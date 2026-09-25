@@ -297,41 +297,17 @@ in
         contrib and arrives already-formed, so adding an integration with a
         different notion of "risk" needs no platform change.
 
-        Rendered into two places from this one declaration: APPROVAL_CONTRIBS_JSON
-        on the agent-host (which relays the answer) and the UI's contrib manifest
-        (which greys the gated option for a viewer who may not use it).
+        This is the PRESENTATION half, and it is build-time metadata: it rides the
+        contrib manifest into the UI image. Where the contrib's verbs actually live
+        on the broker is DEPLOYMENT config — an operator can run the same contrib
+        against a differently-mounted broker — so it is declared by the contrib's
+        deployment module as `agentSandbox.approvals.<name>`, which is also already
+        gated on that deployment enabling the contrib.
+
+        Neither fact is stated twice; they simply belong to different lifecycles.
       '';
       type = types.nullOr (types.submodule {
         options = {
-          brokerPrefix = mkOption {
-            type = types.str;
-            example = "/aws/aws";
-            description = ''
-              Where this contrib's approval verbs live on the broker. The agent-host
-              appends `/{requestId}/approve|deny` and `/{requestId}/can-approve`.
-
-              Usually doubled (`/aws/aws`): the core mounts every provider under
-              `/{provider.name}`, and a transport's own routes carry their own
-              prefix. Spelled out rather than derived, because that second segment
-              is the transport's choice, not a platform convention.
-            '';
-          };
-          pendingPath = mkOption {
-            type = types.nullOr types.str;
-            default = null;
-            example = "/aws/aws/pending";
-            description = ''
-              Where to list this contrib's still-pending requests for a conversation
-              (`?conversation_id=<shortId>`). The agent-host calls it after a revive
-              to re-raise approvals a pod rollout dropped — the in-memory answer
-              routing dies with the old pod, but the request is still pending in the
-              broker, which is the source of truth.
-
-              `null` means no re-raise: the contrib's approvals do NOT survive a
-              rollout, and a user who had an Approve window open loses it silently.
-              Set it unless the contrib's requests are genuinely ephemeral.
-            '';
-          };
           gatedOption = mkOption {
             type = types.str;
             default = "approve";

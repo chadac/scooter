@@ -102,20 +102,14 @@ let
   contribSkills = import ../contrib/skills.nix { inherit lib; };
 
   # The contribs that raise human approvals -> how the agent-host reaches their verbs.
-  # Gated the same way skills are: a contrib's routes ship only where THIS deployment
-  # enabled it, because relaying an answer to a broker that never mounted those routes
-  # turns a user's approval into a 404 they cannot act on.
-  contribApprovals = (import ../contrib/approvals.nix { inherit lib; }).host;
-  enabledApprovals = lib.filterAttrs (name: _: gateOf name) contribApprovals;
+  # Read straight off the evaluated config: each contrib's DEPLOYMENT module sets its
+  # own row inside its own `mkIf`, so the gating is the contrib's and there is nothing
+  # to re-derive here.
   approvalContribsJson =
-    if enabledApprovals == { } then null else builtins.toJSON enabledApprovals;
-  # Whether THIS deployment runs a contrib. The gate for everything a contrib ships
-  # that would misfire when it is off: skills (an agent taught to call a route that
-  # 404s reads the 404 as the feature being broken) and approvals (an answer relayed
-  # to a broker with no such route is a security decision that silently goes nowhere).
+    if cfg.approvals == { } then null else builtins.toJSON cfg.approvals;
   gateOf = name:
     if (bcfg.${name} or null) ? enable then bcfg.${name}.enable
-    else throw ("contrib ${name} ships skills or approvals, which are gated on "
+    else throw ("contrib ${name} ships skills, which are gated on "
       + "agentSandbox.broker.${name}.enable — but no such option exists. "
       + "See contrib/README.md.");
   gatedSkills = lib.concatMapAttrs
@@ -141,6 +135,58 @@ in
       type = types.str;
       default = "agent-sandbox";
       description = "Namespace for the platform + sandboxes.";
+    };
+
+    approvals = mkOption {
+      default = { };
+      example = literalExpression ''{ aws = { brokerPrefix = "/aws/aws"; pendingPath = "/aws/aws/pending"; }; }'';
+      description = ''
+        Contribs that raise human approvals -> where their verbs live on the broker.
+        Rendered into APPROVAL_CONTRIBS_JSON for the agent-host, which relays a user's
+        Approve/Deny there.
+
+        A contrib sets its own row from its DEPLOYMENT module, inside that module's
+        `mkIf`, so a deployment that does not run the contrib contributes nothing and
+        no separate gate is needed here. Relaying an answer to a broker that never
+        mounted the route would turn a security decision into a 404 nobody sees.
+
+        The platform learns only how to REACH the contrib — never what is being
+        approved. The prose a human reads is rendered by the contrib and arrives
+        already-formed; the UI's half of the declaration (which option to grey) is
+        build-time metadata and travels in the contrib manifest instead.
+      '';
+      type = types.attrsOf (types.submodule {
+        options = {
+          brokerPrefix = mkOption {
+            type = types.str;
+            example = "/aws/aws";
+            description = ''
+              Prefix the approval verbs hang off. The agent-host appends
+              `/{requestId}/{optionId}` and `/{requestId}/can-approve`.
+
+              Usually doubled (`/aws/aws`): the core mounts every provider under
+              `/{provider.name}`, and a transport's own routes carry their own prefix.
+              Spelled out rather than derived, because that second segment is the
+              transport's choice, not a platform convention.
+            '';
+          };
+          pendingPath = mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            example = "/aws/aws/pending";
+            description = ''
+              Where to list still-pending requests for a conversation
+              (`?conversation_id=<shortId>`). The agent-host calls it after a revive to
+              re-raise approvals a pod rollout dropped — the in-memory answer routing
+              dies with the old pod, but the request is still pending in the broker,
+              which is the source of truth.
+
+              `null` means no re-raise: a user who had an Approve window open loses it
+              silently on a rollout. Set it unless the requests are truly ephemeral.
+            '';
+          };
+        };
+      });
     };
     registryPrefix = mkOption {
       type = types.str;

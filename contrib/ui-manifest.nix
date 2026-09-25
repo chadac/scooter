@@ -60,13 +60,20 @@ let
 
   linkProviders = lib.attrNames (lib.filterAttrs (_: c: c.ui.source.linkProvider) sourced);
 
-  # The UI half of the approval declarations — which option to grey and what to say.
-  # Taken from contrib/approvals.nix rather than recomputed from `contribs` here, so
-  # the copy the browser renders and the routes the agent-host relays to come from one
-  # source. Note this is NOT gated on `ui.enable`: a contrib may raise approvals while
-  # contributing no icon or tool cards, and greying is a correctness concern rather
-  # than branding.
-  approvals = (import ./approvals.nix { inherit lib; }).ui;
+  # How each contrib's approval is gated: which option to grey, and what to say when
+  # it is. Read off the contribs THIS manifest was built from — an independent
+  # evalModules here would ignore `withModules`, so the CI set (which enables echo)
+  # would silently render a manifest without echo's row.
+  #
+  # NOT gated on `ui.enable`: a contrib may raise approvals while contributing no icon
+  # or tool cards, and greying an option is a correctness concern rather than branding.
+  #
+  # Only the presentation half lives here. Where the contrib's verbs are on the broker
+  # is deployment config, declared by its deployment module (agentSandbox.approvals) —
+  # a browser that knew a broker path would be a browser that could be pointed at one.
+  approvals = lib.mapAttrs
+    (_: c: { inherit (c.approvals) gatedOption blockedTitle blockedHint; })
+    (lib.filterAttrs (_: c: c.approvals != null) contribs);
 in
 
 writeText "contrib-manifest.json" (builtins.toJSON {

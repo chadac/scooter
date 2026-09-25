@@ -46,9 +46,9 @@ export interface ContribToolCard {
  * Only the presentation half lives here. The browser is deliberately not told where
  * the contrib's verbs are on the broker — that travels to the agent-host, which does
  * the relaying. A UI that knew the broker path would be a UI that could be pointed at
- * one. Both halves are rendered from a single declaration (contrib/approvals.nix), so
- * the greying and the relay cannot end up describing different things — the split that
- * caused PR #649's split-brain authorization. Why: PR #651.
+ * one. This half is build-time metadata (contrib/ui-manifest.nix); where the verbs
+ * live on the broker is deployment config the agent-host reads, so neither fact is
+ * stated twice. Why: PR #651.
  */
 export interface ContribApproval {
   /** Which option id is greyed for a viewer the host says may not use it. */

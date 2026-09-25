@@ -13,8 +13,6 @@
     # aws declares its own — if this needed anything aws-shaped, the seam would not
     # be general. Why: PR #651.
     approvals = {
-      brokerPrefix = "/echo/approval";
-      pendingPath = "/echo/approval/pending";
       # Deliberately NOT the defaults: a test that passes with every contrib sharing
       # one hardcoded string cannot tell "read from the manifest" apart from "guessed
       # aws's copy".

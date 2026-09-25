@@ -20,14 +20,10 @@
     sandbox.module = ./sandbox.nix;
     skills."scooter-aws.md" = ./skills/scooter-aws.md;
 
-    # A grant needs a human to say yes. The doubled prefix is the core mounting every
-    # provider under /{provider.name} plus this transport's own /aws route prefix.
-    # pendingPath is set because these requests MUST survive a rollout: the agent is
-    # blocked on the answer, and an approval window that vanishes leaves a user who
-    # cannot act and an agent that never proceeds.
-    approvals = {
-      brokerPrefix = "/aws/aws";
-      pendingPath = "/aws/aws/pending";
-    };
+    # A grant needs a human to say yes. Only the UI half is here (build-time metadata
+    # for the contrib manifest); the defaults — grey "approve", "an admin must" — are
+    # what aws wants, so the empty set is the declaration. Where its verbs live on the
+    # broker is deployment config: see agentSandbox.approvals in ./deployment.nix.
+    approvals = { };
   };
 }

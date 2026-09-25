@@ -286,11 +286,14 @@ let
   # deployTools.sandboxManifestOverlay, which is consumer-owned and overlays on top of it.
   # sandboxSeamProblems below checks it end to end (rendered with aws on, absent with
   # aws off), which is stronger than a mention in the example.
+  #
+  # `approvals` is the same shape: a contrib's DEPLOYMENT module sets its row, not a
+  # deployment config. approvalProblems below checks it both ways.
   coverageExempt = [
     "conversationController" "postgres" "legacyStateMigration"
     "sandboxRuntimeClass" "serviceAccountRoleArn"
     "agentHostImage" "sandboxImage" "uiImage" "defaultSandboxSizeName"
-    "db" "dbSpec" "sandboxPod"
+    "db" "dbSpec" "sandboxPod" "approvals"
   ];
   uncovered = builtins.filter
     (n: !(builtins.elem n coverageExempt)
@@ -544,16 +547,14 @@ let
         else [ ("aws-off: sandbox-manifest-overlay still carries contrib.yaml — the sandbox seam is"
                 + " wired unconditionally, so every sandbox mounts a ConfigMap that is not rendered") ]);
 
-  # THE APPROVAL SEAM REACHES BOTH HALVES, FROM ONE DECLARATION. A contrib that raises
-  # human approvals declares where its verbs live (the agent-host relays there) and how
-  # its option is gated (the UI greys it). The two are rendered from the same attrset
-  # in contrib/approvals.nix precisely because disagreement is silent and dangerous:
-  # a UI that greys what the relay would accept, or — the PR #649 shape — a per-viewer
-  # check and a relay authorizing DIFFERENT principals.
+  # THE APPROVAL SEAM REACHES THE AGENT-HOST. A contrib that raises human approvals
+  # declares where its verbs live from its own DEPLOYMENT module, inside that module's
+  # mkIf — so the gating is the contrib's and this asserts only that the declaration
+  # arrives. Relaying a user's Approve to a broker that never mounted the route turns
+  # a security decision into a 404 nobody sees.
   #
-  # Gated on the DEPLOYMENT, like skills: relaying a user's Approve to a broker that
-  # never mounted the route turns a security decision into a 404 nobody sees.
-  # Why: PR #651.
+  # The UI half (which option to grey) is build-time metadata in the contrib manifest,
+  # checked by the browser-level e2e rather than here. Why: PR #651.
   approvalsJson =
     let m = builtins.filter (e: e.name == "APPROVAL_CONTRIBS_JSON") hostEnv;
     in if m == [ ] then null else builtins.fromJSON (builtins.head m).value;
