@@ -3,6 +3,10 @@
 Generates a short-lived App JWT (RS256) from the App private key, exchanges it
 for an installation access token, caches the token (~50 min), refreshes before
 expiry. Logic lifted from openhands-nix github_app.py.
+
+Only the github provider composes it, and the git credentials it vends are served
+by that provider's own /github/git-credentials route — so it travels with it
+rather than staying in the broker app. Why: PR #591.
 """
 
 from __future__ import annotations

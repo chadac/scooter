@@ -9,11 +9,14 @@ in-pod git-credential-broker helper gets nothing -> git can't authenticate.
 
 Tested at the provider level (no settings/env singleton games): the github
 provider's first transport must be the GitCredential one.
+
+Moved here with the provider (PR #591): the App source it composes came too, so
+this is where the composition is now proved.
 """
 
 from __future__ import annotations
 
-from broker.providers.github import github
+from scooter_contrib_github.broker_provider import github
 from scooter_broker_lib.transports.git_credential import GitCredential
 from scooter_broker_lib.transports.http_proxy import HttpProxy
 
@@ -40,3 +43,23 @@ def test_proxy_targets_github_api():
     provider = github()
     proxy = next(t for t in provider.transports if isinstance(t, HttpProxy))
     assert "api.github.com" in proxy.upstream
+
+
+def test_git_credentials_are_vended_by_the_app_source(monkeypatch):
+    """The end of the `git clone` chain, now that the App source lives here.
+
+    git-credential-broker -> GET /github/git-credentials -> the GENERIC
+    GitCredential transport (still in scooter_broker_lib) -> provider.credential.
+    Only that last link is github's, so the move must leave the transport reading
+    a GitHubAppSource. Why: PR #591.
+    """
+    from scooter_contrib_github.github_app import GitHubAppSource
+
+    monkeypatch.setenv("GITHUB_APP_ID", "123")
+    monkeypatch.setenv("GITHUB_APP_PRIVATE_KEY", "-----BEGIN PRIVATE KEY-----")
+    monkeypatch.setenv("GITHUB_APP_INSTALLATION_ID", "42")
+
+    provider = github()
+    assert provider.enabled
+    assert isinstance(provider.credential, GitHubAppSource)
+    assert provider.credential.installation_id == 42

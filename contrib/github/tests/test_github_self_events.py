@@ -11,14 +11,15 @@ run that wrote it.
 The same App backs this service, so it recognizes that login via `GET /app`
 (`get_app_login`). Without those credentials it falls back to dropping
 Bot-authored comments that don't mention the agent.
+
+Moved here with the handler (PR #591).
 """
 
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from webhooks.config import settings
-from webhooks.handlers import github as gh
+from scooter_contrib_github import webhooks_handler as gh
 
 OWN_LOGIN = "scooter-chadac-me[bot]"
 
@@ -69,10 +70,7 @@ def forwarded():
          patch.object(gh, "get_app_login", new=AsyncMock(return_value=None)), \
          patch.object(gh.db, "lookup_conversation", new=AsyncMock(return_value="conv-1")), \
          patch.object(gh.db, "get_conversation_for_resource", new=AsyncMock(return_value=None)), \
-         patch.object(gh.db, "store_pending_message", new=AsyncMock()), \
-         patch.object(settings, "ignore_bot_authors", True), \
-         patch.object(settings, "ignore_usernames", ""), \
-         patch.object(settings, "mention_pattern", "@agent"):
+         patch.object(gh.db, "store_pending_message", new=AsyncMock()):
         yield send
 
 
@@ -139,14 +137,14 @@ class TestFallbackWithoutAppCredentials:
         assert not forwarded.called
 
     @pytest.mark.asyncio
-    async def test_ignore_bot_authors_off_restores_the_old_behaviour(self, forwarded):
-        with patch.object(settings, "ignore_bot_authors", False):
+    async def test_ignore_bot_authors_off_restores_the_old_behaviour(self, forwarded, trigger_policy):
+        with patch.object(trigger_policy, "ignore_bot_authors", False):
             await gh._handle_review_comment(review_comment(_bot()))
         assert forwarded.called
 
     @pytest.mark.asyncio
-    async def test_ignore_usernames_drops_a_named_identity_regardless_of_type(self, forwarded):
-        with patch.object(settings, "ignore_bot_authors", False), \
-             patch.object(settings, "ignore_usernames", "Scooter-Chadac-Me[bot], noisy"):
+    async def test_ignore_usernames_drops_a_named_identity_regardless_of_type(self, forwarded, trigger_policy):
+        with patch.object(trigger_policy, "ignore_bot_authors", False), \
+             patch.object(trigger_policy, "ignore_usernames", "Scooter-Chadac-Me[bot], noisy"):
             await gh._handle_review_comment(review_comment(_bot()))
         assert not forwarded.called, "matched case-insensitively"

@@ -5,9 +5,11 @@ Links are written by the agent through agent-host's /links as
 "owner/repo#N") terms. Every other test in this suite mocks the lookup, so an
 exact-match miss between those two shapes passed CI while dropping every
 linked-PR forward in production. These assert the mapping itself.
+
+Moved here with the handler (PR #591).
 """
 
-from webhooks.handlers.github import _link_variants
+from scooter_contrib_github.webhooks_handler import _link_variants
 
 
 def test_pull_request_offers_the_stored_pr_url():
