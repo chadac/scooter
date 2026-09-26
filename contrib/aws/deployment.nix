@@ -167,6 +167,22 @@ in
         ];
       };
 
+      # The SANDBOX's half of the same registry: contrib/aws/sandbox.nix renders
+      # ~/.aws/config from this file (one [profile <name>] per account). Reaches
+      # every sandbox through modules/sandbox-pod.nix, so neither the Nix mirror
+      # (modules/conversation.nix) nor the agent-host provisioner spells aws.
+      agentSandbox.sandboxPod = {
+        extraVolumeMounts = [
+          { name = "aws-accounts"; mountPath = "/etc/agent-sandbox/aws"; readOnly = true; }
+        ];
+        extraVolumes = [
+          { name = "aws-accounts"; configMap.name = "agent-broker-aws-accounts"; }
+        ];
+        extraEnv = [
+          { name = "AWS_ACCOUNTS_FILE"; value = "/etc/agent-sandbox/aws/accounts.json"; }
+        ];
+      };
+
       # The account registry, mounted at /etc/agent-broker/accounts.json. Single
       # source of truth shared with the sandbox's ~/.aws/config profiles, which read
       # the same ConfigMap through a second mount (see contrib/aws/sandbox.nix).

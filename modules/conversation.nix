@@ -84,11 +84,8 @@ let
               # the upperdir; runtime nix builds (re-converge) land here + persist
               # across suspend/resume. Disk-backed PVC, never tmpfs.
               { name = "scooter-rw"; mountPath = "/nix/.scooter-rw"; }
-            ] ++ lib.optionals cfg.broker.aws.enable [
-              # The AWS account registry — the entrypoint renders ~/.aws/config
-              # from it (one [profile <name>] per account → the credential helper).
-              { name = "aws-accounts"; mountPath = "/etc/agent-sandbox/aws"; readOnly = true; }
-            ] ++ lib.optionals (cfg.deployTools.configFiles or { } != { }) [
+            ] ++ cfg.sandboxPod.extraVolumeMounts
+            ++ lib.optionals (cfg.deployTools.configFiles or { } != { }) [
               # Deployment config files as a flat read-only dir (filename -> contents).
               # File-based so multi-line config survives the CRD controller.
               { name = "deploy-config"; mountPath = "/etc/agent-sandbox/config"; readOnly = true; }
@@ -100,9 +97,7 @@ let
               # broker credential helper is configured for both (image has no
               # /etc/passwd -> HOME would be "/"). Pin to the writable workspace.
               { name = "HOME"; value = "/workspace"; }
-            ] ++ lib.optionals cfg.broker.aws.enable [
-              { name = "AWS_ACCOUNTS_FILE"; value = "/etc/agent-sandbox/aws/accounts.json"; }
-            ];
+            ] ++ cfg.sandboxPod.extraEnv;
           }];
           volumes = [
             {
@@ -112,9 +107,8 @@ let
             # tmpfs for systemd's /run + /tmp (mirrors the provisioner).
             { name = "run"; emptyDir.medium = "Memory"; }
             { name = "tmp"; emptyDir.medium = "Memory"; }
-          ] ++ lib.optionals cfg.broker.aws.enable [
-            { name = "aws-accounts"; configMap.name = "agent-broker-aws-accounts"; }
-          ] ++ lib.optionals (cfg.deployTools.configFiles or { } != { }) [
+          ] ++ cfg.sandboxPod.extraVolumes
+          ++ lib.optionals (cfg.deployTools.configFiles or { } != { }) [
             { name = "deploy-config"; configMap.name = "deploy-config-files"; }
           ];
         };

@@ -440,9 +440,6 @@ export async function main(
         // local cluster (kind/k3s) where "Always" fails with ImagePullBackOff.
         sandboxPullPolicy:
           (process.env.SANDBOX_PULL_POLICY as "Always" | "IfNotPresent" | "Never") || undefined,
-        // When the AWS permissions broker is on, mount its account-registry
-        // ConfigMap into each sandbox so the entrypoint renders ~/.aws/config.
-        awsAccountsConfigMap: process.env.AWS_ACCOUNTS_CONFIGMAP || undefined,
         // The sandbox is ALWAYS the NixOS systemd-PID-1 image now (the legacy
         // generic image was retired): always provision privileged + tmpfs /run,/tmp
         // so systemd PID 1 boots.

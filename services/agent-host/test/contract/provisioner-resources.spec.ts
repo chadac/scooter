@@ -18,7 +18,7 @@ type Container = {
 type Manifest = { spec: { podTemplate: { spec: { containers: Container[] } } } };
 
 const render = (deploy: Record<string, unknown>) =>
-  sandboxManifest("abc", "conv-abc", "sandbox-abc", "img:latest", "ns", "aud", "10Gi", undefined, true, deploy) as Manifest;
+  sandboxManifest("abc", "conv-abc", "sandbox-abc", "img:latest", "ns", "aud", "10Gi", true, deploy) as Manifest;
 
 describe("sandboxManifest resource requests/limits", () => {
   it("applies the passed resources to the sandbox container", () => {
