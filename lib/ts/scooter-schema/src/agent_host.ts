@@ -20,6 +20,12 @@ export const conversations = pgTable("conversations", {
 	userTitled: boolean("user_titled"),
 	starred: boolean(),
 	pendingQueue: jsonb("pending_queue"),
+	hostPod: text("host_pod"),
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	hostGeneration: bigint("host_generation", { mode: "number" }).default(0).notNull(),
+	phase: text(),
+	sandboxRef: text("sandbox_ref"),
+	creatorPod: text("creator_pod"),
 }, (table) => [
 	index("conversations_by_activity").using("btree", table.lastActivityAt.desc().nullsFirst().op("int8_ops")),
 	index("conversations_by_owner").using("btree", table.owner.asc().nullsLast().op("text_ops")),
