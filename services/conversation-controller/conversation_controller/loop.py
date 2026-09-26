@@ -114,8 +114,19 @@ def _mirror_phase(rows, name: str, phase: str) -> None:
         rows.set_phase(name, phase)
 
 
-def _sync_phases(rows, convs) -> None:
-    """Converge the conversations row's phase column on the CRs this pass listed.
+def _mirror_release(rows, name: str, generation: int) -> None:
+    """Mirror a placement RELEASE (the CR patch that clears hostPod) to the row.
+
+    Immediate rather than left to the next pass's sweep: a release is a fencing event. Once appends
+    check the row (D3), a tick of "the row still says this pod owns it" is a tick in which a pod the
+    controller has already detached can still write. Why: PR #654.
+    """
+    if rows is not None:
+        rows.release_assignment(name, generation)
+
+
+def _sync_rows(rows, convs) -> None:
+    """Converge the row's phase and placement columns on the CRs this pass listed.
 
     Runs BEFORE the per-conversation loop, not after: the loop's own _mirror_phase calls write
     phases decided THIS pass, and a sweep carrying pre-pass values would undo them. Ordering it
@@ -128,6 +139,11 @@ def _sync_phases(rows, convs) -> None:
     if rows is None:
         return
     rows.sync_phases([(c.name, c.phase) for c in convs if c.phase_present])
+    # Assignment converges for a sharper reason than phase: once appends fence on the row, a row
+    # with no generation does not read as stale, it reads as "not allowed to write". An assignment
+    # made before this code existed has to arrive without waiting for a reassignment that may never
+    # come.
+    rows.sync_assignments([(c.name, c.host_pod, c.generation) for c in convs])
 
 
 def reconcile_once(k8s, cap: int, rows=None) -> list[tuple[str, str]]:
@@ -156,7 +172,7 @@ def reconcile_once(k8s, cap: int, rows=None) -> list[tuple[str, str]]:
         )
         sandbox_modes = {}
     convs = [_state(cr, sandbox_modes) for cr in k8s.list_conversations()]
-    _sync_phases(rows, convs)
+    _sync_rows(rows, convs)
 
     # Seed load from conversations currently assigned to a still-ready pod (those stay).
     load: dict[str, int] = {}
@@ -263,6 +279,7 @@ def reconcile_once(k8s, cap: int, rows=None) -> list[tuple[str, str]]:
             # clear; reconcile returns NoOp once it's already {hostPod: null, hostIP: null}, so
             # no churn.)
             k8s.patch_status(c.name, {"hostPod": None, "hostIP": None})
+            _mirror_release(rows, c.name, c.generation)
             hosts[c.name] = None
             results.append((c.name, "detach"))
             continue
@@ -286,6 +303,7 @@ def reconcile_once(k8s, cap: int, rows=None) -> list[tuple[str, str]]:
             # The drift repair exists because the OWNER's setPhase never landed — so the row is
             # exactly as stale as the CR was, and needs the same correction.
             _mirror_phase(rows, c.name, "Suspended")
+            _mirror_release(rows, c.name, c.generation)
             hosts[c.name] = None
             results.append((c.name, "mark-suspended"))
             continue
@@ -299,6 +317,7 @@ def reconcile_once(k8s, cap: int, rows=None) -> list[tuple[str, str]]:
             if c.host_pod is not None or not c.phase_present or c.phase != "Pending":
                 k8s.patch_status(c.name, {"phase": "Pending", "hostPod": None})
                 _mirror_phase(rows, c.name, "Pending")
+                _mirror_release(rows, c.name, c.generation)
             hosts[c.name] = None
             results.append((c.name, "pending"))
             continue
@@ -310,11 +329,12 @@ def reconcile_once(k8s, cap: int, rows=None) -> list[tuple[str, str]]:
             "hostIP": action.host_ip,
             "generation": action.generation,
         })
-        # Phase only. hostPod/generation stay CR-only until the reconcile port, where the row write
-        # is a CONDITIONAL update (`WHERE $gen > host_generation`) — a blind mirror of an assignment
-        # would let a stale controller overwrite a newer one, which is the exact failure the
-        # generation exists to prevent.
         _mirror_phase(rows, c.name, action.phase)
+        # The row claim is CONDITIONAL (`WHERE $gen > host_generation`) where the CR patch above is
+        # not: the CR gets its monotonicity from apiserver optimistic concurrency, and the row has
+        # to get it from the database. A losing claim is not an error — see set_assignment.
+        if rows is not None:
+            rows.set_assignment(c.name, action.host_pod, action.generation)
         hosts[c.name] = action.host_pod  # so a child reconciled later co-locates here
         # A subagent shares its parent's pod — don't double-count it toward pod capacity.
         if c.parent_id is None:

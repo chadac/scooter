@@ -223,7 +223,7 @@ def test_sync_phases_survives_postgres_being_down():
 def test_sync_phases_skips_conversations_with_no_phase_on_the_cr():
     """_state defaults a status-less CR to "Pending". That default is a guess, not an observation,
     and the pass materializes the real phase moments later — mirroring the guess would race it."""
-    from conversation_controller.loop import _sync_phases
+    from conversation_controller.loop import _sync_rows
     from conversation_controller.reconcile import ConversationState
 
     class Recorder:
@@ -234,8 +234,11 @@ def test_sync_phases_skips_conversations_with_no_phase_on_the_cr():
             self.synced = pairs
             return 0
 
+        def sync_assignments(self, triples):
+            return 0
+
     rec = Recorder()
-    _sync_phases(
+    _sync_rows(
         rec,
         [
             ConversationState(name="has-phase", host_pod=None, phase="Assigned", generation=0),
@@ -248,6 +251,126 @@ def test_sync_phases_skips_conversations_with_no_phase_on_the_cr():
 
 def test_sync_phases_is_a_no_op_without_a_database():
     """No DSN configured is a supported deployment, not a degraded one."""
-    from conversation_controller.loop import _sync_phases
+    from conversation_controller.loop import _sync_rows
 
-    _sync_phases(None, [])  # must not raise
+    _sync_rows(None, [])  # must not raise
+
+
+# --- assignment: where the monotonicity comes from -------------------------------------------
+#
+# The CR gets monotonicity from apiserver optimistic concurrency. The row has to get it from the
+# database, because the alternative — a leader lease — is not mutual exclusion: a paused replica
+# still believes it holds one, wakes with a stale view, and would overwrite a newer assignment.
+# These tests pin the WHERE clauses that make that impossible.
+
+
+def test_set_assignment_claims_only_past_a_newer_generation():
+    conn = FakeConn()
+    rows = ConversationRows("dsn", connect=lambda _dsn: conn)
+
+    assert rows.set_assignment("c1", "host-3", 7) is True
+
+    sql, params = conn.executed[0]
+    assert sql == (
+        "UPDATE conversations SET host_pod = %s, host_generation = %s "
+        "WHERE id = %s AND %s > host_generation"
+    )
+    assert params == ("host-3", 7, "c1", 7)
+
+
+def test_a_losing_claim_is_not_an_error():
+    """False means EITHER the claim lost to a newer epoch OR the row is gone. Neither is something
+    the controller can act on, and neither may interrupt the pass."""
+    conn = FakeConn(rowcount=0)
+    rows = ConversationRows("dsn", connect=lambda _dsn: conn)
+
+    assert rows.set_assignment("c1", "host-3", 2) is False
+    assert not conn.closed, "a lost claim is a normal outcome — it must not drop the connection"
+
+
+def test_release_keeps_the_generation_as_a_high_water_mark():
+    """Clearing host_generation would reset the fence to 0 and let any stale epoch claim next. A
+    release says 'no pod owns this', not 'ownership never advanced'."""
+    conn = FakeConn()
+    rows = ConversationRows("dsn", connect=lambda _dsn: conn)
+
+    rows.release_assignment("c1", 4)
+
+    sql, params = conn.executed[0]
+    assert "SET host_pod = NULL" in sql
+    assert "host_generation" not in sql.split("WHERE")[0], "the epoch must survive a release"
+    assert "%s >= host_generation" in sql
+    assert params == ("c1", 4)
+
+
+def test_release_cannot_detach_a_pod_assigned_at_a_newer_epoch():
+    """The >= is the whole guard: a stale controller holds a LOWER epoch than the row and its
+    release must match nothing, or it would unassign a conversation someone else just claimed."""
+    conn = FakeConn(rowcount=0)
+    rows = ConversationRows("dsn", connect=lambda _dsn: conn)
+
+    assert rows.release_assignment("c1", 1) is False
+
+
+def test_sync_assignments_converges_without_going_backwards():
+    """>= because this carries the CR's CURRENT epoch, not a new one: the current controller
+    refreshes, a stale one (lower epoch) is rejected."""
+    conn = FakeConn()
+    rows = ConversationRows("dsn", connect=lambda _dsn: conn)
+
+    rows.sync_assignments([("a", "host-1", 3), ("b", None, 0)])
+
+    sql, params = conn.executed[0]
+    assert "v.gen >= c.host_generation" in sql
+    assert "c.host_pod IS DISTINCT FROM v.host_pod OR c.host_generation <> v.gen" in sql
+    assert params == ["a", "host-1", 3, "b", None, 0]
+
+
+def test_sync_assignments_is_one_statement_and_chunks():
+    conn = FakeConn()
+    rows = ConversationRows("dsn", connect=lambda _dsn: conn)
+
+    rows.sync_assignments([(f"c{i}", "host-1", 1) for i in range(200)])
+    assert len(conn.executed) == 1
+
+    conn2 = FakeConn()
+    rows2 = ConversationRows("dsn", connect=lambda _dsn: conn2)
+    rows2.sync_assignments([(f"c{i}", "host-1", 1) for i in range(1100)])
+    assert len(conn2.executed) == 3
+
+
+def test_sync_assignments_survives_postgres_being_down():
+    conn = FakeConn(fail=True)
+    rows = ConversationRows("dsn", connect=lambda _dsn: conn)
+
+    assert rows.sync_assignments([("a", "host-1", 1)]) == 0
+    assert conn.closed
+
+
+def test_the_sweep_carries_every_conversation_including_the_unassigned():
+    """Unlike phase, an unassigned conversation is NOT skipped: host_pod=None is the observation
+    that no pod owns it, and the row has to learn that too."""
+    from conversation_controller.loop import _sync_rows
+    from conversation_controller.reconcile import ConversationState
+
+    class Recorder:
+        def __init__(self):
+            self.assignments = None
+
+        def sync_phases(self, pairs):
+            return 0
+
+        def sync_assignments(self, triples):
+            self.assignments = triples
+            return 0
+
+    rec = Recorder()
+    _sync_rows(
+        rec,
+        [
+            ConversationState(name="assigned", host_pod="host-1", phase="Assigned", generation=5),
+            ConversationState(name="pending", host_pod=None, phase="Pending", generation=0),
+        ],
+    )
+
+    assert rec.assignments == [("assigned", "host-1", 5), ("pending", None, 0)]
