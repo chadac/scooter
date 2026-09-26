@@ -21,6 +21,7 @@
  */
 
 import { test, expect } from "./fixtures.js";
+import { isFull } from "./target.js";
 
 const panel = {
   root: '[data-testid="interrupt-panel"]',
@@ -42,20 +43,29 @@ async function currentConversationId(
   // The SERVER's id for the selected conversation. `currentId` is the stable local KEY —
   // for a conversation created on its first send it is a placeholder the server never
   // issued, so suspending by it 404s. The server id is recorded alongside it.
-  const fromUi = await page.evaluate(() => {
-    try {
-      const raw = localStorage.getItem("kubenix-agent.sessions.v1");
-      if (!raw) return null;
-      const st = JSON.parse(raw) as {
-        currentId?: string;
-        sessions?: Array<{ id: string; serverId?: string }>;
-      };
-      const cur = st.sessions?.find((s) => s.id === st.currentId);
-      return cur?.serverId ?? null;
-    } catch {
-      return null;
-    }
-  });
+  const readServerId = () =>
+    page.evaluate(() => {
+      try {
+        const raw = localStorage.getItem("kubenix-agent.sessions.v1");
+        if (!raw) return null;
+        const st = JSON.parse(raw) as {
+          currentId?: string;
+          sessions?: Array<{ id: string; serverId?: string }>;
+        };
+        const cur = st.sessions?.find((s) => s.id === st.currentId);
+        return cur?.serverId ?? null;
+      } catch {
+        return null;
+      }
+    });
+
+  // Polled, not read once: the server id is written back when the first reply's stream
+  // reports it, which trails the reply the caller waited for. Why: PR #667.
+  let fromUi: string | null = null;
+  for (let i = 0; i < 30 && !fromUi; i++) {
+    fromUi = await readServerId();
+    if (!fromUi) await page.waitForTimeout(1_000);
+  }
   if (fromUi) return fromUi;
   const list = await (await request.get(`${base}/conversations`)).json();
   const id: string = list[0].id;
@@ -73,26 +83,41 @@ async function suspend(
   expect(res.ok(), "suspend must succeed").toBeTruthy();
 }
 
-/** POST the approval exactly like a contrib's broker half does (aws _notify_host). */
+/** POST the approval exactly like a contrib's broker half does (aws _notify_host).
+ *
+ *  A 404 is RETRIED on the full target — the same retry aws-interrupt.spec.ts's copy of this
+ *  helper already carries. The router resolves the owning pod from a watch-populated cache,
+ *  so between a conversation being reassigned and that ownership becoming visible the request
+ *  lands on a non-owner, which answers 404 for a conversation that is healthy. A broken route
+ *  404s on every attempt and still fails the assertion. Why: PR #667. */
 async function requestAws(
   request: import("@playwright/test").APIRequestContext,
   base: string,
   conversationId: string,
   requestId: string,
 ) {
-  return request.post(`${base}/conversations/${encodeURIComponent(conversationId)}/approvals/aws`, {
-    headers: { "Content-Type": "application/json" },
-    // An id plus the prose the CONTRIB rendered — aws builds this exact sentence in
-    // models.approval_message. The platform no longer receives target_account /
-    // risk_level; it relays an opaque message. Why: PR #651.
-    data: {
-      request_id: requestId,
-      message:
-        "Scooter is requesting AWS access to dev (risk: low).\n" +
-        "s3:GetObject on the state bucket\n" +
-        "Reason: read terraform state",
-    },
-  });
+  const post = () =>
+    request.post(`${base}/conversations/${encodeURIComponent(conversationId)}/approvals/aws`, {
+      headers: { "Content-Type": "application/json" },
+      // An id plus the prose the CONTRIB rendered — aws builds this exact sentence in
+      // models.approval_message. The platform no longer receives target_account /
+      // risk_level; it relays an opaque message. Why: PR #651.
+      data: {
+        request_id: requestId,
+        message:
+          "Scooter is requesting AWS access to dev (risk: low).\n" +
+          "s3:GetObject on the state bucket\n" +
+          "Reason: read terraform state",
+      },
+    });
+
+  let res = await post();
+  if (!isFull) return res;
+  for (let i = 0; i < 10 && res.status() === 404; i++) {
+    await new Promise((r) => setTimeout(r, 2_000));
+    res = await post();
+  }
+  return res;
 }
 
 // CLUSTER-HONEST BUDGET, all three describes (see stop-run.spec.ts:75). Every test
