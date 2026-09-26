@@ -12,11 +12,11 @@ func TestConvIDFromPath(t *testing.T) {
 		{"/conversations/abc123/events.integrity", "abc123", true},
 		{"/conversations/abc123/cancel", "abc123", true},
 		{"/conversations/abc123/links", "abc123", true},
-		{"/c/xyz789/marimo/", "xyz789", true},           // web-service proxy (HTTP or WS)
+		{"/c/xyz789/marimo/", "xyz789", true}, // web-service proxy (HTTP or WS)
 		{"/c/xyz789/ttyd/socket", "xyz789", true},
-		{"/conversations", "", false},                    // no id
-		{"/healthz", "", false},                          // non-scoped
-		{"/agui", "", false},                             // id is in the body, not path
+		{"/conversations", "", false}, // no id
+		{"/healthz", "", false},       // non-scoped
+		{"/agui", "", false},          // id is in the body, not path
 		{"/", "", false},
 	}
 	for _, c := range cases {
