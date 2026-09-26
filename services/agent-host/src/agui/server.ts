@@ -14,7 +14,7 @@ import { createServer, type IncomingMessage, type ServerResponse, type Server } 
 import { EventEncoder } from "@ag-ui/encoder";
 import type { BaseEvent } from "@ag-ui/core";
 
-import type { AguiEvent } from "../bridge.js";
+import type { AguiEvent, ApproverIdentity } from "../bridge.js";
 import type { SessionId, ThreadId } from "../types.js";
 import type { Router } from "../http/router.js";
 import type { WebServiceProxy } from "../proxy/webServiceProxy.js";
@@ -147,6 +147,18 @@ export interface ResumeOutcome {
   reason?: string;
 }
 
+/** What the ingress identity resolver returns. `email`/`name` are optional because a
+ *  header-auth ingress may supply only an id — but they must be CARRIED, not dropped:
+ *  an approval is authorized against a configured claim (email by default), so a
+ *  resolver result narrowed to `{id, anonymous}` silently costs the answering human
+ *  their identity on every approval. Why: PR #649. */
+export interface ResolvedUser {
+  id: string;
+  email?: string;
+  name?: string;
+  anonymous: boolean;
+}
+
 export interface AguiServer {
   listen(port: number): Promise<void>;
   /** The bound port after listen() (for tests binding to :0). undefined if not listening. */
@@ -164,6 +176,10 @@ export interface AguiServer {
     handler: (
       sessionId: SessionId,
       entry: { interruptId: string; status: "resolved" | "cancelled"; payload?: unknown },
+      /** The human who answered, from the ingress identity on THIS request. An
+       *  approval interrupt is authorized against this person, not the conversation
+       *  — undefined only when the caller is anonymous. */
+      approver?: ApproverIdentity,
     ) => Promise<ResumeOutcome>,
   ): void;
   broadcast(sessionId: SessionId, event: AguiEvent): void;
@@ -188,7 +204,7 @@ export interface AguiServer {
    *  is OWNED by the human who created it. Without this, a browser-created
    *  conversation gets no owner (the Mine/All filter can't see it as yours). Absent =
    *  no owner stamped from /agui (single-user / no-FGA deployments). */
-  useIdentityResolver(resolve: (req: import("node:http").IncomingMessage) => { id: string; anonymous: boolean } | Promise<{ id: string; anonymous: boolean }>): void;
+  useIdentityResolver(resolve: (req: import("node:http").IncomingMessage) => ResolvedUser | Promise<ResolvedUser>): void;
   /** Attach an SSE response to a session's persistent event stream (for the
    *  management API's GET .../events). Returns once replay (onAttach) is done. */
   subscribeSSE(sessionId: SessionId, res: ServerResponse): Promise<void>;
@@ -213,6 +229,7 @@ export function createAguiServer(): AguiServer {
     | ((
         sessionId: SessionId,
         entry: { interruptId: string; status: "resolved" | "cancelled"; payload?: unknown },
+        approver?: ApproverIdentity,
       ) => Promise<ResumeOutcome>)
     | undefined;
   let attachHandler:
@@ -226,7 +243,22 @@ export function createAguiServer(): AguiServer {
   // consulted before the proxy on `upgrade`.
   const upgradeHandlers = new Map<string, (req: IncomingMessage, socket: import("node:stream").Duplex, head: Buffer) => void>();
   let ownerVerifier: ((req: IncomingMessage) => Promise<boolean>) | undefined;
-  let identityResolver: ((req: IncomingMessage) => { id: string; anonymous: boolean } | Promise<{ id: string; anonymous: boolean }>) | undefined;
+  let identityResolver: ((req: IncomingMessage) => ResolvedUser | Promise<ResolvedUser>) | undefined;
+
+  /** Resolve the caller's ingress identity, never throwing. The try/catch wraps the
+   *  CALL, not just the promise: a resolver that throws synchronously (a misconfigured
+   *  backend, a bad header parse) escapes `Promise.resolve(f()).catch(...)` entirely
+   *  and would take the whole request down — on the resume path that means a security
+   *  decision the user already made is lost to an identity-lookup failure. Degrading to
+   *  "unknown" is always the right trade here: both callers treat it as anonymous. */
+  const resolveUserSafely = async (req: IncomingMessage): Promise<ResolvedUser | undefined> => {
+    if (!identityResolver) return undefined;
+    try {
+      return await identityResolver(req);
+    } catch {
+      return undefined;
+    }
+  };
 
   const write = (res: ServerResponse, event: AguiEvent) => {
     res.write(encoder.encodeSSE(toBaseEvent(event)));
@@ -347,8 +379,22 @@ export function createAguiServer(): AguiServer {
         // (docs/scooter-bug-resume-hangs-when-run-not-live.md). When answered, the run
         // resumes and streams its continued events over THIS res (via broadcast), which
         // terminal-closes it as usual.
+        // WHO answered. An approval interrupt is authorized against the answering
+        // human (the broker checks a configured claim — email by default), and this
+        // is the only place that identity exists: the resume arrives on a plain
+        // POST /agui, not through the management Router's ctx.user. Resolve it ONCE
+        // for the batch — every entry came in on the same request.
+        //
+        // Anonymous stays undefined rather than becoming a synthetic principal, so a
+        // deployment with no ingress identity keeps its existing behavior instead of
+        // authorizing something that isn't a person.
+        const answerer = await resolveUserSafely(req);
+        const approver: ApproverIdentity | undefined =
+          answerer && !answerer.anonymous
+            ? { id: answerer.id, email: answerer.email, name: answerer.name }
+            : undefined;
         const outcomes = await Promise.all(
-          input.resume.map((r) => resumeHandler?.(sessionId, r) ?? Promise.resolve({ ok: true } as ResumeOutcome)),
+          input.resume.map((r) => resumeHandler?.(sessionId, r, approver) ?? Promise.resolve({ ok: true } as ResumeOutcome)),
         );
         const failed = outcomes.find((o) => o && !o.ok);
         if (failed) {
@@ -410,8 +456,8 @@ export function createAguiServer(): AguiServer {
       let owner: string | undefined;
       if (input.owner && ownerVerifier && (await ownerVerifier(req).catch(() => false))) {
         owner = input.owner;
-      } else if (identityResolver) {
-        const user = await Promise.resolve(identityResolver(req)).catch(() => undefined);
+      } else {
+        const user = await resolveUserSafely(req);
         if (user && !user.anonymous) owner = user.id;
       }
       // Drive the run. If promptHandler THROWS before the run ever emits a terminal
