@@ -63,6 +63,39 @@ func (d *dynamicCreator) Create(ctx context.Context, c NewConversation) error {
 	return err
 }
 
+// dualCreator writes both stores on create: the Conversation CR and the `conversations` row. It
+// exists so the row can become the source of truth for existence — nothing can read a row that no
+// writer produces, and in the cluster stack nothing produced one at create time.
+//
+// The CR stays AUTHORITATIVE for the request: its error is returned, and a row failure is logged
+// but swallowed. That asymmetry is deliberate and is what makes this step additive — a swallowed
+// row failure leaves exactly the state production was already in before this code existed (CR, no
+// row), so the worst case is the status quo rather than a create that now fails where it used to
+// succeed. The asymmetry INVERTS once the router reads existence from the row; at that point a row
+// failure has to fail the create, because a conversation with no row will not list.
+// conversationRowWriter is the row half. Narrow for the same reason ConversationCreator is: the
+// interesting behaviour here is which failure is fatal, and that must be testable without a
+// Postgres.
+type conversationRowWriter interface {
+	CreateConversation(ctx context.Context, c NewConversation) error
+}
+
+type dualCreator struct {
+	cr   ConversationCreator
+	rows conversationRowWriter
+}
+
+func (d *dualCreator) Create(ctx context.Context, c NewConversation) error {
+	if err := d.cr.Create(ctx, c); err != nil {
+		return err
+	}
+	if err := d.rows.CreateConversation(ctx, c); err != nil {
+		logger("create").Error("conversation row insert failed; the CR was created, so this degrades to the pre-dual-write behaviour (absent from the list until agent-host writes meta)",
+			errAttr(err), slog.String("conversation_id", c.Name))
+	}
+	return nil
+}
+
 // createRequest is the accepted body. No threadId: the server mints the id.
 type createRequest struct {
 	Title    string `json:"title"`

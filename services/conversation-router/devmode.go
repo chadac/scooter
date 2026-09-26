@@ -99,36 +99,10 @@ func (d *devCreator) Close() {
 	}
 }
 
-// Create inserts a fresh conversations row. thread_id == id by construction (create.go mints one id
-// that is both). title is usually "" (the agent's <title> or a rename fills it later), but an
-// API-seeded create MAY carry one — an unprompted seed must still list with its title. Only dev
-// mode has somewhere to put it: the cluster path writes a CR, whose schema has no title field.
-// ON CONFLICT DO NOTHING keeps a retry/double-create idempotent. The INSERT fires the
-// conversations_changed trigger, so the router's own LISTEN loop pushes the new row to the sidebar.
+// Create inserts a fresh conversations row — the ONLY write this stack makes on create, since there
+// is no CR here. The row shape itself lives in conversationrow.go, shared with the cluster path.
 func (d *devCreator) Create(ctx context.Context, c NewConversation) error {
-	id, now, title, model, owner, parent := devRowArgs(c, time.Now().UnixMilli())
-	_, err := d.pool.Exec(ctx, `
-		INSERT INTO conversations
-		  (id, thread_id, title, created_at, last_activity_at, model, owner, parent_id)
-		VALUES ($1, $1, $2, $3, $3, $4, $5, $6)
-		ON CONFLICT (id) DO NOTHING`,
-		id, title, now, model, owner, parent)
+	id, now, title, model, owner, parent := conversationRowArgs(c, time.Now().UnixMilli())
+	_, err := d.pool.Exec(ctx, insertConversationSQL, id, title, now, model, owner, parent)
 	return err
-}
-
-// devRowArgs projects a create into the conversations-row columns. Pure, so the mapping (which
-// create field becomes which column) is unit-testable without a database. title comes from the
-// create itself, NOT from the spec map — the spec is the CR's, and the CR has no title. It is a
-// plain string (the column is NOT NULL — absent becomes "", not NULL); the nullable columns use
-// specString.
-func devRowArgs(c NewConversation, now int64) (rowID string, createdAt int64, title string, model, owner, parent *string) {
-	return c.Name, now, c.Title, specString(c.Spec, "model"), specString(c.Spec, "owner"), specString(c.Spec, "parentId")
-}
-
-// specString reads a string spec value, treating "" and a non-string as absent (a NULL column).
-func specString(spec map[string]interface{}, k string) *string {
-	if v, ok := spec[k].(string); ok && v != "" {
-		return &v
-	}
-	return nil
 }
