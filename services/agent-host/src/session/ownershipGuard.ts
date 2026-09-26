@@ -13,6 +13,12 @@
  * CRUCIAL: canWrite() is SYNCHRONOUS and does NO k8s I/O — it reads a CACHED view kept
  * fresh by a watch (see k8sOwnershipGuard). appendEvent fires once per streamed token, so
  * a per-append k8s call would wreck latency.
+ *
+ * NOT the authority anymore. The conversations row decides, evaluated inside the append's
+ * own statement (eventStore's AppendFence), which has no staleness window and cannot be
+ * bypassed by a call site that forgets to ask. What remains here is a cheap pre-filter and
+ * the generation this pod PRESENTS to that fence — so a cache that is merely stale costs a
+ * refused statement, not a corrupted log.
  */
 
 import type { SessionId } from "../types.js";
