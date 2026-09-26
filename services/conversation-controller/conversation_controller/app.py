@@ -15,6 +15,7 @@ from .k8s import ControllerK8s
 from .leader import LeaderElector
 from .logging_config import configure_logging
 from .loop import reconcile_once, reap_orphans, autoscale_once, AutoscaleState
+from . import rows as conversation_rows
 
 logger = logging.getLogger(__name__)
 # Every line from this module carries component="app"; the loop/leader/k8s modules bind
@@ -24,6 +25,9 @@ _C = {"component": "app"}
 
 def run(cfg: Config, stop: threading.Event) -> None:
     k8s = ControllerK8s(cfg.namespace)
+    # Mirrors phase onto agent_host.conversations. None when no DSN is configured, in which case the
+    # controller behaves exactly as it did before it had a database. Why: PR #654.
+    rows = conversation_rows.from_env()
     elector = LeaderElector(cfg.namespace, cfg.lease_name, cfg.identity, cfg.lease_seconds)
     autoscale_state = AutoscaleState()
     # /metrics on every replica (leader or standby) so a scrape target is always up.
@@ -35,7 +39,7 @@ def run(cfg: Config, stop: threading.Event) -> None:
             if leader:
                 if not was_leader:
                     logger.info("became leader", extra={**_C, "identity": cfg.identity})
-                reconcile_once(k8s, cfg.pod_cap)
+                reconcile_once(k8s, cfg.pod_cap, rows=rows)
                 # Reap orphaned Sandboxes (no owning Conversation) — leader-only, same tick.
                 # A reaper failure must NOT abort assignment reconcile, so guard it separately.
                 if cfg.reap_orphans:

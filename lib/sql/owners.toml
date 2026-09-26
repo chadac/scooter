@@ -30,11 +30,12 @@ conversation_assets = { writers = ["agent-host"], readers = [] }
 conversation_events = { writers = ["agent-host"], readers = [] }
 # The background-job registry. Was jobs.json on the emptyDir that every rollout wipes.
 conversation_jobs   = { writers = ["agent-host"], readers = [] }
-# Conversation metadata: the sidebar list + rehydration fields. Two writers, one table (like
-# byoc.remote_agents): agent-host owns the row; conversation-router INSERTs it at create time,
-# writes title/starred for IDLE conversations, and SELECTs the table for GET /conversations (a
-# writer implies read, so not also a reader). See services/conversation-router.
-conversations       = { writers = ["agent-host", "conversation-router"], readers = [] }
+# Conversation metadata: the sidebar list + rehydration fields. THREE writers, one table:
+# agent-host owns the row; conversation-router INSERTs it at create time, writes
+# title/starred for IDLE conversations, and SELECTs the table for GET /conversations;
+# conversation-controller mirrors `phase` (it writes Failed/Pending/the Suspended drift
+# repair, which nothing else does). A writer implies read, so none are also readers.
+conversations       = { writers = ["agent-host", "conversation-router", "conversation-controller"], readers = [] }
 
 [broker]
 owner = "broker"

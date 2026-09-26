@@ -344,7 +344,21 @@ in
                   { name = "AGENT_HOST_MAX_REPLICAS"; value = toString ccfg.maxReplicas; }
                   { name = "SCALE_DOWN_COOLDOWN_SECONDS"; value = toString ccfg.scaleDownCooldownSeconds; }
                   { name = "METRICS_PORT"; value = toString ccfg.metricsPort; }
-                ];
+                  # Write handle on agent_host.conversations, for mirroring `phase` onto the row.
+                  # The controller writes Failed / Pending / the Suspended drift repair, which
+                  # nothing else does — so until these reach the row, a row-sourced reader cannot
+                  # trust phase (a Failed conversation would render as "running"). Its own
+                  # `conversation_controller` role, granted read-write on exactly `conversations`
+                  # (modules/postgres.nix readers + the agentSandbox.db spec). Unset DSN is
+                  # supported: rows.from_env() returns None and the controller skips the mirror.
+                  # Why: PR #654.
+                  { name = "AGENT_HOST_DB_HOST"; value = cfg.postgres.host; }
+                  { name = "AGENT_HOST_DB_PORT"; value = toString cfg.postgres.port; }
+                  { name = "AGENT_HOST_DB_NAME"; value = "agent_host"; }
+                  { name = "AGENT_HOST_DB_USER"; value = "conversation_controller"; }
+                  { name = "AGENT_HOST_DB_PASSWORD"; valueFrom.secretKeyRef = { name = "agent-pg-conversation-controller"; key = "password"; }; }
+                ]
+                ++ lib.optional (cfg.postgres.sslmode != null) { name = "AGENT_HOST_DB_SSLMODE"; value = cfg.postgres.sslmode; };
                 ports = [{ name = "metrics"; containerPort = ccfg.metricsPort; }];
                 resources = lib.mkDefault {
                   requests = { cpu = "25m"; memory = "64Mi"; };

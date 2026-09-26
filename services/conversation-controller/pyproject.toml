@@ -6,6 +6,8 @@ description = "Scooter Conversation CRD controller — assigns each conversation
 requires-python = ">=3.11"
 dependencies = [
     "kubernetes",
+    # Mirrors conversation phase onto agent_host.conversations (conversation_controller/rows.py).
+    "psycopg",
 ]
 
 [project.scripts]
