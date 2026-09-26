@@ -1113,6 +1113,16 @@ jobs:
           DISTRIBUTE_RESULT: ${{ needs.e2e-distribute.result }}
         run: |
           set -euo pipefail
+          # A CANCELLED distribute publishes no matrix, so MATRIX is the empty string and
+          # every reconstruction below is meaningless — there are no shards to attribute a
+          # result to. Bail before the parse: `JSON.parse("")` throws, which used to fail
+          # this step and report the superseded run as a genuine e2e FAILURE. The common
+          # way to get here is the opt-in path itself — labelling an open PR starts a second
+          # run and `cancel-in-progress` kills the first.
+          if [ -z "${MATRIX:-}" ]; then
+            echo "distribute=$DISTRIBUTE_RESULT published no matrix — nothing to report"
+            exit 0
+          fi
           # GitHub exposes only the AGGREGATE result on `needs`, so per-shard pass/fail
           # is reconstructed from the uploaded reports: a shard with a report and no
           # failing test passed; a shard whose report is missing crashed before writing
@@ -1184,6 +1194,14 @@ jobs:
       - name: gate on shard results
         if: always()
         run: |
+          # CANCELLED is not a verdict about the code — the run was superseded (a push, or
+          # a label starting a second run) and its replacement carries the real checks for
+          # this SHA. Failing here would mark the commit red for a suite that never
+          # finished, so cancellation passes the gate. A genuine `failure` still fails.
+          if [ "${{ needs.e2e-distribute.result }}" = "cancelled" ] || [ "${{ needs.e2e-shard.result }}" = "cancelled" ]; then
+            echo "e2e cancelled (run superseded) — deferring to the replacement run"
+            exit 0
+          fi
           if [ "${{ needs.e2e-shard.result }}" != "success" ] || [ "${{ needs.e2e-distribute.result }}" != "success" ]; then
             echo "e2e failed: distribute=${{ needs.e2e-distribute.result }} shards=${{ needs.e2e-shard.result }}"
             exit 1
