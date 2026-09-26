@@ -5,36 +5,30 @@ import (
 	"testing"
 )
 
-// notifyDecision is the pure gate on the LISTEN loop: it decides, from a NOTIFY payload + the CR
-// cache, whether to read and push a row. These lock down the four drop rules — a wrong one either
-// pushes a ghost (no CR) / a removal (delete) the snapshot omits, or silently swallows a real
-// change (a valid upsert).
+// notifyDecision is the pure gate on the LISTEN loop: from a NOTIFY payload alone it decides whether
+// to read and push a row. A wrong rule either pushes a removal the snapshot omits, or silently
+// swallows a real change.
+//
+// The "id with no observed CR" rule is GONE with the CR: the row is existence, and an id whose row
+// has since been deleted is dropped downstream by handleNotification, where ConversationByID
+// returns nil. One store, so there is nothing left to disagree with.
 func TestNotifyDecision(t *testing.T) {
-	cache := NewOwnershipCache()
-	cache.observe(convCR("uuid-live", "conv-live1", "10.0.0.1")) // a known CR
-
-	t.Run("valid upsert with a known CR proceeds", func(t *testing.T) {
-		id, cr, ok := notifyDecision(`{"id":"uuid-live","op":"upsert"}`, cache)
-		if !ok || id != "uuid-live" || cr.ID != "uuid-live" {
-			t.Fatalf("want proceed for a known CR, got (%q,%+v,%v)", id, cr, ok)
+	t.Run("a valid upsert proceeds", func(t *testing.T) {
+		id, ok := notifyDecision(`{"id":"uuid-live","op":"upsert"}`)
+		if !ok || id != "uuid-live" {
+			t.Fatalf("want proceed, got (%q,%v)", id, ok)
 		}
 	})
 
 	t.Run("delete is dropped (removals ride the poll)", func(t *testing.T) {
-		if _, _, ok := notifyDecision(`{"id":"uuid-live","op":"delete"}`, cache); ok {
+		if _, ok := notifyDecision(`{"id":"uuid-live","op":"delete"}`); ok {
 			t.Error("a delete must not push an upsert")
-		}
-	})
-
-	t.Run("an id with no observed CR is dropped (existence follows the CR)", func(t *testing.T) {
-		if _, _, ok := notifyDecision(`{"id":"uuid-ghost","op":"upsert"}`, cache); ok {
-			t.Error("a metadata row with no CR must not be pushed")
 		}
 	})
 
 	t.Run("unparseable / empty-id payloads are dropped", func(t *testing.T) {
 		for _, p := range []string{`not json`, `{}`, `{"op":"upsert"}`, ``} {
-			if _, _, ok := notifyDecision(p, cache); ok {
+			if _, ok := notifyDecision(p); ok {
 				t.Errorf("payload %q should be dropped", p)
 			}
 		}

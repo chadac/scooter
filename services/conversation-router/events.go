@@ -101,7 +101,7 @@ func (h *sseHub) broadcast(row listRow) {
 // channel, and on each notification re-reads the row and fans it out via the hub. It reconnects
 // through NewListenConn after any drop (a notification stream is not resumable — reconnect + the
 // poll are the recovery), and returns when ctx is cancelled. No-op when store is nil (dev/pg-less).
-func runConversationListener(ctx context.Context, store *Store, links *LinkStore, crs crLookup, hub *sseHub) {
+func runConversationListener(ctx context.Context, store *Store, links *LinkStore, phases phaseLookup, hub *sseHub) {
 	if store == nil {
 		return
 	}
@@ -137,7 +137,7 @@ func runConversationListener(ctx context.Context, store *Store, links *LinkStore
 				}
 				break
 			}
-			handleNotification(ctx, n.Payload, store, links, crs, hub, log)
+			handleNotification(ctx, n.Payload, store, links, phases, hub, log)
 		}
 		// Close with a background context: ctx may already be cancelled (shutdown), and a Close on
 		// a cancelled context would skip the connection teardown.
@@ -149,32 +149,29 @@ func runConversationListener(ctx context.Context, store *Store, links *LinkStore
 }
 
 // notifyDecision parses a NOTIFY payload ({id, op}) and applies the drop rules, returning the
-// conversation id + CR to read and whether to proceed. Pure (no DB, no logging) so the branch logic
-// is unit-testable. Drops:
+// conversation id to read and whether to proceed. Pure (no DB, no logging) so the branch logic is
+// unit-testable. Drops:
 //   - unparseable / empty-id payloads (never expected from our own trigger);
-//   - op=delete — removals ride the 10s poll, exactly as agent-host's emitChange never pushed end();
-//   - an id whose CR the cache has not observed — EXISTENCE follows the CR, so pushing a
-//     metadata-only row would resurrect a ghost the snapshot omits (the poll catches it up once the
-//     watch sees the CR).
-func notifyDecision(payload string, crs crLookup) (string, CRInfo, bool) {
+//   - op=delete — removals ride the 10s poll, exactly as agent-host's emitChange never pushed end().
+//
+// It no longer consults a CR existence set: the row IS existence, and handleNotification's re-read
+// already drops an id whose row is gone (ConversationByID returns nil), which covers the same
+// "do not resurrect a ghost" case with one fewer store to disagree with.
+func notifyDecision(payload string) (string, bool) {
 	var p struct {
 		ID string `json:"id"`
 		Op string `json:"op"`
 	}
 	if err := json.Unmarshal([]byte(payload), &p); err != nil || p.ID == "" || p.Op == "delete" {
-		return "", CRInfo{}, false
+		return "", false
 	}
-	cr, ok := crs.CR(p.ID)
-	if !ok {
-		return "", CRInfo{}, false
-	}
-	return p.ID, cr, true
+	return p.ID, true
 }
 
 // handleNotification turns one NOTIFY payload into an upsert broadcast: decide (notifyDecision),
 // then re-read the row + links (the payload carries only the id) and fan the built row out.
-func handleNotification(ctx context.Context, payload string, store *Store, links *LinkStore, crs crLookup, hub *sseHub, log *slog.Logger) {
-	id, cr, proceed := notifyDecision(payload, crs)
+func handleNotification(ctx context.Context, payload string, store *Store, links *LinkStore, phases phaseLookup, hub *sseHub, log *slog.Logger) {
+	id, proceed := notifyDecision(payload)
 	if !proceed {
 		return
 	}
@@ -196,7 +193,7 @@ func handleNotification(ctx context.Context, payload string, store *Store, links
 			ls = got
 		}
 	}
-	hub.broadcast(makeListRow(*m, cr, ls, time.Now().UnixMilli()))
+	hub.broadcast(makeListRow(*m, phases.Phase(id), ls, time.Now().UnixMilli()))
 }
 
 // serveConversationEvents streams GET /conversations/events from the store: an initial snapshot
@@ -204,7 +201,7 @@ func handleNotification(ctx context.Context, payload string, store *Store, links
 // The subscription is registered BEFORE the snapshot read so an upsert arriving during that read is
 // buffered, not lost — a duplicate upsert of a row already in the snapshot is folded idempotently
 // by the UI (mergeFromServer). All writes happen on this one goroutine, so w needs no locking.
-func serveConversationEvents(w http.ResponseWriter, r *http.Request, store *Store, links *LinkStore, crs crLookup, hub *sseHub) {
+func serveConversationEvents(w http.ResponseWriter, r *http.Request, store *Store, links *LinkStore, phases phaseLookup, hub *sseHub) {
 	log := logger("events")
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -223,7 +220,7 @@ func serveConversationEvents(w http.ResponseWriter, r *http.Request, store *Stor
 	sub := hub.subscribe(callerOwner, scope)
 	defer hub.unsubscribe(sub)
 
-	if snap := snapshotFrame(r.Context(), store, links, crs, callerOwner, scope, log); snap != nil {
+	if snap := snapshotFrame(r.Context(), store, links, phases, callerOwner, scope, log); snap != nil {
 		if _, err := w.Write(snap); err != nil {
 			return
 		}
@@ -254,7 +251,7 @@ func serveConversationEvents(w http.ResponseWriter, r *http.Request, store *Stor
 // same way GET /conversations is. On a store read error it returns an EMPTY-list snapshot rather
 // than nil so the client still gets a valid first frame and then rides live upserts + the poll;
 // only a marshalling failure (never expected) yields nil.
-func snapshotFrame(ctx context.Context, store *Store, links *LinkStore, crs crLookup, callerOwner, scope string, log *slog.Logger) []byte {
+func snapshotFrame(ctx context.Context, store *Store, links *LinkStore, phases phaseLookup, callerOwner, scope string, log *slog.Logger) []byte {
 	rctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
@@ -272,7 +269,7 @@ func snapshotFrame(ctx context.Context, store *Store, links *LinkStore, crs crLo
 			linksByConv = lm
 		}
 	}
-	rows := assembleList(metas, crs, linksByConv, time.Now().UnixMilli(), callerOwner, scope)
+	rows := assembleList(metas, phases, linksByConv, time.Now().UnixMilli(), callerOwner, scope)
 	frame, err := json.Marshal(struct {
 		Kind          string    `json:"kind"`
 		Conversations []listRow `json:"conversations"`

@@ -23,7 +23,7 @@ type metaWriter interface {
 }
 
 // serveConversationMetadataPatch mirrors agent-host's mutableFor auth + view() response. Why: PR #475.
-func serveConversationMetadataPatch(w http.ResponseWriter, r *http.Request, field, id string, store metaReader, writeStore metaWriter, crs crLookup) {
+func serveConversationMetadataPatch(w http.ResponseWriter, r *http.Request, field, id string, store metaReader, writeStore metaWriter, phases phaseLookup) {
 	log := logger("metadata")
 	caller := ownerFrom(r)
 
@@ -92,8 +92,7 @@ func serveConversationMetadataPatch(w http.ResponseWriter, r *http.Request, fiel
 	}
 
 	// Same wire row the list emits; a missing CR just yields the default status (UI ignores it here).
-	cr, _ := crs.CR(id)
-	out := makeListRow(*updated, cr, nil, time.Now().UnixMilli())
+	out := makeListRow(*updated, phases.Phase(id), nil, time.Now().UnixMilli())
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(out)
 }

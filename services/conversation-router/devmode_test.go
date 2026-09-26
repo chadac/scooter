@@ -2,32 +2,25 @@ package main
 
 import "testing"
 
-// In dev mode every metadata row is a real conversation (no CRs, no controller), so assembleList
-// under allExisting must keep ALL rows — the opposite of the cluster join, which omits a row whose
-// CR it has not seen. This is the seam that would otherwise render an always-empty sidebar in the
-// kube-less stack.
-func TestAllExistingKeepsEveryRow(t *testing.T) {
+// EXISTENCE IS THE ROW. This used to be the dev stack's special case (allExisting) against a
+// cluster path that joined a CRD watch cache and omitted any row it had no CR for. Both stacks run
+// this one rule now, so the kube-less e2e suite exercises the same list code production does.
+//
+// A row with NULL sandbox_ref, under noPhase, is the kube-less stack's normal shape — the projection
+// must match what a CR with no phase and no sandboxRef produced: status "running", empty sandbox name.
+func TestListsWhateverRowsExist(t *testing.T) {
 	metas := []ConversationRow{
 		{ID: "a", ThreadID: "a", Title: "A", CreatedAt: 100, LastActivityAt: 100},
 		{ID: "b", ThreadID: "b", Title: "B", CreatedAt: 200, LastActivityAt: 200},
 	}
-	rows := assembleList(metas, allExisting{}, nil, 1000, "", "all")
+	rows := assembleList(metas, noPhase{}, nil, 1000, "", "all")
 	if len(rows) != 2 {
-		t.Fatalf("allExisting must keep every row, got %d", len(rows))
+		t.Fatalf("every existing row must be listed, got %d", len(rows))
 	}
-	// No CR => blank sandbox + the makeListRow "running" default (there are no suspended CRs in dev).
 	for _, r := range rows {
 		if r.Status != "running" || r.Sandbox.Name != "" {
-			t.Errorf("dev row projection wrong: %+v", r)
+			t.Errorf("no phase + NULL sandbox_ref must project as running + blank sandbox: %+v", r)
 		}
-	}
-}
-
-// allExisting answers true for ANY id (existence == "the store knows it"), unlike the cache which
-// only knows observed CRs.
-func TestAllExistingAnyID(t *testing.T) {
-	if _, ok := (allExisting{}).CR("never-seen"); !ok {
-		t.Fatal("allExisting must treat any id as existing")
 	}
 }
 

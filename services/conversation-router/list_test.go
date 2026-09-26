@@ -8,34 +8,26 @@ import (
 func sp(s string) *string { return &s }
 func bp(b bool) *bool     { return &b }
 
-// crMap is a crLookup backed by a fixed CR set — the test stand-in for the CRD watch cache, so
-// assembleList's existence join can be driven without a live watch.
-type crMap map[string]CRInfo
+// phaseMap is a phaseLookup backed by a fixed set — the stand-in for the CRD watch cache, so the one
+// remaining CR read can be driven without a live watch.
+type phaseMap map[string]string
 
-func (m crMap) CR(id string) (CRInfo, bool) { c, ok := m[id]; return c, ok }
+func (m phaseMap) Phase(id string) string { return m[id] }
 
-func crsOf(crs []CRInfo) crMap {
-	m := crMap{}
-	for _, c := range crs {
-		m[c.ID] = c
-	}
-	return m
-}
-
-// assembleList is the whole GET /conversations body. These lock down the three ways it can go
-// wrong: leaking an ended conversation (no CR), leaking someone else's under "mine", and getting
-// the metadata⋈CR⋈links join wrong.
+// assembleList is the whole GET /conversations body. These lock down the ways it can go wrong:
+// leaking someone else's conversation under "mine", and getting the metadata⋈links join wrong.
+//
+// It no longer has an existence join to get wrong. phase and sandbox_ref are columns on the row, so
+// "a row with no CR is an ended conversation, omit it" is gone — end() deletes the row, so an ended
+// conversation has nothing to omit. TestListsWhateverRowsExist pins the replacement rule.
 func TestAssembleList(t *testing.T) {
 	metas := []ConversationRow{
-		{ID: "a", ThreadID: "a", Title: "Alpha", CreatedAt: 100, LastActivityAt: 900, Owner: sp("alice"), Starred: bp(true)},
-		{ID: "b", ThreadID: "b", Title: "Bravo", CreatedAt: 200, LastActivityAt: 800, Owner: sp("bob")},
-		{ID: "ended", ThreadID: "ended", Title: "Ghost", CreatedAt: 300, LastActivityAt: 700, Owner: sp("alice")},
+		{ID: "a", ThreadID: "a", Title: "Alpha", CreatedAt: 100, LastActivityAt: 900, Owner: sp("alice"), Starred: bp(true),
+			SandboxRef: sp("conv-aa")},
+		{ID: "b", ThreadID: "b", Title: "Bravo", CreatedAt: 200, LastActivityAt: 800, Owner: sp("bob"),
+			SandboxRef: sp("conv-bb")},
 	}
-	crs := []CRInfo{
-		{ID: "a", Phase: "Assigned", SandboxRef: "conv-aa"},
-		{ID: "b", Phase: "Suspended", SandboxRef: "conv-bb"},
-		// no CR for "ended" — it was ended, so it must be omitted.
-	}
+	phases := phaseMap{"a": "Assigned", "b": "Suspended"}
 
 	// statusForPhase is the phase->dot mapping the sidebar reads. Failed is terminal (the
 	// zombie-repair escalation force-deleted the sandbox) and MUST NOT read as "running" —
@@ -57,14 +49,13 @@ func TestAssembleList(t *testing.T) {
 		"a": {{Source: "github", ResourceType: "pull", URL: sp("http://x")}, {Source: "slack", ResourceType: "thread"}},
 	}
 
-	t.Run("all scope joins meta+CR+links, omits CR-less, preserves input order", func(t *testing.T) {
-		rows := assembleList(metas, crsOf(crs), links, 1000, "", "all")
+	t.Run("all scope joins meta+links and preserves input order", func(t *testing.T) {
+		rows := assembleList(metas, phases, links, 1000, "", "all")
 		if len(rows) != 2 {
-			t.Fatalf("want 2 rows (ended omitted), got %d", len(rows))
+			t.Fatalf("want 2 rows, got %d", len(rows))
 		}
 		// Order is the store's (ORDER BY last_activity_at DESC, created_at DESC), not this
-		// function's — a and b arrive in that order and must come out in it, with the
-		// filtered-out "ended" closing the gap rather than shifting anything.
+		// function's — a and b arrive in that order and must come out in it.
 		if rows[0].ID != "a" || rows[1].ID != "b" {
 			t.Fatalf("wrong order: %s,%s", rows[0].ID, rows[1].ID)
 		}
@@ -100,7 +91,7 @@ func TestAssembleList(t *testing.T) {
 			{ID: "z", ThreadID: "z", Title: "Z", CreatedAt: 900, LastActivityAt: 100},
 			{ID: "q", ThreadID: "q", Title: "Q", CreatedAt: 100, LastActivityAt: 900},
 		}
-		rows := assembleList(scrambled, allExisting{}, nil, 1000, "", "all")
+		rows := assembleList(scrambled, phaseMap{}, nil, 1000, "", "all")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 rows, got %d", len(rows))
 		}
@@ -112,14 +103,14 @@ func TestAssembleList(t *testing.T) {
 	})
 
 	t.Run("mine scope shows only the caller's own", func(t *testing.T) {
-		rows := assembleList(metas, crsOf(crs), links, 1000, "alice", "mine")
+		rows := assembleList(metas, phases, links, 1000, "alice", "mine")
 		if len(rows) != 1 || rows[0].ID != "a" {
 			t.Fatalf("mine should show only alice's live conv, got %+v", rows)
 		}
 	})
 
 	t.Run("anonymous caller sees everyone under mine", func(t *testing.T) {
-		rows := assembleList(metas, crsOf(crs), links, 1000, "", "mine")
+		rows := assembleList(metas, phases, links, 1000, "", "mine")
 		if len(rows) != 2 {
 			t.Fatalf("anonymous sees all, got %d", len(rows))
 		}
@@ -131,8 +122,7 @@ func TestAssembleList(t *testing.T) {
 func TestListRowJSONShape(t *testing.T) {
 	rows := assembleList(
 		[]ConversationRow{{ID: "x", ThreadID: "x", Title: "X", CreatedAt: 1, LastActivityAt: 2}},
-		crsOf([]CRInfo{{ID: "x", Phase: "Assigned"}}),
-		nil, 10, "", "all",
+		phaseMap{"x": "Assigned"}, nil, 10, "", "all",
 	)
 	b, _ := json.Marshal(rows[0])
 	var m map[string]any
@@ -158,18 +148,17 @@ func TestListRowJSONShape(t *testing.T) {
 // link, renders as an independent top-level chat, which is exactly what it must never do.
 func TestAssembleListSubagent(t *testing.T) {
 	metas := []ConversationRow{
-		{ID: "parent", ThreadID: "parent", Title: "Parent", CreatedAt: 100, LastActivityAt: 900, Owner: sp("alice")},
+		{ID: "parent", ThreadID: "parent", Title: "Parent", CreatedAt: 100, LastActivityAt: 900, Owner: sp("alice"),
+			SandboxRef: sp("conv-p")},
 		// A subagent inherits its parent's owner (session manager spawnChild) and carries parentId.
-		{ID: "sub", ThreadID: "sub", Title: "research", CreatedAt: 200, LastActivityAt: 800, Owner: sp("alice"), ParentID: sp("parent")},
+		// It SHARES the parent's sandbox, so its row points at the same ref.
+		{ID: "sub", ThreadID: "sub", Title: "research", CreatedAt: 200, LastActivityAt: 800, Owner: sp("alice"),
+			ParentID: sp("parent"), SandboxRef: sp("conv-p")},
 	}
-	crs := crsOf([]CRInfo{
-		{ID: "parent", Phase: "Assigned", SandboxRef: "conv-p"},
-		// The subagent SHARES the parent's sandbox — it has its own CR pointing at the same ref.
-		{ID: "sub", Phase: "Assigned", SandboxRef: "conv-p"},
-	})
+	phases := phaseMap{"parent": "Assigned", "sub": "Assigned"}
 
 	t.Run("a subagent is listed and carries parentId", func(t *testing.T) {
-		rows := assembleList(metas, crs, nil, 1000, "alice", "mine")
+		rows := assembleList(metas, phases, nil, 1000, "alice", "mine")
 		if len(rows) != 2 {
 			t.Fatalf("parent + subagent must both be listed, got %d", len(rows))
 		}
@@ -186,7 +175,7 @@ func TestAssembleListSubagent(t *testing.T) {
 	})
 
 	t.Run("parentId survives JSON as the UI reads it", func(t *testing.T) {
-		rows := assembleList(metas, crs, nil, 1000, "", "all")
+		rows := assembleList(metas, phases, nil, 1000, "", "all")
 		b, _ := json.Marshal(rows[1])
 		var m map[string]any
 		_ = json.Unmarshal(b, &m)
@@ -206,7 +195,7 @@ func TestAssembleListSubagent(t *testing.T) {
 	t.Run("a subagent is not hidden from its owner under mine", func(t *testing.T) {
 		// The subagent inherits the parent's owner, so "mine" must show both. If it did
 		// not, the parent would render with a child it can never display.
-		rows := assembleList(metas, crs, nil, 1000, "alice", "mine")
+		rows := assembleList(metas, phases, nil, 1000, "alice", "mine")
 		var sawSub bool
 		for _, r := range rows {
 			if r.ID == "sub" {

@@ -95,7 +95,7 @@ func patch(t *testing.T, f *fakeMeta, field, id, body, caller string) *httptest.
 		r.Header.Set("x-auth-user", caller)
 	}
 	w := httptest.NewRecorder()
-	serveConversationMetadataPatch(w, r, field, id, f, f, allExisting{})
+	serveConversationMetadataPatch(w, r, field, id, f, f, noPhase{})
 	return w
 }
 
@@ -209,7 +209,7 @@ func TestMetadataPatchHandler(t *testing.T) {
 		fw := &raceWriter{fakeMeta: f}
 		r := httptest.NewRequest(http.MethodPatch, "/conversations/c1/starred", strings.NewReader(`{"starred":true}`))
 		w := httptest.NewRecorder()
-		serveConversationMetadataPatch(w, r, "starred", "c1", f, fw, allExisting{})
+		serveConversationMetadataPatch(w, r, "starred", "c1", f, fw, noPhase{})
 		if w.Code != 404 {
 			t.Fatalf("want 404, got %d", w.Code)
 		}
