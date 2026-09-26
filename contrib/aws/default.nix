@@ -13,6 +13,10 @@
       pythonDeps = ps: [ ps.boto3 ];
     };
 
+    # Its own deployment options + manifests, instead of ~40 aws references in
+    # modules/broker.nix (#599).
+    deployment.module = ./deployment.nix;
+
     sandbox.module = ./sandbox.nix;
     skills."scooter-aws.md" = ./skills/scooter-aws.md;
   };

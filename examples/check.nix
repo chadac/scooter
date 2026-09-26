@@ -457,9 +457,73 @@ let
   countNamed = env: n: builtins.length (builtins.filter (e: e.name == n) env);
   brokerDbProblems =
     map (n: "aws-off: broker.env.${n} missing — every broker store silently falls back to SQLite and loses its data on restart")
-      (builtins.filter (n: countNamed awsOffBrokerEnv n == 0) dbEnvNames)
-    ++ map (n: "broker.env.${n} declared more than once (k8s keeps the last silently)")
-      (builtins.filter (n: countNamed brokerEnv n > 1) dbEnvNames);
+      (builtins.filter (n: countNamed awsOffBrokerEnv n == 0) dbEnvNames);
+
+  # NO env name may be declared twice on the broker container — widened from the
+  # BROKER_DB_* set above now that a contrib appends its own entries through
+  # broker.extraEnv (#599). k8s accepts a duplicate and silently keeps the LAST
+  # value, so a contrib emitting BROKER_DB_HOST would repoint every store in the
+  # image with nothing logged and no rollout failure. Checking the whole container
+  # means a NEW contrib is covered without editing a list here.
+  # attrNames of a set built from the list: this file has no `lib` in scope (it is
+  # plain `nix eval`, not a module), and a duplicated name must be reported once.
+  brokerEnvNames = builtins.attrNames
+    (builtins.listToAttrs (map (e: { name = e.name; value = null; }) brokerEnv));
+  dupEnvProblems = map
+    (n: "broker.env.${n} declared more than once (k8s keeps the LAST value silently — a contrib's broker.extraEnv must not reuse a core name)")
+    (builtins.filter (n: countNamed brokerEnv n > 1) brokerEnvNames);
+
+  # A CONTRIB'S DEPLOYMENT MODULE REACHES THE BROKER DEPLOYMENT. aws's option tree
+  # and its manifests live in contrib/aws/deployment.nix, which modules/platform.nix
+  # imports without naming it (contrib/deployment-modules.nix) — so this asserts the
+  # seams carry, rather than that the file exists. All four kinds in one render, each
+  # of which was an inline `lib.optionals bcfg.aws.enable` in modules/broker.nix:
+  #   env         -> AWS_ENABLED           (broker.extraEnv)
+  #   volume+mount-> aws-accounts          (broker.extraVolumes/extraVolumeMounts)
+  #   annotation  -> checksum/aws-accounts (broker.podAnnotations, csProblems above)
+  #   a resource  -> the accounts ConfigMap
+  # And the negative half, which is the one a seam gets wrong: with aws OFF nothing
+  # of it may reach the pod. A seam wired unconditionally would pass every positive
+  # check here and quietly mount a ConfigMap that does not exist.
+  brokerCtr = res.deployments.agent-broker.spec.template.spec.containers.agent-broker;
+  awsOffCtrs = builtins.attrValues (awsOffPlatform.config.kubernetes.resources.deployments.agent-broker.spec.template.spec.containers or { });
+  hasName = l: n: builtins.any (v: v.name == n) l;
+  contribSeamProblems =
+    (if countNamed brokerEnv "AWS_ENABLED" == 1 then [ ]
+     else [ "broker.env.AWS_ENABLED — contrib/aws/deployment.nix did not reach the broker container through broker.extraEnv" ])
+    ++ (if hasName (brokerCtr.volumeMounts or [ ]) "aws-accounts" then [ ]
+        else [ "broker.volumeMounts aws-accounts missing (broker.extraVolumeMounts) — the provider reads accounts.json off disk and finds nothing" ])
+    ++ (if hasName (res.deployments.agent-broker.spec.template.spec.volumes or [ ]) "aws-accounts" then [ ]
+        else [ "broker.volumes aws-accounts missing (broker.extraVolumes) — the mount above has no source" ])
+    ++ (if (res.configMaps or { }) ? agent-broker-aws-accounts then [ ]
+        else [ "configMaps.agent-broker-aws-accounts missing — a contrib's deployment module cannot render its own resources" ])
+    ++ (if builtins.all (c: !(hasName (c.volumeMounts or [ ]) "aws-accounts")) awsOffCtrs then [ ]
+        else [ "aws-off: broker still mounts aws-accounts — the seam is wired unconditionally, so the pod mounts a ConfigMap that is not rendered" ])
+    ++ (if builtins.all (c: countNamed (c.env or [ ]) "AWS_ENABLED" == 0) awsOffCtrs then [ ]
+        else [ "aws-off: broker.env.AWS_ENABLED present — contrib env is not gated on the contrib's own enable" ]);
+
+  # OPENFGA IS SUBSTRATE, NOT AWS'S. The authorizer core/authz.py builds from FGA_*
+  # is handed to every provider through BrokerContext (#624), so `broker.fga` is a
+  # core option: a second feature wanting an approver gate must not have to enable
+  # aws to get one. The render that proves it is fga ON with aws OFF — under the old
+  # `broker.aws.fga` that combination could not be expressed at all.
+  fgaNoAwsPlatform = flake.inputs.kubenix.evalModules.${system} {
+    module = { lib, ... }: {
+      imports = [ ./kubenix-config.nix ];
+      agentSandbox.broker.aws.enable = lib.mkForce false;
+      agentSandbox.broker.fga.enable = true;
+    };
+  };
+  fnaRes = fgaNoAwsPlatform.config.kubernetes.resources;
+  fnaBrokerEnv = builtins.concatMap (c: c.env or [ ])
+    (builtins.attrValues (fnaRes.deployments.agent-broker.spec.template.spec.containers or { }));
+  fgaProblems =
+    (if (fnaRes.deployments or { }) ? openfga then [ ]
+     else [ "fga-without-aws: deployments.openfga missing — the authorization server is still gated on an integration" ])
+    ++ (if countNamed fnaBrokerEnv "FGA_ENABLED" == 1 then [ ]
+        else [ "fga-without-aws: broker.env.FGA_ENABLED missing — the broker builds a NoopAuthorizer and every approver check passes" ])
+    ++ (if (fgaNoAwsPlatform.config.agentSandbox.postgres.consumers or { }) ? openfga then [ ]
+        else [ "fga-without-aws: postgres.consumers.openfga missing — openfga has no database or role" ]);
 
   # THE APPROVER ALLOWLIST IS CORE AUTH'S, NOT AWS'S. core/auth.py admits a listed
   # SA as a non-sandbox caller and sets Identity.is_approver; TWO features read that
@@ -556,7 +620,7 @@ let
       (containersOf w))
     allWorkloads;
 
-  allProblems = oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ brokerDbProblems ++ sslProblems ++ vacuityProblems ++ approverProblems;
+  allProblems = oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems;
 in
 if allProblems == [ ]
 then "ok: deployments = ${haveDeps}; datadog + airtable + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; deploy-time Jobs are spec-hash named\n"
