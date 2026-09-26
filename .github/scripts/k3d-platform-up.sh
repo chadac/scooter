@@ -107,9 +107,15 @@ nix shell nixpkgs#kubectl -c bash -c "
   # exactly how the 'GET /conversations returns one pod's slice' bug reached
   # production. Force podCap=1 so each conversation lands on a DIFFERENT pod, and
   # give the fleet room to spread.
-  kubectl -n agent-sandbox set env deployment/conversation-controller CONVERSATION_POD_CAP=1
+  # AGENT_HOST_MIN_REPLICAS, not just a manual scale: the controller IS the autoscaler and
+  # the single writer of agent-host replicas (desired = ceil(demand/cap), clamped to
+  # [min,max]). With no conversations yet, demand is 0, so it scaled the fleet straight back
+  # down and the spread this suite needs evaporated before the tests created anything.
+  kubectl -n agent-sandbox set env deployment/conversation-controller \
+    CONVERSATION_POD_CAP=1 AGENT_HOST_MIN_REPLICAS=3
   kubectl -n agent-sandbox scale deployment/agent-host --replicas=3
   kubectl -n agent-sandbox rollout status deployment/conversation-controller --timeout=180s
   kubectl -n agent-sandbox rollout status deployment/agent-host --timeout=300s
   kubectl -n agent-sandbox rollout status deployment/conversation-router --timeout=180s
+  kubectl -n agent-sandbox rollout status deployment/conversation-controller --timeout=180s
 "
