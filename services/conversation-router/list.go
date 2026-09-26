@@ -5,10 +5,11 @@
 // stream stays fed by each owning host (live changes come from the pod that owns the
 // conversation), which the router still aggregates.
 //
-// The row is assembled the same way agent-host's old listAll() did: Postgres metadata
-// (title/star/owner/timestamps) ⋈ the Conversation CR (EXISTENCE + phase→status + sandbox).
-// The CR is the source of truth for existence — a metadata row with no CR was ended, so it is
-// omitted rather than resurrected as a ghost.
+// The row is assembled from ONE store. It used to be a join: Postgres metadata
+// (title/star/owner/timestamps) ⋈ the Conversation CR (existence + phase→status + sandbox), with
+// the CR authoritative for existence. Every field of that join is a column now, so the list makes
+// no Kubernetes read at all and the CR-says-X-row-says-Y disagreement has nowhere to live.
+// Existence is the row's own existence: end() deletes it. Why: PR #654.
 package main
 
 import (
@@ -54,14 +55,13 @@ type listRow struct {
 // EXISTENCE is now the row: there is no existence set to join, so there is no "row with no CR" case
 // to omit — end() deletes the row. That was the kube-less stack's special case (allExisting), so both
 // stacks now run one code path instead of the cluster taking a join the e2e suite never exercised.
-// `phases` is the one CR read left; see phaseLookup.
-func assembleList(metas []ConversationRow, phases phaseLookup, links map[string][]Link, now int64, callerOwner, scope string) []listRow {
+func assembleList(metas []ConversationRow, links map[string][]Link, now int64, callerOwner, scope string) []listRow {
 	rows := make([]listRow, 0, len(metas))
 	for _, m := range metas {
 		if !visible(m.Owner, callerOwner, scope) {
 			continue
 		}
-		rows = append(rows, makeListRow(m, phases.Phase(m.ID), links[m.ID], now))
+		rows = append(rows, makeListRow(m, links[m.ID], now))
 	}
 	return rows
 }
@@ -87,7 +87,13 @@ func statusForPhase(phase string) string {
 // (assembleList) and the live LISTEN upsert (events.go) so both emit byte-identical rows — if they
 // diverged, a conversation would render one way on first paint and another on the next push. status
 // mapping and the "" namespace match agent-host's old view()+withSources exactly.
-func makeListRow(m ConversationRow, phase string, ls []Link, now int64) listRow {
+func makeListRow(m ConversationRow, ls []Link, now int64) listRow {
+	// NULL phase = no writer has reached this row yet, which statusForPhase maps to "running" —
+	// the same answer an unreconciled CR (status: null) always produced.
+	phase := ""
+	if m.Phase != nil {
+		phase = *m.Phase
+	}
 	status := statusForPhase(phase)
 	if ls == nil {
 		ls = []Link{}
@@ -153,7 +159,7 @@ func sourcesOf(links []Link) []string {
 // yields 503, NOT an empty 200: a transient DB blip must not hand the UI an empty list it would
 // render as "you have no conversations" (the poll keeps the last good list on a failed fetch and
 // retries). Link enrichment is best-effort — its failure degrades to bare rows, never fails the list.
-func serveConversationList(w http.ResponseWriter, r *http.Request, store *Store, links *LinkStore, phases phaseLookup) {
+func serveConversationList(w http.ResponseWriter, r *http.Request, store *Store, links *LinkStore) {
 	log := logger("list")
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -173,7 +179,7 @@ func serveConversationList(w http.ResponseWriter, r *http.Request, store *Store,
 		}
 	}
 
-	rows := assembleList(metas, phases, linksByConv, time.Now().UnixMilli(), ownerFrom(r), listScope(r))
+	rows := assembleList(metas, linksByConv, time.Now().UnixMilli(), ownerFrom(r), listScope(r))
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(rows); err != nil {

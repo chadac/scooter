@@ -8,12 +8,6 @@ import (
 func sp(s string) *string { return &s }
 func bp(b bool) *bool     { return &b }
 
-// phaseMap is a phaseLookup backed by a fixed set — the stand-in for the CRD watch cache, so the one
-// remaining CR read can be driven without a live watch.
-type phaseMap map[string]string
-
-func (m phaseMap) Phase(id string) string { return m[id] }
-
 // assembleList is the whole GET /conversations body. These lock down the ways it can go wrong:
 // leaking someone else's conversation under "mine", and getting the metadata⋈links join wrong.
 //
@@ -23,11 +17,10 @@ func (m phaseMap) Phase(id string) string { return m[id] }
 func TestAssembleList(t *testing.T) {
 	metas := []ConversationRow{
 		{ID: "a", ThreadID: "a", Title: "Alpha", CreatedAt: 100, LastActivityAt: 900, Owner: sp("alice"), Starred: bp(true),
-			SandboxRef: sp("conv-aa")},
+			Phase: sp("Assigned"), SandboxRef: sp("conv-aa")},
 		{ID: "b", ThreadID: "b", Title: "Bravo", CreatedAt: 200, LastActivityAt: 800, Owner: sp("bob"),
-			SandboxRef: sp("conv-bb")},
+			Phase: sp("Suspended"), SandboxRef: sp("conv-bb")},
 	}
-	phases := phaseMap{"a": "Assigned", "b": "Suspended"}
 
 	// statusForPhase is the phase->dot mapping the sidebar reads. Failed is terminal (the
 	// zombie-repair escalation force-deleted the sandbox) and MUST NOT read as "running" —
@@ -50,7 +43,7 @@ func TestAssembleList(t *testing.T) {
 	}
 
 	t.Run("all scope joins meta+links and preserves input order", func(t *testing.T) {
-		rows := assembleList(metas, phases, links, 1000, "", "all")
+		rows := assembleList(metas, links, 1000, "", "all")
 		if len(rows) != 2 {
 			t.Fatalf("want 2 rows, got %d", len(rows))
 		}
@@ -91,7 +84,7 @@ func TestAssembleList(t *testing.T) {
 			{ID: "z", ThreadID: "z", Title: "Z", CreatedAt: 900, LastActivityAt: 100},
 			{ID: "q", ThreadID: "q", Title: "Q", CreatedAt: 100, LastActivityAt: 900},
 		}
-		rows := assembleList(scrambled, phaseMap{}, nil, 1000, "", "all")
+		rows := assembleList(scrambled, nil, 1000, "", "all")
 		if len(rows) != 3 {
 			t.Fatalf("want 3 rows, got %d", len(rows))
 		}
@@ -103,14 +96,14 @@ func TestAssembleList(t *testing.T) {
 	})
 
 	t.Run("mine scope shows only the caller's own", func(t *testing.T) {
-		rows := assembleList(metas, phases, links, 1000, "alice", "mine")
+		rows := assembleList(metas, links, 1000, "alice", "mine")
 		if len(rows) != 1 || rows[0].ID != "a" {
 			t.Fatalf("mine should show only alice's live conv, got %+v", rows)
 		}
 	})
 
 	t.Run("anonymous caller sees everyone under mine", func(t *testing.T) {
-		rows := assembleList(metas, phases, links, 1000, "", "mine")
+		rows := assembleList(metas, links, 1000, "", "mine")
 		if len(rows) != 2 {
 			t.Fatalf("anonymous sees all, got %d", len(rows))
 		}
@@ -121,8 +114,8 @@ func TestAssembleList(t *testing.T) {
 // a nil model/owner/parentId omitted (not null) — the UI reads these verbatim.
 func TestListRowJSONShape(t *testing.T) {
 	rows := assembleList(
-		[]ConversationRow{{ID: "x", ThreadID: "x", Title: "X", CreatedAt: 1, LastActivityAt: 2}},
-		phaseMap{"x": "Assigned"}, nil, 10, "", "all",
+		[]ConversationRow{{ID: "x", ThreadID: "x", Title: "X", CreatedAt: 1, LastActivityAt: 2, Phase: sp("Assigned")}},
+		nil, 10, "", "all",
 	)
 	b, _ := json.Marshal(rows[0])
 	var m map[string]any
@@ -149,16 +142,15 @@ func TestListRowJSONShape(t *testing.T) {
 func TestAssembleListSubagent(t *testing.T) {
 	metas := []ConversationRow{
 		{ID: "parent", ThreadID: "parent", Title: "Parent", CreatedAt: 100, LastActivityAt: 900, Owner: sp("alice"),
-			SandboxRef: sp("conv-p")},
+			Phase: sp("Assigned"), SandboxRef: sp("conv-p")},
 		// A subagent inherits its parent's owner (session manager spawnChild) and carries parentId.
 		// It SHARES the parent's sandbox, so its row points at the same ref.
 		{ID: "sub", ThreadID: "sub", Title: "research", CreatedAt: 200, LastActivityAt: 800, Owner: sp("alice"),
-			ParentID: sp("parent"), SandboxRef: sp("conv-p")},
+			ParentID: sp("parent"), Phase: sp("Assigned"), SandboxRef: sp("conv-p")},
 	}
-	phases := phaseMap{"parent": "Assigned", "sub": "Assigned"}
 
 	t.Run("a subagent is listed and carries parentId", func(t *testing.T) {
-		rows := assembleList(metas, phases, nil, 1000, "alice", "mine")
+		rows := assembleList(metas, nil, 1000, "alice", "mine")
 		if len(rows) != 2 {
 			t.Fatalf("parent + subagent must both be listed, got %d", len(rows))
 		}
@@ -175,7 +167,7 @@ func TestAssembleListSubagent(t *testing.T) {
 	})
 
 	t.Run("parentId survives JSON as the UI reads it", func(t *testing.T) {
-		rows := assembleList(metas, phases, nil, 1000, "", "all")
+		rows := assembleList(metas, nil, 1000, "", "all")
 		b, _ := json.Marshal(rows[1])
 		var m map[string]any
 		_ = json.Unmarshal(b, &m)
@@ -195,7 +187,7 @@ func TestAssembleListSubagent(t *testing.T) {
 	t.Run("a subagent is not hidden from its owner under mine", func(t *testing.T) {
 		// The subagent inherits the parent's owner, so "mine" must show both. If it did
 		// not, the parent would render with a child it can never display.
-		rows := assembleList(metas, phases, nil, 1000, "alice", "mine")
+		rows := assembleList(metas, nil, 1000, "alice", "mine")
 		var sawSub bool
 		for _, r := range rows {
 			if r.ID == "sub" {

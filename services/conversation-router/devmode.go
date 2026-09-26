@@ -5,10 +5,10 @@
 //     falls through to this one upstream);
 //   - create: the conversations-row INSERT alone (devCreator), with no CR write alongside it.
 //
-// EXISTENCE is no longer one of them, and it used to be the biggest: the cluster joined a CRD watch
-// cache and dev substituted allExisting, so the two stacks ran different list code and the e2e suite
-// could not be evidence about production. Existence is the row in both now. What remains is a phase
-// source, which dev answers "" to (no controller writes phases here). Why: PR #654.
+// Neither EXISTENCE nor PHASE is one of them any more, and existence used to be the biggest: the
+// cluster joined a CRD watch cache and dev substituted allExisting, so the two stacks ran different
+// list code and the e2e suite could not be evidence about production. Both are columns on the row
+// now, read by one code path in both stacks. Why: PR #654.
 //
 // None of this compiles into the production path's behaviour: it is reached only when
 // ROUTER_DEV_MODE is set (see main.go).
@@ -23,21 +23,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
-
-// phaseLookup is the last CR read the conversation list still makes. Narrow on purpose: it is a
-// remnant with a scheduled death (when the controller writes conversations.phase), and naming it for
-// the one field it answers keeps that visible rather than letting a general-purpose "CR lookup"
-// quietly regrow.
-type phaseLookup interface {
-	Phase(id string) string
-}
-
-// noPhase is the kube-less stack's phase source. There is no controller here, so nothing ever writes
-// a phase: every conversation reads as statusForPhase("") == "running", which is what this stack has
-// always shown.
-type noPhase struct{}
-
-func (noPhase) Phase(string) string { return "" }
 
 // devModeEnabled reports whether to run the kube-less dev/e2e mode.
 func devModeEnabled() bool {

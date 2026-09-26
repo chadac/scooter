@@ -28,14 +28,12 @@ type ConversationRow struct {
 	ParentID       *string
 	UserTitled     *bool
 	Starred        *bool
-	// SandboxRef used to be read from the CR (spec.sandboxRef) and joined on at read time; it is a
-	// column now. NULL on a conversation agent-host has not registered yet, which projects exactly
-	// as an unreconciled CR did: an empty sandbox name. Why: PR #654.
-	//
-	// `phase` is deliberately NOT here yet, even though the column exists. The CONTROLLER writes
-	// three phases the row never sees — Failed (zombie escalation), Pending, and the Suspended
-	// drift repair — and it has no Postgres access. Reading phase from the row today would render a
-	// Failed conversation as "running", which is the exact bug statusForPhase was written to fix.
+	// Phase and SandboxRef used to be read from the Conversation CR (status.phase, spec.sandboxRef)
+	// and joined onto this row at read time. Both are columns now, and every writer of a phase
+	// reaches them: agent-host writes Assigned/Suspended, the controller mirrors Failed / Pending /
+	// the Suspended drift repair and converges the column each reconcile pass. NULL reads exactly as
+	// an unreconciled CR did — statusForPhase("") is "running", an empty sandbox name. Why: PR #654.
+	Phase      *string
 	SandboxRef *string
 }
 
@@ -44,7 +42,7 @@ type ConversationRow struct {
 // omitted sandbox_ref would make a title PATCH answer with a blank sandbox name, because the PATCH
 // response is built by the same makeListRow as the list.
 const conversationColumns = `id, thread_id, title, created_at, last_activity_at,
-                             model, owner, parent_id, user_titled, starred, sandbox_ref`
+                             model, owner, parent_id, user_titled, starred, phase, sandbox_ref`
 
 // scannable is satisfied by both pgx.Row and pgx.Rows, so one scan helper serves every read and the
 // column ORDER cannot drift from conversationColumns at one call site but not another.
@@ -54,7 +52,7 @@ type scannable interface {
 
 func scanConversation(s scannable, c *ConversationRow) error {
 	return s.Scan(&c.ID, &c.ThreadID, &c.Title, &c.CreatedAt, &c.LastActivityAt,
-		&c.Model, &c.Owner, &c.ParentID, &c.UserTitled, &c.Starred, &c.SandboxRef)
+		&c.Model, &c.Owner, &c.ParentID, &c.UserTitled, &c.Starred, &c.Phase, &c.SandboxRef)
 }
 
 // Store is a read-only handle on the agent_host database. nil when no DSN is configured

@@ -72,7 +72,6 @@ func main() {
 	// devmode.go). The ownership cache is always constructed; in dev it is simply never Run, so
 	// HostIP always misses and every request falls through to the single AGENT_HOST_URL.
 	cache := NewOwnershipCache()
-	var phases phaseLookup = cache
 	var creator ConversationCreator
 	// Body-`owner` trust for the in-cluster callers (webhooks/scheduler). Nil outside a
 	// cluster (no TokenReview to verify against) → a body owner is never honored, and the
@@ -91,7 +90,6 @@ func main() {
 		}
 		defer dc.Close()
 		cfg.fallback = u
-		phases = noPhase{}
 		creator = dc
 		log.Warn("ROUTER_DEV_MODE: kube-less single-host stack (no CRD watch, single upstream)",
 			slog.String("agent_host_url", u.String()))
@@ -173,9 +171,9 @@ func main() {
 	// out to SSE subscribers (see events.go). No-op when store is nil (dev/pg-less) — the hub stays
 	// empty and GET /conversations/events reports unavailable, same as the JSON list.
 	hub := newSSEHub()
-	go runConversationListener(ctx, store, links, phases, hub)
+	go runConversationListener(ctx, store, links, hub)
 
-	srv := &http.Server{Addr: cfg.listenAddr, Handler: newRouter(ctx, cfg, cache, phases, creator, trusted, store, writeStore, links, hub)}
+	srv := &http.Server{Addr: cfg.listenAddr, Handler: newRouter(ctx, cfg, cache, creator, trusted, store, writeStore, links, hub)}
 	go func() {
 		<-ctx.Done()
 		log.Info("shutdown signalled, draining")
@@ -198,7 +196,7 @@ func main() {
 // reverse-proxy (HTTP/SSE/WS), and on a DIAL failure to the owner IP retry once via the
 // fallback Service — covering a stale hostIP from a pod replaced this tick (the CR converges
 // the correct IP shortly, and meanwhile any ready pod can serve via the mirror-hydrated state).
-func newRouter(shutdownCtx context.Context, cfg config, cache *OwnershipCache, phases phaseLookup, creator ConversationCreator, trusted TrustedCaller, store *Store, writeStore *WriteStore, links *LinkStore, hub *sseHub) http.Handler {
+func newRouter(shutdownCtx context.Context, cfg config, cache *OwnershipCache, creator ConversationCreator, trusted TrustedCaller, store *Store, writeStore *WriteStore, links *LinkStore, hub *sseHub) http.Handler {
 	fallback := cfg.fallback
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The conversation LIST and its live events stream are served HERE from Postgres, not
@@ -221,9 +219,9 @@ func newRouter(shutdownCtx context.Context, cfg config, cache *OwnershipCache, p
 				return
 			}
 			if isSSE(r) {
-				serveConversationEvents(w, r, store, links, phases, hub)
+				serveConversationEvents(w, r, store, links, hub)
 			} else {
-				serveConversationList(w, r, store, links, phases)
+				serveConversationList(w, r, store, links)
 			}
 			return
 		}
@@ -232,7 +230,7 @@ func newRouter(shutdownCtx context.Context, cfg config, cache *OwnershipCache, p
 		if writeStore != nil && store != nil {
 			if field, id, ok := MetadataPatch(r.Method, r.URL.Path); ok {
 				if _, hasOwner := cache.HostIP(id); !hasOwner {
-					serveConversationMetadataPatch(w, r, field, id, store, writeStore, phases)
+					serveConversationMetadataPatch(w, r, field, id, store, writeStore)
 					return
 				}
 			}

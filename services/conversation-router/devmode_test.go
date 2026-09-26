@@ -6,14 +6,15 @@ import "testing"
 // cluster path that joined a CRD watch cache and omitted any row it had no CR for. Both stacks run
 // this one rule now, so the kube-less e2e suite exercises the same list code production does.
 //
-// A row with NULL sandbox_ref, under noPhase, is the kube-less stack's normal shape — the projection
-// must match what a CR with no phase and no sandboxRef produced: status "running", empty sandbox name.
+// A row with NULL phase and NULL sandbox_ref is the kube-less stack's normal shape (nothing writes
+// a phase where there is no controller) — the projection must match what a CR with no phase and no
+// sandboxRef produced: status "running", empty sandbox name.
 func TestListsWhateverRowsExist(t *testing.T) {
 	metas := []ConversationRow{
 		{ID: "a", ThreadID: "a", Title: "A", CreatedAt: 100, LastActivityAt: 100},
 		{ID: "b", ThreadID: "b", Title: "B", CreatedAt: 200, LastActivityAt: 200},
 	}
-	rows := assembleList(metas, noPhase{}, nil, 1000, "", "all")
+	rows := assembleList(metas, nil, 1000, "", "all")
 	if len(rows) != 2 {
 		t.Fatalf("every existing row must be listed, got %d", len(rows))
 	}
