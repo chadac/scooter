@@ -51,6 +51,29 @@ async function bothSettled(a: Page, b: Page, when: string): Promise<[UiSnapshot,
   return [sa, sb];
 }
 
+/** The platform's own recovery prose, injected as a continuation prompt when a conversation
+ *  is revived after its owning agent-host pod went away. Rendered in the thread (and echoed
+ *  by the fake agent's shell tool), so its presence is evidence the run was killed FOR us. */
+const RESTARTED = /this conversation was interrupted by a restart/i;
+
+/** The opening baseline turn, resent once if the PLATFORM killed it.
+ *
+ *  A killed run produces NO assistant message, so completeTurn can only wait out its whole
+ *  budget and then report "Expected > 0, Received 0" — a flake that looks like a lost reply.
+ *  Gated on the restart marker, so a baseline that simply never replies still fails.
+ *  Why: PR #666. */
+async function baselineTurn(chat: Chat, page: Page, text: string): Promise<void> {
+  try {
+    await chat.completeTurn(text);
+    return;
+  } catch (err) {
+    if ((await page.getByText(RESTARTED).count()) === 0) throw err;
+  }
+  // The revive has already landed its own recovery turn, so this resend runs against a
+  // healthy conversation — and it is a baseline, asserted on by nothing yet.
+  await chat.completeTurn(text);
+}
+
 test.describe("two tabs on the same conversation", () => {
   // CLUSTER-HONEST BUDGET (see stop-run.spec.ts:75). Every test here opens with a
   // completeTurn baseline — on the full target that funds a sandbox boot (5-25s cold,
@@ -63,11 +86,14 @@ test.describe("two tabs on the same conversation", () => {
   // 300s, not 240: completeTurn's own default is now 120s on the full target (it waits
   // for a ready pod BEFORE the exec, then for the run to END), and these tests chain
   // several of them across two tabs — 240s no longer clears the worst case.
-  test.setTimeout(300_000);
+  //
+  // 420s, not 300: baselineTurn may RESEND a baseline the platform killed, which funds a
+  // second 120s completeTurn on top of the worst case above. Only a restart spends it.
+  test.setTimeout(420_000);
 
   test("a turn sent in tab A appears in tab B without any refresh", async ({ chat, page, context, baseURL }) => {
     await chat.open();
-    await chat.completeTurn("first turn from tab A");
+    await baselineTurn(chat, page, "first turn from tab A");
     const url = page.url();
 
     // Tab B opens the SAME conversation.
@@ -91,7 +117,7 @@ test.describe("two tabs on the same conversation", () => {
 
   test("turns sent ALTERNATELY from both tabs converge to one consistent transcript", async ({ chat, page, context, baseURL }) => {
     await chat.open();
-    await chat.completeTurn("opening turn");
+    await baselineTurn(chat, page, "opening turn");
     const url = page.url();
     const pageB = await context.newPage();
     await pageB.goto(url);
@@ -112,7 +138,7 @@ test.describe("two tabs on the same conversation", () => {
 
   test("a message QUEUED in tab A is visible in tab B (the queue is server-side, not client-only)", async ({ chat, page, context }) => {
     await chat.open();
-    await chat.completeTurn("baseline before the shared queue");
+    await baselineTurn(chat, page, "baseline before the shared queue");
     const url = page.url();
     const pageB = await context.newPage();
     await pageB.goto(url);
@@ -134,7 +160,7 @@ test.describe("two tabs on the same conversation", () => {
 
   test("an INTERRUPT raised in one tab is answerable and settles in BOTH", async ({ chat, page, context }) => {
     await chat.open();
-    await chat.completeTurn("baseline before the shared interrupt");
+    await baselineTurn(chat, page, "baseline before the shared interrupt");
     const url = page.url();
     const pageB = await context.newPage();
     await pageB.goto(url);
@@ -168,7 +194,7 @@ test.describe("two tabs on the same conversation", () => {
     // 120s there — at 180s this line would LOWER the budget below what it needs.
     test.setTimeout(300_000);
     await chat.open();
-    await chat.completeTurn("baseline before simultaneous sends");
+    await baselineTurn(chat, page, "baseline before simultaneous sends");
     const url = page.url();
     const pageB = await context.newPage();
     await pageB.goto(url);
