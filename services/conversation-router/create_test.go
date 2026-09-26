@@ -347,10 +347,10 @@ func TestDualCreatorPropagatesCRFailureAndSkipsTheRow(t *testing.T) {
 	}
 }
 
-// A row failure must NOT fail the create. Swallowing it leaves exactly the state production was in
-// before dual-write existed (CR, no row), so the worst case is the status quo — whereas returning
-// the error would break creates that used to succeed. This expectation inverts when the row becomes
-// the source of truth for existence.
+// A row failure must NOT fail the create. Swallowing it leaves a CR with no row, a state the rest
+// of the system tolerates, so the worst case is a missing row rather than a create that fails where
+// it would otherwise succeed. This expectation inverts once the row is the source of truth for
+// existence: a conversation with no row will not list, so the create has to fail.
 func TestDualCreatorSwallowsRowFailure(t *testing.T) {
 	cr := &fakeCreator{}
 	d := &dualCreator{cr: cr, rows: &fakeRowWriter{err: errors.New("pg down")}}

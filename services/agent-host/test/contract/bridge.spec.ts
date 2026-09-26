@@ -1658,11 +1658,11 @@ describe("a wedged run recreates the agent session", () => {
 
 // --- the RUN_STARTED ORIGIN STAMP ----------------------------------------------------------
 //
-// isOwnRun compares a run's origin to the pod reading it, and the epoch half of that
-// comparison was unreachable: BridgeDeps.generation was declared but never supplied, so
-// every production RUN_STARTED carried `gen: undefined` and the check collapsed to a
-// pod-NAME match. A StatefulSet pod reuses its name, so a run stranded by this pod's
-// PREVIOUS process read as "ours, still executing" and was never healed.
+// isOwnRun compares a run's origin to the pod reading it, and BOTH halves have to be stamped for
+// it to work. These tests pin the EPOCH half, which nothing else covers: a pod NAME alone cannot
+// distinguish this process from the previous one under the same StatefulSet name, so a `gen`-less
+// RUN_STARTED makes a run stranded by that earlier process read as "ours, still executing" — and
+// both consumers skip a run they think is their own, so it is never healed.
 
 describe("RUN_STARTED origin stamp", () => {
   const mkBridge = (agent: ReturnType<typeof createFakeAcpAgent>, deps: Record<string, unknown>) => {
@@ -1702,9 +1702,9 @@ describe("RUN_STARTED origin stamp", () => {
   });
 
   it("omits the epoch when none is observed — and isOwnRun then falls back to the host name", async () => {
-    // The boot window: this pod knows its name but not yet which epoch it holds. Stamping
-    // a guess would be worse than stamping nothing, so the epoch is absent and the name
-    // still decides — exactly today's behaviour, not a new refusal.
+    // The boot window: this pod knows its name but not yet which epoch it holds. Stamping a
+    // guess is worse than stamping nothing — an invented epoch makes a run foreign to its own
+    // pod — so the epoch is absent and the name alone decides.
     const agent = createFakeAcpAgent();
     agent.setScript([{ finish: { stopReason: "end_turn" } }]);
     const bridge = mkBridge(agent, { selfPod: "agent-host-0", generation: () => undefined });
@@ -1718,7 +1718,7 @@ describe("RUN_STARTED origin stamp", () => {
     expect(isOwnRun(started, { host: "agent-host-1", gen: 4 }), "another pod is still foreign").toBe(false);
   });
 
-  it("a run stamped at an OLDER epoch is no longer ours — the case the missing wiring hid", async () => {
+  it("a run stamped at an OLDER epoch is not ours, even under the same pod name", async () => {
     const agent = createFakeAcpAgent();
     agent.setScript([{ finish: { stopReason: "end_turn" } }]);
     const bridge = mkBridge(agent, { selfPod: "agent-host-0", generation: () => 5 });
@@ -1727,7 +1727,7 @@ describe("RUN_STARTED origin stamp", () => {
     await bridge.prompt({ threadId: "t1", text: "go" } as never);
 
     const [started] = starts(events);
-    // Same pod NAME, and before this wiring that was the whole comparison.
+    // Same pod NAME both times: only the epoch separates these two verdicts.
     expect(isOwnRun(started, { host: "agent-host-0", gen: 7 })).toBe(false);
     expect(isOwnRun(started, { host: "agent-host-0", gen: 5 })).toBe(true);
   });

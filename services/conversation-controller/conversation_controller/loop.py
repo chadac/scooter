@@ -139,10 +139,9 @@ def _sync_rows(rows, convs) -> None:
     if rows is None:
         return
     rows.sync_phases([(c.name, c.phase) for c in convs if c.phase_present])
-    # Assignment converges for a sharper reason than phase: once appends fence on the row, a row
-    # with no generation does not read as stale, it reads as "not allowed to write". An assignment
-    # made before this code existed has to arrive without waiting for a reassignment that may never
-    # come.
+    # Assignment converges for a sharper reason than phase: appends fence on the row, where a
+    # missing generation does not read as stale but as "not allowed to write". So every assignment
+    # must reach the row from this pass, not only from a reassignment event that may never come.
     rows.sync_assignments([(c.name, c.host_pod, c.generation) for c in convs])
 
 

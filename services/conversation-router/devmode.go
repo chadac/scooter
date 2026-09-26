@@ -5,10 +5,10 @@
 //     falls through to this one upstream);
 //   - create: the conversations-row INSERT alone (devCreator), with no CR write alongside it.
 //
-// Neither EXISTENCE nor PHASE is one of them any more, and existence used to be the biggest: the
-// cluster joined a CRD watch cache and dev substituted allExisting, so the two stacks ran different
-// list code and the e2e suite could not be evidence about production. Both are columns on the row
-// now, read by one code path in both stacks. Why: PR #654.
+// EXISTENCE and PHASE are deliberately NOT among them: both are columns on the row, read by one
+// code path in both stacks. Keep it that way — a dev-only substitute for either (existence
+// especially, which the cluster would otherwise take from a CRD watch cache) puts different list
+// code under test than production runs, and the e2e suite stops being evidence. Why: PR #654.
 //
 // None of this compiles into the production path's behaviour: it is reached only when
 // ROUTER_DEV_MODE is set (see main.go).

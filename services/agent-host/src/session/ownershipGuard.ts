@@ -1,24 +1,24 @@
 /**
- * OwnershipGuard — the multi-replica FENCING layer. Before this pod appends to a
- * conversation's durable log, it checks that IT is still the owner (status.hostPod on
- * the Conversation CR) at the generation it was assigned under. A pod that was
- * REASSIGNED away (the controller bumped hostPod + generation) must stop writing so it
- * can't corrupt the log the new owner now drives.
+ * OwnershipGuard — the CHEAP half of multi-replica fencing. Before this pod appends to a
+ * conversation's durable log, it checks that IT is the owner (status.hostPod on the
+ * Conversation CR) at the generation it was assigned under, so a pod REASSIGNED away (the
+ * controller bumped hostPod + generation) skips the write instead of racing the pod that
+ * drives the log now.
  *
- * This is a belt-and-suspenders 3rd layer: the controller (one hostPod at a time) + the
- * #248 drain (old owner quiesces on shutdown) + the router (forwards only to hostPod)
- * already prevent double-writes in normal operation. Fencing catches the edge case of a
+ * One of several layers that keep a single writer: the controller (one hostPod at a time),
+ * the #248 drain (old owner quiesces on shutdown), the router (forwards only to hostPod),
+ * and the row fence below. The others cover normal operation; fencing exists for the
  * briefly-partitioned old owner.
  *
  * CRUCIAL: canWrite() is SYNCHRONOUS and does NO k8s I/O — it reads a CACHED view kept
  * fresh by a watch (see k8sOwnershipGuard). appendEvent fires once per streamed token, so
  * a per-append k8s call would wreck latency.
  *
- * NOT the authority anymore. The conversations row decides, evaluated inside the append's
- * own statement (eventStore's AppendFence), which has no staleness window and cannot be
- * bypassed by a call site that forgets to ask. What remains here is a cheap pre-filter and
- * the generation this pod PRESENTS to that fence — so a cache that is merely stale costs a
- * refused statement, not a corrupted log.
+ * NOT the authority: a cheap PRE-FILTER, plus the generation this pod PRESENTS to the
+ * authority. The conversations row decides, evaluated inside the append's own statement
+ * (eventStore's AppendFence) — no staleness window, and no way for a call site to skip it.
+ * So a stale cache here costs a refused statement, never a corrupted log, and this check is
+ * worth keeping only for being synchronous.
  */
 
 import type { SessionId } from "../types.js";

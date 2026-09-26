@@ -11,9 +11,9 @@ func bp(b bool) *bool     { return &b }
 // assembleList is the whole GET /conversations body. These lock down the ways it can go wrong:
 // leaking someone else's conversation under "mine", and getting the metadata⋈links join wrong.
 //
-// It no longer has an existence join to get wrong. phase and sandbox_ref are columns on the row, so
-// "a row with no CR is an ended conversation, omit it" is gone — end() deletes the row, so an ended
-// conversation has nothing to omit. TestListsWhateverRowsExist pins the replacement rule.
+// There is no existence join to get wrong: phase and sandbox_ref are columns, and an ended
+// conversation has no row to omit because end() deletes it. TestListsWhateverRowsExist pins that
+// rule — every row that exists is listed.
 func TestAssembleList(t *testing.T) {
 	metas := []ConversationRow{
 		{ID: "a", ThreadID: "a", Title: "Alpha", CreatedAt: 100, LastActivityAt: 900, Owner: sp("alice"), Starred: bp(true),

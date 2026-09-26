@@ -5,11 +5,11 @@
 // stream stays fed by each owning host (live changes come from the pod that owns the
 // conversation), which the router still aggregates.
 //
-// The row is assembled from ONE store. It used to be a join: Postgres metadata
-// (title/star/owner/timestamps) ⋈ the Conversation CR (existence + phase→status + sandbox), with
-// the CR authoritative for existence. Every field of that join is a column now, so the list makes
-// no Kubernetes read at all and the CR-says-X-row-says-Y disagreement has nowhere to live.
-// Existence is the row's own existence: end() deletes it. Why: PR #654.
+// The row is assembled from ONE store: every field the response needs — title/star/owner/timestamps,
+// existence, phase→status, sandbox — is a column on `conversations`. So the list makes no Kubernetes
+// read at all, and a CR-says-X-row-says-Y disagreement has nowhere to live. Existence is the row's
+// own existence: end() deletes it. Anything reintroduced here from the CR brings that disagreement
+// back. Why: PR #654.
 package main
 
 import (
@@ -52,9 +52,9 @@ type listRow struct {
 // order of metas, which Store.Conversations establishes (most-recently-active first). Anything added
 // here that reorders or regroups rows silently changes the endpoint's contract.
 //
-// EXISTENCE is now the row: there is no existence set to join, so there is no "row with no CR" case
-// to omit — end() deletes the row. That was the kube-less stack's special case (allExisting), so both
-// stacks now run one code path instead of the cluster taking a join the e2e suite never exercised.
+// EXISTENCE is the row: there is no existence set to join, so no "row with no CR" case to omit —
+// end() deletes the row. One code path in both stacks, so the e2e suite exercises what production
+// runs; a filter sourced from anywhere but the row would break that.
 func assembleList(metas []ConversationRow, links map[string][]Link, now int64, callerOwner, scope string) []listRow {
 	rows := make([]listRow, 0, len(metas))
 	for _, m := range metas {

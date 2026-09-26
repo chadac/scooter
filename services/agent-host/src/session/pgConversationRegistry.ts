@@ -70,9 +70,9 @@ export function withConversationRows(
   return {
     async register(id: string, spec: ConversationSpec): Promise<void> {
       await cr.register(id, spec);
-      // Only sandbox_ref and creator_pod: model/owner/parent_id are already on the row,
-      // written by saveMeta, and the CR's spec was duplicating them. Unifying the two stores
-      // means the duplicate stops being written, not that it gets written twice.
+      // Only sandbox_ref and creator_pod. model/owner/parent_id belong to saveMeta, which owns
+      // those columns; writing them here too would make this a second writer of the same
+      // fields, racing it over which value the row keeps.
       //
       // Absent fields are OMITTED rather than set to NULL, mirroring cleanSpec + the CR's
       // merge-patch: revive() and hydrate() re-register with a sandboxRef, but an adoption

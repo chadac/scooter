@@ -2,9 +2,9 @@ package main
 
 import "testing"
 
-// EXISTENCE IS THE ROW. This used to be the dev stack's special case (allExisting) against a
-// cluster path that joined a CRD watch cache and omitted any row it had no CR for. Both stacks run
-// this one rule now, so the kube-less e2e suite exercises the same list code production does.
+// EXISTENCE IS THE ROW — one rule, run by both stacks, which is what lets the kube-less e2e suite
+// exercise the same list code production does. A dev-only substitute here (or a cluster-only join
+// against a CRD watch cache) would break that.
 //
 // A row with NULL phase and NULL sandbox_ref is the kube-less stack's normal shape (nothing writes
 // a phase where there is no controller) — the projection must match what a CR with no phase and no

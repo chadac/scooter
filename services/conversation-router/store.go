@@ -28,11 +28,10 @@ type ConversationRow struct {
 	ParentID       *string
 	UserTitled     *bool
 	Starred        *bool
-	// Phase and SandboxRef used to be read from the Conversation CR (status.phase, spec.sandboxRef)
-	// and joined onto this row at read time. Both are columns now, and every writer of a phase
-	// reaches them: agent-host writes Assigned/Suspended, the controller mirrors Failed / Pending /
-	// the Suspended drift repair and converges the column each reconcile pass. NULL reads exactly as
-	// an unreconciled CR did — statusForPhase("") is "running", an empty sandbox name. Why: PR #654.
+	// Columns, NOT a read-time join against the CR (status.phase, spec.sandboxRef). Every writer of
+	// a phase reaches them: agent-host writes Assigned/Suspended, the controller mirrors Failed /
+	// Pending / the Suspended drift repair and converges the column each reconcile pass. NULL is a
+	// legal read — statusForPhase("") is "running", with an empty sandbox name. Why: PR #654.
 	Phase      *string
 	SandboxRef *string
 }
@@ -242,10 +241,9 @@ func (s *WriteStore) SetUserTitle(ctx context.Context, id, title string) (*Conve
 }
 
 // CreateConversation inserts the create-time row in the cluster stack, alongside the CR that
-// dualCreator writes. Until this existed, a conversation created through the API but never prompted
-// had no row at all in production — it only became one when agent-host first persisted meta — so it
-// was absent from GET /conversations, which reads rows. The kube-less stack never had that gap
-// (devCreator always wrote the row), which is exactly why the divergence went unnoticed.
+// dualCreator writes. It is what makes a conversation created through the API but never prompted
+// visible to GET /conversations, which reads rows: without it the row appears only when agent-host
+// first persists meta.
 func (s *WriteStore) CreateConversation(ctx context.Context, c NewConversation) error {
 	id, now, title, model, owner, parent := conversationRowArgs(c, time.Now().UnixMilli())
 	_, err := s.pool.Exec(ctx, insertConversationSQL, id, title, now, model, owner, parent)
