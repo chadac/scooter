@@ -4,7 +4,7 @@
  * request to the broker and returns the RAW upstream outcome ({status, data,
  * raw}) so the tools can echo errors verbatim (the "never hide an error" rule).
  *
- * AUTH: same anchor the AWS-approval path uses (index.ts resolveAwsRequest) —
+ * AUTH: same anchor the approval relay uses (index.ts resolveApprovalForBroker) —
  * `BROKER_URL` + a Bearer token read from `BROKER_TOKEN_PATH` (the agent-host's
  * ServiceAccount token). The token is read per-call (it's rotated on disk), and a
  * MISSING token (ENOENT) is the genuine local/dev case (no auth header, broker
@@ -36,7 +36,7 @@ export function createBrokerClient(deps: HttpBrokerClientDeps): BrokerClient {
       const { readFileSync } = await import("node:fs");
       return { Authorization: `Bearer ${readFileSync(tokenPath, "utf8").trim()}` };
     } catch (e) {
-      // Mirror resolveAwsRequest (index.ts finding #9): only a not-found token is
+      // Mirror resolveApprovalForBroker (index.ts): only a not-found token is
       // the dev case. An unreadable token that SHOULD be there must not silently
       // downgrade to an unauthenticated call (broker 401 -> silent tool failure).
       if ((e as { code?: string })?.code !== "ENOENT") {

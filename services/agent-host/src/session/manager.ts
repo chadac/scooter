@@ -335,7 +335,7 @@ export interface SessionManager {
   /** Resolve a conversation by its SHORT DNS-safe hash (the `shortId(threadId)`
    *  used for k8s resource names). The broker identifies a conversation by this
    *  short id (extracted from the sandbox SA name `sandbox-{shortId}`), NOT the
-   *  full threadId the session map is keyed by — so the aws-request route must
+   *  full threadId the session map is keyed by — so the approvals route must
    *  resolve via this, else `get(shortId)` misses and the approval 404s. May
    *  hydrate a persisted-but-not-in-memory conversation. Returns undefined only
    *  when no conversation has that short id. */
@@ -1314,7 +1314,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       if (live) return toConversation(live);
       // Not in memory (idle-suspended out, or not yet hydrated after a restart):
       // scan the persisted conversations and hydrate the match on demand, so the
-      // aws-request route can revive it. Mirrors hydrateByThread's find, keyed by
+      // approvals route can revive it. Mirrors hydrateByThread's find, keyed by
       // the short hash instead of the full threadId.
       let metas: ConversationMeta[];
       try {

@@ -249,7 +249,7 @@ export interface ConversationShares {
 
 /** List a conversation's static shares from the broker (powers the right-panel Shares tab).
  *
- *  Same id-space rule as fetchPendingAwsRequests: `brokerConversationId` MUST be the sandbox
+ *  Same id-space rule as fetchPendingApprovals: `brokerConversationId` MUST be the sandbox
  *  SHORT-id (the broker owns shares by `conversation_id` = the short-id from the SA name), NOT the
  *  full thread UUID — callers pass `shortId(threadId)`. The agent-host calls this under its own
  *  control/approver SA and passes conversation_id explicitly (the browser has no sandbox token).
@@ -307,12 +307,13 @@ export async function fetchPendingApprovals(
   return (body.requests ?? []).filter((r) => r.request_id);
 }
 
-/** Raise the Approve/Deny interrupt for a broker AWS request on a conversation's
- *  bridge, wiring the answer back to the broker via `resolveAwsRequest`. Shared by
- *  the /aws-request route (broker notifies at request time) AND the revive re-raise
- *  (index.ts onRevived, which rediscovers PENDING requests after a pod rollout
- *  dropped the in-memory interrupt). Keeping ONE builder means both paths produce an
- *  identical interrupt (same id/options/metadata/answer-routing). */
+/** Raise the Approve/Deny interrupt for a contrib's approval request on a
+ *  conversation's bridge, wiring the answer back via `resolveApproval`. Shared by
+ *  the POST /conversations/:id/approvals/:contrib route (the contrib notifies at
+ *  request time) AND the revive re-raise (index.ts onRevived, which rediscovers
+ *  PENDING requests after a pod rollout dropped the in-memory interrupt). Keeping
+ *  ONE builder means both paths produce an identical interrupt (same
+ *  id/options/metadata/answer-routing). */
 export function raiseApprovalInterrupt(
   bridge: SessionBridge,
   conversationId: string,
@@ -945,7 +946,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
   // (`sandbox-{shortId}`) rather than the full threadId the store keys by. The
   // broker (auto-link injector + explicit /link) identifies the conversation
   // from the SA token, which carries the short id — a plain store.*(ctx.params.id)
-  // would miss it (the same shortId mismatch that broke aws-request). Falls back
+  // would miss it (the same shortId mismatch that broke the approvals route). Falls back
   // to the raw id for UI/webhooks callers that already pass the full threadId.
   const resolveConvId = async (id: string): Promise<string | null> => {
     const conv = sessions.get(id) ?? (await sessions.getByShortId(id));

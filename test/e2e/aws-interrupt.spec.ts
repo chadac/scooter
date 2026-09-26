@@ -2,7 +2,7 @@
  * Tier 3 E2E — the AWS approval interrupt appears in the UI.
  *
  * When the agent requests AWS access, the broker POSTs the agent-host
- * /conversations/:id/aws-request, which calls bridge.raiseInterrupt — a bare
+ * /conversations/:id/approvals/:contrib, which calls bridge.raiseInterrupt — a bare
  * RUN_FINISHED(runId "ext-<id>", outcome interrupt) that is NOT tied to a goose
  * run and can arrive WHILE a run is in flight. It must surface as the
  * InterruptPanel (Approve / Deny). This is the "the approval window doesn't appear
@@ -26,7 +26,7 @@ const panel = {
  *
  *  Named "first" historically; it is the CURRENT conversation, which on a shared backend is
  *  not the same thing as the first listed one. See the body for why that distinction cost a
- *  false "aws-request must revive an inactive conversation" failure.
+ *  false "approvals route must revive an inactive conversation" failure.
  *
  *  Polled because the router aggregates GET /conversations over the READY agent-host pods
  *  and degrades to a PARTIAL — sometimes empty — list while pods churn (the platform dump
@@ -45,8 +45,8 @@ async function firstConversationId(
   // backend. These tests then suspended and AWS-requested a stranger's conversation, which
   // another spec's cleanState was free to delete in between — and the route correctly
   // answered 404 for a conversation that no longer existed. CI showed exactly that: the
-  // suspend succeeded (the id was real then) and the aws-request that followed got a 404,
-  // reported as "aws-request must revive an inactive conversation", a bug that was not
+  // suspend succeeded (the id was real then) and the approval POST that followed got a 404,
+  // reported as "the approvals route must revive an inactive conversation", a bug that was not
   // happening. suspended-recovery.spec.ts already reads the id this way for the same reason.
   //
   // `currentId` is the stable LOCAL key; the server id is recorded beside it as `serverId`
@@ -131,7 +131,7 @@ async function requestAws(
 }
 
 /** Timeout for the API POSTs that do REAL cluster work server-side before replying.
- *  On the full target `/suspend` awaits the sandbox suspend and `/aws-request` /
+ *  On the full target `/suspend` awaits the sandbox suspend and the approvals POST /
  *  the `/agui` resume await a REVIVE (sandbox resume → ready pod, 10-30s measured
  *  at cluster pace; see stop-run.spec.ts:75) — past Playwright's 30s APIRequest
  *  default on arithmetic alone. The fake stack answers in milliseconds either way. */
@@ -159,7 +159,7 @@ test.describe("AWS approval interrupt", () => {
 
     // The broker notifies the agent-host that the agent requested AWS access.
     const res = await requestAws(request, base, conversationId, `awsreq-${Date.now()}`);
-    expect(res.status(), "the aws-request route must accept it (not 404 — no active bridge)").toBe(202);
+    expect(res.status(), "the approvals route must accept it (not 404 — no active bridge)").toBe(202);
 
     // The approval panel MUST appear, with Approve + Deny, describing the request.
     await expect(page.locator(panel.root)).toBeVisible({ timeout: 30_000 });
@@ -187,7 +187,7 @@ test.describe("AWS approval interrupt", () => {
 
     // Now the broker requests AWS. The route must revive + raise (not 404).
     const res = await requestAws(request, base, conversationId, `awsreq-susp-${Date.now()}`);
-    expect(res.status(), "aws-request must revive an inactive conversation, not 404").toBe(202);
+    expect(res.status(), "the approvals route must revive an inactive conversation, not 404").toBe(202);
 
     await expect(page.locator(panel.root)).toBeVisible({ timeout: 30_000 });
     await expect(page.locator(panel.option).filter({ hasText: /approve/i })).toHaveCount(1);

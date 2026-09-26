@@ -262,7 +262,7 @@ describe("recovered (suspended → revived) conversations", () => {
       await sessions.suspend(conv.id);
       await sessions.revive(conv.id);
 
-      // The broker's aws-request path raises onto the (revived) bridge.
+      // The contrib's approvals path raises onto the (revived) bridge.
       bridges.get(conv.id)!.raiseInterrupt("awsreq-after-revive", "approve s3:GetObject");
       await store.flush?.(conv.id);
 
@@ -312,7 +312,7 @@ describe("post-revive interrupt durability (reload survival)", () => {
 describe("broker-shaped AWS request against a recovered conversation", () => {
   // The BROKER does not know the conversation UUID: its identity comes from the
   // sandbox SA name `sandbox-{shortId}` (broker/core/auth.py _SA_PATTERN), so
-  // _notify_host POSTs /conversations/{SHORT_ID}/aws-request. The host must resolve
+  // _notify_host POSTs /conversations/{SHORT_ID}/approvals/aws. The host must resolve
   // that short hash back to the conversation — including after a suspend, when the
   // entry may have been evicted from memory entirely.
   const shortIdOf = (threadId: string): string => {
