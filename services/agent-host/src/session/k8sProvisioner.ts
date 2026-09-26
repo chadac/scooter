@@ -26,7 +26,7 @@ import {
 import type { SandboxRef } from "../types.js";
 import type { SandboxProvisioner } from "./manager.js";
 import { formatError, logger } from "../log.js";
-import { applyOverlay, parseOverlay } from "./sandboxOverlay.js";
+import { applyOverlay, deepMerge, parseOverlay } from "./sandboxOverlay.js";
 import {
   InvalidResourceError,
   type RenderedResources,
@@ -60,6 +60,11 @@ const SANDBOX_NAME_LABEL = "agents.x-k8s.io/sandbox-name";
  *  to look. See runOnCurrentImage (issue #560). */
 /** The ConfigMap key holding the consumer manifest-overlay payload. */
 const OVERLAY_KEY = "overlay.yaml";
+/** The enabled contribs' sandbox-pod parts (env/volumes/mounts), in the SAME
+ *  ConfigMap and the same overlay shape — a contrib needs no second mechanism to
+ *  reach the pod. Merged UNDER the consumer's key, so a deployment still wins a
+ *  name collision. Rendered by modules/platform.nix. */
+const CONTRIB_OVERLAY_KEY = "contrib.yaml";
 
 const POD_GONE_TIMEOUT_MS = 60_000;
 const POD_GONE_POLL_MS = 1_500;
@@ -109,9 +114,6 @@ export interface K8sProvisionerOptions {
   defaultSizeName?: string;
   /** Broker token audience (projected SA token). */
   brokerAudience?: string;
-  /** Mount the AWS account-registry ConfigMap (agent-broker-aws-accounts) so the
-   *  sandbox renders ~/.aws/config — set when the AWS permissions broker is on. */
-  awsAccountsConfigMap?: string;
   /** Run the sandbox container as a systemd-PID-1 NixOS dev environment: a
    *  privileged securityContext + tmpfs on /run + /tmp (what systemd needs).
    *  Set when sandboxImage is the agent-sandbox-os image. Default false keeps the
@@ -291,8 +293,14 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
       });
       return undefined;
     }
-    const parsed = parseOverlay(cm.data?.[OVERLAY_KEY]);
-    return Object.keys(parsed).length > 0 ? parsed : undefined;
+    // Contrib parts first, the consumer's patch merged on top: same strategic merge
+    // the consumer overlay already gets, so a deployment overrides a contrib's env or
+    // volume by NAME rather than by relying on k8s last-duplicate-wins.
+    const merged = deepMerge(
+      parseOverlay(cm.data?.[CONTRIB_OVERLAY_KEY]),
+      parseOverlay(cm.data?.[OVERLAY_KEY]),
+    ) as Record<string, unknown>;
+    return Object.keys(merged).length > 0 ? merged : undefined;
   };
 
   const reconcileImage = async (ref: SandboxRef): Promise<void> => {
@@ -378,7 +386,7 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
   ): Promise<Record<string, any>> => {
     const m = sandboxManifest(
       id, sandboxName(id), saName(id), opts.sandboxImage, ns, audience, storage,
-      opts.awsAccountsConfigMap, opts.systemdImage ?? false,
+      opts.systemdImage ?? false,
       {
         scooterConfigMap: opts.scooterConfigMap,
         configFilesConfigMap: opts.configFilesConfigMap,
@@ -638,7 +646,6 @@ export function sandboxManifest(
   namespace: string,
   audience: string,
   storage: string,
-  awsAccountsConfigMap?: string,
   systemdImage = false,
   deploy: {
     scooterConfigMap?: string;
@@ -729,9 +736,6 @@ export function sandboxManifest(
               volumeMounts: [
                 { name: "workspace", mountPath: "/workspace" },
                 { name: "broker-token", mountPath: "/var/run/secrets/broker", readOnly: true },
-                ...(awsAccountsConfigMap
-                  ? [{ name: "aws-accounts", mountPath: "/etc/agent-sandbox/aws", readOnly: true }]
-                  : []),
                 // systemd writes to /run + /tmp; back them with tmpfs.
                 ...(systemdImage
                   ? [
@@ -780,9 +784,6 @@ export function sandboxManifest(
                   name: "GIT_BROKER_HOST_MAP",
                   value: "github.com=github,gitlab.com=gitlab,test-git.local=test",
                 },
-                ...(awsAccountsConfigMap
-                  ? [{ name: "AWS_ACCOUNTS_FILE", value: "/etc/agent-sandbox/aws/accounts.json" }]
-                  : []),
                 // Deployment-supplied env (e.g. a service URL). Platform-neutral.
                 // CONVERSATION_ID is injected by the caller via extraEnv (with the
                 // full threadId for deep-link correctness).
@@ -797,9 +798,6 @@ export function sandboxManifest(
                 sources: [{ serviceAccountToken: { audience, path: "token" } }],
               },
             },
-            ...(awsAccountsConfigMap
-              ? [{ name: "aws-accounts", configMap: { name: awsAccountsConfigMap } }]
-              : []),
             ...(systemdImage
               ? [
                   { name: "run", emptyDir: { medium: "Memory" } },

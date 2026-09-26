@@ -27,7 +27,7 @@ import {
 type Obj = Record<string, any>;
 
 const manifest = (overlay?: Obj): Obj =>
-  sandboxManifest("c1", "conv-c1", "sandbox-c1", "img:latest", "agent-sandbox", "agent-broker", "10Gi", undefined, false, {
+  sandboxManifest("c1", "conv-c1", "sandbox-c1", "img:latest", "agent-sandbox", "agent-broker", "10Gi", false, {
     extraEnv: [{ name: "CONVERSATION_ID", value: "c1" }],
     ...(overlay ? { overlay } : {}),
   }) as Obj;

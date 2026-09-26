@@ -40,7 +40,7 @@ type Manifest = {
 };
 
 const render = (systemdImage: boolean, deploy: Record<string, unknown> = {}) =>
-  sandboxManifest("abc", "conv-abc", "sandbox-abc", "img:latest", "ns", "aud", "10Gi", undefined, systemdImage, deploy) as Manifest;
+  sandboxManifest("abc", "conv-abc", "sandbox-abc", "img:latest", "ns", "aud", "10Gi", systemdImage, deploy) as Manifest;
 
 const podSpec = (m: Manifest) => m.spec.podTemplate.spec;
 const ctxOf = (m: Manifest) => podSpec(m).containers[0].securityContext;
