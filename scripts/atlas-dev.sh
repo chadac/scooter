@@ -37,7 +37,16 @@ trap cleanup EXIT
 # A random high port avoids collisions with any local server / parallel runs.
 port=$(( (RANDOM % 20000) + 40000 ))
 
-initdb -D "$pgdata" -U postgres --auth=trust >/dev/null 2>&1
+# initdb refuses to run as root, and `2>&1` used to discard the one line that says so — under
+# `set -e` the whole script then exited 1 with NO output at all, from any root environment (a dev
+# container, a sandbox, a root shell). CI is not root, so main stayed green and only local work hit
+# it. Keep stdout quiet (initdb is chatty on success); never hide stderr.
+if [ "$(id -u)" = 0 ]; then
+  echo "atlas-dev.sh: refusing to run as root — initdb will not run as root." >&2
+  echo "  Re-run as an unprivileged user, e.g.:  su -s \"\$(command -v bash)\" <user> -c '$0 $*'" >&2
+  exit 1
+fi
+initdb -D "$pgdata" -U postgres --auth=trust >/dev/null
 pg_ctl -D "$pgdata" \
   -o "-k $sock -c listen_addresses=127.0.0.1 -c port=$port" \
   -l "$tmp/pg.log" start >/dev/null
