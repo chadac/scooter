@@ -89,7 +89,8 @@ async function suspend(
  *  helper already carries. The router resolves the owning pod from a watch-populated cache,
  *  so between a conversation being reassigned and that ownership becoming visible the request
  *  lands on a non-owner, which answers 404 for a conversation that is healthy. A broken route
- *  404s on every attempt and still fails the assertion. Why: PR #667. */
+ *  404s on every attempt and still fails the assertion. Mitigation only — the reassignment
+ *  itself is issue #619. Why: PR #667. */
 async function requestAws(
   request: import("@playwright/test").APIRequestContext,
   base: string,
