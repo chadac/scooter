@@ -104,9 +104,20 @@ class _ZombieProgress:
 _zombie_progress: dict[str, _ZombieProgress] = {}
 
 
-def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
+def _mirror_phase(rows, name: str, phase: str) -> None:
+    """Mirror a phase the controller just patched onto the CR to the conversations row.
+
+    No-ops when `rows` is None (no database configured). Best-effort by contract — ConversationRows
+    swallows and logs its own failures, so this never affects the reconcile pass. Why: PR #654.
+    """
+    if rows is not None:
+        rows.set_phase(name, phase)
+
+
+def reconcile_once(k8s, cap: int, rows=None) -> list[tuple[str, str]]:
     """One reconcile pass over all Conversations. Returns [(name, action_kind)] for
-    logging/tests. Only mutates via k8s.patch_status. The LOAD each conversation sees
+    logging/tests. Mutates via k8s.patch_status, and mirrors phase onto the conversations
+    row when a writer is configured (`rows`; None = no database, unchanged behaviour). The LOAD each conversation sees
     already excludes conversations that are being (re)assigned this pass — we compute it
     from the CURRENT status and update it as we assign, so a burst of Pending
     conversations spreads across pods instead of all landing on the least-loaded one."""
@@ -188,6 +199,9 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
                 if c.sandbox_ref:
                     k8s.force_delete_sandbox(c.sandbox_ref)
                 k8s.patch_status(c.name, {"phase": "Failed"})
+                # Failed is the phase NOTHING else writes, and the one a row-sourced reader most
+                # needs: without it a dead conversation renders as "running".
+                _mirror_phase(rows, c.name, "Failed")
                 prog.resolved = True
                 logger.error(
                     "zombie sandbox unresolved — escalating (force-delete Sandbox + mark conversation Failed)",
@@ -252,6 +266,9 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
                 {**_C, "conversation_id": c.name, "reason": action.reason},
             )
             k8s.patch_status(c.name, {"phase": "Suspended", "hostPod": None, "hostIP": None})
+            # The drift repair exists because the OWNER's setPhase never landed — so the row is
+            # exactly as stale as the CR was, and needs the same correction.
+            _mirror_phase(rows, c.name, "Suspended")
             hosts[c.name] = None
             results.append((c.name, "mark-suspended"))
             continue
@@ -264,6 +281,7 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
             # the UI). `phase_present` distinguishes "genuinely Pending" from "defaulted".
             if c.host_pod is not None or not c.phase_present or c.phase != "Pending":
                 k8s.patch_status(c.name, {"phase": "Pending", "hostPod": None})
+                _mirror_phase(rows, c.name, "Pending")
             hosts[c.name] = None
             results.append((c.name, "pending"))
             continue
@@ -275,6 +293,11 @@ def reconcile_once(k8s, cap: int) -> list[tuple[str, str]]:
             "hostIP": action.host_ip,
             "generation": action.generation,
         })
+        # Phase only. hostPod/generation stay CR-only until the reconcile port, where the row write
+        # is a CONDITIONAL update (`WHERE $gen > host_generation`) — a blind mirror of an assignment
+        # would let a stale controller overwrite a newer one, which is the exact failure the
+        # generation exists to prevent.
+        _mirror_phase(rows, c.name, action.phase)
         hosts[c.name] = action.host_pod  # so a child reconciled later co-locates here
         # A subagent shares its parent's pod — don't double-count it toward pod capacity.
         if c.parent_id is None:

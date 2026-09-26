@@ -866,12 +866,13 @@ in
           note = "The background-job registry. Was jobs.json on the emptyDir that every rollout wipes.";
         };
         conversations = {
-          writers = [ "agent-host" "conversation-router" ];
+          writers = [ "agent-host" "conversation-router" "conversation-controller" ];
           note = ''
-            Conversation metadata: the sidebar list + rehydration fields. Two writers, one table (like
-            byoc.remote_agents): agent-host owns the row; conversation-router INSERTs it at create time,
-            writes title/starred for IDLE conversations, and SELECTs the table for GET /conversations (a
-            writer implies read, so not also a reader). See services/conversation-router.'';
+            Conversation metadata: the sidebar list + rehydration fields. THREE writers, one table:
+            agent-host owns the row; conversation-router INSERTs it at create time, writes
+            title/starred for IDLE conversations, and SELECTs the table for GET /conversations;
+            conversation-controller mirrors `phase` (it writes Failed/Pending/the Suspended drift
+            repair, which nothing else does). A writer implies read, so none are also readers.'';
         };
         conversation_events = {
           writers = [ "agent-host" ];
@@ -899,21 +900,33 @@ in
     # the source and the grant the rendering. #606 inverted it: the option is the source
     # and owners.toml is now generated FROM it, so a contrib that declares a table also
     # gets its grants with no second edit.
-    agentSandbox.postgres.readers.conversation-router =
+    # grantsFor derives one consumer's per-database grants from the `agentSandbox.db` spec: a table
+    # listing it under `readers` becomes SELECT, under `writers` becomes read-write. Shared by the
+    # consumers below so a second consumer cannot drift from the first by copy-paste — the bug this
+    # replaces was five hand-maintained lists that nothing checked against each other (#606).
+    agentSandbox.postgres.readers =
       let
-        tablesWhere = field: db: lib.attrNames (lib.filterAttrs
-          (_t: rule: builtins.elem "conversation-router" rule.${field})
+        tablesWhere = consumer: field: db: lib.attrNames (lib.filterAttrs
+          (_t: rule: builtins.elem consumer rule.${field})
           (cfg.db.${db}.tables or { }));
-        # Tables in `db` whose readers list includes conversation-router (SELECT-only).
-        tablesFor = tablesWhere "readers";
-        # Tables in `db` whose writers list includes conversation-router (read-write). Why: PR #475.
-        writeTablesFor = tablesWhere "writers";
+        grantFor = consumer: db: {
+          inherit db;
+          tables = tablesWhere consumer "readers" db;       # SELECT-only
+          writeTables = tablesWhere consumer "writers" db;  # read-write. Why: PR #475.
+        };
       in
       {
-        user = "conversation_router";
-        grants = [
-          { db = "agent_host"; tables = tablesFor "agent_host"; writeTables = writeTablesFor "agent_host"; }
-        ] ++ lib.optional cfg.webhooks.enable { db = "webhooks"; tables = tablesFor "webhooks"; writeTables = writeTablesFor "webhooks"; };
+        conversation-router = {
+          user = "conversation_router";
+          grants = [ (grantFor "conversation-router" "agent_host") ]
+            ++ lib.optional cfg.webhooks.enable (grantFor "conversation-router" "webhooks");
+        };
+        # The controller mirrors conversation phase onto the row (services/conversation-controller
+        # rows.py). agent_host only — it has no business in any other database. Why: PR #654.
+        conversation-controller = {
+          user = "conversation_controller";
+          grants = [ (grantFor "conversation-controller" "agent_host") ];
+        };
       };
 
     # mkMerge (not //): the optional UI / ingress blocks below ALSO define

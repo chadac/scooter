@@ -15,6 +15,7 @@ python3Packages.buildPythonApplication {
 
   dependencies = with python3Packages; [
     kubernetes
+    psycopg
   ];
 
   nativeCheckInputs = with python3Packages; [
