@@ -423,12 +423,12 @@ export interface BridgeDeps {
   /** This pod's name (POD_NAME), stamped onto RUN_STARTED so a reader can tell a run
    *  started HERE from one stranded by another host. Unset single-replica. */
   selfPod?: string;
-  /** The CR generation this pod owns the conversation at, stamped alongside `selfPod`.
-   *  UNSET today: no accessor exposes it per-conversation, so a run left by an EARLIER
-   *  assignment to this same pod still reads as ours. That window needs the pod to be
-   *  reassigned away and back while a run dangles — rare, and it fails toward not
-   *  resuming rather than toward a spurious nudge. Wire this when the registry can
-   *  answer it. */
+  /** The generation this pod owns the conversation at, stamped alongside `selfPod`.
+   *  Resolved per RUN, not per bridge: a conversation reassigned away and back mid-session
+   *  must stamp the epoch the run actually started under, so the run left by the earlier
+   *  assignment stops reading as ours. Still undefined before the first assignment is
+   *  observed, which isOwnRun treats as "no epoch claimed" and falls back to the host
+   *  name. */
   generation?: () => number | undefined;
   /** The conversation's chosen model (per-conversation override; undefined = deployment
    *  default). Combined with `modelCatalog` + each provider's `modelTag` to pick the model a

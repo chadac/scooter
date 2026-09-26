@@ -1800,6 +1800,10 @@ export async function main(
         // Stamped onto RUN_STARTED so a later reader can tell a run THIS pod is still
         // executing from one stranded by a dead host — see hasDanglingRun.
         selfPod: podName,
+        // The EPOCH half of that stamp, without which isOwnRun degrades to a pod-NAME
+        // match — and a StatefulSet pod reuses its name, so a run stranded by this pod's
+        // PREVIOUS process reads as "ours, still executing" and is never healed.
+        generation: () => ownership?.guard.observedGeneration?.(conversationId as SessionId),
       firstActivityTimeoutMs: config.firstActivityTimeoutMs,
       livenessProbeMs: config.livenessProbeMs,
       // TRANSCRIPT RECORDER (test-harness, off unless TRANSCRIPT_RECORD_DIR is set):
