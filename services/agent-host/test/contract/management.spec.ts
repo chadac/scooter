@@ -569,7 +569,7 @@ describe("management API", () => {
     // The broker (auto-link injector + /link) identifies the conversation by the
     // short DNS hash from the SA token, NOT the full threadId. A link posted under
     // the short id must land on — and read back under — the full conversation, or
-    // it's the same silent shortId mismatch that broke aws-request.
+    // it's the same silent shortId mismatch that broke the approvals route.
     const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
     const short = shortIdOf("c1");
     const post = await call(api, "POST", `/conversations/${short}/links`, {

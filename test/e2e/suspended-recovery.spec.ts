@@ -390,7 +390,7 @@ test.describe("recovered conversation — approvals after a revive", () => {
     await chat.send("continue the plan"); // see the sendTurn note above
 
     const res = await requestAws(request, base, id, `awsreq-post-revive-${Date.now()}`);
-    expect(res.status(), "the aws-request must be accepted on the revived conversation").toBe(202);
+    expect(res.status(), "the approval must be accepted on the revived conversation").toBe(202);
 
     // 90s, not 30: the request is accepted (202 asserted above), so what this waits on is
     // the interrupt reaching the BROWSER — which after a revive means the tab's stream
@@ -434,7 +434,7 @@ test.describe("recovered conversation — approvals after a revive", () => {
     const raised = await requestAws(request, base, id, `awsreq-durable-${Date.now()}`);
     expect(
       raised.status(),
-      `aws-request must be accepted on the revived conversation (got ${raised.status()}: ${await raised.text().catch(() => "")})`,
+      `the approval must be accepted on the revived conversation (got ${raised.status()}: ${await raised.text().catch(() => "")})`,
     ).toBe(202);
     // 90s: identical post-revive delivery hop as the test above — the approval is accepted
     // (202 asserted) and this waits on it reaching the tab through a rebuilt bridge.

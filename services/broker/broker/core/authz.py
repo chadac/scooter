@@ -1,7 +1,7 @@
 """Authorization seam — the broker's policy ENFORCEMENT point.
 
 The broker decides who may do credential/permission-sensitive things (today:
-which human may APPROVE an AWS request for a given account; later: agent
+which human may APPROVE a contrib's request for a given object; later: agent
 permission boundaries — may this conversation/agent request scope X?). This lives
 in the broker, not the agent-host, so all such checks share one enforcement point.
 
