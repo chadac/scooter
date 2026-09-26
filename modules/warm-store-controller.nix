@@ -194,9 +194,12 @@ in
                   # Pod name → the leader-election Lease holder identity.
                   { name = "POD_NAME"; valueFrom.fieldRef.fieldPath = "metadata.name"; }
                 ];
+                # The kubernetes client alone is ~76 MiB resident, so a 64Mi request was
+                # always below the floor: scheduled small, then permanently over its
+                # reservation and first in line for eviction.
                 resources = lib.mkDefault {
-                  requests = { cpu = "25m"; memory = "64Mi"; };
-                  limits = { cpu = "50m"; memory = "128Mi"; };
+                  requests = { cpu = "25m"; memory = "128Mi"; };
+                  limits = { cpu = "50m"; memory = "256Mi"; };
                 };
               };
             };
