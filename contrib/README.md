@@ -88,11 +88,12 @@ contribs.aws = {
 };
 ```
 
-A contrib may ship **only** a sandbox half, as `aws` does today: it needs no
-`services.*.enable`, and no Python package is built for it. `contrib/aws/` is the
-worked example — the `scooter-aws` CLIs, the `awscli2` stub and the
-`~/.aws/config` render, which `modules/sandbox-os/carry-over.nix` carried until
-the surface existed.
+A contrib may ship **only** a sandbox half: it needs no `services.*.enable`, and
+no Python package is built for it. `contrib/aws/` was that example until #633 gave
+it a broker half too; its sandbox module is still the worked one — the
+`scooter-aws` CLIs, the `awscli2` stub and the `~/.aws/config` render, which
+`modules/sandbox-os/carry-over.nix` carried until the surface existed. The
+fixture `contrib/echo/` is sandbox-only.
 
 There is no separate schema for packages or services: a package is
 `environment.systemPackages` inside that module, a daemon is a
@@ -120,6 +121,53 @@ See `contrib/aws/sandbox.nix` for the shipped one and `contrib/echo/sandbox.nix`
 for the fixture (echo is `enable = false`, so it covers the disabled-contrib path
 a shipped contrib cannot), and the `dev-env-contrib-sandbox` check for what is
 asserted.
+
+### Contributing deployment config (`deployment.module`)
+
+The options an operator sets to configure the integration, and the manifests it
+renders, belong to the contrib as well:
+
+```nix
+contribs.aws = {
+  src = ./.;
+  deployment.module = ./deployment.nix;   # a kubenix module
+};
+```
+
+`modules/platform.nix` imports it, so it can declare its own options
+(`agentSandbox.broker.aws.*`) and render its own `kubernetes.resources`. It
+reaches a service's existing Deployment through that service's seams rather than
+redeclaring the container:
+
+| what it needs to add | the seam |
+|---|---|
+| env on the broker container | `agentSandbox.broker.extraEnv` |
+| a mounted ConfigMap | `broker.extraVolumes` + `broker.extraVolumeMounts` |
+| a rollout when its config changes | `broker.podAnnotations` (hash the ConfigMap) |
+| an IRSA / cloud identity annotation | `broker.serviceAccountAnnotations` |
+| anything of its own | `kubernetes.resources.*` directly |
+
+Derived from the source tree like the sandbox modules — `contrib/deployment-modules.nix`
+returns the enabled contribs' modules — and, for the same reason, that eval gets
+**`lib` and nothing else**: an external deployer imports `platform.nix` with no
+`pkgs` to build a contrib's Python half with, and a manifest needs none.
+
+Two consequences worth knowing:
+
+- **This is where a contrib's skills gate comes from.** `skills` ships on
+  `agentSandbox.broker.<name>.enable` (below), and this module is what declares
+  that option. A contrib shipping skills and no deployment module has no gate, and
+  `platform.nix` throws.
+- **An option that does not exist is an eval error**, so a manifest configuring an
+  integration this image never built in fails loudly instead of being ignored.
+
+`contrib/aws/deployment.nix` is the worked example: the account registry, the
+`AWS_*` env, the rollout annotation and the IRSA annotation, which were ~40
+references inside `modules/broker.nix` before #599.
+
+Only the BROKER has these seams today. Adding them to another service is a
+`bcfg.extraEnv`-shaped option plus one `++` in that service's module; a contrib's
+deployment module is not per-service, so nothing about it changes when they exist.
 
 ### Contributing agent skills (`skills`)
 

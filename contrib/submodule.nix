@@ -252,6 +252,39 @@ in
       };
     };
 
+    deployment = mkOption {
+      default = { };
+      description = "What this contrib adds to the platform's kubenix manifests.";
+      type = types.submodule {
+        options.module = mkOption {
+          type = types.nullOr types.path;
+          default = null;
+          example = literalExpression "./deployment.nix";
+          description = ''
+            A kubenix module layered into the platform eval (modules/platform.nix
+            imports it) — where this contrib declares its OWN deployment options
+            and renders its own manifests. `null` means it adds nothing.
+
+            Not per-service, unlike `services.<svc>`: one module, free to touch any
+            option the platform declares, because a contrib with both a broker and a
+            webhooks half still has ONE set of deployment knobs. It reaches into a
+            service's Deployment through that service's seams
+            (agentSandbox.broker.extraEnv and friends) and renders anything of its
+            own straight into kubernetes.resources.
+
+            Gets `{ config, lib, ... }` and NOTHING built: contrib/deployment-modules.nix
+            is lib-only because an external deployer imports platform.nix with no
+            `pkgs` to build a contrib's Python half with. A module forcing a package
+            arg is an eval error. Same constraint as `sandbox.module` (#607) and
+            `skills` (#618), for the same reason.
+
+            A contrib shipping `skills` must declare `agentSandbox.broker.<name>.enable`
+            here — that option IS the gate platform.nix ships its skills on.
+          '';
+        };
+      };
+    };
+
     skills = mkOption {
       type = types.attrsOf types.path;
       default = { };

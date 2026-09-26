@@ -45,6 +45,63 @@ in
       default = false;
       description = "Enable the `test` (whoami) provider for credential e2e tests.";
     };
+    agentHostUrl = mkOption {
+      type = types.str;
+      default = "http://agent-host.${cfg.namespace}.svc.cluster.local:8080";
+      description = ''
+        Agent-host URL (AGENT_HOST_URL) — where the broker calls back to the
+        platform: auto-linking a PR/issue an agent created, and raising an
+        approval interrupt. Core, not per-feature: one cluster-internal URL, so a
+        provider must read THIS rather than declare its own. Why: PR #636.
+      '';
+    };
+
+    # --- How a contrib reaches the broker Deployment ------------------------
+    # A contrib owns its own deployment config in contrib/<name>/deployment.nix
+    # (imported by modules/platform.nix), but the Deployment is declared HERE.
+    # These are the seams it contributes through — without them a contrib would
+    # have to redeclare the container to add one env var. Why: #599.
+    #
+    # Lists, not attrsets, because that is the k8s shape; a contrib emits only
+    # what its own `enable` gates, so a disabled one contributes nothing.
+    extraEnv = mkOption {
+      type = types.listOf (types.attrsOf types.anything);
+      default = [ ];
+      example = literalExpression ''[ { name = "AWS_ENABLED"; value = "true"; } ]'';
+      description = ''
+        Extra env entries appended to the broker container. A NAME declared twice
+        is not an error here and k8s silently keeps the last value, so a contrib
+        must own its prefix (examples/check.nix asserts the shared BROKER_DB_* set
+        is never duplicated).
+      '';
+    };
+    extraVolumes = mkOption {
+      type = types.listOf (types.attrsOf types.anything);
+      default = [ ];
+      description = "Extra volumes on the broker pod (a contrib's ConfigMap mount).";
+    };
+    extraVolumeMounts = mkOption {
+      type = types.listOf (types.attrsOf types.anything);
+      default = [ ];
+      description = "Extra volumeMounts on the broker container, paired with extraVolumes.";
+    };
+    podAnnotations = mkOption {
+      type = types.attrsOf types.str;
+      default = { };
+      example = literalExpression ''{ "checksum/aws-accounts" = "…"; }'';
+      description = ''
+        Annotations on the broker POD TEMPLATE. The reason this seam exists at all:
+        k8s rolls a Deployment only when the template mutates, so a contrib whose
+        config lives in a mounted ConfigMap must hash it in here or the running
+        process keeps reading the value it read at startup.
+      '';
+    };
+    serviceAccountAnnotations = mkOption {
+      type = types.attrsOf types.str;
+      default = { };
+      example = literalExpression ''{ "eks.amazonaws.com/role-arn" = "arn:aws:iam::…"; }'';
+      description = "Annotations on the agent-broker ServiceAccount (IRSA and the like).";
+    };
     jiraSiteUrl = mkOption {
       type = types.str;
       default = "";
@@ -257,123 +314,38 @@ in
       };
     };
 
-    # --- AWS permissions broker (dynamic, approval-gated AWS access) --------
-    aws = {
+    # --- OpenFGA authorization (the approver gate) --------------------------
+    # SUBSTRATE, not a provider's: core/authz.py builds the authorizer from these
+    # FGA_* settings and hands it to EVERY provider through BrokerContext (#624), so
+    # this must not move back under one integration's options. Off -> NoopAuthorizer.
+    # WHO may approve WHAT stays the provider's: the object half of a tuple
+    # (`aws_account:<alias>`) is spelled by the code that knows what an account is.
+    # Why: PR #636.
+    fga = {
       enable = mkOption {
         type = types.bool;
         default = false;
-        description = "Enable the AWS permissions provider (request/approve/provision dynamic IAM roles).";
+        description = "Enforce approver authorization via OpenFGA. Deploys an openfga server.";
       };
-      region = mkOption { type = types.str; default = "us-east-1"; description = "AWS region."; };
-      externalId = mkOption {
+      apiUrl = mkOption {
         type = types.str;
-        default = "agent-permissions-broker";
-        description = "STS ExternalId used when the broker assumes each account's base role.";
+        default = "http://openfga.${cfg.namespace}.svc.cluster.local:8080";
+        description = "OpenFGA HTTP API URL.";
       };
-      brokerPrincipalArn = mkOption {
-        type = types.str;
-        default = "";
-        description = "The broker's IRSA role ARN — the principal the dynamic roles trust.";
-      };
-      serviceAccountRoleArn = mkOption {
+      storeId = mkOption {
         type = types.str;
         default = "";
-        description = "IRSA role ARN annotated on the broker SA (eks.amazonaws.com/role-arn). Usually == brokerPrincipalArn.";
+        description = "OpenFGA store id (created out-of-band or by a seed step).";
       };
-      roleTtlHours = mkOption { type = types.int; default = 12; description = "Dynamic-role TTL (refresh window)."; };
-      approverClaim = mkOption {
-        type = types.enum [ "email" "id" "name" ];
-        default = "email";
-        description = ''
-          Which identity claim authorizes an approver — must match how the FGA
-          `approver` tuples are seeded (accounts.<a>.approvers, conventionally
-          emails). The agent-host sends the answering user's {id, email, name}; the
-          broker checks THIS claim. "email" (default) suits ALB-OIDC (where the id
-          is an opaque sub); use "id" for header-auth that already carries emails.
-        '';
-      };
-      accounts = mkOption {
-        type = types.attrsOf (types.attrsOf types.anything);
-        default = { };
-        description = ''
-          The account registry: alias -> { account_id, broker_role_arn, enabled,
-          description?, allowed_policy?, allowed_managed_policies?, region?,
-          approvers?, auto_approve_read_only?, auto_allowed_policy?,
-          auto_allowed_managed_policies? }. Rendered into a ConfigMap mounted
-          at /etc/agent-broker/accounts.json.
-
-          `description` is a human-written summary of what the account is for. The
-          agent reads it (via `scooter-aws accounts` → GET /aws/accounts) to pick
-          the RIGHT account to request access to — set it on every account.
-
-          Set `auto_approve_read_only = true` on an account to grant purely
-          read-only requests (all actions Get*/List*/Describe*/… ; no managed-policy
-          ARNs) immediately, WITHOUT a human approver — recorded as approved_by
-          "system:auto-approve-read-only". Anything with a write action or a managed
-          ARN still needs a human. Default off (every request needs approval).
-
-          `auto_allowed_policy` (+ `auto_allowed_managed_policies`) is the general
-          form: an OPT-IN glob superset of grants auto-approved with no human — same
-          fnmatch shape as allowed_policy (Action+Resource statements; managed-ARN
-          fnmatch patterns). e.g. pre-approve assuming deploy roles:
-            auto_allowed_policy.Statement = [{
-              Action = [ "sts:AssumeRole" ];
-              Resource = [ "arn:aws:iam::123456789012:role/deploy-*" ];
-            }];
-          A request FULLY covered by it (every action+resource, every managed ARN)
-          skips approval; anything in `allowed_policy` but NOT in the auto tier still
-          needs a human. Checked AFTER the ceiling, so auto ⊆ allowed by construction.
-
-
-          Example:
-            accounts.readonly-sandbox = {
-              account_id = "123456789012";
-              broker_role_arn = "arn:aws:iam::123456789012:role/agent-token-broker-base";
-              enabled = true;
-              description = "Sandbox account for safe read-only exploration (S3, logs).";
-              auto_approve_read_only = true;
-            };
-        '';
-      };
-      agentHostUrl = mkOption {
+      authorizationModelId = mkOption {
         type = types.str;
-        default = "http://agent-host.${cfg.namespace}.svc.cluster.local:8080";
-        description = "Agent-host URL — the broker notifies it to raise the approval interrupt.";
+        default = "";
+        description = "OpenFGA authorization-model id (optional; latest used if empty).";
       };
-      # The broker's DB (permission/size store) now lives in the shared platform
-      # Postgres (agentSandbox.postgres) — its OWN `broker` db + auto-provisioned role
-      # (agent-pg-broker). No per-broker DB knobs; point at RDS via postgres.external.
-
-      # OpenFGA authorization: the broker ENFORCES which user may approve which
-      # account (relation `approver` on `aws_account:<alias>`). Off by default →
-      # the broker's NoopAuthorizer → today's behavior. Per-account approver lists
-      # live in `accounts.<alias>.approvers` (seeded into OpenFGA at startup).
-      fga = {
-        enable = mkOption {
-          type = types.bool;
-          default = false;
-          description = "Enforce per-account approver authorization via OpenFGA. Deploys an openfga server.";
-        };
-        apiUrl = mkOption {
-          type = types.str;
-          default = "http://openfga.${cfg.namespace}.svc.cluster.local:8080";
-          description = "OpenFGA HTTP API URL.";
-        };
-        storeId = mkOption {
-          type = types.str;
-          default = "";
-          description = "OpenFGA store id (created out-of-band or by a seed step).";
-        };
-        authorizationModelId = mkOption {
-          type = types.str;
-          default = "";
-          description = "OpenFGA authorization-model id (optional; latest used if empty).";
-        };
-        image = mkOption {
-          type = types.str;
-          default = "openfga/openfga:latest";
-          description = "OpenFGA server image.";
-        };
+      image = mkOption {
+        type = types.str;
+        default = "openfga/openfga:latest";
+        description = "OpenFGA server image.";
       };
     };
   };
@@ -399,18 +371,20 @@ in
     };
   }
   (lib.mkIf bcfg.enable {
-    # mkMerge (not //): the aws + fga blocks each add to `deployments`/`services`,
-    # and a shallow // would REPLACE those keys (dropping agent-broker). mkMerge
-    # deep-merges so all deployments/services coexist.
+    # mkMerge (not //): the fga block and every contrib's deployment module each
+    # add to `deployments`/`services`, and a shallow // would REPLACE those keys
+    # (dropping agent-broker). mkMerge deep-merges so all of them coexist.
     kubernetes.resources = lib.mkMerge [
     {
       serviceAccounts.agent-broker = {
         metadata = {
           name = "agent-broker";
           namespace = cfg.namespace;
-        } // lib.optionalAttrs (bcfg.aws.enable && bcfg.aws.serviceAccountRoleArn != "") {
-          # IRSA: the broker pod assumes the per-account base roles via this role.
-          annotations."eks.amazonaws.com/role-arn" = bcfg.aws.serviceAccountRoleArn;
+        } // lib.optionalAttrs (bcfg.serviceAccountAnnotations != { }) {
+          # Contributed, e.g. IRSA (`eks.amazonaws.com/role-arn`) so the broker pod
+          # can assume a cloud role. Emitted only when non-empty: an
+          # `annotations = { }` key is not the same manifest as no key.
+          annotations = bcfg.serviceAccountAnnotations;
         };
       };
 
@@ -454,12 +428,10 @@ in
               # the long-lived process has already read it, so it runs stale until a
               # manual `rollout restart`). Hashing the ConfigMap data into a pod
               # annotation mutates the template on any change → automatic rollout.
-              # (Standard k8s pattern; Helm does this with sha256sum.) Only the
-              # aws-accounts CM exists today; add more checksum/* as needed.
-              annotations = lib.optionalAttrs bcfg.aws.enable {
-                "checksum/aws-accounts" =
-                  builtins.hashString "sha256" (builtins.toJSON bcfg.aws.accounts);
-              };
+              # (Standard k8s pattern; Helm does this with sha256sum.) The hashes
+              # come from whoever owns the ConfigMap — a contrib stamps its own
+              # through broker.podAnnotations rather than this file listing them.
+              annotations = bcfg.podAnnotations;
             };
             spec = {
               serviceAccountName = "agent-broker";
@@ -484,8 +456,7 @@ in
                   { name = "TEST_PROVIDER_ENABLED"; value = lib.boolToString bcfg.testProvider; }
                   # Auto-linking: when an agent creates a PR/MR/issue via the proxy,
                   # the broker POSTs it to the agent-host /conversations/{id}/links.
-                  # Same agent-host URL the AWS approval notify uses.
-                  { name = "AGENT_HOST_URL"; value = bcfg.aws.agentHostUrl; }
+                  { name = "AGENT_HOST_URL"; value = bcfg.agentHostUrl; }
 
                   # The shared platform `broker` database. Unconditional: the
                   # `broker` consumer is registered whenever the broker runs (see
@@ -605,31 +576,25 @@ in
                   { name = "SHARES_PUBLIC_BASE_URL"; value = sharesBaseUrl; }
                 ++ lib.optional (sharesFrameAncestors != "")
                   { name = "SHARES_FRAME_ANCESTORS"; value = sharesFrameAncestors; }
-                ) ++ lib.optionals bcfg.aws.enable ([
-                  { name = "AWS_ENABLED"; value = "true"; }
-                  { name = "AWS_REGION"; value = bcfg.aws.region; }
-                  { name = "AWS_STS_EXTERNAL_ID"; value = bcfg.aws.externalId; }
-                  { name = "AWS_BROKER_PRINCIPAL_ARN"; value = bcfg.aws.brokerPrincipalArn; }
-                  { name = "AWS_ACCOUNTS_FILE"; value = "/etc/agent-broker/accounts.json"; }
-                  { name = "AWS_ROLE_TTL_HOURS"; value = toString bcfg.aws.roleTtlHours; }
-                  { name = "AWS_APPROVER_CLAIM"; value = bcfg.aws.approverClaim; }
-                  { name = "AWS_AGENT_HOST_URL"; value = bcfg.aws.agentHostUrl; }
-                ] ++ lib.optionals bcfg.aws.fga.enable [
-                  # OpenFGA authorization (the per-account approver gate).
+                ) ++ lib.optionals bcfg.fga.enable [
+                  # The authorizer core/authz.py builds and hands to every provider
+                  # through BrokerContext — substrate, so it is emitted here rather
+                  # than by the integration that happens to check a tuple.
                   { name = "FGA_ENABLED"; value = "true"; }
-                  { name = "FGA_API_URL"; value = bcfg.aws.fga.apiUrl; }
-                  { name = "FGA_STORE_ID"; value = bcfg.aws.fga.storeId; }
-                  { name = "FGA_AUTHORIZATION_MODEL_ID"; value = bcfg.aws.fga.authorizationModelId; }
-                ]);
-                volumeMounts = lib.optionals bcfg.aws.enable [
-                  { name = "aws-accounts"; mountPath = "/etc/agent-broker"; readOnly = true; }
-                ];
+                  { name = "FGA_API_URL"; value = bcfg.fga.apiUrl; }
+                  { name = "FGA_STORE_ID"; value = bcfg.fga.storeId; }
+                  { name = "FGA_AUTHORIZATION_MODEL_ID"; value = bcfg.fga.authorizationModelId; }
+                ]
+                # Contribs last. A name emitted twice is silently the LAST value in
+                # k8s, so examples/check.nix asserts this container declares no
+                # duplicate env name at all — that check, not this ordering, is what
+                # stops a contrib from quietly repointing BROKER_DB_HOST.
+                ++ bcfg.extraEnv;
+                volumeMounts = bcfg.extraVolumeMounts;
                 readinessProbe.httpGet = { path = "/health"; port = "http"; };
                 livenessProbe.httpGet = { path = "/health"; port = "http"; };
               };
-              volumes = lib.optionals bcfg.aws.enable [
-                { name = "aws-accounts"; configMap.name = "agent-broker-aws-accounts"; }
-              ];
+              volumes = bcfg.extraVolumes;
             };
           };
         };
@@ -643,21 +608,11 @@ in
         };
       };
     }
-    (lib.mkIf bcfg.aws.enable {
-      # The account registry, mounted at /etc/agent-broker/accounts.json. Single
-      # source of truth shared with the sandbox's ~/.aws/config profiles. Each
-      # account's optional `approvers` list (user ids) is seeded into OpenFGA by
-      # the broker at startup when fga.enable is set.
-      configMaps.agent-broker-aws-accounts = {
-        metadata = { name = "agent-broker-aws-accounts"; namespace = cfg.namespace; };
-        data."accounts.json" = builtins.toJSON bcfg.aws.accounts;
-      };
-    })
-    (lib.mkIf bcfg.aws.fga.enable {
+    (lib.mkIf bcfg.fga.enable {
       # OpenFGA authorization server — the broker's policy enforcement backend.
       # Uses the shared Postgres (agent-shared-db) as its datastore (a separate
       # `openfga` database). The broker seeds the model + approver tuples at
-      # startup. (storeId/modelId are provided via broker.aws.fga options once
+      # startup. (storeId/modelId are provided via broker.fga options once
       # created — e.g. by a one-time `fga store create` against this server.)
       deployments.openfga = {
         metadata = { name = "openfga"; namespace = cfg.namespace; };
@@ -668,7 +623,7 @@ in
             metadata.labels.app = "openfga";
             spec.containers.openfga = {
               name = "openfga";
-              image = bcfg.aws.fga.image;
+              image = bcfg.fga.image;
               args = [ "run" ];
               env = [
                 { name = "OPENFGA_DATASTORE_ENGINE"; value = "postgres"; }
@@ -707,11 +662,11 @@ in
 
     # Register with the shared Postgres so the provisioning Job creates each db + a
     # dedicated owner role (agent-pg-broker / agent-pg-openfga). The `broker` db is
-    # used by the sandbox-size store (always, when the broker runs) AND the AWS
-    # permission store; openfga only when FGA is enabled.
+    # used by every store in the broker image — its own and any contrib's, which is
+    # why the BROKER_DB_* env above is unconditional; openfga only when FGA is on.
     agentSandbox.postgres.consumers = lib.mkMerge [
       { broker = { db = "broker"; user = "broker"; }; }
-      (lib.mkIf bcfg.aws.fga.enable { openfga = { db = "openfga"; user = "openfga"; }; })
+      (lib.mkIf bcfg.fga.enable { openfga = { db = "openfga"; user = "openfga"; }; })
     ];
   })
   ];
