@@ -19,5 +19,11 @@
 
     sandbox.module = ./sandbox.nix;
     skills."scooter-aws.md" = ./skills/scooter-aws.md;
+
+    # A grant needs a human to say yes. Only the UI half is here (build-time metadata
+    # for the contrib manifest); the defaults — grey "approve", "an admin must" — are
+    # what aws wants, so the empty set is the declaration. Where its verbs live on the
+    # broker is deployment config: see agentSandbox.approvals in ./deployment.nix.
+    approvals = { };
   };
 }

@@ -17,7 +17,13 @@
  * malformed row costs its own chip rather than the whole manifest.
  */
 
-import type { ContribIcon, ContribManifest, ContribSource, ContribToolCard } from "./contribTypes.js";
+import type {
+  ContribApproval,
+  ContribIcon,
+  ContribManifest,
+  ContribSource,
+  ContribToolCard,
+} from "./contribTypes.js";
 
 /** Same-origin by construction — see the nginx route in pkgs/ui-image. */
 const ENDPOINT = "/contrib/manifest.json";
@@ -26,7 +32,13 @@ const ENDPOINT = "/contrib/manifest.json";
  *  or unreachable route degrades to built-ins, never to a blank page. Why: PR #601. */
 const TIMEOUT_MS = 1500;
 
-const EMPTY: ContribManifest = { sources: {}, toolCards: {}, toolTitles: {}, linkProviders: [] };
+const EMPTY: ContribManifest = {
+  sources: {},
+  toolCards: {},
+  toolTitles: {},
+  linkProviders: [],
+  approvals: {},
+};
 
 let manifest: ContribManifest = EMPTY;
 
@@ -54,6 +66,15 @@ function asToolCard(v: unknown): ContribToolCard | undefined {
   return { provider: r.provider, argKey: r.argKey, action: r.action };
 }
 
+/** An approval row. A partial row is DROPPED rather than defaulted: the fallback is
+ *  "no gating", i.e. the option stays live and the broker still enforces — whereas a
+ *  half-built row could grey a button with no explanation of why. */
+function asApproval(v: unknown): ContribApproval | undefined {
+  const r = asRecord(v);
+  if (!isStr(r.gatedOption) || !isStr(r.blockedTitle) || !isStr(r.blockedHint)) return undefined;
+  return { gatedOption: r.gatedOption, blockedTitle: r.blockedTitle, blockedHint: r.blockedHint };
+}
+
 /** Keep the rows that validate, drop the ones that don't. */
 function rows<T>(v: unknown, as: (x: unknown) => T | undefined): Record<string, T> {
   const out: Record<string, T> = {};
@@ -72,6 +93,7 @@ function parse(doc: unknown): ContribManifest {
     sources,
     toolCards: rows(d.toolCards, asToolCard),
     toolTitles: rows(d.toolTitles, (v) => (isStr(v) ? v : undefined)),
+    approvals: rows(d.approvals, asApproval),
     // A chip for a source we cannot draw is the dead chip this whole feature
     // exists to remove, so a provider whose row failed validation goes with it.
     linkProviders: (Array.isArray(d.linkProviders) ? d.linkProviders : []).filter(
@@ -122,4 +144,10 @@ export function contribToolTitles(): Record<string, string> {
 /** Sources offered as sidebar filter chips and "Show:" label modes (sessions.ts). */
 export function contribLinkProviders(): readonly string[] {
   return manifest.linkProviders;
+}
+
+/** Approval gating per contrib name (InterruptPanel.tsx). Absent = no gating: the
+ *  option stays live and the broker remains the enforcement point. */
+export function contribApprovals(): Record<string, ContribApproval> {
+  return manifest.approvals;
 }

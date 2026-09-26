@@ -87,7 +87,7 @@ async function firstConversationId(
   return id;
 }
 
-/** POST the aws-request exactly like the broker's _notify_host does.
+/** POST the approval exactly like a contrib's broker half does (aws _notify_host).
  *
  *  A 404 is RETRIED on the full target. The caller has already confirmed the server lists
  *  this conversation (firstConversationId does that), so a 404 here does not mean "no such
@@ -106,15 +106,18 @@ async function requestAws(
   requestId: string,
 ) {
   const post = () =>
-    request.post(`${base}/conversations/${encodeURIComponent(conversationId)}/aws-request`, {
+    request.post(`${base}/conversations/${encodeURIComponent(conversationId)}/approvals/aws`, {
       headers: { "Content-Type": "application/json" },
       timeout: 120_000, // the route may REVIVE (real sandbox resume on the full target) before its 202
+      // The generic payload: an id plus the prose the CONTRIB rendered. aws composes
+      // this exact sentence in models.approval_message — the platform no longer
+      // receives target_account/risk_level at all. Why: PR #651.
       data: {
         request_id: requestId,
-        target_account: "dev",
-        risk_level: "low",
-        policy_summary: "s3:GetObject on the state bucket",
-        justification: "read terraform state",
+        message:
+          "Scooter is requesting AWS access to dev (risk: low).\n" +
+          "s3:GetObject on the state bucket\n" +
+          "Reason: read terraform state",
       },
     });
 

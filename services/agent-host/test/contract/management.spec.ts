@@ -10,7 +10,7 @@ import { describe, it, expect, vi } from "vitest";
 import { PassThrough } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import { createManagementApi, raiseAwsApprovalInterrupt, fetchPendingAwsRequests } from "../../src/api/management.js";
+import { createManagementApi, raiseApprovalInterrupt, fetchPendingApprovals } from "../../src/api/management.js";
 import { shortId } from "../../src/session/manager.js";
 import type { Conversation, SessionManager, ConversationStore, ConversationLink } from "../../src/session/manager.js";
 import type { AguiServer } from "../../src/agui/server.js";
@@ -794,7 +794,7 @@ describe("management API", () => {
     expect(sessions.ensureReadable).toHaveBeenCalledWith("moved-1");
   });
 
-  describe("POST /conversations/:id/aws-request (approval interrupt)", () => {
+  describe("POST /conversations/:id/approvals/:contrib (approval interrupt)", () => {
     // A full-UUID conversation with a live bridge — so its short hash != its id,
     // reproducing the broker keying that used to 404.
     const UUID = "aee8b191-a4ca-4cb5-81f0-ffd058a89663";
@@ -821,13 +821,16 @@ describe("management API", () => {
       return { sessions, raiseInterrupt };
     };
 
-    const awsBody = { request_id: "req-1", target_account: "dev", risk_level: "low", policy_summary: "s3:GetObject", justification: "read state" };
+    // The generic payload: an id and the prose the CONTRIB rendered. The platform no
+    // longer receives target_account/risk_level — it could not describe a second
+    // integration with them. Why: PR #651.
+    const awsBody = { request_id: "req-1", message: "Scooter is requesting AWS access to dev (risk: low)." };
 
     it("resolves by the SHORT id the broker sends (not just the full threadId) and raises the interrupt", async () => {
       const { sessions, raiseInterrupt } = sessionsWithBridge();
       const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
       // The broker POSTs the SHORT hash — the pre-fix route did get(SHORT) -> 404.
-      const { status } = await call(api, "POST", `/conversations/${SHORT}/aws-request`, awsBody);
+      const { status } = await call(api, "POST", `/conversations/${SHORT}/approvals/aws`, awsBody);
       expect(status).toBe(202);
       expect(raiseInterrupt).toHaveBeenCalledOnce();
       expect((raiseInterrupt.mock.calls[0][0] as { id: string }).id).toBe("req-1");
@@ -836,7 +839,7 @@ describe("management API", () => {
     it("still resolves by the FULL threadId (UI/webhooks path unchanged)", async () => {
       const { sessions, raiseInterrupt } = sessionsWithBridge();
       const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
-      const { status } = await call(api, "POST", `/conversations/${UUID}/aws-request`, awsBody);
+      const { status } = await call(api, "POST", `/conversations/${UUID}/approvals/aws`, awsBody);
       expect(status).toBe(202);
       expect(raiseInterrupt).toHaveBeenCalledOnce();
     });
@@ -844,7 +847,7 @@ describe("management API", () => {
     it("REVIVES a conversation with no live bridge, then raises (idle-suspended path)", async () => {
       const { sessions, raiseInterrupt } = sessionsWithBridge({ bridge: false });
       const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
-      const { status } = await call(api, "POST", `/conversations/${SHORT}/aws-request`, awsBody);
+      const { status } = await call(api, "POST", `/conversations/${SHORT}/approvals/aws`, awsBody);
       expect(sessions.revive).toHaveBeenCalledWith(UUID); // revived by the RESOLVED id
       expect(status).toBe(202);
       expect(raiseInterrupt).toHaveBeenCalledOnce();
@@ -853,51 +856,108 @@ describe("management API", () => {
     it("404s a genuinely unknown conversation (neither full nor short id matches)", async () => {
       const { sessions } = sessionsWithBridge();
       const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
-      const { status } = await call(api, "POST", `/conversations/totally-unknown/aws-request`, awsBody);
+      const { status } = await call(api, "POST", `/conversations/totally-unknown/approvals/aws`, awsBody);
       expect(status).toBe(404);
     });
 
     it("400s without a request_id", async () => {
       const { sessions } = sessionsWithBridge();
       const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
-      const { status } = await call(api, "POST", `/conversations/${SHORT}/aws-request`, { target_account: "dev" });
+      const { status } = await call(api, "POST", `/conversations/${SHORT}/approvals/aws`, { message: "no id" });
       expect(status).toBe(400);
     });
   });
 
-  describe("raiseAwsApprovalInterrupt (shared builder — route + revive re-raise)", () => {
-    it("raises an Approve/Deny interrupt tagged aws, and routes the answer to resolveAwsRequest", async () => {
+  describe("raiseApprovalInterrupt (shared builder — route + revive re-raise)", () => {
+    const build = () => {
       const raiseInterrupt = vi.fn();
-      const bridge = { raiseInterrupt } as never;
-      const resolveAwsRequest = vi.fn(async () => {});
-      raiseAwsApprovalInterrupt(bridge, "conv-1", { request_id: "req-9", target_account: "prod", risk_level: "high" }, resolveAwsRequest);
+      const resolveApproval = vi.fn(async () => {});
+      return { raiseInterrupt, resolveApproval, bridge: { raiseInterrupt } as never };
+    };
+    /** The builder's argument to raiseInterrupt. */
+    type Raised = {
+      id: string;
+      message: string;
+      metadata: { contrib: string; requestId: string };
+      options: Array<{ optionId: string }>;
+      onAnswer: (o: string | null, a?: unknown) => void;
+    };
 
-      const arg = raiseInterrupt.mock.calls[0][0] as {
-        id: string; metadata: { aws: boolean; requestId: string };
-        options: Array<{ optionId: string }>; onAnswer: (o: string, a?: unknown) => void;
-      };
+    it("tags the interrupt with the CONTRIB NAME and relays the answer", async () => {
+      const { raiseInterrupt, resolveApproval, bridge } = build();
+      raiseApprovalInterrupt(bridge, "conv-1", "aws", { request_id: "req-9", message: "grant prod?" }, resolveApproval);
+
+      const arg = raiseInterrupt.mock.calls[0][0] as Raised;
       expect(arg.id).toBe("req-9");
-      expect(arg.metadata).toMatchObject({ aws: true, requestId: "req-9" });
+      // A NAME, not `aws: true` — the UI looks the gating copy up per contrib, so a
+      // new integration needs no UI change.
+      expect(arg.metadata).toMatchObject({ contrib: "aws", requestId: "req-9" });
       expect(arg.options.map((o) => o.optionId)).toEqual(["approve", "deny"]);
+      // The contrib's prose is shown verbatim; the platform composes nothing.
+      expect(arg.message).toBe("grant prod?");
 
-      // Answering "approve" routes to the broker with approved=true.
       arg.onAnswer("approve", { id: "u@x" });
       await Promise.resolve();
-      expect(resolveAwsRequest).toHaveBeenCalledWith("conv-1", "req-9", true, { id: "u@x" });
+      // The VERB is the optionId, not a boolean: the platform never decides what a
+      // choice means, so a contrib with other options keeps working.
+      expect(resolveApproval).toHaveBeenCalledWith("conv-1", "aws", "req-9", "approve", { id: "u@x" });
+    });
 
-      // Answering "deny" -> approved=false; the approver falls back to the conv id.
+    it("works for ANY contrib, with its own verbs", async () => {
+      // The seam's whole claim. Nothing here is aws-shaped.
+      const { raiseInterrupt, resolveApproval, bridge } = build();
+      raiseApprovalInterrupt(
+        bridge, "conv-1", "echo",
+        { request_id: "e-1", message: "echo asks", options: [{ optionId: "yes", name: "Yes", kind: "allow_once" }] },
+        resolveApproval,
+      );
+      const arg = raiseInterrupt.mock.calls[0][0] as Raised;
+      expect(arg.metadata.contrib).toBe("echo");
+      expect(arg.options.map((o) => o.optionId)).toEqual(["yes"]);
+      arg.onAnswer("yes", { id: "u@x" });
+      await Promise.resolve();
+      expect(resolveApproval).toHaveBeenCalledWith("conv-1", "echo", "e-1", "yes", { id: "u@x" });
+    });
+
+    it("relays NOTHING when the user dismisses (null) — a dismiss is not a denial", async () => {
+      // The boolean form collapsed a dismiss to `optionId === "approve"` === false and
+      // sent DENY, recording a decision the user never made. The request stays pending
+      // in the broker and the revive re-raise brings the window back. Why: PR #651.
+      const { raiseInterrupt, resolveApproval, bridge } = build();
+      raiseApprovalInterrupt(bridge, "conv-1", "aws", { request_id: "req-9" }, resolveApproval);
+      const arg = raiseInterrupt.mock.calls[0][0] as Raised;
+      arg.onAnswer(null, { id: "u@x" });
+      await Promise.resolve();
+      expect(resolveApproval).not.toHaveBeenCalled();
+    });
+
+    it("falls back to the conversation id ONLY when no human identity is present", async () => {
+      // Anonymous / no-ingress-identity deployments have no human to name. Everywhere
+      // else this fallback is the bug PR #649 fixed, so it must not be reachable when
+      // an approver IS supplied.
+      const { raiseInterrupt, resolveApproval, bridge } = build();
+      raiseApprovalInterrupt(bridge, "conv-1", "aws", { request_id: "req-9" }, resolveApproval);
+      const arg = raiseInterrupt.mock.calls[0][0] as Raised;
       arg.onAnswer("deny", undefined);
       await Promise.resolve();
-      expect(resolveAwsRequest).toHaveBeenCalledWith("conv-1", "req-9", false, { id: "conv-1" });
+      expect(resolveApproval).toHaveBeenCalledWith("conv-1", "aws", "req-9", "deny", { id: "conv-1" });
+    });
+
+    it("still shows something when the contrib sent no message", async () => {
+      // A pair of buttons with no prose is a decision a user cannot make.
+      const { raiseInterrupt, resolveApproval, bridge } = build();
+      raiseApprovalInterrupt(bridge, "conv-1", "echo", { request_id: "e-2" }, resolveApproval);
+      expect((raiseInterrupt.mock.calls[0][0] as Raised).message).toContain("echo");
     });
   });
 
-  describe("fetchPendingAwsRequests (revive re-raise query — the short-id id-space)", () => {
+  describe("fetchPendingApprovals (revive re-raise query — the short-id id-space)", () => {
     // Regression for scooter-bug-reraise-pending-uses-threadid-not-shortid: the re-raise path queried
-    // the broker with the thread UUID, but the broker keys AWS requests by the sandbox SHORT-id, so it
+    // the broker with the thread UUID, but the broker keys requests by the sandbox SHORT-id, so it
     // got [] and the Approve window never reappeared after a rollout/resume/revive.
     const UUID = "5e1949ce-c98c-4c52-bb43-afe923b040ce";
     const SHORT = shortId(UUID); // what the broker actually keys on
+    const PATH = "/aws/aws/pending";
 
     const mockFetch = (byShortId: Record<string, unknown[]>) =>
       vi.fn(async (url: string) => {
@@ -915,7 +975,7 @@ describe("management API", () => {
       vi.stubGlobal("fetch", fetchFn);
       try {
         // The caller (index.ts) resolves shortId(id) before calling — assert that's what hits the wire.
-        const pending = await fetchPendingAwsRequests("http://broker:8080", shortId(UUID), {});
+        const pending = await fetchPendingApprovals("http://broker:8080", PATH, shortId(UUID), {});
         expect(fetchFn).toHaveBeenCalledOnce();
         const calledUrl = new URL(fetchFn.mock.calls[0][0] as string);
         expect(calledUrl.searchParams.get("conversation_id")).toBe(SHORT);
@@ -926,22 +986,45 @@ describe("management API", () => {
       }
     });
 
+    it("uses the CONTRIB'S declared pendingPath, not a hardcoded aws one", async () => {
+      const fetchFn = mockFetch({});
+      vi.stubGlobal("fetch", fetchFn);
+      try {
+        await fetchPendingApprovals("http://broker:8080", "/echo/approval/pending", SHORT, {});
+        expect(new URL(fetchFn.mock.calls[0][0] as string).pathname).toBe("/echo/approval/pending");
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("returns [] without calling the broker when the contrib declares no pendingPath", async () => {
+      // `pendingPath: null` means "my requests don't survive a rollout" — not "query /".
+      const fetchFn = vi.fn();
+      vi.stubGlobal("fetch", fetchFn);
+      try {
+        expect(await fetchPendingApprovals("http://broker:8080", "", SHORT, {})).toEqual([]);
+        expect(fetchFn).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
     it("returns [] (not throw) on a 404/501 no-broker response, and drops rows without a request_id", async () => {
       const fetch404 = vi.fn(async () => ({ ok: false, status: 404 }) as Response);
       vi.stubGlobal("fetch", fetch404);
       try {
-        expect(await fetchPendingAwsRequests("http://broker:8080", SHORT, {})).toEqual([]);
+        expect(await fetchPendingApprovals("http://broker:8080", PATH, SHORT, {})).toEqual([]);
       } finally {
         vi.unstubAllGlobals();
       }
       const fetchJunk = vi.fn(async () => ({
         ok: true,
         status: 200,
-        json: async () => ({ requests: [{ request_id: "ok" }, { target_account: "no-id" }] }),
+        json: async () => ({ requests: [{ request_id: "ok" }, { message: "no-id" }] }),
       }) as Response);
       vi.stubGlobal("fetch", fetchJunk);
       try {
-        expect(await fetchPendingAwsRequests("http://broker:8080", SHORT, {})).toEqual([{ request_id: "ok" }]);
+        expect(await fetchPendingApprovals("http://broker:8080", PATH, SHORT, {})).toEqual([{ request_id: "ok" }]);
       } finally {
         vi.unstubAllGlobals();
       }

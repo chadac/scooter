@@ -167,6 +167,16 @@ in
         ];
       };
 
+      # Where the agent-host relays a human's Approve/Deny. Inside this `mkIf`, so a
+      # deployment that does not run aws never points the relay at routes its broker
+      # has not mounted. pendingPath is set because these requests MUST survive a
+      # rollout: the agent is blocked on the answer, and an approval window that
+      # vanishes leaves a user who cannot act and an agent that never proceeds.
+      agentSandbox.approvals.aws = {
+        brokerPrefix = "/aws/aws";
+        pendingPath = "/aws/aws/pending";
+      };
+
       # The SANDBOX's half of the same registry: contrib/aws/sandbox.nix renders
       # ~/.aws/config from this file (one [profile <name>] per account). Reaches
       # every sandbox through modules/sandbox-pod.nix, so neither the Nix mirror

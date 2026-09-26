@@ -131,7 +131,7 @@ maybe("multi-replica platform smoke", () => {
   // another. Repeated calls guard against a lucky load-balance passing a broken build.
   it("a SHORT-ID-addressed request routes to the OWNER, not a random pod", async () => {
     // The broker addresses its AWS approval-notify by the sandbox SHORT-ID
-    // (POST /conversations/<shortId>/aws-request, from req.conversation_id), never the thread
+    // (POST /conversations/<shortId>/approvals/<contrib>, from req.conversation_id), never the thread
     // UUID. The router's ownership cache used to be keyed ONLY by the CR name (the UUID), so that
     // lookup missed, resolveTarget fell back to the ClusterIP Service, and the raise landed on a
     // NON-OWNER — where getByShortId() misses and the interrupt is silently dropped. The user saw
@@ -171,11 +171,11 @@ maybe("multi-replica platform smoke", () => {
     // attempt passes ~1/N of the time by luck even when routing is broken.
     for (let attempt = 0; attempt < 5; attempt++) {
       const out = await cluster.curlInCluster(
-        `${AGENT_HOST}/conversations/${shortId}/aws-request`,
+        `${AGENT_HOST}/conversations/${shortId}/approvals/aws`,
         {
           method: "POST",
           headers: ["Content-Type: application/json"],
-          body: JSON.stringify({ requestId: `probe-${attempt}`, tool: "probe", scope: "read" }),
+          body: JSON.stringify({ request_id: `probe-${attempt}`, message: "routing probe" }),
           timeoutMs: 30_000,
         },
       );

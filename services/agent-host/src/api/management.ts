@@ -92,23 +92,28 @@ export interface ManagementDeps {
    *  is the identity of the human answering (for an AWS interrupt, the broker
    *  authorizes them). */
   answerPermission: (sessionId: string, toolCallId: string, optionId: string, approver?: ApproverIdentity) => Promise<void>;
-  /** Approve/deny a broker AWS request after the user answers the interrupt
-   *  (POSTs to the broker's /aws/{id}/approve|deny). `approver` is the identity of
-   *  the human who answered — the broker authorizes the configured claim
-   *  (email/id/name) via OpenFGA. Optional. Returns the broker's error detail (a
-   *  provisioning failure) so the caller can feed it back to the agent. */
-  resolveAwsRequest?: (
+  /** Relay the user's answer to the contrib's broker half (POSTs to
+   *  `<brokerPrefix>/{requestId}/{optionId}`). `approver` is the identity of the human
+   *  who answered — the broker authorizes the configured claim (email/id/name) via
+   *  OpenFGA. Optional (unwired = no relay).
+   *
+   *  The VERB is the optionId, not a boolean: a contrib offering something other than
+   *  approve/deny keeps working, and the platform never decides what a choice MEANS.
+   *  Throws on a dropped answer so the caller can surface it. Why: PR #651. */
+  resolveApproval?: (
     sessionId: string,
+    contrib: string,
     requestId: string,
-    approved: boolean,
+    optionId: string,
     approver: ApproverIdentity,
   ) => Promise<void>;
-  /** Read-only: may `approver` (the VIEWING user) approve this AWS request? Powers
-   *  the UI's greyed-out Approve button. Per-viewer — the interrupt is raised once
-   *  server-side but seen by many users. Fails closed (false) broker-side. Optional
-   *  (defaults to allowed when unwired / no broker). */
-  canApproveAwsRequest?: (
+  /** Read-only: may `approver` (the VIEWING user) act on this request? Powers the UI's
+   *  greyed-out option. Per-viewer — the interrupt is raised once server-side but seen
+   *  by many users. Fails closed (false) broker-side. Optional (defaults to allowed
+   *  when unwired / no broker). */
+  canApproveRequest?: (
     sessionId: string,
+    contrib: string,
     requestId: string,
     approver: ApproverIdentity,
   ) => Promise<boolean>;
@@ -187,15 +192,41 @@ export interface ManagementDeps {
   };
 }
 
-/** The fields of a broker AWS request needed to render its approval interrupt.
- *  Matches the broker's request-view + the /aws-request POST body. */
-export interface AwsRequestSummary {
+/**
+ * One pending approval, as a contrib's broker half describes it. The platform's
+ * whole vocabulary for "a human must say yes to something".
+ *
+ * `message` arrives ALREADY RENDERED. The platform used to build the prose itself
+ * from aws's fields (`target_account`, `risk_level`, `policy_summary`), which meant
+ * the agent-host knew what an AWS account was and a second integration with a
+ * different notion of risk could not be described at all. Rendering belongs to the
+ * side that knows what it is asking for. Why: PR #651.
+ *
+ * snake_case because it is the broker's wire shape, passed through verbatim.
+ */
+export interface ApprovalRequest {
   request_id: string;
-  target_account?: string;
-  risk_level?: string;
-  policy_summary?: string;
-  justification?: string;
+  /** What the human reads. Rendered by the contrib; opaque here. */
+  message?: string;
+  /** Optional override of the Approve/Deny pair (same shape raiseInterrupt takes). */
+  options?: Array<{ optionId: string; name: string; kind: string }>;
 }
+
+/** Where a contrib's approval verbs live on the broker, from APPROVAL_CONTRIBS_JSON.
+ *  Rendered by modules/platform.nix from the contrib's own declaration. */
+export interface ApprovalContrib {
+  /** Prefix the verbs hang off, e.g. "/aws/aws" — `/{id}/approve|deny|can-approve`. */
+  brokerPrefix: string;
+  /** Where to list still-pending requests for a conversation. null = no re-raise. */
+  pendingPath?: string | null;
+}
+
+/** The default verbs. A contrib may override per request, but this pair is what an
+ *  approval means to the UI's gating (see `gatedOption` in the contrib manifest). */
+export const DEFAULT_APPROVAL_OPTIONS: ReadonlyArray<{ optionId: string; name: string; kind: string }> = [
+  { optionId: "approve", name: "Approve", kind: "allow_once" },
+  { optionId: "deny", name: "Deny", kind: "reject_once" },
+];
 
 /** One published static share, as the broker's /shares summary returns it (snake_case
  *  passed through verbatim). The UI maps these to its camelCase view type. */
@@ -253,24 +284,26 @@ export async function fetchConversationShares(
  *  session map uses. Passing the UUID returns an empty list — the bug where, after a rollout / resume /
  *  dangling-run revive, the pending Approve window never reappears. Callers resolve the short-id
  *  (via `shortId(threadId)`) before calling. Returns [] on any non-OK / error (best-effort). */
-export async function fetchPendingAwsRequests(
+export async function fetchPendingApprovals(
   brokerUrl: string,
+  pendingPath: string,
   brokerConversationId: string,
   authHeaders: Record<string, string>,
   onWarn?: (status: number) => void,
-): Promise<AwsRequestSummary[]> {
+): Promise<ApprovalRequest[]> {
   const base = brokerUrl.replace(/\/$/, "");
-  if (!base) return [];
+  if (!base || !pendingPath) return [];
   const res = await fetch(
-    `${base}/aws/aws/pending?conversation_id=${encodeURIComponent(brokerConversationId)}`,
+    `${base}${pendingPath}?conversation_id=${encodeURIComponent(brokerConversationId)}`,
     { method: "GET", headers: authHeaders },
   );
   if (!res.ok) {
-    // 404/501 = no AWS broker configured; anything else is worth a log but not fatal.
+    // 404/501 = the contrib isn't configured on this broker; anything else is worth a
+    // log but not fatal — a failed re-raise must not break the revive it rides on.
     if (res.status !== 404 && res.status !== 501) onWarn?.(res.status);
     return [];
   }
-  const body = (await res.json().catch(() => ({}))) as { requests?: AwsRequestSummary[] };
+  const body = (await res.json().catch(() => ({}))) as { requests?: ApprovalRequest[] };
   return (body.requests ?? []).filter((r) => r.request_id);
 }
 
@@ -280,39 +313,54 @@ export async function fetchPendingAwsRequests(
  *  (index.ts onRevived, which rediscovers PENDING requests after a pod rollout
  *  dropped the in-memory interrupt). Keeping ONE builder means both paths produce an
  *  identical interrupt (same id/options/metadata/answer-routing). */
-export function raiseAwsApprovalInterrupt(
+export function raiseApprovalInterrupt(
   bridge: SessionBridge,
   conversationId: string,
-  req: AwsRequestSummary,
-  resolveAwsRequest?: ManagementDeps["resolveAwsRequest"],
+  contrib: string,
+  req: ApprovalRequest,
+  resolveApproval?: ManagementDeps["resolveApproval"],
 ): void {
-  const summary =
-    `Scooter is requesting AWS access to ${req.target_account} ` +
-    `(risk: ${req.risk_level}).\n${req.policy_summary || ""}\n` +
-    `Reason: ${req.justification || "(none)"}`;
   bridge.raiseInterrupt({
     id: req.request_id,
-    message: summary,
-    options: [
-      { optionId: "approve", name: "Approve", kind: "allow_once" },
-      { optionId: "deny", name: "Deny", kind: "reject_once" },
-    ],
-    // Tag it AWS so the UI runs a per-viewer can-approve check (greys the Approve
-    // button for users who can't approve). requestId == the interrupt id, but carry
-    // it explicitly so the UI needn't assume that.
-    metadata: { aws: true, requestId: req.request_id },
+    // Rendered by the contrib. Empty would leave the user a pair of buttons with
+    // nothing to decide on, so say plainly that the description is missing rather
+    // than showing a blank card.
+    message: req.message || `${contrib} is requesting approval (no description provided).`,
+    options: [...(req.options ?? DEFAULT_APPROVAL_OPTIONS)],
+    // `contrib` is the NAME, not a boolean: the UI looks up this contrib's row in the
+    // manifest for which option to grey and what to say, so an integration added later
+    // needs no UI change. (It replaced `{ aws: true }`, which could only ever describe
+    // one integration.) requestId == the interrupt id, but carry it explicitly so the
+    // UI needn't assume that.
+    metadata: { contrib, requestId: req.request_id },
     onAnswer: (optionId, approver) => {
-      // The approver is the HUMAN who answered (from the permission route), not the
-      // conversation owner — the broker authorizes the configured claim. Fall back
-      // to the conversation id when there's no identity (anonymous / FGA-off / dev).
+      // The approver is the HUMAN who answered. Falling back to the conversation id
+      // authorizes something that is not a person — with FGA on no tuple matches it,
+      // so the approval is refused; with FGA off it is recorded as the approver and
+      // the audit trail names nobody. Kept only for anonymous/no-ingress-identity
+      // deployments, where there is no human to name. See PR #649.
       const approverIdentity = approver ?? { id: conversationId };
-      // resolveAwsRequest THROWS on a dropped approval (token unreadable / broker
-      // 4xx-5xx); fire-and-forget, so handle the rejection — a swallowed one silently
-      // loses the user's security decision.
-      void resolveAwsRequest?.(conversationId, req.request_id, optionId === "approve", approverIdentity).catch(
+      // A DISMISS (null optionId) relays nothing. The old boolean form collapsed it to
+      // `optionId === "approve"` === false and sent DENY — recording a decision the
+      // user never made, from a click that means "not now". The request stays PENDING
+      // in the broker, which is its source of truth, and the revive re-raise brings the
+      // window back. Why: PR #651.
+      if (optionId === null) {
+        log.info("approval dismissed without an answer; leaving it pending", {
+          conversation_id: conversationId,
+          contrib,
+          request_id: req.request_id,
+        });
+        return;
+      }
+      // resolveApproval THROWS on a dropped answer (token unreadable / broker 4xx-5xx);
+      // fire-and-forget, so handle the rejection — a swallowed one silently loses the
+      // user's security decision.
+      void resolveApproval?.(conversationId, contrib, req.request_id, optionId, approverIdentity).catch(
         (err) => {
-          log.errorWith("AWS approval NOT recorded", err, {
+          log.errorWith("approval NOT recorded", err, {
             conversation_id: conversationId,
+            contrib,
             request_id: req.request_id,
             decision: optionId,
           });
@@ -876,16 +924,16 @@ export function createManagementApi(deps: ManagementDeps): Router {
     return { status: 204, json: null };
   });
 
-  // May the CURRENT viewer approve this AWS request? The UI calls this per pending
-  // AWS interrupt to decide whether to grey out the Approve button (per-viewer: the
-  // interrupt is raised once server-side but seen by many users). Anonymous users
-  // can never approve (no identity to authorize) → canApprove:false, greyed button.
-  r.get("/conversations/:id/aws-request/:requestId/can-approve", async (ctx) => {
-    if (!deps.canApproveAwsRequest) return { json: { canApprove: true } }; // unwired → don't block
+  // May the CURRENT viewer act on this request? The UI calls this per pending approval
+  // interrupt to decide whether to grey the gated option (per-viewer: the interrupt is
+  // raised once server-side but seen by many users). Anonymous users can never approve
+  // (no identity to authorize) → canApprove:false, greyed.
+  r.get("/conversations/:id/approvals/:contrib/:requestId/can-approve", async (ctx) => {
+    if (!deps.canApproveRequest) return { json: { canApprove: true } }; // unwired → don't block
     if (ctx.user.anonymous) return { json: { canApprove: false } };
     const approver = { id: ctx.user.id, email: ctx.user.email, name: ctx.user.name };
     const canApprove = await deps
-      .canApproveAwsRequest(ctx.params.id, ctx.params.requestId, approver)
+      .canApproveRequest(ctx.params.id, ctx.params.contrib, ctx.params.requestId, approver)
       .catch(() => false); // fail closed (greyed) on any error
     return { json: { canApprove } };
   });
@@ -1124,16 +1172,20 @@ export function createManagementApi(deps: ManagementDeps): Router {
     }
   });
 
-  // The broker calls this when an agent requests AWS access: raise an in-
-  // conversation approval interrupt (Approve / Deny). The user's pick routes back
-  // to the broker (approve/deny) via deps.resolveAwsRequest.
-  r.post("/conversations/:id/aws-request", async (ctx) => {
+  // A contrib's broker half calls this when its agent-side asks for something a human
+  // must allow: raise an in-conversation approval interrupt. The user's pick routes
+  // back to that contrib via deps.resolveApproval.
+  //
+  // `:contrib` is not validated against the configured set. The relay is (index.ts
+  // looks the name up in APPROVAL_CONTRIBS_JSON and does nothing for an unknown one),
+  // and refusing here would mean a contrib whose broker half is deployed slightly
+  // ahead of the agent-host cannot raise anything — while accepting costs only an
+  // interrupt whose answer goes nowhere, which is the same as today's unwired case.
+  r.post("/conversations/:id/approvals/:contrib", async (ctx) => {
     const body = await ctx.body<{
       request_id?: string;
-      target_account?: string;
-      risk_level?: string;
-      policy_summary?: string;
-      justification?: string;
+      message?: string;
+      options?: Array<{ optionId: string; name: string; kind: string }>;
     }>();
     if (!body.request_id) return { status: 400, json: { error: "request_id required" } };
     // Resolve the conversation. The BROKER identifies it by the SHORT DNS-safe
@@ -1150,8 +1202,8 @@ export function createManagementApi(deps: ManagementDeps): Router {
     }
     // The conversation exists but its in-memory BRIDGE may be absent — it was
     // idle-suspended, or hydrated-but-not-revived after an agent-host restart, or
-    // torn down by a model switch. The agent that called `scooter-aws request` is
-    // still running in the sandbox, so we MUST NOT drop the approval on the floor:
+    // torn down by a model switch. The agent that asked is still running in the
+    // sandbox and is blocked on the answer, so we MUST NOT drop it on the floor:
     // revive to rebuild the bridge, then raise. Without this the route dropped it
     // and the broker (fire-and-forget) swallowed it — "the approval window never
     // appeared." raiseInterrupt persists the interrupt, so it also survives a
@@ -1163,12 +1215,15 @@ export function createManagementApi(deps: ManagementDeps): Router {
         await sessions.revive(conv.id);
         bridge = sessions.get(conv.id)?.bridge;
       } catch (err) {
-        log.errorWith("aws-request could not revive", err, { conversation_id: conv.id });
+        log.errorWith("approval request could not revive", err, {
+          conversation_id: conv.id,
+          contrib: ctx.params.contrib,
+        });
       }
     }
     if (!bridge) return { status: 503, json: { error: "could not activate conversation to raise the approval" } };
 
-    raiseAwsApprovalInterrupt(bridge, conv.id, body as AwsRequestSummary, deps.resolveAwsRequest);
+    raiseApprovalInterrupt(bridge, conv.id, ctx.params.contrib, body as ApprovalRequest, deps.resolveApproval);
     return { status: 202, json: { ok: true } };
   });
 

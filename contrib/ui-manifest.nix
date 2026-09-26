@@ -59,8 +59,23 @@ let
     withUi));
 
   linkProviders = lib.attrNames (lib.filterAttrs (_: c: c.ui.source.linkProvider) sourced);
+
+  # How each contrib's approval is gated: which option to grey, and what to say when
+  # it is. Read off the contribs THIS manifest was built from — an independent
+  # evalModules here would ignore `withModules`, so the CI set (which enables echo)
+  # would silently render a manifest without echo's row.
+  #
+  # NOT gated on `ui.enable`: a contrib may raise approvals while contributing no icon
+  # or tool cards, and greying an option is a correctness concern rather than branding.
+  #
+  # Only the presentation half lives here. Where the contrib's verbs are on the broker
+  # is deployment config, declared by its deployment module (agentSandbox.approvals) —
+  # a browser that knew a broker path would be a browser that could be pointed at one.
+  approvals = lib.mapAttrs
+    (_: c: { inherit (c.approvals) gatedOption blockedTitle blockedHint; })
+    (lib.filterAttrs (_: c: c.approvals != null) contribs);
 in
 
 writeText "contrib-manifest.json" (builtins.toJSON {
-  inherit sources toolCards toolTitles linkProviders;
+  inherit sources toolCards toolTitles linkProviders approvals;
 })

@@ -100,6 +100,13 @@ let
   # date with the contrib set. Why: PR #618.
   bcfg = config.agentSandbox.broker;
   contribSkills = import ../contrib/skills.nix { inherit lib; };
+
+  # The contribs that raise human approvals -> how the agent-host reaches their verbs.
+  # Read straight off the evaluated config: each contrib's DEPLOYMENT module sets its
+  # own row inside its own `mkIf`, so the gating is the contrib's and there is nothing
+  # to re-derive here.
+  approvalContribsJson =
+    if cfg.approvals == { } then null else builtins.toJSON cfg.approvals;
   gateOf = name:
     if (bcfg.${name} or null) ? enable then bcfg.${name}.enable
     else throw ("contrib ${name} ships skills, which are gated on "
@@ -128,6 +135,58 @@ in
       type = types.str;
       default = "agent-sandbox";
       description = "Namespace for the platform + sandboxes.";
+    };
+
+    approvals = mkOption {
+      default = { };
+      example = literalExpression ''{ aws = { brokerPrefix = "/aws/aws"; pendingPath = "/aws/aws/pending"; }; }'';
+      description = ''
+        Contribs that raise human approvals -> where their verbs live on the broker.
+        Rendered into APPROVAL_CONTRIBS_JSON for the agent-host, which relays a user's
+        Approve/Deny there.
+
+        A contrib sets its own row from its DEPLOYMENT module, inside that module's
+        `mkIf`, so a deployment that does not run the contrib contributes nothing and
+        no separate gate is needed here. Relaying an answer to a broker that never
+        mounted the route would turn a security decision into a 404 nobody sees.
+
+        The platform learns only how to REACH the contrib — never what is being
+        approved. The prose a human reads is rendered by the contrib and arrives
+        already-formed; the UI's half of the declaration (which option to grey) is
+        build-time metadata and travels in the contrib manifest instead.
+      '';
+      type = types.attrsOf (types.submodule {
+        options = {
+          brokerPrefix = mkOption {
+            type = types.str;
+            example = "/aws/aws";
+            description = ''
+              Prefix the approval verbs hang off. The agent-host appends
+              `/{requestId}/{optionId}` and `/{requestId}/can-approve`.
+
+              Usually doubled (`/aws/aws`): the core mounts every provider under
+              `/{provider.name}`, and a transport's own routes carry their own prefix.
+              Spelled out rather than derived, because that second segment is the
+              transport's choice, not a platform convention.
+            '';
+          };
+          pendingPath = mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            example = "/aws/aws/pending";
+            description = ''
+              Where to list still-pending requests for a conversation
+              (`?conversation_id=<shortId>`). The agent-host calls it after a revive to
+              re-raise approvals a pod rollout dropped — the in-memory answer routing
+              dies with the old pod, but the request is still pending in the broker,
+              which is the source of truth.
+
+              `null` means no re-raise: a user who had an Approve window open loses it
+              silently on a rollout. Set it unless the requests are truly ephemeral.
+            '';
+          };
+        };
+      });
     };
     registryPrefix = mkOption {
       type = types.str;
@@ -1314,6 +1373,13 @@ in
                   # ownership, and sends every ACP frame. Without this there is NO BYO path and every
                   # run takes the cloud floor.
                   { name = "BYOC_CONTROLLER_URL"; value = "http://byoc-controller.${cfg.namespace}.svc.cluster.local:8080"; }
+                ++ lib.optional (approvalContribsJson != null)
+                  # The contribs that raise human approvals: name -> where its verbs
+                  # live on the broker. The agent-host relays a user's Approve/Deny
+                  # there. It carries no prose and no policy — what is being approved
+                  # is the contrib's business, and the UI's half of this declaration
+                  # travels separately in the contrib manifest.
+                  { name = "APPROVAL_CONTRIBS_JSON"; value = approvalContribsJson; }
                 ++ lib.optionals cfg.broker.enable [
                   # BROKER_URL + the projected broker token: the AWS approve/deny relay
                   # and the shares/links queries the agent-host makes on a conversation's

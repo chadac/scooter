@@ -286,11 +286,14 @@ let
   # deployTools.sandboxManifestOverlay, which is consumer-owned and overlays on top of it.
   # sandboxSeamProblems below checks it end to end (rendered with aws on, absent with
   # aws off), which is stronger than a mention in the example.
+  #
+  # `approvals` is the same shape: a contrib's DEPLOYMENT module sets its row, not a
+  # deployment config. approvalProblems below checks it both ways.
   coverageExempt = [
     "conversationController" "postgres" "legacyStateMigration"
     "sandboxRuntimeClass" "serviceAccountRoleArn"
     "agentHostImage" "sandboxImage" "uiImage" "defaultSandboxSizeName"
-    "db" "dbSpec" "sandboxPod"
+    "db" "dbSpec" "sandboxPod" "approvals"
   ];
   uncovered = builtins.filter
     (n: !(builtins.elem n coverageExempt)
@@ -544,6 +547,37 @@ let
         else [ ("aws-off: sandbox-manifest-overlay still carries contrib.yaml — the sandbox seam is"
                 + " wired unconditionally, so every sandbox mounts a ConfigMap that is not rendered") ]);
 
+  # THE APPROVAL SEAM REACHES THE AGENT-HOST. A contrib that raises human approvals
+  # declares where its verbs live from its own DEPLOYMENT module, inside that module's
+  # mkIf — so the gating is the contrib's and this asserts only that the declaration
+  # arrives. Relaying a user's Approve to a broker that never mounted the route turns
+  # a security decision into a 404 nobody sees.
+  #
+  # The UI half (which option to grey) is build-time metadata in the contrib manifest,
+  # checked by the browser-level e2e rather than here. Why: PR #651.
+  approvalsJson =
+    let m = builtins.filter (e: e.name == "APPROVAL_CONTRIBS_JSON") hostEnv;
+    in if m == [ ] then null else builtins.fromJSON (builtins.head m).value;
+  awsOffApprovals =
+    let ctrs = builtins.attrValues (awsOffPlatform.config.kubernetes.resources.deployments.agent-host.spec.template.spec.containers or { });
+    in builtins.concatMap (c: c.env or [ ]) ctrs;
+  approvalProblems =
+    (if approvalsJson != null then [ ]
+     else [ ("host.env.APPROVAL_CONTRIBS_JSON missing — aws declares approvals but the"
+             + " agent-host has no route to relay an answer to, so every Approve click"
+             + " is recorded nowhere") ])
+    ++ (if approvalsJson == null || approvalsJson ? aws then [ ]
+        else [ "APPROVAL_CONTRIBS_JSON has no aws row (contrib/aws/default.nix declares one)" ])
+    ++ (if approvalsJson == null || (approvalsJson.aws.brokerPrefix or "") == "/aws/aws" then [ ]
+        else [ "aws.brokerPrefix must be /aws/aws — the core mounts a provider at /{name} and the transport adds its own prefix" ])
+    ++ (if approvalsJson == null || (approvalsJson.aws.pendingPath or null) != null then [ ]
+        else [ ("aws.pendingPath is null — an approval window lost to a pod rollout would"
+                + " never be re-raised, leaving a blocked agent and a user with nothing to click") ])
+    # The NEGATIVE half: with aws off, nothing of it may reach the host. A seam wired
+    # unconditionally would point the relay at routes this broker does not serve.
+    ++ (if builtins.all (e: e.name != "APPROVAL_CONTRIBS_JSON") awsOffApprovals then [ ]
+        else [ "aws-off: host.env.APPROVAL_CONTRIBS_JSON present — approvals are not gated on the contrib's own enable" ]);
+
   # `permission_requests` belongs to contrib/aws/deployment.nix now, and must still
   # be in the spec with the DEPLOYMENT's aws off — that is the invariant keeping the
   # generated schema a function of the source tree rather than of a deploy flag.
@@ -676,7 +710,7 @@ let
       (containersOf w))
     allWorkloads;
 
-  allProblems = oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ stage2Problems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems;
+  allProblems = oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ approvalProblems ++ stage2Problems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems;
 in
 if allProblems == [ ]
 then "ok: deployments = ${haveDeps}; datadog + airtable + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; deploy-time Jobs are spec-hash named\n"
