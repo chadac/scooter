@@ -93,6 +93,15 @@ manifests=$(nix build .#platform-manifests-k3d --no-link --print-out-paths)
 nix shell nixpkgs#kubectl -c bash -c "
   set -euo pipefail
   kubectl apply -f '${manifests}'
+  # Postgres accepts TCP before it is USABLE: agent-postgres-init creates the roles
+  # (until then callers get 28P01) and agent-db-migrate creates the schema (until then
+  # 42P01). Nothing below waits on the database, so every service raced it. Selected by
+  # label, not name — both Job names carry a spec hash that changes with the schema.
+  kubectl -n agent-sandbox rollout status deployment/agent-shared-db --timeout=180s
+  kubectl -n agent-sandbox wait --for=condition=complete job \
+    -l app.kubernetes.io/name=agent-postgres-init --timeout=180s
+  kubectl -n agent-sandbox wait --for=condition=complete job \
+    -l app.kubernetes.io/name=agent-db-migrate --timeout=180s
   # MULTI-REPLICA + SPREAD. The default topology (replicas=2, podCap=100) puts every
   # test conversation on ONE pod, so any per-pod-view bug is invisible — which is
   # exactly how the 'GET /conversations returns one pod's slice' bug reached
@@ -103,5 +112,4 @@ nix shell nixpkgs#kubectl -c bash -c "
   kubectl -n agent-sandbox rollout status deployment/conversation-controller --timeout=180s
   kubectl -n agent-sandbox rollout status deployment/agent-host --timeout=300s
   kubectl -n agent-sandbox rollout status deployment/conversation-router --timeout=180s
-  kubectl -n agent-sandbox rollout status deployment/conversation-controller --timeout=180s
 "
