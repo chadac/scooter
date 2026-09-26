@@ -40,8 +40,16 @@ const run = (n: number, ts?: number): AguiEvent[] =>
  * An in-memory Postgres under a real drizzle client. Rows live in an array so a
  * test can inspect physical order, which is the thing most of these assert.
  */
-function fakeDb(): { db: NodePgDatabase; rows: Array<Record<string, unknown>>; failNext: (e: Error) => void } {
+function fakeDb(): {
+  db: NodePgDatabase;
+  rows: Array<Record<string, unknown>>;
+  failNext: (e: Error) => void;
+  assign: (conv: string, a: { hostPod: string | null; hostGeneration?: number }) => void;
+} {
   const rows: Array<Record<string, unknown>> = [];
+  // The conversations row the append fence reads. Absent = no row at all, which is a real
+  // state (the append can beat the INSERT) and must not refuse.
+  const assigned = new Map<string, { hostPod: string | null; hostGeneration?: number }>();
   let fail: Error | undefined;
   const client = {
     async query(cfg: { text: string; values?: unknown[] } | string, params: unknown[] = []) {
@@ -60,6 +68,19 @@ function fakeDb(): { db: NodePgDatabase; rows: Array<Record<string, unknown>>; f
         // drizzle SERIALIZES jsonb to a string before binding; Postgres returns
         // it parsed. Model that, or every event->>'type' filter sees a string.
         const parsed = typeof event === "string" ? JSON.parse(event) : event;
+        // The APPEND FENCE rides this statement: `... select $1..$5 where not exists (a row
+        // contradicting the presented claim)`. Evaluated BEFORE the PK, as Postgres does —
+        // a fenced-out append never reaches the constraint.
+        if (/NOT EXISTS/i.test(text)) {
+          // The subquery correlates on the conversation id, which is therefore bound a
+          // SECOND time ahead of the claim: [...5 row values, id, pod, gen?].
+          const [, pod, gen] = values.slice(5) as [string, string, number | undefined];
+          const a = assigned.get(conversation_id);
+          const contradicts =
+            a?.hostPod != null &&
+            (a.hostPod !== pod || (gen !== undefined && Number(a.hostGeneration ?? 0) !== Number(gen)));
+          if (contradicts) return { rows: [], rowCount: 0 };
+        }
         // The PK is a CORRECTNESS backstop, not just an index: a second writer
         // must collide loudly rather than interleave silently. Honour ON
         // CONFLICT the way Postgres does, so a store that adds
@@ -121,10 +142,19 @@ function fakeDb(): { db: NodePgDatabase; rows: Array<Record<string, unknown>>; f
       throw new Error(`unexpected sql: ${text}`);
     },
   };
-  return { db: drizzle(client as never), rows, failNext: (e) => (fail = e) };
+  return {
+    db: drizzle(client as never),
+    rows,
+    failNext: (e) => (fail = e),
+    assign: (conv, a) => assigned.set(conv, a),
+  };
 }
 
 const store = (db: NodePgDatabase) => createPgEventStore({ db });
+
+/** A store that presents `pod` (and `gen`, when known) as its claim on every append. */
+const fencedStore = (db: NodePgDatabase, pod: string, gen?: number) =>
+  createPgEventStore({ db, fence: { pod, generation: () => gen } });
 
 describe("eventStore — ordering", () => {
   it("THE INVARIANT: a burst of fire-and-forget appends lands in EMISSION order", async () => {
@@ -175,6 +205,105 @@ describe("eventStore — ordering", () => {
     ]);
 
     expect(errors.length, "a duplicate (conversation_id, seq) must not be silent").toBeGreaterThan(0);
+  });
+});
+
+// --- THE APPEND FENCE ---------------------------------------------------------------------
+//
+// The test directly above is the hazard: two writers, stale cached heads, a PK collision
+// that is loud but has already lost a turn. These pin the fence that stops the second
+// writer from reaching the constraint at all — the row is consulted IN the insert, so a
+// superseded pod is refused by the write it was already making.
+//
+// What the fence is deliberately NOT: an existence check. A missing or unclaimed row must
+// still append, because a brand-new conversation streams its first turn before anything has
+// assigned it a host, and refusing there would drop the user's first prompt.
+
+describe("eventStore — the append fence", () => {
+  it("THE FENCE: the row naming another host refuses the append, and nothing is written", async () => {
+    const { db, rows, assign } = fakeDb();
+    assign(CONV, { hostPod: "host-2", hostGeneration: 4 });
+    const s = fencedStore(db, "host-1", 4);
+
+    // RESOLVES: losing the claim is an outcome, not a failure — every caller `void`s this.
+    await expect(s.appendEvent(CONV, run(1)[0])).resolves.toBeUndefined();
+
+    expect(rows).toEqual([]);
+  });
+
+  it("a refused append notifies NO listener and leaves no gap in seq", async () => {
+    // A phantom onAppend would hand the integrity SSE stream a checksum no reader can find
+    // in the table, which reads to a client as a corrupt chain rather than a reassignment.
+    const { db, rows, assign } = fakeDb();
+    assign(CONV, { hostPod: "host-2", hostGeneration: 4 });
+    const s = fencedStore(db, "host-1", 4);
+    const fired: ChecksummedEvent[] = [];
+    s.onAppend((_id, c) => fired.push(c));
+    const errors: unknown[] = [];
+    s.onAppendError((_id, e) => errors.push(e));
+
+    await s.appendEvent(CONV, run(1)[0]);
+    expect(fired, "nothing committed, so nothing to announce").toEqual([]);
+    expect(errors, "a fence refusal is not a persistence failure").toEqual([]);
+
+    // The claim comes back to this pod: seq must resume at 1 (the refused event consumed
+    // nothing) and the chain must still start from EMPTY.
+    assign(CONV, { hostPod: "host-1", hostGeneration: 4 });
+    await s.appendEvent(CONV, run(2)[0]);
+    expect(rows.map((r) => r.seq)).toEqual([1]);
+    expect(rows[0].prev_checksum).toBe(EMPTY_CHECKSUM);
+  });
+
+  it("the EPOCH fences a pod the row still names as host", async () => {
+    // Reassigned away and back: host-1 holds a claim from generation 5, the row has since
+    // advanced to 7, and another pod wrote events in between. Pod IDENTITY cannot catch
+    // this — a StatefulSet pod reuses its name — and the cached canWrite() deliberately
+    // ALLOWS it (it absorbs a newer generation for the same pod). The row does not.
+    const { db, rows, assign } = fakeDb();
+    assign(CONV, { hostPod: "host-1", hostGeneration: 7 });
+
+    await fencedStore(db, "host-1", 5).appendEvent(CONV, run(1)[0]);
+    expect(rows).toEqual([]);
+
+    await fencedStore(db, "host-1", 7).appendEvent(CONV, run(2)[0]);
+    expect(rows).toHaveLength(1);
+  });
+
+  it("an UNCLAIMED row appends — and so does a conversation with no row yet", async () => {
+    // Both are the first-turn path. The fence blocks a CONTRADICTION; silence is not one.
+    const { db, rows, assign } = fakeDb();
+    assign(CONV, { hostPod: null });
+    const s = fencedStore(db, "host-1", 3);
+
+    await s.appendEvent(CONV, run(1)[0]);
+    await s.appendEvent("conv-no-row" as SessionId, run(1)[0]); // nothing in conversations
+
+    expect(rows.map((r) => r.conversation_id)).toEqual([CONV, "conv-no-row"]);
+  });
+
+  it("no observed generation narrows the fence to pod identity — it does not widen it", async () => {
+    // Between boot and the first watch event this pod knows it is the host but not at which
+    // epoch. Presenting an epoch nobody assigned would refuse EVERY append (a silently
+    // logless pod); presenting none keeps the identity half of the fence working.
+    const { db, rows, assign } = fakeDb();
+    assign(CONV, { hostPod: "host-1", hostGeneration: 9 });
+    await fencedStore(db, "host-1").appendEvent(CONV, run(1)[0]);
+    expect(rows, "still the named host, epoch unknown -> allowed").toHaveLength(1);
+
+    assign(CONV, { hostPod: "host-2", hostGeneration: 9 });
+    await fencedStore(db, "host-1").appendEvent(CONV, run(2)[0]);
+    expect(rows, "another host, epoch unknown -> still refused").toHaveLength(1);
+  });
+
+  it("an UNFENCED store appends unconditionally — single-replica is untouched", async () => {
+    // No POD_NAME means no second writer to fence against and nothing assigning a host, so
+    // the fence would refuse nothing and cost a subquery per streamed token.
+    const { db, rows, assign } = fakeDb();
+    assign(CONV, { hostPod: "someone-else", hostGeneration: 12 });
+
+    await store(db).appendEvent(CONV, run(1)[0]);
+
+    expect(rows).toHaveLength(1);
   });
 });
 

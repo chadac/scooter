@@ -683,10 +683,11 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     // would double-log every broadcast event (bloated, replay-confusing history).
     e.bridge.onPersist((event) => {
       e.lastActivityAt = nowMs();
-      // FENCING: if a reassignment made another pod the owner, this (stale) pod must
-      // stop appending so it can't corrupt the log the new owner drives. Synchronous +
-      // cache-backed (no k8s call per event). allowAllGuard (single-replica) always
-      // passes — today's behavior. See ownershipGuard.ts.
+      // FENCING, layer 1 of 2: a cheap PRE-FILTER, not the authority. The conversations
+      // row decides, inside the insert (eventStore's AppendFence), so a refusal that this
+      // cached check misses — during watch lag, or at any of the other appendEvent call
+      // sites — still cannot corrupt the log. Kept because it is synchronous and skips the
+      // statement entirely for a conversation already known to be elsewhere.
       if (!ownershipGuard.canWrite(e.id)) {
         // LOUD, because this drop is how a mid-run reassignment TRUNCATES the run's log:
         // every remaining event — including the terminal — vanishes, and the UI reads the
