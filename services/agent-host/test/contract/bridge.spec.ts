@@ -17,6 +17,7 @@ import {
   type AguiEvent,
 } from "../../src/bridge.js";
 import type { AcpClient } from "../../src/acp/client.js";
+import { isOwnRun } from "../../src/session/danglingRun.js";
 import { createFakeAcpAgent } from "../fakes/fakeAcpAgent.js";
 import { createFakeSandboxApi } from "../fakes/fakeSandboxApi.js";
 import { createSandboxExecBackend } from "../../src/exec/sandboxExec.js";
@@ -1652,5 +1653,82 @@ describe("a wedged run recreates the agent session", () => {
 
     const copies = seen.filter((e) => e.type === "TEXT_MESSAGE_CONTENT" && e.delta === "the only copy");
     expect(copies.length, "the prompt is logged once, not once per attempt").toBe(1);
+  });
+});
+
+// --- the RUN_STARTED ORIGIN STAMP ----------------------------------------------------------
+//
+// isOwnRun compares a run's origin to the pod reading it, and the epoch half of that
+// comparison was unreachable: BridgeDeps.generation was declared but never supplied, so
+// every production RUN_STARTED carried `gen: undefined` and the check collapsed to a
+// pod-NAME match. A StatefulSet pod reuses its name, so a run stranded by this pod's
+// PREVIOUS process read as "ours, still executing" and was never healed.
+
+describe("RUN_STARTED origin stamp", () => {
+  const mkBridge = (agent: ReturnType<typeof createFakeAcpAgent>, deps: Record<string, unknown>) => {
+    const exec = createSandboxExecBackend(createFakeSandboxApi());
+    return createSessionBridge({
+      config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
+      exec,
+      acpClient: acpClientFromTransport(agent.transport, exec),
+      ...deps,
+    } as never);
+  };
+  // onEvent only (`collect`, not `collectPersist`): RUN_STARTED goes out on BOTH channels,
+  // so subscribing to both would count every run twice.
+  const starts = (events: AguiEvent[]) =>
+    events.filter((e) => e.type === "RUN_STARTED") as Array<{ host?: string; gen?: number }>;
+
+  it("carries the epoch, and re-reads it PER RUN", async () => {
+    // Per run, not per bridge: a conversation reassigned away and back mid-session must
+    // stamp the epoch each run actually started under, or the second run inherits the
+    // first's claim and the stamp lies in exactly the case it exists for.
+    let generation: number | undefined = 5;
+    const agent = createFakeAcpAgent();
+    agent.setScript([{ finish: { stopReason: "end_turn" } }]);
+    const bridge = mkBridge(agent, { selfPod: "agent-host-0", generation: () => generation });
+    const events = collect(bridge);
+    await bridge.start();
+    await bridge.prompt({ threadId: "t1", text: "go" } as never);
+
+    generation = 6;
+    agent.setScript([{ finish: { stopReason: "end_turn" } }]);
+    await bridge.prompt({ threadId: "t1", text: "again" } as never);
+
+    expect(starts(events).map((s) => [s.host, s.gen])).toEqual([
+      ["agent-host-0", 5],
+      ["agent-host-0", 6],
+    ]);
+  });
+
+  it("omits the epoch when none is observed — and isOwnRun then falls back to the host name", async () => {
+    // The boot window: this pod knows its name but not yet which epoch it holds. Stamping
+    // a guess would be worse than stamping nothing, so the epoch is absent and the name
+    // still decides — exactly today's behaviour, not a new refusal.
+    const agent = createFakeAcpAgent();
+    agent.setScript([{ finish: { stopReason: "end_turn" } }]);
+    const bridge = mkBridge(agent, { selfPod: "agent-host-0", generation: () => undefined });
+    const events = collect(bridge);
+    await bridge.start();
+    await bridge.prompt({ threadId: "t1", text: "go" } as never);
+
+    const [started] = starts(events);
+    expect(started.gen).toBeUndefined();
+    expect(isOwnRun(started, { host: "agent-host-0", gen: 4 }), "name match still holds").toBe(true);
+    expect(isOwnRun(started, { host: "agent-host-1", gen: 4 }), "another pod is still foreign").toBe(false);
+  });
+
+  it("a run stamped at an OLDER epoch is no longer ours — the case the missing wiring hid", async () => {
+    const agent = createFakeAcpAgent();
+    agent.setScript([{ finish: { stopReason: "end_turn" } }]);
+    const bridge = mkBridge(agent, { selfPod: "agent-host-0", generation: () => 5 });
+    const events = collect(bridge);
+    await bridge.start();
+    await bridge.prompt({ threadId: "t1", text: "go" } as never);
+
+    const [started] = starts(events);
+    // Same pod NAME, and before this wiring that was the whole comparison.
+    expect(isOwnRun(started, { host: "agent-host-0", gen: 7 })).toBe(false);
+    expect(isOwnRun(started, { host: "agent-host-0", gen: 5 })).toBe(true);
   });
 });
