@@ -957,9 +957,9 @@ in
           writers = [ "agent-host" "conversation-router" ];
           note = ''
             Conversation metadata: the sidebar list + rehydration fields. Two writers, one table (like
-            byoc.remote_agents): agent-host owns the row; conversation-router writes title/starred for IDLE
-            conversations and SELECTs the table for GET /conversations (a writer implies read, so not also a
-            reader). See services/conversation-router.'';
+            byoc.remote_agents): agent-host owns the row; conversation-router INSERTs it at create time,
+            writes title/starred for IDLE conversations, and SELECTs the table for GET /conversations (a
+            writer implies read, so not also a reader). See services/conversation-router.'';
         };
         conversation_events = {
           writers = [ "agent-host" ];

@@ -221,6 +221,17 @@ func (s *WriteStore) SetUserTitle(ctx context.Context, id, title string) (*Conve
 		id, title))
 }
 
+// CreateConversation inserts the create-time row in the cluster stack, alongside the CR that
+// dualCreator writes. Until this existed, a conversation created through the API but never prompted
+// had no row at all in production — it only became one when agent-host first persisted meta — so it
+// was absent from GET /conversations, which reads rows. The kube-less stack never had that gap
+// (devCreator always wrote the row), which is exactly why the divergence went unnoticed.
+func (s *WriteStore) CreateConversation(ctx context.Context, c NewConversation) error {
+	id, now, title, model, owner, parent := conversationRowArgs(c, time.Now().UnixMilli())
+	_, err := s.pool.Exec(ctx, insertConversationSQL, id, title, now, model, owner, parent)
+	return err
+}
+
 // scanUpdated maps a RETURNING row to a ConversationRow; no-rows (raced delete) becomes (nil, nil).
 func scanUpdated(row pgx.Row) (*ConversationRow, error) {
 	var c ConversationRow

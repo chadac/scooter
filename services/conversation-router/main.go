@@ -146,6 +146,14 @@ func main() {
 		}
 	}
 
+	// Dual-write the create: the conversations row alongside the CR. Wired HERE rather than beside
+	// the dynamicCreator above because it needs writeStore, which is opened after it. Dev already
+	// writes the row and has no CR, so this wraps the cluster path only.
+	if writeStore != nil {
+		creator = &dualCreator{cr: creator, rows: writeStore}
+		log.Info("conversation create dual-writes the row alongside the CR")
+	}
+
 	// Read-only handle on the webhooks database (resource_links) — the sidebar enrichment for
 	// GET /conversations. Optional and independent of the metadata store: no links DB => bare
 	// rows (no sources/links), never a failure.

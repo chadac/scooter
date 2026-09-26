@@ -296,3 +296,68 @@ func TestCreateEchoesTheRequestedTitle(t *testing.T) {
 		t.Fatalf("want the title echoed, got %q", resp.Title)
 	}
 }
+
+// fakeRowWriter is the row half of a dual create.
+type fakeRowWriter struct {
+	calls []NewConversation
+	err   error
+}
+
+func (f *fakeRowWriter) CreateConversation(_ context.Context, c NewConversation) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.calls = append(f.calls, c)
+	return nil
+}
+
+// A create must land in BOTH stores, carrying the same id — the row is what makes the conversation
+// list before anything prompts it, and the CR is what gets it assigned.
+func TestDualCreatorWritesBothStores(t *testing.T) {
+	cr, rows := &fakeCreator{}, &fakeRowWriter{}
+	d := &dualCreator{cr: cr, rows: rows}
+	if err := d.Create(context.Background(), NewConversation{
+		Name: "conv-1", Title: "Seeded", Spec: map[string]interface{}{"owner": "alice"},
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if len(cr.calls) != 1 || cr.calls[0].name != "conv-1" {
+		t.Errorf("CR not written: %+v", cr.calls)
+	}
+	if len(rows.calls) != 1 || rows.calls[0].Name != "conv-1" {
+		t.Fatalf("row not written: %+v", rows.calls)
+	}
+	// The title reaches the row (it has a column) even though the CR deliberately drops it.
+	if rows.calls[0].Title != "Seeded" {
+		t.Errorf("title should reach the row: %q", rows.calls[0].Title)
+	}
+}
+
+// The CR is authoritative: its failure fails the create, and the row must NOT be written. Writing
+// the row anyway would invent a conversation that lists but can never be assigned a host.
+func TestDualCreatorPropagatesCRFailureAndSkipsTheRow(t *testing.T) {
+	boom := errors.New("apiserver down")
+	rows := &fakeRowWriter{}
+	d := &dualCreator{cr: &fakeCreator{err: boom}, rows: rows}
+	if err := d.Create(context.Background(), NewConversation{Name: "conv-1"}); !errors.Is(err, boom) {
+		t.Fatalf("CR error must propagate, got %v", err)
+	}
+	if len(rows.calls) != 0 {
+		t.Errorf("row must not be written when the CR failed: %+v", rows.calls)
+	}
+}
+
+// A row failure must NOT fail the create. Swallowing it leaves exactly the state production was in
+// before dual-write existed (CR, no row), so the worst case is the status quo — whereas returning
+// the error would break creates that used to succeed. This expectation inverts when the row becomes
+// the source of truth for existence.
+func TestDualCreatorSwallowsRowFailure(t *testing.T) {
+	cr := &fakeCreator{}
+	d := &dualCreator{cr: cr, rows: &fakeRowWriter{err: errors.New("pg down")}}
+	if err := d.Create(context.Background(), NewConversation{Name: "conv-1"}); err != nil {
+		t.Fatalf("a row failure must not fail the create, got %v", err)
+	}
+	if len(cr.calls) != 1 {
+		t.Errorf("the CR write should still have happened: %+v", cr.calls)
+	}
+}
