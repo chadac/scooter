@@ -154,9 +154,9 @@ func runConversationListener(ctx context.Context, store *Store, links *LinkStore
 //   - unparseable / empty-id payloads (never expected from our own trigger);
 //   - op=delete — removals ride the 10s poll, exactly as agent-host's emitChange never pushed end().
 //
-// It no longer consults a CR existence set: the row IS existence, and handleNotification's re-read
-// already drops an id whose row is gone (ConversationByID returns nil), which covers the same
-// "do not resurrect a ghost" case with one fewer store to disagree with.
+// It consults no existence set: the row IS existence, and handleNotification's re-read already drops
+// an id whose row is gone (ConversationByID returns nil), which covers the "do not resurrect a
+// ghost" case with one fewer store to disagree with.
 func notifyDecision(payload string) (string, bool) {
 	var p struct {
 		ID string `json:"id"`

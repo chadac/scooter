@@ -234,10 +234,10 @@ class ConversationRows:
     def sync_assignments(self, assignments: list[tuple[str, str | None, int]]) -> int:
         """Converge host_pod/host_generation on the CRs this pass listed. Returns rows changed.
 
-        The same convergence sync_phases does, and needed for a sharper reason. Once appends fence
-        on the row (D3), "no generation" means "do not write" — so a settled conversation whose row
-        was never touched would not be stale, it would be BLOCKED. Every assignment that predates
-        this code has to reach the row without waiting for a reassignment that may never come.
+        The same convergence sync_phases does, and needed for a sharper reason. Appends fence on the
+        row (D3), where "no generation" means "do not write" — so a settled conversation with an
+        untouched row is not merely stale, it is BLOCKED. Every assignment must therefore reach the
+        row from this pass, not only from a reassignment event that may never come.
 
         `>=`, not `>`: this carries the CR's current epoch rather than a new one, so a controller
         holding the same epoch as the row is the current one and may refresh it. A stale controller

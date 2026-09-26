@@ -751,8 +751,8 @@ export async function main(
   // goose, and wire its AG-UI events out through the server.
   // Multi-replica FENCING: when POD_NAME is set (the StatefulSet gives each pod its
   // ordinal name), watch the Conversation CRD so this pod stops appending to a
-  // conversation reassigned away from it. Unset (single-replica) => allowAllGuard (no-op,
-  // today's behavior); no watch, no k8s dependency. See ownershipGuard.ts.
+  // conversation reassigned away from it. Unset (single-replica) => allowAllGuard: a no-op
+  // guard, no watch, no k8s dependency. See ownershipGuard.ts.
   const ownership = podName
     ? createK8sOwnershipGuard(podName, config.namespace)
     : undefined;

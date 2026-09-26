@@ -1,9 +1,9 @@
 // The create-time `conversations` row, shared by both stacks.
 //
-// These primitives used to live in devmode.go because only the kube-less stack wrote a row; the
-// cluster path wrote a CR and nothing else. Production now writes BOTH (see dualCreator), so the
-// row shape has to have ONE definition — otherwise the two stacks drift on what a new conversation
-// looks like, and the kube-less e2e suite stops being evidence about production. Why: PR #654.
+// ONE definition of the row shape, for both writers: the cluster path (dualCreator, CR + row) and
+// the kube-less path (devCreator, row alone). A second definition would let the two stacks disagree
+// about what a new conversation looks like, and the kube-less e2e suite would stop being evidence
+// about production. Why: PR #654.
 package main
 
 // insertConversationSQL is that one definition. thread_id == id by construction (create.go mints a
