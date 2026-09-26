@@ -114,6 +114,22 @@ def _mirror_phase(rows, name: str, phase: str) -> None:
         rows.set_phase(name, phase)
 
 
+def _sync_phases(rows, convs) -> None:
+    """Converge the conversations row's phase column on the CRs this pass listed.
+
+    Runs BEFORE the per-conversation loop, not after: the loop's own _mirror_phase calls write
+    phases decided THIS pass, and a sweep carrying pre-pass values would undo them. Ordering it
+    first means the sweep only ever backfills what the pass is about to refine.
+
+    phase_present=False is skipped — that CR carries no phase at all and `c.phase` is _state's
+    "Pending" default, not an observation. The pass materializes it a few lines below and mirrors
+    the real value; writing the default here would race that with a guess. Why: PR #654.
+    """
+    if rows is None:
+        return
+    rows.sync_phases([(c.name, c.phase) for c in convs if c.phase_present])
+
+
 def reconcile_once(k8s, cap: int, rows=None) -> list[tuple[str, str]]:
     """One reconcile pass over all Conversations. Returns [(name, action_kind)] for
     logging/tests. Mutates via k8s.patch_status, and mirrors phase onto the conversations
@@ -140,6 +156,7 @@ def reconcile_once(k8s, cap: int, rows=None) -> list[tuple[str, str]]:
         )
         sandbox_modes = {}
     convs = [_state(cr, sandbox_modes) for cr in k8s.list_conversations()]
+    _sync_phases(rows, convs)
 
     # Seed load from conversations currently assigned to a still-ready pod (those stay).
     load: dict[str, int] = {}

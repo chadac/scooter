@@ -34,6 +34,9 @@ _C = {"component": "rows"}
 # router does the same thing in its pool config (buildWritePoolConfig).
 CONNECT_OPTIONS = "-c default_transaction_read_only=off"
 
+# Conversations per sync_phases statement. Two bind parameters each, against Postgres' 65535 limit.
+_SYNC_CHUNK = 500
+
 
 def dsn_from_env() -> str | None:
     """Build the agent_host DSN from the same AGENT_HOST_DB_* env the router and agent-host read.
@@ -118,6 +121,52 @@ class ConversationRows:
                 extra={**_C, "conversation_id": conversation_id, "phase": phase, "error": str(err)},
             )
             return False
+
+    def sync_phases(self, phases: list[tuple[str, str]]) -> int:
+        """Reconcile the phase column against every CR the pass just listed. Returns rows changed.
+
+        set_phase alone is not enough to make the column trustworthy, for two reasons that both end
+        with a permanently wrong row. A conversation that existed BEFORE the controller could write
+        never gets a mirror, because the controller only patches on a transition and a settled
+        conversation has none — its phase stays NULL and reads as "running" forever. And row writes
+        are best-effort, so any dropped one is dropped for good. This is the convergent write that
+        fixes both: it runs from the listed CRs each pass, so a missed write self-heals on the next
+        tick and a never-written row is backfilled on the first.
+
+        One statement per chunk, not one per conversation: this runs every tick over the whole
+        fleet. `IS DISTINCT FROM` means a steady-state pass updates zero rows (and NULL-vs-value
+        compares correctly, which plain `<>` would not) — so the cost of convergence is one query
+        that matches nothing.
+        """
+        if not phases:
+            return 0
+        changed = 0
+        # Chunked to stay clear of Postgres' 65535 bound on bind parameters (two per pair).
+        for i in range(0, len(phases), _SYNC_CHUNK):
+            chunk = phases[i : i + _SYNC_CHUNK]
+            values = ",".join(["(%s::text, %s::text)"] * len(chunk))
+            params: list[str] = []
+            for conversation_id, phase in chunk:
+                params += [conversation_id, phase]
+            try:
+                with self._cursor() as cur:
+                    cur.execute(
+                        "UPDATE conversations AS c SET phase = v.phase "
+                        f"FROM (VALUES {values}) AS v(id, phase) "
+                        "WHERE c.id = v.id AND c.phase IS DISTINCT FROM v.phase",
+                        params,
+                    )
+                    changed += max(cur.rowcount, 0)
+            except Exception as err:  # noqa: BLE001 - best-effort by contract
+                self._drop()
+                logger.warning(
+                    "conversations row phase sync failed",
+                    extra={**_C, "conversations": len(chunk), "error": str(err)},
+                )
+                # Stop after a failure: the connection was just dropped, and the remaining chunks
+                # would each pay a fresh connect to fail the same way. The next tick retries all.
+                break
+        return changed
 
     def close(self) -> None:
         self._drop()
