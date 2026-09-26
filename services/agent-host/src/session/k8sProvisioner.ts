@@ -26,7 +26,7 @@ import {
 import type { SandboxRef } from "../types.js";
 import type { SandboxProvisioner } from "./manager.js";
 import { formatError, logger } from "../log.js";
-import { applyOverlay, parseOverlay } from "./sandboxOverlay.js";
+import { applyOverlay, deepMerge, parseOverlay } from "./sandboxOverlay.js";
 import {
   InvalidResourceError,
   type RenderedResources,
@@ -60,6 +60,11 @@ const SANDBOX_NAME_LABEL = "agents.x-k8s.io/sandbox-name";
  *  to look. See runOnCurrentImage (issue #560). */
 /** The ConfigMap key holding the consumer manifest-overlay payload. */
 const OVERLAY_KEY = "overlay.yaml";
+/** The enabled contribs' sandbox-pod parts (env/volumes/mounts), in the SAME
+ *  ConfigMap and the same overlay shape — a contrib needs no second mechanism to
+ *  reach the pod. Merged UNDER the consumer's key, so a deployment still wins a
+ *  name collision. Rendered by modules/platform.nix. */
+const CONTRIB_OVERLAY_KEY = "contrib.yaml";
 
 const POD_GONE_TIMEOUT_MS = 60_000;
 const POD_GONE_POLL_MS = 1_500;
@@ -74,46 +79,6 @@ export function imageTagOf(imageRef: string): string {
   if (idx < 0) return "";
   const tag = ref.slice(idx + 1);
   return tag.includes("/") ? "" : tag; // a ':' before a '/' is a registry port, not a tag
-}
-
-/**
- * What a contrib adds to EVERY sandbox pod: plain k8s fragments, spliced into the
- * generated manifest. Deliberately not typed per integration — the whole point of
- * the seam is that the platform never learns what aws (or the next one) needs.
- *
- * Parsed from SANDBOX_CONTRIB_JSON, which modules/platform.nix renders from
- * `agentSandbox.sandboxPod.*` — the SAME option modules/conversation.nix renders
- * its mirror from, so the two paths that describe a sandbox pod cannot disagree
- * about what a contrib added. Why: PR #640.
- */
-export interface SandboxContribParts {
-  extraEnv?: Array<Record<string, unknown>>;
-  extraVolumes?: Array<Record<string, unknown>>;
-  extraVolumeMounts?: Array<Record<string, unknown>>;
-}
-
-/** Parse SANDBOX_CONTRIB_JSON. Unset/empty -> undefined (no contrib contributes).
- *  Malformed THROWS rather than silently dropping: a contrib whose mount vanished
- *  looks to the agent like the integration is broken, with nothing to point at. */
-export function parseContribParts(raw: string | undefined | null): SandboxContribParts | undefined {
-  if (!raw || !raw.trim()) return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (e) {
-    throw new Error(`SANDBOX_CONTRIB_JSON is not valid JSON: ${(e as Error).message}`);
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new Error("SANDBOX_CONTRIB_JSON must be a JSON object");
-  }
-  const parts = parsed as Record<string, unknown>;
-  for (const k of ["extraEnv", "extraVolumes", "extraVolumeMounts"]) {
-    const v = parts[k];
-    if (v !== undefined && !Array.isArray(v)) {
-      throw new Error(`SANDBOX_CONTRIB_JSON.${k} must be an array`);
-    }
-  }
-  return parts as SandboxContribParts;
 }
 
 export interface K8sProvisionerOptions {
@@ -149,11 +114,6 @@ export interface K8sProvisionerOptions {
   defaultSizeName?: string;
   /** Broker token audience (projected SA token). */
   brokerAudience?: string;
-  /** The enabled contribs' sandbox-pod parts (SANDBOX_CONTRIB_JSON): env/volumes/
-   *  volumeMounts an integration needs in EVERY sandbox, e.g. aws mounting its
-   *  account registry so the pod can render ~/.aws/config. Opaque here — this
-   *  platform knows no integration by name. Rendered by modules/sandbox-pod.nix. */
-  contribParts?: SandboxContribParts;
   /** Run the sandbox container as a systemd-PID-1 NixOS dev environment: a
    *  privileged securityContext + tmpfs on /run + /tmp (what systemd needs).
    *  Set when sandboxImage is the agent-sandbox-os image. Default false keeps the
@@ -333,8 +293,14 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
       });
       return undefined;
     }
-    const parsed = parseOverlay(cm.data?.[OVERLAY_KEY]);
-    return Object.keys(parsed).length > 0 ? parsed : undefined;
+    // Contrib parts first, the consumer's patch merged on top: same strategic merge
+    // the consumer overlay already gets, so a deployment overrides a contrib's env or
+    // volume by NAME rather than by relying on k8s last-duplicate-wins.
+    const merged = deepMerge(
+      parseOverlay(cm.data?.[CONTRIB_OVERLAY_KEY]),
+      parseOverlay(cm.data?.[OVERLAY_KEY]),
+    ) as Record<string, unknown>;
+    return Object.keys(merged).length > 0 ? merged : undefined;
   };
 
   const reconcileImage = async (ref: SandboxRef): Promise<void> => {
@@ -422,7 +388,6 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
       id, sandboxName(id), saName(id), opts.sandboxImage, ns, audience, storage,
       opts.systemdImage ?? false,
       {
-        contrib: opts.contribParts,
         scooterConfigMap: opts.scooterConfigMap,
         configFilesConfigMap: opts.configFilesConfigMap,
         extraTokenAudiences: opts.extraTokenAudiences ?? [],
@@ -683,8 +648,6 @@ export function sandboxManifest(
   storage: string,
   systemdImage = false,
   deploy: {
-    /** The enabled contribs' pod parts (see SandboxContribParts). */
-    contrib?: SandboxContribParts;
     scooterConfigMap?: string;
     configFilesConfigMap?: string;
     extraTokenAudiences?: string[];
@@ -773,7 +736,6 @@ export function sandboxManifest(
               volumeMounts: [
                 { name: "workspace", mountPath: "/workspace" },
                 { name: "broker-token", mountPath: "/var/run/secrets/broker", readOnly: true },
-                ...(deploy.contrib?.extraVolumeMounts ?? []),
                 // systemd writes to /run + /tmp; back them with tmpfs.
                 ...(systemdImage
                   ? [
@@ -822,9 +784,6 @@ export function sandboxManifest(
                   name: "GIT_BROKER_HOST_MAP",
                   value: "github.com=github,gitlab.com=gitlab,test-git.local=test",
                 },
-                // Contrib env BEFORE the deployment's own: a deployment overriding a
-                // contrib's value by name must win, and k8s keeps the LAST duplicate.
-                ...(deploy.contrib?.extraEnv ?? []),
                 // Deployment-supplied env (e.g. a service URL). Platform-neutral.
                 // CONVERSATION_ID is injected by the caller via extraEnv (with the
                 // full threadId for deep-link correctness).
@@ -839,7 +798,6 @@ export function sandboxManifest(
                 sources: [{ serviceAccountToken: { audience, path: "token" } }],
               },
             },
-            ...(deploy.contrib?.extraVolumes ?? []),
             ...(systemdImage
               ? [
                   { name: "run", emptyDir: { medium: "Memory" } },

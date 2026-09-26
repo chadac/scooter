@@ -77,7 +77,7 @@ let
   # sandbox-shaping config must stay off the broker. Why: PR #584.
   sandboxShapingEnv = [
     "SANDBOX_IMAGE" "SANDBOX_PULL_POLICY" "SANDBOX_RUNTIME_CLASS" "SANDBOX_RESOURCES"
-    "SANDBOX_SIZES_JSON" "SANDBOX_MANIFEST_OVERLAY_CONFIGMAP" "SANDBOX_CONTRIB_JSON"
+    "SANDBOX_SIZES_JSON" "SANDBOX_MANIFEST_OVERLAY_CONFIGMAP"
     "SCOOTER_CONFIGMAP" "SCOOTER_CONFIG_FILES_CONFIGMAP" "SCOOTER_TOKEN_AUDIENCES" "SCOOTER_ENV"
   ];
   oneEntrypointProblems =
@@ -283,7 +283,7 @@ let
   # owners.toml and atlas.hcl from the option and fails CI on any drift.
   # `sandboxPod` is a CONTRIB seam, like `db`: a contrib's deployment module sets it,
   # a deployment does not — an operator wanting extra pod config has
-  # deployTools.sandboxManifestOverlay, which is consumer-owned and overlays on top.
+  # deployTools.sandboxManifestOverlay, which is consumer-owned and overlays on top of it.
   # sandboxSeamProblems below checks it end to end (rendered with aws on, absent with
   # aws off), which is stronger than a mention in the example.
   coverageExempt = [
@@ -508,33 +508,41 @@ let
         else [ "aws-off: broker.env.AWS_ENABLED present — contrib env is not gated on the contrib's own enable" ]);
 
   # A CONTRIB'S DEPLOYMENT MODULE REACHES THE SANDBOX POD. Same seam shape as the
-  # broker one above, but the consumer is the agent-host: it writes the Sandbox CR,
-  # so a contrib's mount can only take effect if SANDBOX_CONTRIB_JSON carries it.
-  # The negative half matters more here than on the broker — aws's registry mount
+  # broker one above, but the consumer is the agent-host: it writes the Sandbox CR, so
+  # a contrib's mount can only take effect if the manifest-overlay ConfigMap carries
+  # it. The negative half matters more here than on the broker — aws's registry mount
   # names a ConfigMap that only renders with aws on, so a seam wired unconditionally
   # gives every sandbox in an aws-less deployment an unsatisfiable volume, and the
   # pod stays Pending with the failure only visible on the Sandbox's events.
   # Why: PR #640.
-  contribPartsVal =
-    let m = builtins.filter (e: e.name == "SANDBOX_CONTRIB_JSON") hostEnv;
-    in if m == [ ] then null else builtins.fromJSON (builtins.head m).value;
-  awsOffHostEnv =
-    let ctrs = builtins.attrValues (awsOffPlatform.config.kubernetes.resources.deployments.agent-host.spec.template.spec.containers or { });
-    in builtins.concatMap (c: c.env or [ ]) ctrs;
+  contribOverlayOf = e:
+    let cms = e.config.kubernetes.resources.configMaps or { };
+        cm = cms.sandbox-manifest-overlay or null;
+    in if cm == null || !(cm.data ? "contrib.yaml") then null
+       else (builtins.fromJSON cm.data."contrib.yaml").spec.podTemplate.spec;
+  contribPodSpec = contribOverlayOf platform;
+  # The overlay keys on the container named `sandbox`; a rename here renders a patch
+  # that merges onto nothing and silently appends a second container.
+  contribCtr =
+    if contribPodSpec == null then null
+    else let m = builtins.filter (c: c.name == "sandbox") contribPodSpec.containers; in
+      if m == [ ] then null else builtins.head m;
   sandboxSeamProblems =
-    (if contribPartsVal != null then [ ]
-     else [ ("host.env.SANDBOX_CONTRIB_JSON missing — contrib/aws/deployment.nix did not"
-             + " reach the sandbox pod through agentSandbox.sandboxPod, so no sandbox"
+    (if contribPodSpec != null then [ ]
+     else [ ("configMaps.sandbox-manifest-overlay has no contrib.yaml — contrib/aws/deployment.nix"
+             + " did not reach the sandbox pod through agentSandbox.sandboxPod, so no sandbox"
              + " renders ~/.aws/config and `scooter-aws` has no profiles") ])
-    ++ (if contribPartsVal == null || hasName (contribPartsVal.extraVolumeMounts or [ ]) "aws-accounts" then [ ]
+    ++ (if contribPodSpec == null || contribCtr != null then [ ]
+        else [ "contrib.yaml patches no container named `sandbox` — it would merge onto nothing" ])
+    ++ (if contribCtr == null || hasName (contribCtr.volumeMounts or [ ]) "aws-accounts" then [ ]
         else [ "sandboxPod.extraVolumeMounts aws-accounts missing — the sandbox has no account registry to read" ])
-    ++ (if contribPartsVal == null || hasName (contribPartsVal.extraVolumes or [ ]) "aws-accounts" then [ ]
+    ++ (if contribPodSpec == null || hasName (contribPodSpec.volumes or [ ]) "aws-accounts" then [ ]
         else [ "sandboxPod.extraVolumes aws-accounts missing — the mount above has no source, so every sandbox pod stays Pending" ])
-    ++ (if contribPartsVal == null || hasName (contribPartsVal.extraEnv or [ ]) "AWS_ACCOUNTS_FILE" then [ ]
+    ++ (if contribCtr == null || hasName (contribCtr.env or [ ]) "AWS_ACCOUNTS_FILE" then [ ]
         else [ "sandboxPod.extraEnv AWS_ACCOUNTS_FILE missing — the mount is there but nothing tells the sandbox where it is" ])
-    ++ (if builtins.all (e: e.name != "SANDBOX_CONTRIB_JSON") awsOffHostEnv then [ ]
-        else [ ("aws-off: host.env.SANDBOX_CONTRIB_JSON present — the sandbox seam is wired"
-                + " unconditionally, so every sandbox mounts a ConfigMap that is not rendered") ]);
+    ++ (if contribOverlayOf awsOffPlatform == null then [ ]
+        else [ ("aws-off: sandbox-manifest-overlay still carries contrib.yaml — the sandbox seam is"
+                + " wired unconditionally, so every sandbox mounts a ConfigMap that is not rendered") ]);
 
   # `permission_requests` belongs to contrib/aws/deployment.nix now, and must still
   # be in the spec with the DEPLOYMENT's aws off — that is the invariant keeping the

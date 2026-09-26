@@ -29,7 +29,7 @@ import { createRemoteAgentUi } from "./acp/remoteAgentOneliner.js";
 import { createPgRemoteAgentStore } from "./acp/remoteAgentStore.js";
 import type { AcpProvider } from "./acp/provider.js";
 import { historyAfterCompaction, compactConversation } from "./session/compaction.js";
-import { createK8sProvisioner, parseContribParts, type K8sProvisioner } from "./session/k8sProvisioner.js";
+import { createK8sProvisioner, type K8sProvisioner } from "./session/k8sProvisioner.js";
 import type { SandboxResources } from "./session/resources.js";
 import { brokerAuthHeaders as sharedBrokerAuthHeaders } from "./session/brokerAuth.js";
 import type { SandboxProvisioner } from "./session/manager.js";
@@ -440,11 +440,6 @@ export async function main(
         // local cluster (kind/k3s) where "Always" fails with ImagePullBackOff.
         sandboxPullPolicy:
           (process.env.SANDBOX_PULL_POLICY as "Always" | "IfNotPresent" | "Never") || undefined,
-        // What the enabled contribs add to every sandbox pod (env/volumes/mounts).
-        // Opaque: rendered by modules/sandbox-pod.nix from the same option the Nix
-        // mirror reads, so this file names no integration. Throws on malformed —
-        // see parseContribParts.
-        contribParts: parseContribParts(process.env.SANDBOX_CONTRIB_JSON),
         // The sandbox is ALWAYS the NixOS systemd-PID-1 image now (the legacy
         // generic image was retired): always provision privileged + tmpfs /run,/tmp
         // so systemd PID 1 boots.

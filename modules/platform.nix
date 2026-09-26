@@ -18,16 +18,29 @@ let
   # same origin); otherwise it targets the agent-host API directly.
   ingressBackend = if cfg.ui.enable then "ui" else "agent-host";
 
-  # The enabled contribs' sandbox-pod parts (modules/sandbox-pod.nix), serialized for
-  # the agent-host — which creates the real Sandbox CR and so is the only place these
-  # can take effect. null when nothing contributes, so a deployment with no such
-  # contrib carries no env var at all rather than an empty-list payload.
-  sandboxPodParts = {
-    inherit (cfg.sandboxPod) extraEnv extraVolumes extraVolumeMounts;
-  };
-  contribSandboxParts =
-    if lib.all (v: v == [ ]) (lib.attrValues sandboxPodParts) then null
-    else builtins.toJSON sandboxPodParts;
+  # The enabled contribs' sandbox-pod parts (modules/sandbox-pod.nix), shaped as a
+  # manifest OVERLAY. The agent-host creates the real Sandbox CR and is the only place
+  # these can take effect, and it already has one mechanism for splicing k8s fragments
+  # into that manifest — deployTools.sandboxManifestOverlay. A contrib rides it rather
+  # than getting a second payload the provisioner must know how to parse. Why: PR #640.
+  #
+  # Empty when nothing contributes, so a deployment with no such contrib renders no
+  # extra ConfigMap key at all.
+  contribPodOverlay = lib.optionalAttrs
+    (cfg.sandboxPod.extraEnv != [ ] || cfg.sandboxPod.extraVolumes != [ ] || cfg.sandboxPod.extraVolumeMounts != [ ])
+    {
+      spec.podTemplate.spec = {
+        # `sandbox` is the container the overlay's strategic merge keys on.
+        containers = [{
+          name = "sandbox";
+          env = cfg.sandboxPod.extraEnv;
+          volumeMounts = cfg.sandboxPod.extraVolumeMounts;
+        }];
+        volumes = cfg.sandboxPod.extraVolumes;
+      };
+    };
+  # One ConfigMap carries both halves, so it renders when EITHER is non-empty.
+  overlayCmNeeded = cfg.deployTools.sandboxManifestOverlay != { } || contribPodOverlay != { };
 
   # --- Model catalog: fold availableModels (PROVIDER-FIRST: provider -> model id -> opts) into
   # the rich list the agent-host reads as AGENT_MODELS_JSON. Model ids are provider-specific
@@ -1301,13 +1314,6 @@ in
                   # ownership, and sends every ACP frame. Without this there is NO BYO path and every
                   # run takes the cloud floor.
                   { name = "BYOC_CONTROLLER_URL"; value = "http://byoc-controller.${cfg.namespace}.svc.cluster.local:8080"; }
-                ++ lib.optional (contribSandboxParts != null)
-                  # The enabled contribs' sandbox-pod parts (env/volumes/mounts), as
-                  # ONE payload. The agent-host is the single provisioning entrypoint,
-                  # so a contrib that needs something in every sandbox reaches it here
-                  # rather than through a per-integration env var the host must know
-                  # the meaning of. Absent when no contrib contributes. Why: PR #640.
-                  { name = "SANDBOX_CONTRIB_JSON"; value = contribSandboxParts; }
                 ++ lib.optionals cfg.broker.enable [
                   # BROKER_URL + the projected broker token: the AWS approve/deny relay
                   # and the shares/links queries the agent-host makes on a conversation's
@@ -1315,10 +1321,11 @@ in
                   # itself and never asks the broker for a pod.
                   { name = "BROKER_URL"; value = "http://agent-broker.${cfg.namespace}.svc.cluster.local:8080"; }
                   { name = "BROKER_TOKEN_PATH"; value = "/var/run/secrets/broker/token"; }
-                ] ++ lib.optionals (cfg.deployTools.sandboxManifestOverlay != { }) [
-                  # The consumer manifest-overlay CM (a patch deep-merged onto the
-                  # generated Sandbox — see session/sandboxOverlay.ts). Read at create
-                  # time, so editing it lands on the next conversation without a restart.
+                ] ++ lib.optionals overlayCmNeeded [
+                  # The manifest-overlay CM (patches deep-merged onto the generated
+                  # Sandbox — see session/sandboxOverlay.ts): the consumer's own, and
+                  # the enabled contribs' pod parts. Read at create time, so editing it
+                  # lands on the next conversation without a restart.
                   { name = "SANDBOX_MANIFEST_OVERLAY_CONFIGMAP"; value = "sandbox-manifest-overlay"; }
                 ] ++ [
                   # The named size catalog (name → {cpu, memory, gpu?, hint?}) and which
@@ -1477,16 +1484,22 @@ in
           metadata = { name = "deploy-config-files"; namespace = cfg.namespace; };
           data = cfg.deployTools.configFiles;
         };
-      } // lib.optionalAttrs (cfg.deployTools.sandboxManifestOverlay != { }) {
-        # Consumer manifest overlay (a recursive PATCH deep-merged onto the generated
+      } // lib.optionalAttrs overlayCmNeeded {
+        # Manifest overlays (recursive PATCHes deep-merged onto the generated
         # per-conversation Sandbox — see agent-host session/sandboxOverlay.ts). The
         # agent-host reads it by name (SANDBOX_MANIFEST_OVERLAY_CONFIGMAP) at create
         # time, so a ConfigMap edit takes effect on the next conversation without a
         # redeploy.
         sandbox-manifest-overlay = {
           metadata = { name = "sandbox-manifest-overlay"; namespace = cfg.namespace; };
-          # One key holding the whole patch as YAML (JSON is valid YAML).
-          data."overlay.yaml" = builtins.toJSON cfg.deployTools.sandboxManifestOverlay;
+          # Each key holds a whole patch as YAML (JSON is valid YAML): the consumer's,
+          # and the enabled contribs' pod parts. The host merges contrib UNDER consumer,
+          # so a deployment can still override a contrib's env or volume by name.
+          data = lib.optionalAttrs (cfg.deployTools.sandboxManifestOverlay != { }) {
+            "overlay.yaml" = builtins.toJSON cfg.deployTools.sandboxManifestOverlay;
+          } // lib.optionalAttrs (contribPodOverlay != { }) {
+            "contrib.yaml" = builtins.toJSON contribPodOverlay;
+          };
         };
       } // lib.optionalAttrs (cfg.observability.otel.enable && cfg.observability.otel.pricing != { }) {
         # Per-model price table (USD per 1M tokens) -> cost derivation. Serialized

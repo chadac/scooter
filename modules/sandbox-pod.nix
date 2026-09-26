@@ -13,8 +13,10 @@
 # k8s shape, and a contrib emits only what its own `enable` gates.
 #
 # The two consumers read ONE option, so they cannot disagree about what a contrib
-# added — the agent-host gets it serialized as SANDBOX_CONTRIB_JSON (rendered in
-# modules/platform.nix) rather than as a per-integration env var it must interpret.
+# added. The agent-host gets it through the mechanism it ALREADY has for splicing k8s
+# fragments into that manifest — the manifest-overlay ConfigMap (modules/platform.nix
+# renders these parts into its `contrib.yaml` key). The provisioner therefore learns
+# nothing about contribs: no payload type, no parser, no per-integration env var.
 { lib, ... }:
 
 let
@@ -30,9 +32,9 @@ in
         Extra env entries on the sandbox container. A contrib must own its prefix:
         a name declared twice is not an error and k8s silently keeps the last.
 
-        These are appended BEFORE the deployment's own extraEnv and before the
-        consumer manifest overlay, so a deployment can still override a contrib's
-        value by name (session/sandboxOverlay.ts merges env strategically).
+        Merged UNDER the consumer's deployTools.sandboxManifestOverlay, so a
+        deployment can still override a contrib's value by name
+        (session/sandboxOverlay.ts merges env strategically).
       '';
     };
     extraVolumes = mkOption {
