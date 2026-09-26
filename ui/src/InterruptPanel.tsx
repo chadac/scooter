@@ -18,6 +18,7 @@ import { hasId, type MaybeConversationId } from "./conversation.js";
 
 import { useConversationInterrupts } from "./RuntimeProvider.js";
 import type { PendingInterrupt } from "./integrityAgent.js";
+import { contribApprovals } from "./contribManifest.js";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -32,35 +33,47 @@ function optionsOf(intr: PendingInterrupt): Option[] {
   return Array.isArray(raw) ? (raw as Option[]) : [];
 }
 
-/** An AWS approval interrupt is tagged `metadata.aws` by the host (management.ts).
- *  Its `requestId` is carried explicitly (== the interrupt id, but don't assume).
- *  Returns undefined for a non-AWS interrupt (tool permission etc.) → no can-approve
- *  check, button never greyed. Exported for unit testing this classification. */
-export function awsRequestId(intr: PendingInterrupt): string | undefined {
+/** An approval interrupt carries the CONTRIB NAME that raised it (`metadata.contrib`,
+ *  set by the host in management.ts) plus its `requestId` (== the interrupt id, but
+ *  carried explicitly so we needn't assume). A name rather than the old `aws: true`
+ *  boolean: the gating copy is looked up per contrib in the manifest, so an
+ *  integration added later needs no change here. Why: PR #651.
+ *
+ *  Returns undefined for a non-approval interrupt (a tool permission, etc.) → no
+ *  can-approve check and nothing greyed. Exported for unit testing this
+ *  classification. */
+export function approvalOf(intr: PendingInterrupt): { contrib: string; requestId: string } | undefined {
   const m = intr.metadata;
-  if (!m || m.aws !== true) return undefined;
-  return typeof m.requestId === "string" ? m.requestId : intr.id;
+  if (!m || typeof m.contrib !== "string" || !m.contrib) return undefined;
+  return {
+    contrib: m.contrib,
+    requestId: typeof m.requestId === "string" ? m.requestId : intr.id,
+  };
 }
 
 /**
- * Per-VIEWER can-approve check for an AWS interrupt. The interrupt is raised once
+ * Per-VIEWER can-approve check for an APPROVAL interrupt. The interrupt is raised once
  * server-side but seen by many users, so whether *this* viewer may approve is
  * asked live from the host (which forwards the viewer's identity to the broker's
- * OpenFGA check). Undefined while loading / for non-AWS interrupts → treated as
+ * authorization check). Undefined while loading / for non-approval interrupts → treated as
  * "allowed" (don't grey a button we can't yet judge). Fails toward greying only on
  * an explicit `false`.
  */
 function useCanApprove(
-  requestId: string | undefined,
+  approval: { contrib: string; requestId: string } | undefined,
   conversationId: MaybeConversationId,
   baseUrl: string,
 ): boolean | undefined {
   const [can, setCan] = useState<boolean | undefined>(undefined);
+  // Depend on the FIELDS, not the object: `approvalOf` builds a fresh object each
+  // render, so an object dependency would refetch on every render of a pending card.
+  const contrib = approval?.contrib;
+  const requestId = approval?.requestId;
   useEffect(() => {
-    if (!requestId || !hasId(conversationId)) return;
+    if (!contrib || !requestId || !hasId(conversationId)) return;
     let cancelled = false;
     fetch(
-      `${baseUrl}/conversations/${encodeURIComponent(conversationId)}/aws-request/${encodeURIComponent(requestId)}/can-approve`,
+      `${baseUrl}/conversations/${encodeURIComponent(conversationId)}/approvals/${encodeURIComponent(contrib)}/${encodeURIComponent(requestId)}/can-approve`,
       { credentials: "include" },
     )
       .then((r) => (r.ok ? r.json() : { canApprove: false }))
@@ -73,12 +86,12 @@ function useCanApprove(
     return () => {
       cancelled = true;
     };
-  }, [requestId, conversationId, baseUrl]);
+  }, [contrib, requestId, conversationId, baseUrl]);
   return can;
 }
 
-/** One pending interrupt: its message + option buttons. For an AWS interrupt, the
- *  Approve button is greyed (with a tooltip) when this viewer can't approve. */
+/** One pending interrupt: its message + option buttons. For an approval interrupt, the
+ *  gated option is greyed (with a tooltip) when this viewer may not use it. */
 function InterruptCard({
   intr,
   busy,
@@ -96,11 +109,15 @@ function InterruptCard({
   baseUrl: string;
 }) {
   const options = optionsOf(intr);
-  const requestId = awsRequestId(intr);
-  const canApprove = useCanApprove(requestId, conversationId, baseUrl);
-  // Only gate the "approve" option of an AWS interrupt, and only on an explicit
-  // no. Loading/unknown leaves it enabled (optimistic; the broker still enforces).
-  const approveBlocked = requestId !== undefined && canApprove === false;
+  const approval = approvalOf(intr);
+  const canApprove = useCanApprove(approval, conversationId, baseUrl);
+  // How THIS contrib's approval is gated. Absent row (a contrib the manifest doesn't
+  // describe, or a manifest that failed to load) = no gating: the option stays live
+  // and the broker remains the enforcement point. Greying is a courtesy that saves a
+  // user a doomed click; it is not the security boundary.
+  const gating = approval ? contribApprovals()[approval.contrib] : undefined;
+  // Gate only on an explicit no. Loading/unknown leaves it enabled (optimistic).
+  const approveBlocked = approval !== undefined && gating !== undefined && canApprove === false;
 
   return (
     <div
@@ -114,7 +131,7 @@ function InterruptCard({
       )}
       <div className="flex flex-col gap-2">
         {options.map((o) => {
-          const blocked = approveBlocked && o.optionId === "approve";
+          const blocked = approveBlocked && o.optionId === gating?.gatedOption;
           return (
             <Button
               key={o.optionId}
@@ -124,7 +141,7 @@ function InterruptCard({
               data-testid="interrupt-option"
               data-option-id={o.optionId}
               data-blocked={blocked ? "true" : undefined}
-              title={blocked ? "You need an admin to approve this request." : undefined}
+              title={blocked ? gating?.blockedTitle : undefined}
               className={cn(blocked && "cursor-not-allowed")}
               onClick={() => !blocked && answer(intr, "resolved", o.optionId)}
             >
@@ -134,7 +151,7 @@ function InterruptCard({
         })}
         {approveBlocked && (
           <p className="text-xs text-muted-foreground" data-testid="interrupt-approve-hint">
-            You don't have permission to approve this — an admin must.
+            {gating?.blockedHint}
           </p>
         )}
         {/* Always offer an explicit dismiss when there are no options or

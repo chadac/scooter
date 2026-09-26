@@ -1,4 +1,4 @@
-"""The AWS approval notify: broker -> agent-host POST /conversations/{id}/aws-request.
+"""The AWS approval notify: broker -> agent-host POST /conversations/{id}/approvals/aws.
 
 This is the call that makes the Approve window appear in the conversation. It had
 NO test coverage, and the original implementation was:
@@ -19,6 +19,7 @@ IMMEDIATE approval window, so the transient cases are retried.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 
@@ -97,10 +98,23 @@ async def test_posts_the_broker_notify_shape_to_the_short_id_url(monkeypatch):
     assert len(seen) == 1
     req = seen[0]
     # Addressed by the SHORT id — the only handle the broker has.
-    assert req.url.path == "/conversations/k3f9zq/aws-request"
-    body = req.read().decode()
-    for field in ("req-abc123", "dev", "low", "s3:GetObject", "read terraform state"):
-        assert field in body, f"{field} missing from the notify payload"
+    assert req.url.path == "/conversations/k3f9zq/approvals/aws"
+    body = json.loads(req.read().decode())
+    # The GENERIC payload: an id and prose THIS side rendered. The platform used to
+    # receive target_account/risk_level/policy_summary and compose the sentence
+    # itself, which is why it could not describe any other integration. Why: PR #651.
+    assert body == {
+        "request_id": "req-abc123",
+        "message": (
+            "Scooter is requesting AWS access to dev (risk: low).\n"
+            "s3:GetObject on the state bucket\n"
+            "Reason: read terraform state"
+        ),
+    }
+    # The account/risk/policy facts must still REACH the human — they are just inside
+    # the rendered message now rather than separate fields the platform interprets.
+    for fact in ("dev", "low", "s3:GetObject", "read terraform state"):
+        assert fact in body["message"], f"{fact} missing from the approval prose"
 
 
 @pytest.mark.asyncio

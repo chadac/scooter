@@ -19,8 +19,9 @@ import { tmpdir } from "node:os";
 import { createAguiServer } from "./agui/server.js";
 import {
   createManagementApi,
-  raiseAwsApprovalInterrupt,
-  fetchPendingAwsRequests,
+  raiseApprovalInterrupt,
+  fetchPendingApprovals,
+  type ApprovalContrib,
   fetchConversationShares,
 } from "./api/management.js";
 import { createSessionManager, shortId } from "./session/manager.js";
@@ -775,7 +776,7 @@ export async function main(
     // Without this the agent deadlocks: it polls the pending request forever and the
     // UI shows no button (the reported approval-interrupt-lost-on-rollout bug).
     onRevived: (id) => {
-      void reRaisePendingAwsInterrupts(id).catch((err) =>
+      void reRaisePendingApprovals(id).catch((err) =>
         hostLog.errorWith("re-raise pending AWS interrupts failed", err, { conversation_id: id }),
       );
     },
@@ -810,77 +811,116 @@ export async function main(
   }
 
   /** Broker auth headers (the agent-host SA token), shared by the AWS calls. Mirrors
-   *  resolveAwsRequest's token read: a MISSING token (ENOENT) is the dev case; any
+   *  resolveApprovalForBroker's token read: a MISSING token (ENOENT) is the dev case; any
    *  OTHER read error is surfaced (don't send an unauthenticated request). */
   const brokerAuthHeaders = sharedBrokerAuthHeaders;
 
-  /** On revive, ask the broker for this conversation's PENDING AWS requests and
-   *  re-raise an Approve/Deny interrupt for each — reconstructing the exact interrupt
-   *  the rollout lost (same builder as the live /aws-request route). raiseInterrupt
-   *  keys on the request id, so a re-raise of a still-open interrupt is idempotent. */
-  const reRaisePendingAwsInterrupts = async (id: string): Promise<void> => {
+  /** The contribs that raise approvals: name -> where its verbs live on the broker.
+   *  Rendered by modules/platform.nix from each contrib's own declaration, so this
+   *  file names no integration. Unset/malformed -> none (approvals simply aren't
+   *  relayed), which is the same as a deployment that enables no such contrib. */
+  const approvalContribs: Record<string, ApprovalContrib> = (() => {
+    const raw = process.env.APPROVAL_CONTRIBS_JSON;
+    if (!raw || !raw.trim()) return {};
+    try {
+      const parsed = JSON.parse(raw) as Record<string, ApprovalContrib>;
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch (e) {
+      hostLog.errorWith("APPROVAL_CONTRIBS_JSON is not valid JSON; no approvals will be relayed", e as Error);
+      return {};
+    }
+  })();
+
+  /** On revive, ask each approval contrib for this conversation's PENDING requests and
+   *  re-raise an interrupt for each — reconstructing the exact interrupt the rollout
+   *  lost (same builder as the live route). raiseInterrupt keys on the request id, so
+   *  a re-raise of a still-open interrupt is idempotent.
+   *
+   *  A contrib with no `pendingPath` is skipped: it has told us its requests do not
+   *  survive a rollout. */
+  const reRaisePendingApprovals = async (id: string): Promise<void> => {
     const brokerUrl = (process.env.BROKER_URL ?? "").replace(/\/$/, "");
     if (!brokerUrl) return; // no broker (local/dev) — nothing to re-raise
     const bridge = sessions.get(id as SessionId)?.bridge;
     if (!bridge) return;
-    // The broker keys AWS requests by the sandbox SHORT-id (`sandbox-{shortId}`), NOT the full thread
-    // UUID the session map uses — the same id-space mismatch the request-time route resolves. Query by
-    // shortId(id) (what every other broker call already uses); querying by the UUID returns [], so a
-    // still-pending request would never be re-raised after a rollout/resume/revive and the Approve
-    // window would never reappear. Keep RAISING the interrupt on the real conversation `id`/bridge.
-    const pending = await fetchPendingAwsRequests(brokerUrl, shortId(id), await brokerAuthHeaders(), (status) =>
-      hostLog.warn("broker /aws/pending returned a non-2xx", { conversation_id: id, status }),
-    );
-    for (const req of pending) {
-      raiseAwsApprovalInterrupt(bridge, id, req, resolveAwsRequestForBroker);
+    const headers = await brokerAuthHeaders();
+    for (const [contrib, cfg] of Object.entries(approvalContribs)) {
+      if (!cfg.pendingPath) continue;
+      // The broker keys requests by the sandbox SHORT-id (`sandbox-{shortId}`), NOT the full thread
+      // UUID the session map uses — the same id-space mismatch the request-time route resolves.
+      // Querying by the UUID returns [], so a still-pending request would never be re-raised after a
+      // rollout/resume/revive and the Approve window would never reappear. Keep RAISING the interrupt
+      // on the real conversation `id`/bridge.
+      const pending = await fetchPendingApprovals(
+        brokerUrl, cfg.pendingPath, shortId(id), headers,
+        (status) => hostLog.warn("broker pending-approvals returned a non-2xx", { conversation_id: id, contrib, status }),
+      ).catch((err) => {
+        // One contrib's broker being unreachable must not stop the others' re-raises.
+        hostLog.warn("pending-approvals fetch failed", { conversation_id: id, contrib, error: formatError(err) });
+        return [];
+      });
+      for (const req of pending) {
+        raiseApprovalInterrupt(bridge, id, contrib, req, resolveApprovalForBroker);
+      }
     }
   };
 
-  /** Approve/deny a broker AWS request (POST /aws/{id}/approve|deny) after the user
-   *  answers the interrupt. Shared by the /aws-request route's onAnswer AND the
-   *  revive re-raise. Sends the answering user's identity; the broker authorizes the
-   *  configured claim. Throws on a dropped/failed approval (never silently lost); an
-   *  APPROVE provisioning failure is fed back into the conversation. */
-  const resolveAwsRequestForBroker = async (
+  /** Relay the user's answer to the contrib's broker half
+   *  (POST <brokerPrefix>/{requestId}/{optionId}). Shared by the request-time route's
+   *  onAnswer AND the revive re-raise. Sends the answering user's identity; the broker
+   *  authorizes the configured claim. Throws on a dropped/failed relay (never silently
+   *  lost); a failure is ALSO fed back into the conversation so the blocked agent can
+   *  act on it instead of waiting forever. */
+  const resolveApprovalForBroker = async (
     sessionId: string,
+    contrib: string,
     requestId: string,
-    approved: boolean,
+    optionId: string,
     approver: ApproverIdentity,
   ): Promise<void> => {
     const brokerUrl = (process.env.BROKER_URL ?? "").replace(/\/$/, "");
     if (!brokerUrl) {
-      hostLog.warn("BROKER_URL unset; cannot resolve AWS request", { request_id: requestId });
+      hostLog.warn("BROKER_URL unset; cannot relay approval", { contrib, request_id: requestId });
       return;
     }
-    const action = approved ? "approve" : "deny";
-    const res = await fetch(`${brokerUrl}/aws/aws/${encodeURIComponent(requestId)}/${action}`, {
-      method: "POST",
-      headers: await brokerAuthHeaders(),
-      body: JSON.stringify({ approver }),
-    });
+    const cfg = approvalContribs[contrib];
+    if (!cfg) {
+      // The interrupt was raised (the route accepts any name) but this deployment has
+      // no route to relay it to. Loud, because a user's security decision just went
+      // nowhere and nothing else in the system will say so.
+      throw new Error(`no approval routing configured for contrib '${contrib}' (APPROVAL_CONTRIBS_JSON)`);
+    }
+    // The optionId IS the verb. The platform doesn't interpret the choice — a contrib
+    // offering options beyond approve/deny needs no change here.
+    const prefix = cfg.brokerPrefix.replace(/\/$/, "");
+    const res = await fetch(
+      `${brokerUrl}${prefix}/${encodeURIComponent(requestId)}/${encodeURIComponent(optionId)}`,
+      { method: "POST", headers: await brokerAuthHeaders(), body: JSON.stringify({ approver }) },
+    );
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      if (approved) {
-        // Extract the broker's error reasons for a readable, actionable message.
-        let detail = body.slice(0, 1500);
-        try {
-          const j = JSON.parse(body);
-          const errs = j?.detail?.errors ?? j?.errors;
-          if (Array.isArray(errs) && errs.length) detail = errs.join("\n");
-        } catch {
-          /* not JSON — use the raw body */
-        }
-        void sessions
-          .prompt(
-            sessionId as SessionId,
-            "The AWS access you requested was approved, but the broker could NOT " +
-              "provision it. Do NOT retry the request; instead, help the user fix the broker " +
-              "setup, then they can re-approve. Broker error:\n\n" + detail,
-            undefined, undefined, undefined, undefined, undefined, "broker",
-          )
-          .catch((e) => hostLog.errorWith("failed to feed the AWS provisioning error to the agent", e));
+      // Extract the broker's error reasons for a readable, actionable message. `errors`
+      // under `detail` is the shape scooter_broker_lib raises RequestError as.
+      let detail = body.slice(0, 1500);
+      try {
+        const j = JSON.parse(body);
+        const errs = j?.detail?.errors ?? j?.errors;
+        if (Array.isArray(errs) && errs.length) detail = errs.join("\n");
+      } catch {
+        /* not JSON — use the raw body */
       }
-      throw new Error(`broker rejected AWS ${action} for ${requestId}: ${res.status} ${body.slice(0, 500)}`);
+      // Tell the AGENT, not just the log: it is blocked on this answer, and a failure
+      // it never hears about is indistinguishable from a human who never answered.
+      void sessions
+        .prompt(
+          sessionId as SessionId,
+          `Your ${contrib} request was answered "${optionId}", but the broker could NOT ` +
+            "complete it. Do NOT retry the request; instead, help the user fix the broker " +
+            "setup, then they can answer again. Broker error:\n\n" + detail,
+          undefined, undefined, undefined, undefined, undefined, "broker",
+        )
+        .catch((e) => hostLog.errorWith("failed to feed the approval failure to the agent", e));
+      throw new Error(`broker rejected ${contrib} '${optionId}' for ${requestId}: ${res.status} ${body.slice(0, 500)}`);
     }
   };
 
@@ -927,7 +967,7 @@ export async function main(
 
   // The typed agent-tools (slack/gitlab/github/web) call the broker server-side
   // under the agent-host's OWN identity (BROKER_URL + SA token, same anchor as
-  // resolveAwsRequest below). When BROKER_URL is unset (local/fake) the tools
+  // resolveApprovalForBroker below). When BROKER_URL is unset (local/fake) the tools
   // still register, but calls fail with a clear error the handlers echo verbatim.
   const brokerUrl = (process.env.BROKER_URL ?? "").replace(/\/$/, "");
   // Optional FALLBACK target discovery: read the webhooks conversation_map from
@@ -1220,7 +1260,7 @@ export async function main(
   // no-ops there, the SSE is left open with no data, and the approval hangs → 502
   // forever (docs/scooter-bug-resume-hangs-when-run-not-live.md). So if the direct
   // answer doesn't land, REVIVE the conversation (rebuilds the bridge; onRevived →
-  // reRaisePendingAwsInterrupts re-raises the still-pending broker request, restoring
+  // reRaisePendingApprovals re-raises the still-pending broker request, restoring
   // answer-routing) and also re-raise directly (covers a live bridge that merely lost
   // the interrupt), then retry. Returns whether it was ultimately answered so the /agui
   // resume branch can close with RUN_ERROR instead of hanging when it genuinely can't.
@@ -1253,7 +1293,7 @@ export async function main(
         error: formatError(err),
       });
     });
-    await reRaisePendingAwsInterrupts(sessionId).catch((err) => {
+    await reRaisePendingApprovals(sessionId).catch((err) => {
       hostLog.warn("resume: re-raise pending interrupts failed", {
         conversation_id: sessionId,
         error: formatError(err),
@@ -1273,7 +1313,7 @@ export async function main(
   // Shared broker call setup: base URL + the agent-host SA token (the trust
   // anchor that vouches for the real user). Returns null when BROKER_URL is unset
   // (local/fake) so callers can no-op cleanly. Mirrors the token-read rules used
-  // by resolveAwsRequest (ENOENT => dev/no-token; any other read error throws).
+  // by resolveApprovalForBroker (ENOENT => dev/no-token; any other read error throws).
   const brokerAuth = async (): Promise<{ url: string; headers: Record<string, string> } | null> => {
     const url = (process.env.BROKER_URL ?? "").replace(/\/$/, "");
     if (!url) return null;
@@ -1396,20 +1436,23 @@ export async function main(
           hostLog.warn("no pending permission", { conversation_id: sessionId, tool_call_id: toolCallId });
         }
       },
-      // Approve/deny the broker AWS request the user answered. Shared with the
-      // revive re-raise (onRevived) so both paths route answers identically.
-      resolveAwsRequest: resolveAwsRequestForBroker,
-      canApproveAwsRequest: async (_sessionId, requestId, approver) => {
-        // Read-only: may THIS viewer approve THIS request? Per-viewer (the interrupt
+      // Relay the user's answer to the contrib that asked. Shared with the revive
+      // re-raise (onRevived) so both paths route answers identically.
+      resolveApproval: resolveApprovalForBroker,
+      canApproveRequest: async (_sessionId, contrib, requestId, approver) => {
+        // Read-only: may THIS viewer act on THIS request? Per-viewer (the interrupt
         // is raised once but seen by many users), so the UI asks with the current
         // user's identity. Fail CLOSED (false) on any hiccup — a greyed button that
         // should be live is safe; a live button that should be greyed is not. When
         // BROKER_URL is unset (local/fake), default to true so dev UIs stay usable.
+        const cfg = approvalContribs[contrib];
+        if (!cfg) return false; // unknown contrib: nothing can authorize it
         const auth = await brokerAuth().catch(() => null);
         if (!auth) return true;
         try {
+          const prefix = cfg.brokerPrefix.replace(/\/$/, "");
           const res = await fetch(
-            `${auth.url}/aws/aws/${encodeURIComponent(requestId)}/can-approve`,
+            `${auth.url}${prefix}/${encodeURIComponent(requestId)}/can-approve`,
             { method: "POST", headers: auth.headers, body: JSON.stringify({ approver }) },
           );
           if (!res.ok) return false;

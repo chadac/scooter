@@ -73,21 +73,24 @@ async function suspend(
   expect(res.ok(), "suspend must succeed").toBeTruthy();
 }
 
-/** POST the aws-request exactly like the broker's _notify_host does. */
+/** POST the approval exactly like a contrib's broker half does (aws _notify_host). */
 async function requestAws(
   request: import("@playwright/test").APIRequestContext,
   base: string,
   conversationId: string,
   requestId: string,
 ) {
-  return request.post(`${base}/conversations/${encodeURIComponent(conversationId)}/aws-request`, {
+  return request.post(`${base}/conversations/${encodeURIComponent(conversationId)}/approvals/aws`, {
     headers: { "Content-Type": "application/json" },
+    // An id plus the prose the CONTRIB rendered — aws builds this exact sentence in
+    // models.approval_message. The platform no longer receives target_account /
+    // risk_level; it relays an opaque message. Why: PR #651.
     data: {
       request_id: requestId,
-      target_account: "dev",
-      risk_level: "low",
-      policy_summary: "s3:GetObject on the state bucket",
-      justification: "read terraform state",
+      message:
+        "Scooter is requesting AWS access to dev (risk: low).\n" +
+        "s3:GetObject on the state bucket\n" +
+        "Reason: read terraform state",
     },
   });
 }

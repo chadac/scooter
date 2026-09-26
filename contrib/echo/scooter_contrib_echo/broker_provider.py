@@ -23,6 +23,8 @@ from fastapi import APIRouter, Depends
 from scooter_broker_lib.registry import register_provider
 from scooter_broker_lib.types import AuthDependency, Identity, Provider, Transport
 
+from .approvals import EchoApprovals
+
 PROVIDER_NAME = "echo"
 
 
@@ -62,7 +64,12 @@ def echo_contrib() -> Provider:
     """
     return Provider(
         name=PROVIDER_NAME,
-        transports=[EchoTransport()],
+        # Two transports: the identity echo, and a HUMAN-APPROVAL flow built only from
+        # the public seam. The second one exists so the approval path has a consumer
+        # that is not aws — the mechanism and one integration's needs were previously
+        # indistinguishable, and the end-to-end path could only be tested by mocking
+        # STS/IAM/OpenFGA. Why: PR #651.
+        transports=[EchoTransport(), EchoApprovals()],
         credential=None,  # diagnostic transport: delivers no secret
         enabled=True,
     )

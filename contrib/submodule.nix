@@ -285,6 +285,52 @@ in
       };
     };
 
+    approvals = mkOption {
+      default = null;
+      description = ''
+        This contrib raises HUMAN APPROVALS: the agent asks for something, a person
+        answers Approve/Deny in the conversation, and the answer is relayed back to
+        the contrib's broker half. `null` (the default) means it raises none.
+
+        The platform deliberately learns only how to REACH this contrib's verbs —
+        never what it is approving. The prose a human reads is rendered by the
+        contrib and arrives already-formed, so adding an integration with a
+        different notion of "risk" needs no platform change.
+
+        This is the PRESENTATION half, and it is build-time metadata: it rides the
+        contrib manifest into the UI image. Where the contrib's verbs actually live
+        on the broker is DEPLOYMENT config — an operator can run the same contrib
+        against a differently-mounted broker — so it is declared by the contrib's
+        deployment module as `agentSandbox.approvals.<name>`, which is also already
+        gated on that deployment enabling the contrib.
+
+        Neither fact is stated twice; they simply belong to different lifecycles.
+      '';
+      type = types.nullOr (types.submodule {
+        options = {
+          gatedOption = mkOption {
+            type = types.str;
+            default = "approve";
+            description = ''
+              Which option id the per-viewer authorization check gates. Only this one
+              is greyed for a viewer the broker says may not act; the others (Deny,
+              typically) stay live, because refusing is not a privileged action.
+            '';
+          };
+          blockedTitle = mkOption {
+            type = types.str;
+            default = "You need an admin to approve this request.";
+            description = "Tooltip on the gated option when this viewer may not use it.";
+          };
+          blockedHint = mkOption {
+            type = types.str;
+            default = "You don't have permission to approve this — an admin must.";
+            description = "Text shown under the options when this viewer may not use the gated one.";
+          };
+        };
+      });
+    };
+
     skills = mkOption {
       type = types.attrsOf types.path;
       default = { };
