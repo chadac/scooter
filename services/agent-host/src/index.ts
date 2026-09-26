@@ -39,6 +39,7 @@ import { createPgEventStore, withPgEvents } from "./session/eventStore.js";
 import { agentHostDsnFromEnv } from "./db/agentHostDsn.js";
 import { createK8sOwnershipGuard } from "./session/k8sOwnershipGuard.js";
 import { createK8sConversationRegistry } from "./session/k8sConversationRegistry.js";
+import { withConversationRows } from "./session/pgConversationRegistry.js";
 import type { ConversationStore, ConversationLink } from "./session/manager.js";
 import { createPgLinkStore } from "./session/linkStore.js";
 import { createPgMetaStore } from "./session/metaStore.js";
@@ -747,9 +748,12 @@ export async function main(
   // The WRITE side of the same CRD: when multi-replica (POD_NAME set), register each new
   // conversation as a Conversation CR so the controller assigns it a hostPod and the
   // router forwards to it. Unset => noopRegistry (no CR). See conversationRegistry.ts.
-  const conversationRegistry = podName
-    ? createK8sConversationRegistry(config.namespace)
-    : undefined;
+  // ...and its ROW half: the same writes also land on agent_host.conversations, so the row can
+  // become the source of truth for existence. Assignment reads stay on the CR (the controller
+  // still writes it) — see pgConversationRegistry.ts. No DSN => CR only, unchanged.
+  const crRegistry = podName ? createK8sConversationRegistry(config.namespace) : undefined;
+  const conversationRegistry =
+    crRegistry && agentHostDsn ? withConversationRows(crRegistry, { dsn: agentHostDsn }) : crRegistry;
 
   const sessions = createSessionManager({
     provisioner,
