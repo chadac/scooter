@@ -168,6 +168,111 @@ class ConversationRows:
                 break
         return changed
 
+    def set_assignment(self, conversation_id: str, host_pod: str, generation: int) -> bool:
+        """Claim a conversation for a pod, at an epoch. True when the claim won.
+
+        `WHERE %s > host_generation` is the whole point of the column, and it is not defensive
+        programming — it is where the monotonicity comes from. Today the CR gets it from apiserver
+        optimistic concurrency; a blind mirror would throw that away, letting a paused controller
+        wake up and overwrite a newer assignment with its stale view. A leader lease does not
+        prevent that (a k8s Lease is not mutual exclusion, and a paused replica still believes it
+        holds one), so the database has to enforce it.
+
+        False therefore means TWO different things — the claim lost to a newer epoch, or the row is
+        gone — and neither is an error the controller can act on. The CR write next to this one is
+        still authoritative; this column is not read yet.
+        """
+        try:
+            with self._cursor() as cur:
+                cur.execute(
+                    "UPDATE conversations SET host_pod = %s, host_generation = %s "
+                    "WHERE id = %s AND %s > host_generation",
+                    (host_pod, generation, conversation_id, generation),
+                )
+                return cur.rowcount > 0
+        except Exception as err:  # noqa: BLE001 - best-effort by contract
+            self._drop()
+            logger.warning(
+                "conversations row assignment write failed",
+                extra={
+                    **_C,
+                    "conversation_id": conversation_id,
+                    "host_pod": host_pod,
+                    "generation": generation,
+                    "error": str(err),
+                },
+            )
+            return False
+
+    def release_assignment(self, conversation_id: str, generation: int) -> bool:
+        """Clear placement — the row half of the CR patch that sets hostPod to null.
+
+        host_generation is deliberately LEFT where it is. Clearing it would reset the fence to 0 and
+        let any stale epoch claim the conversation next; the epoch is a high-water mark, and a
+        release is not a reason to forget how far ownership has advanced.
+
+        `>=`, not `>`: a release carries the CURRENT epoch rather than a new one, so the controller
+        that legitimately owns the decision matches exactly. A stale controller holds a lower epoch
+        and cannot detach a pod that has since been assigned a newer one.
+        """
+        try:
+            with self._cursor() as cur:
+                cur.execute(
+                    "UPDATE conversations SET host_pod = NULL "
+                    "WHERE id = %s AND %s >= host_generation AND host_pod IS NOT NULL",
+                    (conversation_id, generation),
+                )
+                return cur.rowcount > 0
+        except Exception as err:  # noqa: BLE001 - best-effort by contract
+            self._drop()
+            logger.warning(
+                "conversations row release failed",
+                extra={**_C, "conversation_id": conversation_id, "error": str(err)},
+            )
+            return False
+
+    def sync_assignments(self, assignments: list[tuple[str, str | None, int]]) -> int:
+        """Converge host_pod/host_generation on the CRs this pass listed. Returns rows changed.
+
+        The same convergence sync_phases does, and needed for a sharper reason. Once appends fence
+        on the row (D3), "no generation" means "do not write" — so a settled conversation whose row
+        was never touched would not be stale, it would be BLOCKED. Every assignment that predates
+        this code has to reach the row without waiting for a reassignment that may never come.
+
+        `>=`, not `>`: this carries the CR's current epoch rather than a new one, so a controller
+        holding the same epoch as the row is the current one and may refresh it. A stale controller
+        holds a lower epoch and is rejected, which is the property that matters. Rows already at
+        that (pod, epoch) are excluded, so a steady-state pass updates none.
+        """
+        if not assignments:
+            return 0
+        changed = 0
+        for i in range(0, len(assignments), _SYNC_CHUNK):
+            chunk = assignments[i : i + _SYNC_CHUNK]
+            values = ",".join(["(%s::text, %s::text, %s::bigint)"] * len(chunk))
+            params: list[object] = []
+            for conversation_id, host_pod, generation in chunk:
+                params += [conversation_id, host_pod, generation]
+            try:
+                with self._cursor() as cur:
+                    cur.execute(
+                        "UPDATE conversations AS c "
+                        "SET host_pod = v.host_pod, host_generation = v.gen "
+                        f"FROM (VALUES {values}) AS v(id, host_pod, gen) "
+                        "WHERE c.id = v.id AND v.gen >= c.host_generation "
+                        "AND (c.host_pod IS DISTINCT FROM v.host_pod OR c.host_generation <> v.gen)",
+                        params,
+                    )
+                    changed += max(cur.rowcount, 0)
+            except Exception as err:  # noqa: BLE001 - best-effort by contract
+                self._drop()
+                logger.warning(
+                    "conversations row assignment sync failed",
+                    extra={**_C, "conversations": len(chunk), "error": str(err)},
+                )
+                break
+        return changed
+
     def close(self) -> None:
         self._drop()
 
