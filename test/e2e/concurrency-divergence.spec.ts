@@ -61,7 +61,7 @@ const RESTARTED = /this conversation was interrupted by a restart/i;
  *  A killed run produces NO assistant message, so completeTurn can only wait out its whole
  *  budget and then report "Expected > 0, Received 0" — a flake that looks like a lost reply.
  *  Gated on the restart marker, so a baseline that simply never replies still fails.
- *  Why: PR #666. */
+ *  Mitigation only — the reassignment itself is issue #619. Why: PR #666. */
 async function baselineTurn(chat: Chat, page: Page, text: string): Promise<void> {
   try {
     await chat.completeTurn(text);
