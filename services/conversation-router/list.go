@@ -46,29 +46,27 @@ type listRow struct {
 	Links          []Link            `json:"links"`
 }
 
-// assembleList joins metadata with the CR existence set, applies the visibility filter, enriches
-// with links — the whole GET /conversations body, as a pure function so it is unit-testable
-// without a DB or a live watch. It does NOT sort: it PRESERVES the order of metas, which
-// Store.Conversations establishes (most-recently-active first). Anything added here that reorders
-// or regroups rows silently changes the endpoint's contract. Existence comes from crs.CR(id): in cluster the
-// CRD watch cache (a metadata row with no CR is an ended conversation, omitted); in the kube-less
-// dev stack allExisting (every row exists).
-func assembleList(metas []ConversationRow, crs crLookup, links map[string][]Link, now int64, callerOwner, scope string) []listRow {
+// assembleList applies the visibility filter and enriches with links — the whole GET /conversations
+// body, as a pure function so it is unit-testable without a DB. It does NOT sort: it PRESERVES the
+// order of metas, which Store.Conversations establishes (most-recently-active first). Anything added
+// here that reorders or regroups rows silently changes the endpoint's contract.
+//
+// EXISTENCE is now the row: there is no existence set to join, so there is no "row with no CR" case
+// to omit — end() deletes the row. That was the kube-less stack's special case (allExisting), so both
+// stacks now run one code path instead of the cluster taking a join the e2e suite never exercised.
+// `phases` is the one CR read left; see phaseLookup.
+func assembleList(metas []ConversationRow, phases phaseLookup, links map[string][]Link, now int64, callerOwner, scope string) []listRow {
 	rows := make([]listRow, 0, len(metas))
 	for _, m := range metas {
-		cr, ok := crs.CR(m.ID)
-		if !ok {
-			continue // EXISTENCE follows the CR: no CR => ended => omit.
-		}
 		if !visible(m.Owner, callerOwner, scope) {
 			continue
 		}
-		rows = append(rows, makeListRow(m, cr, links[m.ID], now))
+		rows = append(rows, makeListRow(m, phases.Phase(m.ID), links[m.ID], now))
 	}
 	return rows
 }
 
-// statusForPhase maps the Conversation CR's status.phase to the sidebar dot state. The controller
+// statusForPhase maps status.phase to the sidebar dot state. The controller
 // writes exactly four phases (Pending | Assigned | Suspended | Failed). Only Suspended and Failed
 // are distinguished; Pending/Assigned/"" are a live/starting sandbox → "running". Failed is
 // TERMINAL (the zombie-repair escalation force-deleted the Sandbox and gave up) — it MUST NOT read
@@ -85,12 +83,12 @@ func statusForPhase(phase string) string {
 	}
 }
 
-// makeListRow projects one metadata row + its CR + its links into the wire shape. Shared by the
-// snapshot (assembleList) and the live LISTEN upsert (events.go) so both emit byte-identical rows —
-// if they diverged, a conversation would render one way on first paint and another on the next
-// push. status mapping and the "" namespace match agent-host's old view()+withSources exactly.
-func makeListRow(m ConversationRow, cr CRInfo, ls []Link, now int64) listRow {
-	status := statusForPhase(cr.Phase)
+// makeListRow projects one metadata row + its links into the wire shape. Shared by the snapshot
+// (assembleList) and the live LISTEN upsert (events.go) so both emit byte-identical rows — if they
+// diverged, a conversation would render one way on first paint and another on the next push. status
+// mapping and the "" namespace match agent-host's old view()+withSources exactly.
+func makeListRow(m ConversationRow, phase string, ls []Link, now int64) listRow {
+	status := statusForPhase(phase)
 	if ls == nil {
 		ls = []Link{}
 	}
@@ -110,7 +108,7 @@ func makeListRow(m ConversationRow, cr CRInfo, ls []Link, now int64) listRow {
 		Starred:        deref(m.Starred),
 		// namespace is "" to match the old projection; the UI list ignores sandbox, and the
 		// owner pod's GET /conversations/:id carries the live sandbox detail when needed.
-		Sandbox: sandboxProjection{Name: cr.SandboxRef, Namespace: ""},
+		Sandbox: sandboxProjection{Name: derefStr(m.SandboxRef), Namespace: ""},
 		Sources: sourcesOf(ls),
 		Links:   ls,
 	}
@@ -155,7 +153,7 @@ func sourcesOf(links []Link) []string {
 // yields 503, NOT an empty 200: a transient DB blip must not hand the UI an empty list it would
 // render as "you have no conversations" (the poll keeps the last good list on a failed fetch and
 // retries). Link enrichment is best-effort — its failure degrades to bare rows, never fails the list.
-func serveConversationList(w http.ResponseWriter, r *http.Request, store *Store, links *LinkStore, crs crLookup) {
+func serveConversationList(w http.ResponseWriter, r *http.Request, store *Store, links *LinkStore, phases phaseLookup) {
 	log := logger("list")
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -175,7 +173,7 @@ func serveConversationList(w http.ResponseWriter, r *http.Request, store *Store,
 		}
 	}
 
-	rows := assembleList(metas, crs, linksByConv, time.Now().UnixMilli(), ownerFrom(r), listScope(r))
+	rows := assembleList(metas, phases, linksByConv, time.Now().UnixMilli(), ownerFrom(r), listScope(r))
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(rows); err != nil {
@@ -191,3 +189,13 @@ func nonNeg(v int64) int64 {
 }
 
 func deref(b *bool) bool { return b != nil && *b }
+
+// derefStr reads a nullable text column as "". A NULL sandbox_ref means "agent-host has not
+// registered this conversation yet", which must project exactly as a CR without spec.sandboxRef
+// did: an empty sandbox name.
+func derefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}

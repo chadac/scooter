@@ -43,48 +43,30 @@ type OwnershipCache struct {
 	// short-id -> IP map) so an owner change updates one entry and can't leave the two
 	// views disagreeing about who owns the conversation.
 	aliases map[string]string
-	// crs: convID -> the CR fields the conversation LIST needs (existence, phase→status,
-	// sandboxRef). The router serves GET /conversations by joining this (existence + status)
-	// with the Postgres metadata; the CR is the source of truth for EXISTENCE, so a metadata
-	// row without a CR here is an ended conversation and is omitted. Kept fresh by the same
-	// watch that maintains hosts/aliases.
-	crs map[string]crInfo
-}
-
-// crInfo is the per-conversation CR state the list join reads: phase drives status, sandboxRef
-// supplies the sandbox name in the row projection.
-type crInfo struct {
-	phase      string
-	sandboxRef string
-}
-
-// CRInfo is one conversation's CR state, id included, for enumeration by the list assembler.
-type CRInfo struct {
-	ID         string
-	Phase      string
-	SandboxRef string
+	// phases: convID -> status.phase. The LAST thing the list still reads from the CR. It used to
+	// also carry EXISTENCE and sandboxRef; those are columns on the row now, so a metadata row is no
+	// longer omitted for want of a CR. Phase stays because the CONTROLLER writes Failed / Pending /
+	// the Suspended drift repair and has no Postgres access — reading phase from the row today would
+	// render a Failed conversation as "running". Goes away when the controller writes the row.
+	// Why: PR #654.
+	phases map[string]string
 }
 
 func NewOwnershipCache() *OwnershipCache {
 	return &OwnershipCache{
 		hosts:   map[string]string{},
 		aliases: map[string]string{},
-		crs:     map[string]crInfo{},
+		phases:  map[string]string{},
 	}
 }
 
-// CR returns one conversation's CR state, or ("", false) when no CR is known — i.e. the
-// conversation does not exist (never created, or ended). The LISTEN loop uses this to honour the
-// EXISTENCE rule for a single upsert: a metadata row whose CR the cache has not observed is not
-// pushed (the snapshot/poll picks it up once the watch catches the CR).
-func (c *OwnershipCache) CR(id string) (CRInfo, bool) {
+// Phase returns status.phase for a conversation, or "" when no CR is known. "" is the correct answer
+// for an unknown conversation rather than an error: statusForPhase maps it to "running", which is
+// what an unreconciled CR (status: null) has always produced.
+func (c *OwnershipCache) Phase(id string) string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	info, ok := c.crs[id]
-	if !ok {
-		return CRInfo{}, false
-	}
-	return CRInfo{ID: id, Phase: info.phase, SandboxRef: info.sandboxRef}, true
+	return c.phases[id]
 }
 
 // HostIP returns the assigned owner pod IP for a conversation, or ("", false) if
@@ -128,9 +110,8 @@ func (c *OwnershipCache) observe(obj *unstructured.Unstructured) {
 	short := shortIDFrom(obj)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// The CR exists (ADDED/MODIFIED), so record it for the list join regardless of whether an
-	// owner IP is assigned yet — existence and status don't depend on assignment.
-	c.crs[convID] = crInfo{phase: phaseFrom(obj), sandboxRef: sandboxRefFrom(obj)}
+	// Recorded regardless of assignment: a conversation's phase does not depend on having a host.
+	c.phases[convID] = phaseFrom(obj)
 	if host == "" {
 		delete(c.hosts, convID)
 	} else {
@@ -156,7 +137,7 @@ func (c *OwnershipCache) forget(obj *unstructured.Unstructured) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.hosts, convID)
-	delete(c.crs, convID) // the conversation ended — drop it from the existence set
+	delete(c.phases, convID)
 
 	// Drop every alias pointing at this conversation. Sweeping by owner (rather than only the
 	// short-id in this payload) covers a DELETE event whose object arrives without spec.
@@ -246,16 +227,9 @@ func shortIDFrom(obj *unstructured.Unstructured) string {
 	return strings.TrimPrefix(ref, "conv-")
 }
 
-// phaseFrom reads status.phase (Pending|Assigned|Suspended|Orphaned) — the field the list maps
-// to a conversation status. "" until the controller writes it.
+// phaseFrom reads status.phase (Pending|Assigned|Suspended|Failed) — the field the list maps to a
+// conversation status. "" until the controller writes it.
 func phaseFrom(obj *unstructured.Unstructured) string {
 	phase, _, _ := unstructuredNestedString(obj.Object, "status", "phase")
 	return phase
-}
-
-// sandboxRefFrom reads spec.sandboxRef verbatim (`conv-<shortId>`) — the sandbox name the list
-// row projects. "" until the sandbox is provisioned.
-func sandboxRefFrom(obj *unstructured.Unstructured) string {
-	ref, _, _ := unstructuredNestedString(obj.Object, "spec", "sandboxRef")
-	return ref
 }

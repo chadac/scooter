@@ -1,15 +1,14 @@
-// Kube-less DEV/E2E mode. In cluster the router learns conversation EXISTENCE + routing from a
-// CRD watch and creates conversations by writing a Conversation CR. The local fast-e2e / dev stack
-// has no apiserver and no controller — a single agent-host fronts a real Postgres. This file is the
-// three seams that differ there:
+// Kube-less DEV/E2E mode. The local fast-e2e / dev stack has no apiserver and no controller — a
+// single agent-host fronts a real Postgres. This file is the seams that differ there:
 //
-//   - existence: allExisting (every metadata row is a real conversation — the store IS the
-//     existence set, since nothing creates CRs);
 //   - routing: a single AGENT_HOST_URL (the empty ownership cache always misses, so every route
 //     falls through to this one upstream);
-//   - create: a direct conversations-row INSERT (devCreator) instead of a CR write — agent-host
-//     then hydrates the conversation from that row on the first /agui prompt, exactly as it would
-//     after adopting a CR.
+//   - create: the conversations-row INSERT alone (devCreator), with no CR write alongside it.
+//
+// EXISTENCE is no longer one of them, and it used to be the biggest: the cluster joined a CRD watch
+// cache and dev substituted allExisting, so the two stacks ran different list code and the e2e suite
+// could not be evidence about production. Existence is the row in both now. What remains is a phase
+// source, which dev answers "" to (no controller writes phases here). Why: PR #654.
 //
 // None of this compiles into the production path's behaviour: it is reached only when
 // ROUTER_DEV_MODE is set (see main.go).
@@ -25,21 +24,20 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// crLookup answers conversation EXISTENCE + the CR fields the list join needs, keyed by id. Two
-// implementations: the CRD watch cache (*OwnershipCache) in cluster, and allExisting in the
-// kube-less stack. Passing the interface (rather than *OwnershipCache) into the list/events path is
-// what lets the same assembleList/notify code serve both.
-type crLookup interface {
-	CR(id string) (CRInfo, bool)
+// phaseLookup is the last CR read the conversation list still makes. Narrow on purpose: it is a
+// remnant with a scheduled death (when the controller writes conversations.phase), and naming it for
+// the one field it answers keeps that visible rather than letting a general-purpose "CR lookup"
+// quietly regrow.
+type phaseLookup interface {
+	Phase(id string) string
 }
 
-// allExisting treats every conversation the metadata store knows as existing — the dev/e2e stack
-// has no Conversation CRs, so the store is the whole existence set. Phase/sandbox are blank: there
-// is one agent-host and no sandboxes, so the row's status is makeListRow's "running" default and
-// the sandbox name is empty (both fields exist only to mirror the cluster projection).
-type allExisting struct{}
+// noPhase is the kube-less stack's phase source. There is no controller here, so nothing ever writes
+// a phase: every conversation reads as statusForPhase("") == "running", which is what this stack has
+// always shown.
+type noPhase struct{}
 
-func (allExisting) CR(id string) (CRInfo, bool) { return CRInfo{ID: id}, true }
+func (noPhase) Phase(string) string { return "" }
 
 // devModeEnabled reports whether to run the kube-less dev/e2e mode.
 func devModeEnabled() bool {

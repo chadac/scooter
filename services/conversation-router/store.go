@@ -28,6 +28,33 @@ type ConversationRow struct {
 	ParentID       *string
 	UserTitled     *bool
 	Starred        *bool
+	// SandboxRef used to be read from the CR (spec.sandboxRef) and joined on at read time; it is a
+	// column now. NULL on a conversation agent-host has not registered yet, which projects exactly
+	// as an unreconciled CR did: an empty sandbox name. Why: PR #654.
+	//
+	// `phase` is deliberately NOT here yet, even though the column exists. The CONTROLLER writes
+	// three phases the row never sees — Failed (zombie escalation), Pending, and the Suspended
+	// drift repair — and it has no Postgres access. Reading phase from the row today would render a
+	// Failed conversation as "running", which is the exact bug statusForPhase was written to fix.
+	SandboxRef *string
+}
+
+// conversationColumns is the ONE projection list, shared by the two SELECTs and the write path's
+// RETURNING. They drifted apart easily while each spelled its own columns — and a RETURNING that
+// omitted sandbox_ref would make a title PATCH answer with a blank sandbox name, because the PATCH
+// response is built by the same makeListRow as the list.
+const conversationColumns = `id, thread_id, title, created_at, last_activity_at,
+                             model, owner, parent_id, user_titled, starred, sandbox_ref`
+
+// scannable is satisfied by both pgx.Row and pgx.Rows, so one scan helper serves every read and the
+// column ORDER cannot drift from conversationColumns at one call site but not another.
+type scannable interface {
+	Scan(dest ...any) error
+}
+
+func scanConversation(s scannable, c *ConversationRow) error {
+	return s.Scan(&c.ID, &c.ThreadID, &c.Title, &c.CreatedAt, &c.LastActivityAt,
+		&c.Model, &c.Owner, &c.ParentID, &c.UserTitled, &c.Starred, &c.SandboxRef)
 }
 
 // Store is a read-only handle on the agent_host database. nil when no DSN is configured
@@ -120,8 +147,7 @@ func (s *Store) CountConversations(ctx context.Context) (int64, error) {
 // would otherwise come back in an arbitrary order that reshuffles between polls. Why: issue #540.
 func (s *Store) Conversations(ctx context.Context) ([]ConversationRow, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, thread_id, title, created_at, last_activity_at,
-		       model, owner, parent_id, user_titled, starred
+		SELECT `+conversationColumns+`
 		  FROM conversations
 		 ORDER BY last_activity_at DESC, created_at DESC`)
 	if err != nil {
@@ -131,8 +157,7 @@ func (s *Store) Conversations(ctx context.Context) ([]ConversationRow, error) {
 	var out []ConversationRow
 	for rows.Next() {
 		var c ConversationRow
-		if err := rows.Scan(&c.ID, &c.ThreadID, &c.Title, &c.CreatedAt, &c.LastActivityAt,
-			&c.Model, &c.Owner, &c.ParentID, &c.UserTitled, &c.Starred); err != nil {
+		if err := scanConversation(rows, &c); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -146,12 +171,10 @@ func (s *Store) Conversations(ctx context.Context) ([]ConversationRow, error) {
 // so the caller simply emits nothing (the poll reconciles removals).
 func (s *Store) ConversationByID(ctx context.Context, id string) (*ConversationRow, error) {
 	var c ConversationRow
-	err := s.pool.QueryRow(ctx, `
-		SELECT id, thread_id, title, created_at, last_activity_at,
-		       model, owner, parent_id, user_titled, starred
+	err := scanConversation(s.pool.QueryRow(ctx, `
+		SELECT `+conversationColumns+`
 		  FROM conversations
-		 WHERE id = $1`, id).Scan(&c.ID, &c.ThreadID, &c.Title, &c.CreatedAt, &c.LastActivityAt,
-		&c.Model, &c.Owner, &c.ParentID, &c.UserTitled, &c.Starred)
+		 WHERE id = $1`, id), &c)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -203,10 +226,9 @@ func OpenWriteStore(ctx context.Context, dsn string) (*WriteStore, error) {
 	return &WriteStore{pool: pool}, nil
 }
 
-// writeColumns is the RETURNING list — same projection ConversationByID reads, so the write's row
-// builds the wire response without a second SELECT.
-const writeColumns = `id, thread_id, title, created_at, last_activity_at,
-                      model, owner, parent_id, user_titled, starred`
+// writeColumns is the RETURNING list — the same projection ConversationByID reads, so the write's
+// row builds the wire response without a second SELECT.
+const writeColumns = conversationColumns
 
 // SetStarred sets the star flag and returns the updated row ((nil,nil) if the row raced a delete).
 func (s *WriteStore) SetStarred(ctx context.Context, id string, starred bool) (*ConversationRow, error) {
@@ -235,8 +257,7 @@ func (s *WriteStore) CreateConversation(ctx context.Context, c NewConversation) 
 // scanUpdated maps a RETURNING row to a ConversationRow; no-rows (raced delete) becomes (nil, nil).
 func scanUpdated(row pgx.Row) (*ConversationRow, error) {
 	var c ConversationRow
-	err := row.Scan(&c.ID, &c.ThreadID, &c.Title, &c.CreatedAt, &c.LastActivityAt,
-		&c.Model, &c.Owner, &c.ParentID, &c.UserTitled, &c.Starred)
+	err := scanConversation(row, &c)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
