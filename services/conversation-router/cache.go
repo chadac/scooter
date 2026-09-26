@@ -43,30 +43,13 @@ type OwnershipCache struct {
 	// short-id -> IP map) so an owner change updates one entry and can't leave the two
 	// views disagreeing about who owns the conversation.
 	aliases map[string]string
-	// phases: convID -> status.phase. The LAST thing the list still reads from the CR. It used to
-	// also carry EXISTENCE and sandboxRef; those are columns on the row now, so a metadata row is no
-	// longer omitted for want of a CR. Phase stays because the CONTROLLER writes Failed / Pending /
-	// the Suspended drift repair and has no Postgres access — reading phase from the row today would
-	// render a Failed conversation as "running". Goes away when the controller writes the row.
-	// Why: PR #654.
-	phases map[string]string
 }
 
 func NewOwnershipCache() *OwnershipCache {
 	return &OwnershipCache{
 		hosts:   map[string]string{},
 		aliases: map[string]string{},
-		phases:  map[string]string{},
 	}
-}
-
-// Phase returns status.phase for a conversation, or "" when no CR is known. "" is the correct answer
-// for an unknown conversation rather than an error: statusForPhase maps it to "running", which is
-// what an unreconciled CR (status: null) has always produced.
-func (c *OwnershipCache) Phase(id string) string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.phases[id]
 }
 
 // HostIP returns the assigned owner pod IP for a conversation, or ("", false) if
@@ -110,8 +93,6 @@ func (c *OwnershipCache) observe(obj *unstructured.Unstructured) {
 	short := shortIDFrom(obj)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// Recorded regardless of assignment: a conversation's phase does not depend on having a host.
-	c.phases[convID] = phaseFrom(obj)
 	if host == "" {
 		delete(c.hosts, convID)
 	} else {
@@ -137,7 +118,6 @@ func (c *OwnershipCache) forget(obj *unstructured.Unstructured) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.hosts, convID)
-	delete(c.phases, convID)
 
 	// Drop every alias pointing at this conversation. Sweeping by owner (rather than only the
 	// short-id in this payload) covers a DELETE event whose object arrives without spec.
@@ -225,11 +205,4 @@ func shortIDFrom(obj *unstructured.Unstructured) string {
 		return ""
 	}
 	return strings.TrimPrefix(ref, "conv-")
-}
-
-// phaseFrom reads status.phase (Pending|Assigned|Suspended|Failed) — the field the list maps to a
-// conversation status. "" until the controller writes it.
-func phaseFrom(obj *unstructured.Unstructured) string {
-	phase, _, _ := unstructuredNestedString(obj.Object, "status", "phase")
-	return phase
 }

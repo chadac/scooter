@@ -156,3 +156,98 @@ def test_the_connection_overrides_the_roles_read_only_default():
     from conversation_controller.rows import CONNECT_OPTIONS
 
     assert "default_transaction_read_only=off" in CONNECT_OPTIONS
+
+
+# --- sync_phases: the convergent write ------------------------------------------------------
+#
+# set_phase alone leaves two permanent holes — a conversation that never transitions again is
+# never mirrored, and a dropped best-effort write is dropped for good. These pin the sweep that
+# closes both, and pin that it stays cheap enough to run every tick.
+
+
+def test_sync_phases_updates_only_rows_that_differ():
+    """IS DISTINCT FROM, not `<>`: a NULL phase (every row predating the mirror) is exactly the
+    case that must be backfilled, and `NULL <> 'Assigned'` is NULL — it would match nothing."""
+    conn = FakeConn()
+    rows = ConversationRows("dsn", connect=lambda _dsn: conn)
+
+    rows.sync_phases([("a", "Assigned"), ("b", "Failed")])
+
+    sql, params = conn.executed[0]
+    assert "IS DISTINCT FROM" in sql
+    assert "(%s::text, %s::text),(%s::text, %s::text)" in sql
+    assert params == ["a", "Assigned", "b", "Failed"]
+
+
+def test_sync_phases_is_one_statement_for_the_whole_fleet():
+    """This runs on every tick. One query per conversation would make the steady state cost scale
+    with fleet size for a pass that, by construction, usually changes nothing."""
+    conn = FakeConn()
+    rows = ConversationRows("dsn", connect=lambda _dsn: conn)
+
+    rows.sync_phases([(f"c{i}", "Assigned") for i in range(200)])
+
+    assert len(conn.executed) == 1
+
+
+def test_sync_phases_chunks_past_the_bind_parameter_limit():
+    """Two bind params per conversation against Postgres' 65535 cap: a big enough fleet in one
+    statement is not a slow query, it is a hard failure of the whole sweep."""
+    conn = FakeConn()
+    rows = ConversationRows("dsn", connect=lambda _dsn: conn)
+
+    rows.sync_phases([(f"c{i}", "Assigned") for i in range(1200)])
+
+    assert len(conn.executed) == 3
+    assert all(len(params) <= 1000 for _sql, params in conn.executed)
+
+
+def test_sync_phases_of_nothing_issues_no_query():
+    """An empty cluster must not even open a connection."""
+    opens = []
+    rows = ConversationRows("dsn", connect=lambda dsn: opens.append(dsn) or FakeConn())
+
+    assert rows.sync_phases([]) == 0
+    assert opens == []
+
+
+def test_sync_phases_survives_postgres_being_down():
+    """The boundary this whole module exists to hold: assignment keeps working without Postgres."""
+    conn = FakeConn(fail=True)
+    rows = ConversationRows("dsn", connect=lambda _dsn: conn)
+
+    assert rows.sync_phases([("a", "Assigned")]) == 0
+    assert conn.closed, "a connection that errored must be dropped so the next tick reconnects"
+
+
+def test_sync_phases_skips_conversations_with_no_phase_on_the_cr():
+    """_state defaults a status-less CR to "Pending". That default is a guess, not an observation,
+    and the pass materializes the real phase moments later — mirroring the guess would race it."""
+    from conversation_controller.loop import _sync_phases
+    from conversation_controller.reconcile import ConversationState
+
+    class Recorder:
+        def __init__(self):
+            self.synced = None
+
+        def sync_phases(self, pairs):
+            self.synced = pairs
+            return 0
+
+    rec = Recorder()
+    _sync_phases(
+        rec,
+        [
+            ConversationState(name="has-phase", host_pod=None, phase="Assigned", generation=0),
+            ConversationState(name="no-phase", host_pod=None, phase="Pending", generation=0, phase_present=False),
+        ],
+    )
+
+    assert rec.synced == [("has-phase", "Assigned")]
+
+
+def test_sync_phases_is_a_no_op_without_a_database():
+    """No DSN configured is a supported deployment, not a degraded one."""
+    from conversation_controller.loop import _sync_phases
+
+    _sync_phases(None, [])  # must not raise
