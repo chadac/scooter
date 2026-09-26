@@ -52,6 +52,22 @@ CREATE TABLE "conversations" (
   "user_titled"      boolean NULL,
   "starred"          boolean NULL,
   "pending_queue"    jsonb NULL,
+  -- ASSIGNMENT / FENCING. Mirrors the Conversation CR's status.hostPod + status.generation,
+  -- which these columns are replacing. Why: PR #654. Named
+  -- host_* rather than owner_* because "owner" above is the end USER, not the host pod.
+  --
+  -- host_pod is a pod NAME, never an IP: a name is stable identity, an IP is a mutable
+  -- fact Kubernetes owns and can reassign silently. The router resolves name -> address at
+  -- route time. A stale name fails closed; a stale IP succeeds against the wrong pod.
+  "host_pod"         text NULL,
+  -- Fence epoch, bumped by the assigner on every (re)assignment. NOT NULL DEFAULT 0 is
+  -- load-bearing: the claim is `WHERE $gen > host_generation`, and `$gen > NULL` is NULL,
+  -- so a nullable column would make every claim fail and nothing could ever be assigned.
+  "host_generation"  bigint NOT NULL DEFAULT 0,
+  -- Pending | Assigned | Suspended. (The CR also declared Orphaned, never written.)
+  "phase"            text NULL,
+  "sandbox_ref"      text NULL,
+  "creator_pod"      text NULL,
   PRIMARY KEY ("id")
 );
 
@@ -71,6 +87,8 @@ CREATE INDEX "conversations_by_owner" ON "conversations" ("owner");
 --   migrations/<ts>_notify_conversation_changes.sql
 -- Keep the two in sync by hand when the notified columns change (that migration and the
 -- router's assembleList are the only two places that must agree on which changes push).
+-- The assignment columns are deliberately NOT notified: reassignment churn would wake every
+-- listening sidebar for a change no sidebar renders.
 
 -- The conversation EVENT LOG — the durable replacement for events.jsonl on the
 -- wiped emptyDir, and for the NFS mirror that existed only to survive that.
