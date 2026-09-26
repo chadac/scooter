@@ -355,15 +355,16 @@ in
   # while everything else stays gated on `enable`. The gated body keeps its own
   # indentation so this wrapper is the whole diff.
   config = lib.mkMerge [
-  # The tables the `broker` database holds (agentSandbox.db, #606). static_shares +
-  # static_share_versions move into the shares CONTRIB module in stage 2 of #606 —
-  # this is the declaration that moves, and nothing else changes when it does.
+  # The tables the `broker` database holds (agentSandbox.db, #606). The OWNER is
+  # declared here and the tables MERGE in from wherever the code that writes them
+  # lives: permission_requests is contrib/aws/deployment.nix's now (stage 2 of #606).
+  # static_shares + static_share_versions are still here because `shares` is not a
+  # contrib yet; they move on the same line when it becomes one.
   {
     agentSandbox.db.broker = {
       owner = "broker";
       tables = {
         sandbox_size = { writers = [ "broker" ]; };
-        permission_requests = { writers = [ "broker" ]; };
         module_registry = { writers = [ "broker" ]; };
         static_shares = { writers = [ "broker" ]; };
         static_share_versions = { writers = [ "broker" ]; };

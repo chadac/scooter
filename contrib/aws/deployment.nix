@@ -114,52 +114,66 @@ in
     };
   };
 
-  # Gated on the BROKER being deployed too, not just on aws: without it there is no
-  # container to inject env into, and the ConfigMap below would render for a
-  # deployment that runs no broker at all.
-  config = lib.mkIf (bcfg.enable && acfg.enable) {
-    agentSandbox.broker = {
-      extraEnv = [
-        { name = "AWS_ENABLED"; value = "true"; }
-        { name = "AWS_REGION"; value = acfg.region; }
-        { name = "AWS_STS_EXTERNAL_ID"; value = acfg.externalId; }
-        { name = "AWS_BROKER_PRINCIPAL_ARN"; value = acfg.brokerPrincipalArn; }
-        { name = "AWS_ACCOUNTS_FILE"; value = "/etc/agent-broker/accounts.json"; }
-        { name = "AWS_ROLE_TTL_HOURS"; value = toString acfg.roleTtlHours; }
-        { name = "AWS_APPROVER_CLAIM"; value = acfg.approverClaim; }
-        # The provider notifies the agent-host to raise the approval interrupt. The
-        # platform's one cluster-internal agent-host URL, not a second knob that
-        # could be set to disagree with core's AGENT_HOST_URL — which is what
-        # `broker.aws.agentHostUrl` was, since the CORE auto-linking env read it.
-        { name = "AWS_AGENT_HOST_URL"; value = bcfg.agentHostUrl; }
-      ];
+  # The table declaration is deliberately OUTSIDE the `mkIf` below: it is gated on
+  # the contrib being BUILT (deployment-modules.nix imports only enabled contribs),
+  # never on this deployment running it — `just db-generate` renders from bare
+  # defaults, so a deployment-gated table vanishes from the committed schema.
+  # Why: PR #637.
+  config = lib.mkMerge [
+    {
+      # Writer is `broker`: the contrib runs inside the broker image and writes
+      # through the broker's own database role. It declares no `owner` — that is
+      # modules/broker.nix's, which owns the database.
+      agentSandbox.db.broker.tables.permission_requests = { writers = [ "broker" ]; };
+    }
 
-      # The registry is a mounted FILE, so its content is invisible to the pod
-      # template — without this hash, editing an account updates the file in place
-      # and the already-running process keeps serving the accounts it read at
-      # startup, with no rollout and nothing logged.
-      podAnnotations."checksum/aws-accounts" =
-        builtins.hashString "sha256" (builtins.toJSON acfg.accounts);
+    # Everything else IS a deployment property, and gated on the BROKER being
+    # deployed as well as aws: without the broker there is no container to inject env
+    # into, and the ConfigMap below would render for a deployment that runs no broker.
+    (lib.mkIf (bcfg.enable && acfg.enable) {
+      agentSandbox.broker = {
+        extraEnv = [
+          { name = "AWS_ENABLED"; value = "true"; }
+          { name = "AWS_REGION"; value = acfg.region; }
+          { name = "AWS_STS_EXTERNAL_ID"; value = acfg.externalId; }
+          { name = "AWS_BROKER_PRINCIPAL_ARN"; value = acfg.brokerPrincipalArn; }
+          { name = "AWS_ACCOUNTS_FILE"; value = "/etc/agent-broker/accounts.json"; }
+          { name = "AWS_ROLE_TTL_HOURS"; value = toString acfg.roleTtlHours; }
+          { name = "AWS_APPROVER_CLAIM"; value = acfg.approverClaim; }
+          # The provider notifies the agent-host to raise the approval interrupt. The
+          # platform's one cluster-internal agent-host URL, not a second knob that
+          # could be set to disagree with core's AGENT_HOST_URL — which is what
+          # `broker.aws.agentHostUrl` was, since the CORE auto-linking env read it.
+          { name = "AWS_AGENT_HOST_URL"; value = bcfg.agentHostUrl; }
+        ];
 
-      # IRSA: the broker pod assumes each account's base role via this role.
-      serviceAccountAnnotations = lib.optionalAttrs (acfg.serviceAccountRoleArn != "") {
-        "eks.amazonaws.com/role-arn" = acfg.serviceAccountRoleArn;
+        # The registry is a mounted FILE, so its content is invisible to the pod
+        # template — without this hash, editing an account updates the file in place
+        # and the already-running process keeps serving the accounts it read at
+        # startup, with no rollout and nothing logged.
+        podAnnotations."checksum/aws-accounts" =
+          builtins.hashString "sha256" (builtins.toJSON acfg.accounts);
+
+        # IRSA: the broker pod assumes each account's base role via this role.
+        serviceAccountAnnotations = lib.optionalAttrs (acfg.serviceAccountRoleArn != "") {
+          "eks.amazonaws.com/role-arn" = acfg.serviceAccountRoleArn;
+        };
+
+        extraVolumeMounts = [
+          { name = "aws-accounts"; mountPath = "/etc/agent-broker"; readOnly = true; }
+        ];
+        extraVolumes = [
+          { name = "aws-accounts"; configMap.name = "agent-broker-aws-accounts"; }
+        ];
       };
 
-      extraVolumeMounts = [
-        { name = "aws-accounts"; mountPath = "/etc/agent-broker"; readOnly = true; }
-      ];
-      extraVolumes = [
-        { name = "aws-accounts"; configMap.name = "agent-broker-aws-accounts"; }
-      ];
-    };
-
-    # The account registry, mounted at /etc/agent-broker/accounts.json. Single
-    # source of truth shared with the sandbox's ~/.aws/config profiles, which read
-    # the same ConfigMap through a second mount (see contrib/aws/sandbox.nix).
-    kubernetes.resources.configMaps.agent-broker-aws-accounts = {
-      metadata = { name = "agent-broker-aws-accounts"; namespace = cfg.namespace; };
-      data."accounts.json" = builtins.toJSON acfg.accounts;
-    };
-  };
+      # The account registry, mounted at /etc/agent-broker/accounts.json. Single
+      # source of truth shared with the sandbox's ~/.aws/config profiles, which read
+      # the same ConfigMap through a second mount (see contrib/aws/sandbox.nix).
+      kubernetes.resources.configMaps.agent-broker-aws-accounts = {
+        metadata = { name = "agent-broker-aws-accounts"; namespace = cfg.namespace; };
+        data."accounts.json" = builtins.toJSON acfg.accounts;
+      };
+    })
+  ];
 }
