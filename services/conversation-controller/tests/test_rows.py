@@ -5,6 +5,8 @@ down. The controller's job is assignment; a Postgres outage must cost a stale `p
 nothing else. Every test below is really a statement about that boundary.
 """
 
+import inspect
+
 import pytest
 
 from conversation_controller.rows import ConversationRows, dsn_from_env, from_env
@@ -288,28 +290,13 @@ def test_a_losing_claim_is_not_an_error():
     assert not conn.closed, "a lost claim is a normal outcome — it must not drop the connection"
 
 
-def test_release_keeps_the_generation_as_a_high_water_mark():
-    """Clearing host_generation would reset the fence to 0 and let any stale epoch claim next. A
-    release says 'no pod owns this', not 'ownership never advanced'."""
-    conn = FakeConn()
-    rows = ConversationRows("dsn", connect=lambda _dsn: conn)
-
-    rows.release_assignment("c1", 4)
-
-    sql, params = conn.executed[0]
-    assert "SET host_pod = NULL" in sql
-    assert "host_generation" not in sql.split("WHERE")[0], "the epoch must survive a release"
-    assert "%s >= host_generation" in sql
-    assert params == ("c1", 4)
-
-
-def test_release_cannot_detach_a_pod_assigned_at_a_newer_epoch():
-    """The >= is the whole guard: a stale controller holds a LOWER epoch than the row and its
-    release must match nothing, or it would unassign a conversation someone else just claimed."""
-    conn = FakeConn(rowcount=0)
-    rows = ConversationRows("dsn", connect=lambda _dsn: conn)
-
-    assert rows.release_assignment("c1", 1) is False
+def test_nothing_can_release_the_row_claim():
+    """#678. host_pod is the append fence's single-writer identity, and an unclaimed row does not
+    refuse — so a claim passing through NULL lets every pod write at once. Only set_assignment
+    writes the column, and only A -> B. There is no release."""
+    assert not hasattr(ConversationRows, "release_assignment")
+    src = inspect.getsource(ConversationRows)
+    assert "host_pod = NULL" not in src, "a release would re-open the fence mid-conversation"
 
 
 def test_sync_assignments_converges_without_going_backwards():
@@ -322,8 +309,21 @@ def test_sync_assignments_converges_without_going_backwards():
 
     sql, params = conn.executed[0]
     assert "v.gen >= c.host_generation" in sql
-    assert "c.host_pod IS DISTINCT FROM v.host_pod OR c.host_generation <> v.gen" in sql
     assert params == ["a", "host-1", 3, "b", None, 0]
+
+
+def test_sync_assignments_never_clears_a_claim():
+    """#678. A suspended conversation is listed every pass with hostPod=None; mirroring that
+    straight through re-opened the fence on every tick. coalesce keeps the last writer, and the
+    no-op guard must compare against the coalesced value or a suspended row churns forever."""
+    conn = FakeConn()
+    rows = ConversationRows("dsn", connect=lambda _dsn: conn)
+
+    rows.sync_assignments([("b", None, 0)])
+
+    sql, _ = conn.executed[0]
+    assert "SET host_pod = coalesce(v.host_pod, c.host_pod)" in sql
+    assert "c.host_pod IS DISTINCT FROM coalesce(v.host_pod, c.host_pod)" in sql
 
 
 def test_sync_assignments_is_one_statement_and_chunks():

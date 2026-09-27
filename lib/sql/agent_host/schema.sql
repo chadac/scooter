@@ -59,6 +59,10 @@ CREATE TABLE "conversations" (
   -- host_pod is a pod NAME, never an IP: a name is stable identity, an IP is a mutable
   -- fact Kubernetes owns and can reassign silently. The router resolves name -> address at
   -- route time. A stale name fails closed; a stale IP succeeds against the wrong pod.
+  --
+  -- THE APPEND FENCE'S SINGLE-WRITER IDENTITY. NULL means "not yet assigned" and does not
+  -- refuse (a first turn appends before anything assigns it), so the claim must only ever
+  -- move A -> B, never back to NULL while the conversation lives. Why: #678.
   "host_pod"         text NULL,
   -- Fence epoch, bumped by the assigner on every (re)assignment. NOT NULL DEFAULT 0 is
   -- load-bearing: the claim is `WHERE $gen > host_generation`, and `$gen > NULL` is NULL,

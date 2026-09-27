@@ -516,17 +516,13 @@ export async function main(
   // volume (assets, goose state). NO FILE FALLBACK: without a DSN the event log is
   // unavailable rather than silently written to an emptyDir every rollout wipes.
   const localStore = createFileConversationStore(config.localStatePath);
-  // The APPEND FENCE's claim source. Late-bound because the ownership tracker that answers
-  // it is built further down (same reason onGained is assigned there, not at construction);
-  // nothing appends before boot finishes, so the hole is never observed.
-  let observedGeneration: ((id: SessionId) => number | undefined) | undefined;
   const podName = process.env.POD_NAME;
   const eventStore = agentHostResourceDsn()
     ? createPgEventStore({
         dsn: agentHostResourceDsn(),
         // Single-replica (no POD_NAME) has no second writer to fence against, and nothing
         // assigns a host there — a fence would refuse nothing and cost a subquery per token.
-        fence: podName ? { pod: podName, generation: (id) => observedGeneration?.(id) } : undefined,
+        fence: podName ? { pod: podName } : undefined,
       })
     : undefined;
   hostLog.info("conversation event log", { backend: eventStore ? "postgres" : "none" });
@@ -747,17 +743,13 @@ export async function main(
 
   // Build a bridge per conversation: connect exec to the sandbox pod, spawn
   // goose, and wire its AG-UI events out through the server.
-  // Multi-replica FENCING: when POD_NAME is set (the StatefulSet gives each pod its
-  // ordinal name), watch the Conversation CRD so this pod stops appending to a
+  // Multi-replica FENCING: when POD_NAME is set (the downward API gives each pod its
+  // name), watch the Conversation CRD so this pod stops appending to a
   // conversation reassigned away from it. Unset (single-replica) => allowAllGuard: a no-op
   // guard, no watch, no k8s dependency. See ownershipGuard.ts.
   const ownership = podName
     ? createK8sOwnershipGuard(podName, config.namespace)
     : undefined;
-  // Hand the tracker's cached epoch to the append fence. The fence presents it; the ROW
-  // decides. Undefined (nothing observed yet) narrows the fence to pod identity — see
-  // AppendFence.
-  observedGeneration = (id) => ownership?.guard.observedGeneration?.(id);
   // The WRITE side of the same CRD: when multi-replica (POD_NAME set), register each new
   // conversation as a Conversation CR so the controller assigns it a hostPod and the
   // router forwards to it. Unset => noopRegistry (no CR). See conversationRegistry.ts.

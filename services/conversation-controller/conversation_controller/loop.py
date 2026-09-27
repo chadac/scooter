@@ -114,17 +114,6 @@ def _mirror_phase(rows, name: str, phase: str) -> None:
         rows.set_phase(name, phase)
 
 
-def _mirror_release(rows, name: str, generation: int) -> None:
-    """Mirror a placement RELEASE (the CR patch that clears hostPod) to the row.
-
-    Immediate rather than left to the next pass's sweep: a release is a fencing event. Once appends
-    check the row (D3), a tick of "the row still says this pod owns it" is a tick in which a pod the
-    controller has already detached can still write. Why: PR #654.
-    """
-    if rows is not None:
-        rows.release_assignment(name, generation)
-
-
 def _sync_rows(rows, convs) -> None:
     """Converge the row's phase and placement columns on the CRs this pass listed.
 
@@ -267,18 +256,13 @@ def reconcile_once(k8s, cap: int, rows=None) -> list[tuple[str, str]]:
             results.append((c.name, "suspend-sandbox"))
             continue
         if isinstance(action, Detach):
-            # A SUSPENDED conversation that still carries stale placement → release it (the
-            # controller owns hostPod/hostIP; the agent-host owns the Suspended phase, which we
-            # leave as-is). Clear BOTH the fencing identity (hostPod) AND the routing address
-            # (hostIP): hostPod so a suspended conversation isn't shown "on" a dead pod and the
-            # placement/demand logic stops treating it as hosted; hostIP so the router stops
-            # dialing the (now-dead) pod and falls back to a live one
-            # (docs/scooter-bug-stale-hostip-routes-to-dead-pod.md). The invariant: hostIP is
-            # empty whenever hostPod is empty. (Only patches when there's actually placement to
-            # clear; reconcile returns NoOp once it's already {hostPod: null, hostIP: null}, so
-            # no churn.)
+            # A SUSPENDED conversation that still carries stale placement → release it. Clear
+            # BOTH or neither: hostIP alone would keep the router dialing a dead pod
+            # (docs/scooter-bug-stale-hostip-routes-to-dead-pod.md), hostPod alone would keep
+            # the placement/demand logic treating it as hosted.
+            # This is PLACEMENT only. The row's host_pod — the append fence's single-writer
+            # identity — deliberately survives a release; see rows.set_assignment and #678.
             k8s.patch_status(c.name, {"hostPod": None, "hostIP": None})
-            _mirror_release(rows, c.name, c.generation)
             hosts[c.name] = None
             results.append((c.name, "detach"))
             continue
@@ -302,7 +286,6 @@ def reconcile_once(k8s, cap: int, rows=None) -> list[tuple[str, str]]:
             # The drift repair exists because the OWNER's setPhase never landed — so the row is
             # exactly as stale as the CR was, and needs the same correction.
             _mirror_phase(rows, c.name, "Suspended")
-            _mirror_release(rows, c.name, c.generation)
             hosts[c.name] = None
             results.append((c.name, "mark-suspended"))
             continue
@@ -316,7 +299,6 @@ def reconcile_once(k8s, cap: int, rows=None) -> list[tuple[str, str]]:
             if c.host_pod is not None or not c.phase_present or c.phase != "Pending":
                 k8s.patch_status(c.name, {"phase": "Pending", "hostPod": None})
                 _mirror_phase(rows, c.name, "Pending")
-                _mirror_release(rows, c.name, c.generation)
             hosts[c.name] = None
             results.append((c.name, "pending"))
             continue
