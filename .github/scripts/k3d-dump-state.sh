@@ -19,6 +19,13 @@ nix shell nixpkgs#kubectl nixpkgs#jq nixpkgs#docker-client nixpkgs#systemd -c ba
   done
   kubectl describe nodes || true
   kubectl -n agent-sandbox get sandboxes.agents.x-k8s.io -o wide || true
+  # The conversations ROW, not just the CR. The append fence reads host_pod from
+  # HERE, so a CR that names an owner while the row does not is invisible above and
+  # is exactly the state in which two pods both pass the fence (#678).
+  echo "===== agent_host.conversations (the row the append fence reads) ====="
+  kubectl -n agent-sandbox exec deploy/agent-shared-db -- \
+    psql -U postgres -d agent_host -c \
+    "select id, phase, host_pod, host_generation from conversations order by id" || true
   kubectl -n agent-sandbox get events --sort-by=.lastTimestamp | tail -120 || true
   kubectl -n agent-sandbox logs -l app=agent-host --tail=300 || true
   kubectl -n agent-sandbox logs -l app=conversation-controller --tail=150 || true
