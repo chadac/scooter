@@ -6,7 +6,7 @@
  * No LISTEN/NOTIFY, no triggers.
  */
 
-import { and, asc, desc, eq, gte, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNull, lt, sql } from "drizzle-orm";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { agent_host } from "@scooter/schema";
 
@@ -197,6 +197,41 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
     }
   };
 
+  /** Conversations this pod has already run the claim for — one attempt per process. */
+  const claimAttempted = new Set<SessionId>();
+
+  /**
+   * TAKE the row if nobody holds it. The fence cannot refuse an unclaimed row (a first turn
+   * appends before anything assigns it), and the controller's assignment arrives on a
+   * reconcile TICK — measured at 6-10s after the first append in #678. A conversation
+   * routed to two pods inside that window had both of them pass the fence and collide on
+   * the PK. No tick can be fast enough, so the claim has to come from the writer.
+   *
+   * `where host_pod is null` makes it first-writer-wins in one statement: the loser updates
+   * nothing and is refused by its own insert a moment later. The controller still overrides
+   * on a real handoff — set_assignment carries a higher epoch and is unconditional on pod.
+   */
+  const claimIfUnheld = async (id: SessionId) => {
+    const fence = config.fence;
+    if (!fence || claimAttempted.has(id)) return;
+    claimAttempted.add(id);
+    try {
+      await db
+        .update(conversations)
+        .set({ hostPod: fence.pod })
+        .where(and(eq(conversations.id, id), isNull(conversations.hostPod)));
+    } catch (error) {
+      // Not fatal: losing the claim write leaves the fence exactly as open as it was
+      // before, and the append still has the PK behind it. Surface it rather than
+      // silently degrading to the racy behaviour this replaces.
+      log.warn("could not claim the conversations row; the append fence stays unarmed", {
+        conversation_id: id,
+        pod: fence.pod,
+        error: formatError(error),
+      });
+    }
+  };
+
   const head = async (id: SessionId) => {
     const cached = heads.get(id);
     if (cached) return cached;
@@ -218,6 +253,9 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
         .catch(() => {}) // a prior failure must not break the CHAIN (ordering)
         .then(async () => {
           try {
+            // Before the first append, not after: the window this closes is measured in
+            // seconds, and an append that beats its own claim is the collision itself.
+            await claimIfUnheld(id);
             const at = await head(id);
             const prevChecksum = at.checksum;
             const seq = at.seq + 1;

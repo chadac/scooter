@@ -90,6 +90,15 @@ function fakeDb(): {
         rows.push({ conversation_id, seq, event: parsed, checksum, prev_checksum });
         return { rows: [], rowCount: 1 };
       }
+      // The CLAIM: `update conversations set host_pod = $1 where id = $2 and host_pod is null`.
+      // First-writer-wins is the whole point, so the null check is modelled, not assumed.
+      if (head.startsWith("UPDATE")) {
+        const [pod, conversation_id] = values as [string, string];
+        const a = assigned.get(conversation_id);
+        if (!a || a.hostPod != null) return { rows: [], rowCount: 0 };
+        assigned.set(conversation_id, { hostPod: pod });
+        return { rows: [], rowCount: 1 };
+      }
       if (head.startsWith("DELETE")) {
         const [conversation_id] = values as [string];
         const before = rows.length;
@@ -273,6 +282,42 @@ describe("eventStore — the append fence", () => {
 
     expect(errors, "the fence must refuse the non-owner, not leave it to the PK").toEqual([]);
     expect(rows).toHaveLength(1);
+  });
+
+  it("THE CLAIM: the first writer takes an unclaimed row, so the second pod is fenced", async () => {
+    // #678's dominant path. The row is created with host_pod null and the controller's
+    // assignment lands on a reconcile TICK — 6-10s later in the measured failures. Two pods
+    // routed the same conversation inside that window both passed the fence and collided on
+    // the PK. Claiming on first append closes it in one statement instead of one tick.
+    const { db, rows, assign } = fakeDb();
+    assign(CONV, { hostPod: null }); // created, not yet assigned
+    const a = fencedStore(db, "host-1");
+    const b = fencedStore(db, "host-2");
+    const errors: unknown[] = [];
+    a.onAppendError((_id, e) => errors.push(e));
+    b.onAppendError((_id, e) => errors.push(e));
+
+    await Promise.all([
+      a.appendEvent(CONV, run(1)[0]).catch(() => {}),
+      b.appendEvent(CONV, run(2)[0]).catch(() => {}),
+    ]);
+
+    expect(errors, "no PK collision — the loser is refused by the fence").toEqual([]);
+    expect(rows, "exactly one writer committed").toHaveLength(1);
+  });
+
+  it("the claim NEVER steals a row another pod already holds", async () => {
+    // `where host_pod is null` is the whole guard. A claim that overwrote an existing owner
+    // would hand the conversation to whichever pod appended most recently — the opposite of
+    // one-writer-per-conversation.
+    const { db, rows, assign } = fakeDb();
+    assign(CONV, { hostPod: "host-1" });
+
+    await fencedStore(db, "host-2").appendEvent(CONV, run(1)[0]);
+    expect(rows, "host-2 must not claim its way past the owner").toEqual([]);
+
+    await fencedStore(db, "host-1").appendEvent(CONV, run(2)[0]);
+    expect(rows, "the real owner still writes").toHaveLength(1);
   });
 
   it("an UNCLAIMED row appends — and so does a conversation with no row yet", async () => {
