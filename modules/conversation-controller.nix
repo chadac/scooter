@@ -360,9 +360,12 @@ in
                 ]
                 ++ lib.optional (cfg.postgres.sslmode != null) { name = "AGENT_HOST_DB_SSLMODE"; value = cfg.postgres.sslmode; };
                 ports = [{ name = "metrics"; containerPort = ccfg.metricsPort; }];
+                # Import floor is ~83 MiB, ~76 MiB of it the kubernetes client alone, so
+                # 64Mi could never start. Keep requests == limits: the leader must not be
+                # an eviction candidate.
                 resources = lib.mkDefault {
-                  requests = { cpu = "25m"; memory = "64Mi"; };
-                  limits = { cpu = "25m"; memory = "64Mi"; };
+                  requests = { cpu = "25m"; memory = "256Mi"; };
+                  limits = { cpu = "25m"; memory = "256Mi"; };
                 };
               };
             };
