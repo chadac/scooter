@@ -2,11 +2,11 @@
   "version": 1,
   "inputs": {
     "nixpkgs": {
-      "lastModified": 1789785513,
-      "narHash": "sha256-B44WL6h0XoLjJ41bUPJk0X5SDinLCII//6EcBLXKiJ0=",
+      "lastModified": 1790323409,
+      "narHash": "sha256-VVTPf+Hyd5ebpjBMHmrLMSBIeW6ls48Bqtosj7CNKLA=",
       "owner": "NixOS",
       "repo": "nixpkgs",
-      "rev": "20b1ddd1aa5ace70c9468305030aa4f9ef79671b",
+      "rev": "e94cb152ed51bd6e24eb4a41f1460252beb52cd2",
       "type": "github"
     }
   },
@@ -33,12 +33,12 @@
       },
       "marimo": {
         "attr": "marimo",
-        "drv": "/nix/store/5xifdh8pb3bp93v1hrjypqnidx2jab7l-python3.14-marimo-0.24.0.drv",
+        "drv": "/nix/store/vx22fmiwakqrn2rszh5dminqaqimy4za-python3.14-marimo-0.24.2.drv",
         "output": "out",
         "bins": [
           "marimo"
         ],
-        "name": "marimo-0.24.0"
+        "name": "marimo-0.24.2"
       },
       "tree": {
         "attr": "tree",
@@ -60,12 +60,12 @@
       },
       "uv": {
         "attr": "uv",
-        "drv": "/nix/store/dgyvxhf9dz1hs89qm2rc7nrn2gm0b1i4-uv-0.12.16.drv",
+        "drv": "/nix/store/ffh99clx6zbs0ln0cvihkn0vm31y7ng1-uv-0.12.17.drv",
         "output": "out",
         "bins": [
           "uv"
         ],
-        "name": "uv-0.12.16"
+        "name": "uv-0.12.17"
       }
     },
     "x86_64-linux": {
@@ -90,12 +90,12 @@
       },
       "marimo": {
         "attr": "marimo",
-        "drv": "/nix/store/f3yh4a9mlnnfm13xgr1hxdbmp93wlg5a-python3.14-marimo-0.24.0.drv",
+        "drv": "/nix/store/ckypp55l925sy7d8gjzawba89ss356yg-python3.14-marimo-0.24.2.drv",
         "output": "out",
         "bins": [
           "marimo"
         ],
-        "name": "marimo-0.24.0"
+        "name": "marimo-0.24.2"
       },
       "tree": {
         "attr": "tree",
@@ -117,12 +117,12 @@
       },
       "uv": {
         "attr": "uv",
-        "drv": "/nix/store/39pnws4qcwlfpv3l5clml37i7cgzxms7-uv-0.12.16.drv",
+        "drv": "/nix/store/p2rhahw3rvkc3pigjgkcqyx7bhx0qr4n-uv-0.12.17.drv",
         "output": "out",
         "bins": [
           "uv"
         ],
-        "name": "uv-0.12.16"
+        "name": "uv-0.12.17"
       }
     }
   }
