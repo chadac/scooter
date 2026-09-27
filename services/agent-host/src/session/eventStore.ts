@@ -43,21 +43,22 @@ export interface PgEventStoreConfig {
  * the seven appendEvent call sites, while a fence on the statement cannot be forgotten by
  * a new one.
  *
+ * POD IDENTITY IS THE WHOLE FENCE. One writer per conversation, ever: `host_pod` moves
+ * only on a handoff, and the pod it moves away from never writes again. The epoch is NOT
+ * consulted — agent-host is a Deployment, so a pod name carries a ReplicaSet hash and a
+ * random suffix and is never reused. The epoch clause only ever refused a rightful owner
+ * holding a lagging cached generation.
+ *
  * It fences on CONTRADICTION only: an append is refused when the row names a different
- * host, or this pod at a different epoch. A row that names nobody — or no row at all —
- * does not refuse, because existence is not this fence's job and a brand-new conversation
- * appends before anything has assigned it. Refusing an absent claim outright ("no
- * generation => no writes") requires reading the claim from the ROW; while it comes from
- * the CR watch, an unobserved-but-assigned conversation is indistinguishable from an
- * unassigned one, and failing closed there would drop first turns.
+ * host. A row that names nobody — or no row at all — does not refuse, because a brand-new
+ * conversation appends before anything has assigned it, and failing closed there would drop
+ * first turns. That concession is safe ONLY while "nobody" means "not yet assigned": the
+ * controller must never release a claim back to NULL mid-conversation, or two pods pass
+ * this fence at once and collide on the PK. See #678 and rows.py.
  */
 export interface AppendFence {
   /** This pod's name — the identity the row must not contradict. */
   pod: string;
-  /** The epoch this pod believes it holds `id` under, or undefined when it has observed no
-   *  assignment. Undefined narrows the fence to pod identity rather than widening it to
-   *  allow-all: presenting an epoch nobody assigned would refuse every append. */
-  generation(id: SessionId): number | undefined;
 }
 
 /** The event-log half of ConversationStore, backed by conversation_events. */
@@ -168,20 +169,19 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
 
   /** The fence predicate, or nothing when unfenced. See AppendFence for the semantics;
    *  `not exists (... contradiction ...)` is what makes a missing or unclaimed row allow. */
-  const fenceClause = (id: SessionId, gen: number | undefined) => {
+  const fenceClause = (id: SessionId) => {
     const fence = config.fence;
     if (!fence) return sql.empty();
-    const wrongEpoch = gen === undefined ? sql.empty() : sql` or ${conversations.hostGeneration} <> ${gen}`;
     return sql`
               where not exists (
                 select 1 from ${conversations}
                  where ${conversations.id} = ${id}
                    and ${conversations.hostPod} is not null
-                   and (${conversations.hostPod} <> ${fence.pod}${wrongEpoch})
+                   and ${conversations.hostPod} <> ${fence.pod}
               )`;
   };
 
-  const onFenced = (id: SessionId, presented: number | undefined) => {
+  const onFenced = (id: SessionId) => {
     // The head came from a log this pod no longer drives; the new owner is advancing seq
     // past it. Drop it so a conversation reassigned BACK re-seeds from the table instead of
     // colliding on the PK.
@@ -189,12 +189,9 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
     const n = (refusals.get(id) ?? 0) + 1;
     refusals.set(id, n);
     if (n === 1 || n % 100 === 0) {
-      // presented_generation is the epoch the STATEMENT carried, not a fresh read of the
-      // cache: an investigation into a refusal needs what was actually presented.
       log.warn("append fenced by the conversations row (this pod is not the host)", {
         conversation_id: id,
         pod: config.fence?.pod,
-        presented_generation: presented,
         refused: n,
       });
     }
@@ -225,22 +222,19 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
             const prevChecksum = at.checksum;
             const seq = at.seq + 1;
             const checksum = chainNext(prevChecksum, event);
-            // Resolved ONCE, so the statement's predicate and the refusal log cannot
-            // disagree about which epoch was presented.
-            const presented = config.fence?.generation(id);
             // INSERT ... SELECT, not VALUES, so the fence can ride the statement (see
             // AppendFence). NO onConflictDoNothing: the PK is a correctness backstop, and
             // a duplicate (conversation_id, seq) means a second writer.
             const res = await db.execute(sql`
               insert into ${conversationEvents} (conversation_id, seq, event, checksum, prev_checksum)
-              select ${id}::text, ${seq}::bigint, ${JSON.stringify(event)}::jsonb, ${checksum}::text, ${prevChecksum}::text${fenceClause(id, presented)}
+              select ${id}::text, ${seq}::bigint, ${JSON.stringify(event)}::jsonb, ${checksum}::text, ${prevChecksum}::text${fenceClause(id)}
             `);
             if ((res.rowCount ?? 0) === 0) {
               // Zero rows is only reachable under a fence, and it is not an error: the row
               // says this pod is no longer the writer. Do NOT advance the head or notify
               // listeners — nothing was committed, and claiming otherwise would hand the
               // integrity stream a checksum no reader can find.
-              onFenced(id, presented);
+              onFenced(id);
               return;
             }
             heads.set(id, { seq, checksum });

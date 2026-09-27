@@ -1233,32 +1233,16 @@ in
         subjects = [{ kind = "ServiceAccount"; name = "agent-host"; namespace = cfg.namespace; }];
       };
 
-      # agent-host is a StatefulSet (not a Deployment) so each replica has a STABLE
-      # ordinal name + per-pod DNS (agent-host-<n>.agent-host-headless.<ns>.svc) — the
-      # address the conversation-router forwards to for the pod that owns a conversation
-      # (status.hostPod). At replicas=1 this behaves exactly like the old single-replica
-      # Deployment: one pod, one shared state PVC. A StatefulSet's RollingUpdate also
-      # terminates the old ordinal pod BEFORE creating its replacement, so the shared
-      # RWO agent-host-state volume is never Multi-Attach-deadlocked (the reason the
-      # Deployment needed Recreate) — RollingUpdate is safe here.
+      # A DEPLOYMENT, deliberately — routing is by POD IP (status.hostIP), so the stable
+      # ordinal names and per-pod DNS a StatefulSet would give are not needed. Pod names are
+      # therefore ReplicaSet-hashed and NEVER REUSED, which is what lets the append fence be
+      # pod identity alone (services/agent-host eventStore AppendFence, #678).
       #
-      # DESIGN (rollout-drain, todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md) — NOT YET APPLIED:
-      # convert this StatefulSet → a Deployment for seamless upgrades:
-      #   - deployments.agent-host (random pod names — routing is by POD IP now, not DNS).
-      #   - strategy RollingUpdate maxSurge=1, maxUnavailable=0 (new pod Ready BEFORE the old
-      #     drains → no capacity gap; terminate-before-create was ONLY forced by the RWO PVC).
-      #   - per-pod `state` volumeClaimTemplate → emptyDir (it's a HOT CACHE; the durable copy
-      #     is the shared RWX history mirror ⇒ no RWO PVC ⇒ no Multi-Attach blocker).
-      #   - REMOVE services.agent-host-headless (no per-pod DNS); keep the `agent-host`
-      #     ClusterIP Service (the router's fallback target).
-      # SEAMLESS ROLLOUT (todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md): a Deployment with
-      # maxSurge=1/maxUnavailable=0 — a new-gen pod becomes Ready BEFORE any old pod drains,
-      # so capacity never dips during an upgrade (the StatefulSet's terminate-before-create,
-      # forced by the RWO PVC's Multi-Attach, was what caused the gap). Routing is by POD IP
-      # now (status.hostIP), so random Deployment pod names are fine — no ordinal/DNS needed.
-      # The per-pod `state` volume is an emptyDir HOT CACHE: durable history lives on the
-      # shared RWX mirror (MIRROR_STATE_PATH), and a reassigned conversation is revived from
-      # it (controller revive-push). No RWO PVC ⇒ no Multi-Attach ⇒ surge is safe.
+      # maxSurge=1/maxUnavailable=0: a new-gen pod goes Ready BEFORE any old pod drains, so
+      # capacity never dips on an upgrade. Surge is only safe because the per-pod `state`
+      # volume is an emptyDir HOT CACHE — durable history lives on the shared RWX mirror
+      # (MIRROR_STATE_PATH). An RWO PVC here would Multi-Attach-deadlock the surge.
+      # Design: todo/docs/ROLLOUT_DRAIN_AND_POD_IP.md.
       deployments.agent-host = {
         metadata = { name = "agent-host"; namespace = cfg.namespace; };
         # When the controller autoscales the agent-host, it is the SINGLE writer of
