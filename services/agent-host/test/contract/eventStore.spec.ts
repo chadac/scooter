@@ -164,6 +164,18 @@ function fakeDb(): {
   };
 }
 
+/** The row read-back is DETACHED from the write chain (it must not add latency to an
+ *  append), so a log line lands a microtask or two after the append resolves. Poll for it
+ *  rather than asserting on the next tick — a fixed sleep is the flake this avoids. */
+const awaitLine = async (spy: { mock: { calls: unknown[][] } }, needle: string) => {
+  for (let i = 0; i < 100; i++) {
+    const hit = spy.mock.calls.flat().map(String).find((a) => a.includes(needle));
+    if (hit) return hit;
+    await new Promise((r) => setTimeout(r, 2));
+  }
+  return undefined;
+};
+
 const store = (db: NodePgDatabase) => createPgEventStore({ db });
 
 /** A store that presents `pod` as its claim on every append. */
@@ -366,7 +378,7 @@ describe("eventStore — the append fence", () => {
       assign(CONV, { hostPod: null });
       await s.appendEvent(CONV, run(3)[0]).catch(() => {}); // collides on (CONV, 2)
 
-      const line = errSpy.mock.calls.flat().map(String).find((a) => a.includes("durable append FAILED"));
+      const line = await awaitLine(errSpy, "the row at the moment of a PK collision");
       expect(line, "the collision must be logged").toBeDefined();
       const field = (k: string, v: string) => new RegExp(`"${k}":"?${v}"?|\\b${k}=${v}\\b`);
       expect(line, "flagged as a second writer, not a generic db error").toMatch(field("collided", "true"));
@@ -390,7 +402,7 @@ describe("eventStore — the append fence", () => {
       assign(CONV, { hostPod: "host-2" });
       await fencedStore(db, "host-1").appendEvent(CONV, run(1)[0]);
 
-      const line = errSpy.mock.calls.flat().map(String).find((a) => a.includes("append fenced"));
+      const line = await awaitLine(errSpy, "append fenced");
       expect(line, "a refusal must be logged at all").toBeDefined();
       // Matched by FIELD, not by serialized form: log.ts emits JSON (`"row":"held"`) or
       // key=value (`row=held`) depending on the environment, and a test pinned to one of
