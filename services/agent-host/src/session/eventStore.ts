@@ -181,20 +181,49 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
               )`;
   };
 
-  const onFenced = (id: SessionId) => {
+  /** Why the fence said no, read back from the row. The predicate rides the insert, so a
+   *  refusal arrives as rowCount 0 and carries NO reason — and the two reasons need
+   *  different fixes: `held` is the fence working (another pod owns the conversation),
+   *  `missing` is a deleted or never-created row, which under a fence that requires the
+   *  row would be a DROPPED turn. Read only on a sampled line; a fenced pod refuses once
+   *  per streamed token, so one query each would be a query per token. Why: PR #679. */
+  const fenceReason = async (id: SessionId) => {
+    const rows = await db
+      .select({ hostPod: conversations.hostPod, hostGeneration: conversations.hostGeneration })
+      .from(conversations)
+      .where(eq(conversations.id, id))
+      .limit(1);
+    const row = rows[0];
+    if (!row) return { row: "missing" as const };
+    return {
+      row: row.hostPod ? ("held" as const) : ("unheld" as const),
+      host_pod: row.hostPod ?? undefined,
+      host_generation: row.hostGeneration,
+    };
+  };
+
+  const onFenced = async (id: SessionId) => {
     // The head came from a log this pod no longer drives; the new owner is advancing seq
     // past it. Drop it so a conversation reassigned BACK re-seeds from the table instead of
     // colliding on the PK.
     heads.delete(id);
     const n = (refusals.get(id) ?? 0) + 1;
     refusals.set(id, n);
-    if (n === 1 || n % 100 === 0) {
-      log.warn("append fenced by the conversations row (this pod is not the host)", {
-        conversation_id: id,
-        pod: config.fence?.pod,
-        refused: n,
-      });
+    if (n !== 1 && n % 100 !== 0) return;
+    // A refusal committed nothing and lost nothing, so the diagnostic must not be able to
+    // turn one into the "turn lost" path by throwing out of the caller's try.
+    let reason: Record<string, unknown> = {};
+    try {
+      reason = await fenceReason(id);
+    } catch (error) {
+      reason = { row: "unreadable", row_error: formatError(error) };
     }
+    log.warn("append fenced by the conversations row (this pod is not the host)", {
+      conversation_id: id,
+      pod: config.fence?.pod,
+      refused: n,
+      ...reason,
+    });
   };
 
   /** Conversations this pod has already run the claim for — one attempt per process. */
@@ -272,7 +301,7 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
               // says this pod is no longer the writer. Do NOT advance the head or notify
               // listeners — nothing was committed, and claiming otherwise would hand the
               // integrity stream a checksum no reader can find.
-              onFenced(id);
+              await onFenced(id);
               return;
             }
             heads.set(id, { seq, checksum });

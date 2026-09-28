@@ -16,7 +16,7 @@
  * store's generated-model queries are exercised rather than a hand-rolled shim.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { drizzle } from "drizzle-orm/node-postgres";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 
@@ -109,6 +109,13 @@ function fakeDb(): {
         // drizzle asks for rowMode:"array": positional values in SELECT order.
         // The store issues four shapes; model each by what the SQL selects.
         const conversation_id = values[0] as string;
+
+        // The fence-reason read-back, off the CONVERSATIONS row rather than the event log.
+        // Modelled by its projection: nothing else selects host_pod.
+        if (/HOST_POD/i.test(text)) {
+          const a = assigned.get(conversation_id);
+          return a ? { rows: [[a.hostPod, 0]], rowCount: 1 } : { rows: [], rowCount: 0 };
+        }
         let mine = rows
           .filter((r) => r.conversation_id === conversation_id)
           .sort((a, b) => (a.seq as number) - (b.seq as number));
@@ -330,6 +337,27 @@ describe("eventStore — the append fence", () => {
     await s.appendEvent("conv-no-row" as SessionId, run(1)[0]); // nothing in conversations
 
     expect(rows.map((r) => r.conversation_id)).toEqual([CONV, "conv-no-row"]);
+  });
+
+  it("THE REASON: a refusal names WHY, because held and missing need different fixes", async () => {
+    // The predicate rides the insert, so a refusal comes back as rowCount 0 and carries
+    // nothing. Both causes then log the same line — and they are not the same event:
+    // `held` is the fence working, `missing` is a row that was deleted out from under a
+    // live conversation, which under a fence that requires the row is a DROPPED turn.
+    // Told apart only by reading the row back, so this pins the read-back. Why: PR #679.
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {}); // warn -> console.error
+    try {
+      const { db, assign } = fakeDb();
+      assign(CONV, { hostPod: "host-2" });
+      await fencedStore(db, "host-1").appendEvent(CONV, run(1)[0]);
+
+      const line = errSpy.mock.calls.flat().map(String).find((a) => a.includes("append fenced"));
+      expect(line, "a refusal must be logged at all").toBeDefined();
+      expect(line).toContain('"row":"held"');
+      expect(line, "which pod holds it is the reassignment story").toContain('"host_pod":"host-2"');
+    } finally {
+      errSpy.mockRestore();
+    }
   });
 
   it("the fence reads pod identity ONLY — it never consults the epoch", async () => {
