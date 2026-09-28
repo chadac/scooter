@@ -94,7 +94,11 @@ test.describe("multi-turn re-render (tail + replay)", () => {
     // Switch away, then back — the open path that strand at the top.
     await page.locator(sidebar.newSession).click();
     await chat.send("elsewhere");
-    await chat.waitForReply(/dummy agent/i, 100_000); // second conversation boot (see above)
+    // Best-effort + an explicit precondition, for the reason given at the top of this file's
+    // first switch-away: a reassignment mid-run makes this reply undeliverable while the
+    // switch-away itself is unaffected. Why: PR #681.
+    await chat.waitForReply(/dummy agent/i, 100_000).catch(() => {});
+    await expect(page.locator(sidebar.item)).toHaveCount(2, { timeout: 30_000 });
     await page.locator(sidebar.item).filter({ hasText: /turn m1-aa/i }).first().click();
 
     // Fully repopulated…
