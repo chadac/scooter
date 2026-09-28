@@ -353,8 +353,12 @@ describe("eventStore — the append fence", () => {
 
       const line = errSpy.mock.calls.flat().map(String).find((a) => a.includes("append fenced"));
       expect(line, "a refusal must be logged at all").toBeDefined();
-      expect(line).toContain('"row":"held"');
-      expect(line, "which pod holds it is the reassignment story").toContain('"host_pod":"host-2"');
+      // Matched by FIELD, not by serialized form: log.ts emits JSON (`"row":"held"`) or
+      // key=value (`row=held`) depending on the environment, and a test pinned to one of
+      // them passes locally and fails in CI on formatting rather than on behaviour.
+      const field = (k: string, v: string) => new RegExp(`"${k}":"${v}"|\\b${k}=${v}\\b`);
+      expect(line).toMatch(field("row", "held"));
+      expect(line, "which pod holds it is the reassignment story").toMatch(field("host_pod", "host-2"));
     } finally {
       errSpy.mockRestore();
     }
