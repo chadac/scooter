@@ -49,12 +49,9 @@ export interface PgEventStoreConfig {
  * random suffix and is never reused. The epoch clause only ever refused a rightful owner
  * holding a lagging cached generation.
  *
- * It fences on CONTRADICTION only: an append is refused when the row names a different
- * host. A row that names nobody — or no row at all — does not refuse, because a brand-new
- * conversation appends before anything has assigned it, and failing closed there would drop
- * first turns. That concession is safe ONLY while "nobody" means "not yet assigned": the
- * controller must never release a claim back to NULL mid-conversation, or two pods pass
- * this fence at once and collide on the PK. See #678 and rows.py.
+ * THE ROW MUST EXIST. An append is allowed only against a row naming this pod or nobody
+ * (which the claim then takes); no row means DELETED, not new, and refuses. Every create
+ * writes the row first, so nothing legitimate appends without one. Why: #678, PR #679.
  */
 export interface AppendFence {
   /** This pod's name — the identity the row must not contradict. */
@@ -167,17 +164,25 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
   // once per token, and one line each would bury the reassignment that caused it.
   const refusals = new Map<SessionId, number>();
 
+  /** Conversations whose row this pod has TAKEN. Positive knowledge only — dropped on any
+   *  refusal or failure, since both mean the row no longer says what we think. */
+  const claimHeld = new Set<SessionId>();
+  /** Last claim attempt, per conversation. */
+  const claimAttemptedAt = new Map<SessionId, number>();
+  /** Retry floor for a pod that does NOT hold the row: without it a fenced pod would run a
+   *  claim per streamed token for a whole run. Why: PR #679. */
+  const CLAIM_RETRY_MS = 1_000;
+
   /** The fence predicate, or nothing when unfenced. See AppendFence for the semantics;
-   *  `not exists (... contradiction ...)` is what makes a missing or unclaimed row allow. */
+   *  `exists (... a row that permits us ...)` is what makes a DELETED conversation refuse. */
   const fenceClause = (id: SessionId) => {
     const fence = config.fence;
     if (!fence) return sql.empty();
     return sql`
-              where not exists (
+              where exists (
                 select 1 from ${conversations}
                  where ${conversations.id} = ${id}
-                   and ${conversations.hostPod} is not null
-                   and ${conversations.hostPod} <> ${fence.pod}
+                   and (${conversations.hostPod} is null or ${conversations.hostPod} = ${fence.pod})
               )`;
   };
 
@@ -186,6 +191,9 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
     // past it. Drop it so a conversation reassigned BACK re-seeds from the table instead of
     // colliding on the PK.
     heads.delete(id);
+    // A refusal is proof we do NOT hold the row, whatever we last recorded. Re-arm the
+    // claim so a row that becomes unheld again is TAKEN rather than left open.
+    claimHeld.delete(id);
     const n = (refusals.get(id) ?? 0) + 1;
     refusals.set(id, n);
     if (n === 1 || n % 100 === 0) {
@@ -197,9 +205,6 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
     }
   };
 
-  /** Conversations this pod has already run the claim for — one attempt per process. */
-  const claimAttempted = new Set<SessionId>();
-
   /**
    * TAKE the row if nobody holds it. The fence cannot refuse an unclaimed row (a first turn
    * appends before anything assigns it), and the controller's assignment arrives on a
@@ -210,16 +215,25 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
    * `where host_pod is null` makes it first-writer-wins in one statement: the loser updates
    * nothing and is refused by its own insert a moment later. The controller still overrides
    * on a real handoff — set_assignment carries a higher epoch and is unconditional on pod.
+   *
+   * RETRIED, not once per process: saveMeta upserts, so a row deleted and re-created comes
+   * back UNHELD and must be re-taken or it admits every writer at once. Why: PR #679.
    */
   const claimIfUnheld = async (id: SessionId) => {
     const fence = config.fence;
-    if (!fence || claimAttempted.has(id)) return;
-    claimAttempted.add(id);
+    if (!fence || claimHeld.has(id)) return;
+    const now = Date.now();
+    const last = claimAttemptedAt.get(id);
+    if (last !== undefined && now - last < CLAIM_RETRY_MS) return;
+    claimAttemptedAt.set(id, now);
     try {
-      await db
+      const res = await db
         .update(conversations)
         .set({ hostPod: fence.pod })
         .where(and(eq(conversations.id, id), isNull(conversations.hostPod)));
+      // One row updated = the row now names us. Zero = it is held elsewhere or gone; either
+      // way we do not hold it, so the next append past the throttle asks again.
+      if ((res.rowCount ?? 0) > 0) claimHeld.add(id);
     } catch (error) {
       // Not fatal: losing the claim write leaves the fence exactly as open as it was
       // before, and the append still has the PK behind it. Surface it rather than
@@ -288,8 +302,10 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
             log.errorWith("durable append FAILED (turn lost)", error, { conversation_id: id });
             for (const cb of errorListeners) cb(id, error);
             // Drop the cached head: after a failure this pod's idea of seq may
-            // be wrong (another writer), so re-seed from the table next time.
+            // be wrong (another writer), so re-seed from the table next time. Same for the
+            // claim — a failed write leaves the row's owner unknown to us.
             heads.delete(id);
+            claimHeld.delete(id);
             throw error;
           }
         });
