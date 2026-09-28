@@ -181,6 +181,21 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
               )`;
   };
 
+  /** Postgres 23505 — unique_violation. Here it can only be (conversation_id, seq), which
+   *  is a SECOND WRITER, not a retry: the store never uses onConflictDoNothing. */
+  const isDuplicateKey = (error: unknown): boolean => {
+    for (let e: unknown = error, depth = 0; e && depth < 4; depth++) {
+      const o = e as { code?: unknown; message?: unknown; cause?: unknown };
+      // Drizzle WRAPS the driver error ("Failed query: ..."), so the pg code lives on
+      // `cause`, not on what the catch receives. Walk the chain rather than trusting
+      // either shape; the message is the last resort for a wrapper that drops `cause`.
+      if (o.code === "23505") return true;
+      if (typeof o.message === "string" && o.message.includes("conversation_events_pkey")) return true;
+      e = o.cause;
+    }
+    return false;
+  };
+
   /** Why the fence said no, read back from the row. The predicate rides the insert, so a
    *  refusal arrives as rowCount 0 and carries NO reason — and the two reasons need
    *  different fixes: `held` is the fence working (another pod owns the conversation),
@@ -314,7 +329,28 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
             // appendEvent is `void`-called, so nobody sees this rejection. With
             // no file fallback it is a LOST TURN — surface it, then rethrow for
             // any caller that did await.
-            log.errorWith("durable append FAILED (turn lost)", error, { conversation_id: id });
+            //
+            // A PK collision is the ONE failure where the row is the answer: it means a
+            // second writer got here, so the row either named the other pod (the fence was
+            // not applied) or named NOBODY (it was released, and this pod's claim never
+            // re-ran). Those need opposite fixes and the refusal log cannot tell them
+            // apart, because a collision is precisely the case where nobody was refused.
+            // Safe to read unconditionally — a collision is already the error path, and
+            // never the hot one. Why: PR #679.
+            const collided = isDuplicateKey(error);
+            let reason: Record<string, unknown> = {};
+            if (collided && config.fence) {
+              try {
+                reason = await fenceReason(id);
+              } catch (e) {
+                reason = { row: "unreadable", row_error: formatError(e) };
+              }
+            }
+            log.errorWith("durable append FAILED (turn lost)", error, {
+              conversation_id: id,
+              ...(collided ? { collided: true, pod: config.fence?.pod } : {}),
+              ...reason,
+            });
             for (const cb of errorListeners) cb(id, error);
             // Drop the cached head: after a failure this pod's idea of seq may
             // be wrong (another writer), so re-seed from the table next time.

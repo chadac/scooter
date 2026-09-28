@@ -339,6 +339,45 @@ describe("eventStore — the append fence", () => {
     expect(rows.map((r) => r.conversation_id)).toEqual([CONV, "conv-no-row"]);
   });
 
+  it("A COLLISION names the row too — the one failure where nobody was refused", async () => {
+    // Observed on this branch: conversation 0078363a refused pod kz8zq at 16:01:26 (`held`
+    // by rhtv6), then took 59 PK collisions FROM kz8zq between 16:01:35 and :41. So the row
+    // changed in between — but to what? If it named kz8zq, the other writer should have
+    // been refused and was not. If it named NOBODY, the claim was released and never
+    // re-ran. Opposite fixes, and the refusal log cannot distinguish them, because a
+    // collision is exactly the case where no refusal happened. Why: PR #679.
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { db, assign } = fakeDb();
+      assign(CONV, { hostPod: "host-1" });
+      const s = fencedStore(db, "host-1");
+      await s.appendEvent(CONV, run(1)[0]); // seq 1 committed
+
+      // A second writer takes seq 2 while this pod's head still says 1. It gets in because
+      // the row was RELEASED: an unclaimed row does not refuse, and host-2's own claim then
+      // takes it.
+      assign(CONV, { hostPod: null });
+      const other = fencedStore(db, "host-2");
+      await other.appendEvent(CONV, run(2)[0]);
+
+      // Released AGAIN, which is the state that produces a collision rather than a clean
+      // refusal: host-1 skips its claim (once per process, already attempted above), passes
+      // the fence because nothing contradicts it, and lands on a seq that is taken.
+      assign(CONV, { hostPod: null });
+      await s.appendEvent(CONV, run(3)[0]).catch(() => {}); // collides on (CONV, 2)
+
+      const line = errSpy.mock.calls.flat().map(String).find((a) => a.includes("durable append FAILED"));
+      expect(line, "the collision must be logged").toBeDefined();
+      const field = (k: string, v: string) => new RegExp(`"${k}":"?${v}"?|\\b${k}=${v}\\b`);
+      expect(line, "flagged as a second writer, not a generic db error").toMatch(field("collided", "true"));
+      expect(line, "the row state at the moment of the collision is the whole point").toMatch(
+        field("row", "unheld"),
+      );
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
   it("THE REASON: a refusal names WHY, because held and missing need different fixes", async () => {
     // The predicate rides the insert, so a refusal comes back as rowCount 0 and carries
     // nothing. Both causes then log the same line — and they are not the same event:
