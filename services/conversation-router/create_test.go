@@ -333,29 +333,31 @@ func TestDualCreatorWritesBothStores(t *testing.T) {
 	}
 }
 
-// A CR failure fails the create. The row is already written by then (it goes first, so the
-// half-state a failure leaves is the benign one), and ON CONFLICT DO NOTHING makes the retry free.
-func TestDualCreatorPropagatesCRFailure(t *testing.T) {
+// The CR is authoritative: its failure fails the create, and the row must NOT be written. Writing
+// the row anyway would invent a conversation that lists but can never be assigned a host.
+func TestDualCreatorPropagatesCRFailureAndSkipsTheRow(t *testing.T) {
 	boom := errors.New("apiserver down")
-	d := &dualCreator{cr: &fakeCreator{err: boom}, rows: &fakeRowWriter{}}
+	rows := &fakeRowWriter{}
+	d := &dualCreator{cr: &fakeCreator{err: boom}, rows: rows}
 	if err := d.Create(context.Background(), NewConversation{Name: "conv-1"}); !errors.Is(err, boom) {
 		t.Fatalf("CR error must propagate, got %v", err)
 	}
+	if len(rows.calls) != 0 {
+		t.Errorf("row must not be written when the CR failed: %+v", rows.calls)
+	}
 }
 
-// A ROW failure now fails the create, and the CR must NOT be written. The append fence refuses a
-// conversation with no row — it cannot tell a never-created one from a deleted one, and a deleted
-// one must refuse (#678) — so swallowing this would hand back a conversation that lists nowhere
-// and silently accepts no turns. A CR written anyway would also hold a pod slot (pod_cap is 1)
-// for a conversation nothing can ever write to.
-func TestDualCreatorFailsOnRowFailureAndSkipsTheCR(t *testing.T) {
-	boom := errors.New("pg down")
+// A row failure must NOT fail the create. Swallowing it leaves a CR with no row, a state the rest
+// of the system tolerates, so the worst case is a missing row rather than a create that fails where
+// it would otherwise succeed. This expectation inverts once the row is the source of truth for
+// existence: a conversation with no row will not list, so the create has to fail.
+func TestDualCreatorSwallowsRowFailure(t *testing.T) {
 	cr := &fakeCreator{}
-	d := &dualCreator{cr: cr, rows: &fakeRowWriter{err: boom}}
-	if err := d.Create(context.Background(), NewConversation{Name: "conv-1"}); !errors.Is(err, boom) {
-		t.Fatalf("a row failure must fail the create, got %v", err)
+	d := &dualCreator{cr: cr, rows: &fakeRowWriter{err: errors.New("pg down")}}
+	if err := d.Create(context.Background(), NewConversation{Name: "conv-1"}); err != nil {
+		t.Fatalf("a row failure must not fail the create, got %v", err)
 	}
-	if len(cr.calls) != 0 {
-		t.Errorf("the CR must not be written when the row failed: %+v", cr.calls)
+	if len(cr.calls) != 1 {
+		t.Errorf("the CR write should still have happened: %+v", cr.calls)
 	}
 }
