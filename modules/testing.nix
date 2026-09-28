@@ -67,13 +67,17 @@ in
       webhooks.testWebhook = lib.mkForce tcfg.testWebhook;
       # SMALL sandboxes. The production default is Guaranteed QoS 2cpu/4Gi PER
       # sandbox. Tests assert behaviour, not perf isolation: a fake agent's
-      # echo + a short shell command fit comfortably here, and several sandboxes
-      # must be schedulable side by side. REQUESTS are near-zero (scheduling
-      # density is the whole point); LIMITS stay real because the sandbox is a
-      # genuine systemd NixOS pod even under the fake agent — a tiny memory LIMIT
-      # would OOM-kill it at boot, and limits (not requests) are what kill.
+      # echo + a short shell command fit comfortably here.
+      #
+      # REQUESTS must stay something the node can HONOUR, not near-zero: at 50m the
+      # scheduler admitted every sandbox a leaking suite could create, and admitted
+      # pods then starved instead of queueing. Don't lower these. Why: PR #675.
+      #
+      # LIMITS stay generous: the sandbox is a genuine systemd NixOS pod even under
+      # the fake agent, and a tiny memory LIMIT would OOM-kill it at boot — limits
+      # (not requests) are what kill.
       sandboxResources = lib.mkForce {
-        requests = { cpu = "50m"; memory = "64Mi"; };
+        requests = { cpu = "250m"; memory = "256Mi"; };
         limits = { cpu = "1"; memory = "1Gi"; };
       };
     };

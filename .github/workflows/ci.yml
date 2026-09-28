@@ -609,11 +609,11 @@ jobs:
 
   # e2e full is sharded with the SAME distribute -> shard-matrix -> collect shape as
   # e2e fast, so the two suites stay structurally consistent and widening the full
-  # allowlist later is a number bump, not a restructure. Three shards now that the
-  # misc specs are enabled: the 12-spec test phase (~35-50m serial at cluster pace —
-  # suspended-recovery and concurrency alone fund two sandbox boots per test) has
-  # outgrown the ~13m k3d setup, which is the documented bump condition (each shard
-  # boots its OWN cluster — that is the price of a shard here).
+  # allowlist later is a number bump, not a restructure. Each shard boots its OWN
+  # cluster (~4m) and runs the cluster smoke (~2.5m) before its specs — that fixed
+  # ~7m is the price of a shard, against a ~40m serial test phase. The shard COUNT
+  # is set below and is a contention knob; the balance BETWEEN shards comes from
+  # measured weights, not from this comment. Why: PR #675.
   e2e-full-distribute:
     name: e2e full distribute (shard)
     needs: cluster-changes
@@ -646,31 +646,38 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # Weights from the last green full run (best-effort), mirroring e2e fast.
-      - name: fetch prior e2e-full report (for weights)
+      # A WINDOW of recent reports, NOT the last green run: `--status success` matched
+      # nothing for a month and fell back silently, so the plan was never measured.
+      # Red runs are safe to weight from because shard-e2e takes a per-spec MAX and
+      # floors it with the committed table. Why: PR #675.
+      - name: fetch recent e2e-full reports (for weights)
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           mkdir -p prior
-          run_id=$(gh run list --workflow "${{ github.workflow }}" --branch "${{ github.event.repository.default_branch }}" \
-            --status success --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
-          if [ -n "${run_id:-}" ]; then
-            gh run download "$run_id" --name e2e-full-report --dir prior 2>/dev/null \
-              && echo "downloaded prior e2e-full report from run $run_id" \
-              || echo "no e2e-full-report artifact on run $run_id — using committed weights"
-          else
-            echo "no prior successful run — using committed weights"
-          fi
+          # Walk back from newest: the artifact expires (90d) and a run that died before
+          # `merge reports` has none, so "most recent" is not "has one".
+          runs=$(gh run list --workflow "${{ github.workflow }}" --branch "$DEFAULT_BRANCH" \
+            --limit 20 --json databaseId --jq '.[].databaseId' 2>/dev/null || true)
+          found=0
+          for id in $runs; do
+            [ "$found" -ge 5 ] && break
+            [ "$id" = "${{ github.run_id }}" ] && continue
+            if gh run download "$id" --name e2e-full-report --dir "prior/$id" 2>/dev/null; then
+              found=$((found + 1))
+              echo "weights: took e2e-full-report from run $id"
+            fi
+          done
+          [ "$found" -gt 0 ] || echo "no recent e2e-full report — using committed weights"
 
       - id: plan
         name: plan shards
         run: |
           set -euo pipefail
-          report=""
-          [ -f prior/report.json ] && report="prior/report.json"
-          matrix=$(SPEC_SET=full PRIOR_REPORT="$report" SHARDS="$E2E_FULL_SHARDS" node test/e2e/support/shard-e2e.mjs)
+          matrix=$(SPEC_SET=full PRIOR_REPORT_DIR=prior SHARDS="$E2E_FULL_SHARDS" node test/e2e/support/shard-e2e.mjs)
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   # PLATFORM SMOKE on a real k3d cluster: deploy the FULL multi-replica platform
