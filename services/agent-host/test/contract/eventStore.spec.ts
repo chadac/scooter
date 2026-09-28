@@ -16,7 +16,7 @@
  * store's generated-model queries are exercised rather than a hand-rolled shim.
  */
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { drizzle } from "drizzle-orm/node-postgres";
 import type { NodePgDatabase } from "drizzle-orm/node-postgres";
 
@@ -45,12 +45,10 @@ function fakeDb(): {
   rows: Array<Record<string, unknown>>;
   failNext: (e: Error) => void;
   assign: (conv: string, a: { hostPod: string | null }) => void;
-  drop: (conv: string) => void;
-  hostOf: (conv: string) => string | null;
 } {
   const rows: Array<Record<string, unknown>> = [];
-  // The conversations row the append fence reads. Absent = no row at all, which under a
-  // fence means DELETED (the row is written by the create, before anyone can append).
+  // The conversations row the append fence reads. Absent = no row at all, which is a real
+  // state (the append can beat the INSERT) and must not refuse.
   const assigned = new Map<string, { hostPod: string | null }>();
   let fail: Error | undefined;
   const client = {
@@ -70,18 +68,16 @@ function fakeDb(): {
         // drizzle SERIALIZES jsonb to a string before binding; Postgres returns
         // it parsed. Model that, or every event->>'type' filter sees a string.
         const parsed = typeof event === "string" ? JSON.parse(event) : event;
-        // The APPEND FENCE rides this statement: `... select $1..$5 where exists (a row
-        // that permits the presented claim)`. Evaluated BEFORE the PK, as Postgres does —
+        // The APPEND FENCE rides this statement: `... select $1..$5 where not exists (a row
+        // contradicting the presented claim)`. Evaluated BEFORE the PK, as Postgres does —
         // a fenced-out append never reaches the constraint.
-        if (/WHERE EXISTS/i.test(text)) {
+        if (/NOT EXISTS/i.test(text)) {
           // The subquery correlates on the conversation id, which is therefore bound a
           // SECOND time ahead of the claim: [...5 row values, id, pod].
           const [, pod] = values.slice(5) as [string, string];
           const a = assigned.get(conversation_id);
-          // No row -> refuse: existence IS the row, so absence means deleted. Otherwise pod
-          // identity is the whole predicate — the epoch is not read. See AppendFence.
-          if (!a) return { rows: [], rowCount: 0 };
-          if (a.hostPod != null && a.hostPod !== pod) return { rows: [], rowCount: 0 };
+          // Pod identity is the whole predicate — the epoch is not read. See AppendFence.
+          if (a?.hostPod != null && a.hostPod !== pod) return { rows: [], rowCount: 0 };
         }
         // The PK is a CORRECTNESS backstop, not just an index: a second writer
         // must collide loudly rather than interleave silently. Honour ON
@@ -158,10 +154,6 @@ function fakeDb(): {
     rows,
     failNext: (e) => (fail = e),
     assign: (conv, a) => assigned.set(conv, a),
-    /** Delete the conversations row — what end() does, and the state the fence must refuse. */
-    drop: (conv: string) => assigned.delete(conv),
-    /** Who the row names now, so a test can assert the claim actually landed. */
-    hostOf: (conv: string) => assigned.get(conv)?.hostPod ?? null,
   };
 }
 
@@ -230,11 +222,9 @@ describe("eventStore — ordering", () => {
 // writer from reaching the constraint at all — the row is consulted IN the insert, so a
 // superseded pod is refused by the write it was already making.
 //
-// The fence IS an existence check, and deliberately so: no row means the conversation was
-// deleted, and two pods that outlived the delete wrote orphan events into it. An UNCLAIMED
-// row still appends — a brand-new conversation streams its first turn before anything has
-// assigned it a host — but the same append takes the row, so the second writer is refused
-// rather than left to the PK.
+// What the fence is deliberately NOT: an existence check. A missing or unclaimed row must
+// still append, because a brand-new conversation streams its first turn before anything has
+// assigned it a host, and refusing there would drop the user's first prompt.
 
 describe("eventStore — the append fence", () => {
   it("THE FENCE: the row naming another host refuses the append, and nothing is written", async () => {
@@ -330,62 +320,16 @@ describe("eventStore — the append fence", () => {
     expect(rows, "the real owner still writes").toHaveLength(1);
   });
 
-  it("an UNCLAIMED row appends — the first turn is not blocked", async () => {
+  it("an UNCLAIMED row appends — and so does a conversation with no row yet", async () => {
+    // Both are the first-turn path. The fence blocks a CONTRADICTION; silence is not one.
     const { db, rows, assign } = fakeDb();
     assign(CONV, { hostPod: null });
-
-    await fencedStore(db, "host-1").appendEvent(CONV, run(1)[0]);
-
-    expect(rows.map((r) => r.conversation_id)).toEqual([CONV]);
-  });
-
-  it("NO ROW refuses: a deleted conversation is gone, not new", async () => {
-    // The shard-3 residual of #678. end() deletes the row AND the CR, which disarmed both
-    // fences at once — the row had nothing to refuse with, and the ownership cache dropped
-    // the assignment so canWrite fail-opened everywhere. Two pods that outlived the delete
-    // then appended orphan events into a conversation that no longer existed and collided
-    // with each other, 47 times in 4.7s. Nothing legitimate appends before the row: the
-    // router dual-writes it inside create, and saveMeta upserts it before a bridge exists.
-    const { db, rows } = fakeDb();
-    const errors: unknown[] = [];
-    const s = fencedStore(db, "host-1");
-    s.onAppendError((_id, e) => errors.push(e));
-
-    await expect(s.appendEvent("conv-deleted" as SessionId, run(1)[0])).resolves.toBeUndefined();
-
-    expect(rows, "no row, no append").toEqual([]);
-    expect(errors, "a refusal is not a persistence failure").toEqual([]);
-  });
-
-  it("THE RETRY: a row re-created unheld is CLAIMED again, not left open forever", async () => {
-    // saveMeta upserts, so a pod that outlived a delete can put the row back with host_pod
-    // null. A claim attempted once per process would never re-take it, and an unheld row
-    // admits every writer at once — the exact state the claim exists to prevent, restored
-    // by the recovery path.
-    const { db, rows, assign, drop, hostOf } = fakeDb();
-    assign(CONV, { hostPod: "host-2" });
     const s = fencedStore(db, "host-1");
 
-    await s.appendEvent(CONV, run(1)[0]); // claim loses, append refused
-    expect(rows, "host-2 holds it").toEqual([]);
+    await s.appendEvent(CONV, run(1)[0]);
+    await s.appendEvent("conv-no-row" as SessionId, run(1)[0]); // nothing in conversations
 
-    drop(CONV); // the conversation is deleted …
-    await s.appendEvent(CONV, run(2)[0]);
-    expect(rows, "… and stays unwritable while it does not exist").toEqual([]);
-
-    assign(CONV, { hostPod: null }); // … then re-created, unheld
-    // Past the claim's retry throttle. Only Date is faked — the store's promises still
-    // settle on the real loop, so a 1s wall-clock sleep is not the price of this test.
-    vi.useFakeTimers({ toFake: ["Date"] });
-    try {
-      vi.setSystemTime(Date.now() + 5_000);
-      await s.appendEvent(CONV, run(3)[0]);
-    } finally {
-      vi.useRealTimers();
-    }
-
-    expect(rows, "the row was re-claimed and the append committed").toHaveLength(1);
-    expect(hostOf(CONV), "and it names THIS pod, so a second writer is refused").toBe("host-1");
+    expect(rows.map((r) => r.conversation_id)).toEqual([CONV, "conv-no-row"]);
   });
 
   it("the fence reads pod identity ONLY — it never consults the epoch", async () => {
