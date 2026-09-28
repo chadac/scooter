@@ -55,7 +55,16 @@ test.describe("multi-turn re-render (tail + replay)", () => {
     // (fresh sandbox pod) before its exec can answer.
     await page.locator(sidebar.newSession).click();
     await chat.send("a different conversation");
-    await chat.waitForReply(/dummy agent/i, 100_000);
+    // BEST-EFFORT. The switch-away only has to leave the first conversation, and its reply is
+    // scaffolding — this test is about the FIRST conversation re-rendering, asserted below. A
+    // mid-run reassignment makes the reply undeliverable: the ownership fence drops the
+    // outgoing pod's remaining events by design, so the turn completes server-side while the
+    // UI keeps an empty thread and the message parked in the queue. Failing here would report
+    // a platform hand-off as a tail/replay regression. Why: PR #681.
+    await chat.waitForReply(/dummy agent/i, 100_000).catch(() => {});
+    // The other conversation must EXIST to switch away from — that much is this test's
+    // precondition, and it holds whether the turn ran or queued. Why: PR #681.
+    await expect(page.locator(sidebar.item)).toHaveCount(2, { timeout: 30_000 });
 
     await page.locator(sidebar.item).filter({ hasText: /turn alpha-111/i }).first().click();
 
