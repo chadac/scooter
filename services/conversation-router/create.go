@@ -67,12 +67,11 @@ func (d *dynamicCreator) Create(ctx context.Context, c NewConversation) error {
 // exists so the row can become the source of truth for existence — nothing can read a row that no
 // writer produces, and in the cluster stack nothing produced one at create time.
 //
-// The CR stays AUTHORITATIVE for the request: its error is returned, and a row failure is logged
-// but swallowed. That asymmetry is what keeps this step additive — a swallowed row failure leaves a
-// CR with no row, which is a state the rest of the system already tolerates, rather than failing a
-// create that would otherwise succeed. The asymmetry INVERTS once the router reads existence from
-// the row: a row failure has to fail the create then, because a conversation with no row will not
-// list.
+// BOTH writes are required, and the ROW GOES FIRST. The append fence refuses a conversation with
+// no row — it cannot tell a never-created row from a deleted one, and deleted must refuse — so a
+// swallowed row failure would hand back a conversation that silently accepts no turns. Row first
+// because a row with no CR is the benign half-state (it lists, it deletes, agent-host's register()
+// supplies the CR); a CR with no row holds a pod slot and refuses every append. Why: PR #679.
 // conversationRowWriter is the row half. Narrow for the same reason ConversationCreator is: the
 // interesting behaviour here is which failure is fatal, and that must be testable without a
 // Postgres.
@@ -86,14 +85,12 @@ type dualCreator struct {
 }
 
 func (d *dualCreator) Create(ctx context.Context, c NewConversation) error {
-	if err := d.cr.Create(ctx, c); err != nil {
+	if err := d.rows.CreateConversation(ctx, c); err != nil {
+		logger("create").Error("conversation row insert failed; the create is refused, because a conversation with no row is refused by the append fence",
+			errAttr(err), slog.String("conversation_id", c.Name))
 		return err
 	}
-	if err := d.rows.CreateConversation(ctx, c); err != nil {
-		logger("create").Error("conversation row insert failed; the CR was created, so this degrades to the pre-dual-write behaviour (absent from the list until agent-host writes meta)",
-			errAttr(err), slog.String("conversation_id", c.Name))
-	}
-	return nil
+	return d.cr.Create(ctx, c)
 }
 
 // createRequest is the accepted body. No threadId: the server mints the id.
