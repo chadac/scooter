@@ -782,6 +782,17 @@ jobs:
         if: always()
         run: nix shell nixpkgs#k3d -c k3d cluster delete scooter-ci || true
 
+      # The input that sizes the persistent /nix volumes (server-config
+      # docs/github-runners-spec.md §11): volume = 3x this, rotate at 2.5x.
+      # Measured AFTER the job so it includes the platform images and browsers,
+      # not just the devshell closure. `always()` so a failed shard still
+      # reports -- a shard that dies late has done most of the building.
+      - name: report /nix/store size
+        if: always()
+        run: |
+          du -sh /nix/store 2>/dev/null || true
+          df -h /nix 2>/dev/null || df -h / || true
+
   # The GATE for e2e full: succeeds only when every shard passed; merges the per-shard
   # reports into `e2e-full-report` so the next run's distribute weights by real
   # durations. Mirrors e2e-collect. Skips (not passes) when the path filter skipped
