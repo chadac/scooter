@@ -88,7 +88,9 @@ export default defineConfig({
         // under contention) need units; they are unreachable from the CI job.
         test: {
           name: "ci-scripts",
-          include: ["scripts/**/*.spec.mjs"],
+          // test/e2e/support too: shard-e2e.mjs decides the CI shard plan, and a
+          // mis-weighted plan surfaces only as a timeout in a nightly hours later.
+          include: ["scripts/**/*.spec.mjs", "test/e2e/support/**/*.spec.mjs"],
           environment: "node",
         },
       },

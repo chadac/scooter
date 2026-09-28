@@ -3,12 +3,15 @@
  * Distribute the Playwright e2e spec FILES into N balanced shards for parallel CI
  * runners, weighted by per-file runtime.
  *
- * Weights come from (in priority order):
- *   1. A prior run's Playwright JSON report (env PRIOR_REPORT=path) — the "auto-measure
- *      from the last green run" source. We sum each spec file's test durations.
- *   2. A committed defaults file (test/e2e/shard-weights.json) — the fallback so the
- *      FIRST run (or a cache miss) still balances sensibly, and new specs get a value.
+ * Each spec's weight is the MAX of:
+ *   1. Measured durations — a window of recent Playwright JSON reports
+ *      (PRIOR_REPORT_DIR=dir, per-spec max across them) or a single one (PRIOR_REPORT=path).
+ *   2. A committed table — shard-weights.full.json for SPEC_SET=full, else
+ *      shard-weights.json. Per-target because the two suites' runtimes differ ~3x.
  *   3. A flat DEFAULT_WEIGHT for any spec absent from both.
+ * MAX rather than "first source that knows", because every way a weight goes WRONG here
+ * makes it too SMALL (a truncated report, a stale table), and too-small is the one that
+ * overloads a shard.
  *
  * Bin-packing: Longest-Processing-Time-first (LPT) greedy — sort files heaviest-first,
  * assign each to the currently-lightest shard. Near-optimal makespan for this size.
@@ -21,6 +24,7 @@
  * Usage:  node test/e2e/support/shard-e2e.mjs <N>
  *         SHARDS=<N> node test/e2e/support/shard-e2e.mjs
  *         PRIOR_REPORT=prev/report.json node test/e2e/support/shard-e2e.mjs 4
+ *         SPEC_SET=full PRIOR_REPORT_DIR=prior node test/e2e/support/shard-e2e.mjs 4
  */
 
 import { readdirSync, readFileSync, existsSync } from "node:fs";
@@ -30,7 +34,9 @@ import { dirname, join, basename } from "node:path";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const E2E_DIR = join(HERE, ".."); // test/e2e
 const REPO_ROOT = join(E2E_DIR, "..", ".."); // scooter/
-const DEFAULTS_PATH = join(E2E_DIR, "shard-weights.json");
+// Per-target fallback tables. The full target's numbers are ~3x the fast one's (a real
+// sandbox pod per conversation), so one shared table cannot balance both suites.
+const DEFAULTS_PATH = join(E2E_DIR, process.env.SPEC_SET === "full" ? "shard-weights.full.json" : "shard-weights.json");
 
 const DEFAULT_WEIGHT = 30; // seconds — a middling spec, used when nothing else knows.
 
@@ -63,7 +69,7 @@ function committedWeights() {
  *  the report is absent/unreadable. Sums every test's duration within a file, so a
  *  file's weight reflects its whole cost. Playwright's JSON `suites` tree carries a
  *  `file` per top-level suite and `results[].duration` (ms) per test spec. */
-function priorReportWeights(reportPath) {
+export function priorReportWeights(reportPath) {
   if (!reportPath || !existsSync(reportPath)) return {};
   let report;
   try {
@@ -95,20 +101,43 @@ function priorReportWeights(reportPath) {
   return out;
 }
 
-/** Resolve each spec file's weight: prior report → committed default → flat default. */
-function resolveWeights(files, prior, committed) {
+/** Per-spec MAX across every report.json under `dir` (recursively — `gh run download`
+ *  nests one directory per run). MAX, never a mean: a truncated run under-reports the
+ *  specs it reached, and averaging that in is what overloads a shard. Why: PR #686. */
+export function windowReportWeights(dir) {
+  if (!dir || !existsSync(dir)) return {};
+  const out = {};
+  const walkDir = (d) => {
+    for (const ent of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, ent.name);
+      if (ent.isDirectory()) walkDir(p);
+      else if (ent.name.endsWith(".json")) {
+        for (const [f, secs] of Object.entries(priorReportWeights(p))) {
+          if (secs > 0) out[f] = Math.max(out[f] ?? 0, secs);
+        }
+      }
+    }
+  };
+  walkDir(dir);
+  return out;
+}
+
+/** Resolve each spec file's weight: max(measured, committed, DEFAULT_WEIGHT). */
+export function resolveWeights(files, prior, committed) {
   const w = {};
   for (const f of files) {
-    if (prior[f] && prior[f] > 0) w[f] = prior[f];
-    else if (committed[f] && committed[f] > 0) w[f] = committed[f];
-    else w[f] = DEFAULT_WEIGHT;
+    // Committed value is a FLOOR on the measured one, not a fallback — otherwise a spec
+    // truncated by every run in the window stays under-weighted forever. Why: PR #686.
+    const measured = prior[f] > 0 ? prior[f] : 0;
+    const fallback = committed[f] > 0 ? committed[f] : DEFAULT_WEIGHT;
+    w[f] = Math.max(measured, fallback);
   }
   return w;
 }
 
 /** LPT greedy bin-packing into `n` shards. Returns an array of { specs: string[],
  *  total: number }, each `specs` holding the repo-relative spec paths. */
-function packShards(files, weights, n) {
+export function packShards(files, weights, n) {
   const shards = Array.from({ length: n }, () => ({ specs: [], total: 0 }));
   const heaviestFirst = [...files].sort((a, b) => weights[b] - weights[a]);
   for (const f of heaviestFirst) {
@@ -124,11 +153,15 @@ function packShards(files, weights, n) {
 function main() {
   const n = Math.max(1, Number(process.argv[2] ?? process.env.SHARDS ?? 4));
   const files = specFiles();
-  const prior = priorReportWeights(process.env.PRIOR_REPORT);
+  // PRIOR_REPORT_DIR (a window of runs, per-spec max) takes precedence over the single
+  // PRIOR_REPORT; either may be empty, in which case the committed table carries it.
+  const prior = process.env.PRIOR_REPORT_DIR
+    ? windowReportWeights(process.env.PRIOR_REPORT_DIR)
+    : priorReportWeights(process.env.PRIOR_REPORT);
   const committed = committedWeights();
   const weights = resolveWeights(files, prior, committed);
 
-  const source = Object.keys(prior).length ? "prior-report" : Object.keys(committed).length ? "committed-defaults" : "flat-default";
+  const source = Object.keys(prior).length ? (process.env.PRIOR_REPORT_DIR ? "window-max" : "prior-report") : Object.keys(committed).length ? "committed-defaults" : "flat-default";
   const effN = Math.min(n, files.length) || 1; // don't create empty shards
   const shards = packShards(files, weights, effN)
     // Keep only non-empty shards (defensive; effN caps this already).
@@ -151,4 +184,5 @@ function main() {
   process.stdout.write(JSON.stringify({ include }));
 }
 
-main();
+// Run only as a CLI, so the spec can import the pure functions above.
+if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) main();
