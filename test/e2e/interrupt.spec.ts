@@ -8,7 +8,7 @@
  * Red/Green/Blue and reports the chosen one.
  */
 
-import { test, expect } from "./fixtures.js";
+import { test, expect, platformRestarted } from "./fixtures.js";
 
 const panel = {
   rightPanel: '[data-testid="right-panel"]',
@@ -50,12 +50,25 @@ test.describe("agent option dropdown (interrupt)", () => {
     // 30s. A click that did nothing cannot be waited out, so re-click while the panel is up.
     const green = page.locator(panel.option).filter({ hasText: /green/i });
     await expect(green).toBeEnabled({ timeout: 30_000 });
-    await expect(async () => {
-      if (await page.locator(panel.root).isVisible().catch(() => false)) {
-        await green.click({ timeout: 5_000 }).catch(() => {});
-      }
-      await expect(page.getByText(/you picked: green/i).first()).toBeVisible({ timeout: 15_000 });
-    }).toPass({ timeout: 90_000 });
+    try {
+      await expect(async () => {
+        if (await page.locator(panel.root).isVisible().catch(() => false)) {
+          await green.click({ timeout: 5_000 }).catch(() => {});
+        }
+        await expect(page.getByText(/you picked: green/i).first()).toBeVisible({ timeout: 15_000 });
+      }).toPass({ timeout: 90_000 });
+    } catch (err) {
+      // A mid-run reassignment KILLS the run the interrupt belongs to, but the panel is
+      // re-rendered from the truncated log — so the options are still visible and enabled
+      // and every retry above clicks a request that has no run left to resume. The
+      // platform's recovery prose is the only marker that this happened; without it the
+      // failure is a genuine regression and still fails. Why: PR #680.
+      test.skip(
+        await platformRestarted(page),
+        "the conversation was reassigned mid-run: the interrupt's run was killed by the platform, so answering it can never resume",
+      );
+      throw err;
+    }
 
     // The interrupt content goes away once the request is answered. The right panel
     // itself PERSISTS now (the Sandbox status tab is always present for a live

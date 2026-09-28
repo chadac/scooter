@@ -25,6 +25,25 @@ export const sel = {
   composerInput: '[aria-label="Message input"]',
 };
 
+/** The platform's own recovery prose, injected when a conversation is reassigned to a new
+ *  pod mid-run. The ownership fence DROPS the outgoing pod's remaining events by design
+ *  (services/agent-host/src/session/manager.ts), so the run a test is asserting on is
+ *  killed and the new owner resumes with this message. Why: PR #680. */
+export const RESTART_MARKER = /this conversation was interrupted by a restart/i;
+
+/** True when the platform reassigned this conversation mid-test. The recovery prose lands
+ *  in the THREAD or in the QUEUE — a test that checks only one reads the other as its own
+ *  lost state. Why: PR #680. */
+export async function platformRestarted(page: Page): Promise<boolean> {
+  if ((await page.getByText(RESTART_MARKER).count()) > 0) return true;
+  return (
+    (await page
+      .locator('[data-testid="queued-message-text"]')
+      .filter({ hasText: RESTART_MARKER })
+      .count()) > 0
+  );
+}
+
 export class Chat {
   constructor(private page: Page) {}
 
@@ -304,6 +323,11 @@ export const test = base.extend<Fixtures>({
       // undeletable. 150 attempts ≈ 150s covers it; fast keeps 50 at 100ms (~5s), which is
       // ample for an in-process destroy.
       const attempts = process.env.E2E_TARGET === "full" ? 150 : 50;
+      // Last DELETE status per conversation. Without it the give-up error below names an id
+      // and nothing else, and "starred" is the only cause it can distinguish — so a row that
+      // 404s, 409s for another reason, or 5xxs every pass is indistinguishable from one the
+      // server accepted and never actually destroyed. Why: PR #680.
+      const lastDeleteStatus = new Map<string, number>();
       for (let i = 0; i < attempts; i++) {
         const res = await request.get(`${base}/conversations`);
         if (!res.ok()) {
@@ -366,8 +390,11 @@ export const test = base.extend<Fixtures>({
               await request
                 .patch(`${base}/conversations/${c.id}/starred`, { data: { starred: false } })
                 .catch(() => undefined);
-              return request.delete(`${base}/conversations/${c.id}`);
+              const retry = await request.delete(`${base}/conversations/${c.id}`);
+              lastDeleteStatus.set(c.id, retry.status());
+              return retry;
             }
+            lastDeleteStatus.set(c.id, del.status());
             return del;
           }),
         );
@@ -391,7 +418,13 @@ export const test = base.extend<Fixtures>({
           if (left.length) {
             throw new Error(
               `cleanState could not empty the server after ${attempts} attempts. Still present: ` +
-                left.map((c) => `${c.id}${c.starred ? " (STARRED — DELETE 409s)" : ""}`).join(", ") +
+                left
+                  .map(
+                    (c) =>
+                      `${c.id}${c.starred ? " (STARRED — DELETE 409s)" : ""}` +
+                      ` [last DELETE → ${lastDeleteStatus.get(c.id) ?? "never attempted"}]`,
+                  )
+                  .join(", ") +
                 `. State persists at LOCAL_STATE_PATH (default /tmp/agent-host-e2e), so this survives ` +
                 `restarts until that directory is cleared.`,
             );

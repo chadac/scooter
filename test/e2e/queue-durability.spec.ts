@@ -9,7 +9,7 @@
  * Uses the fake agent (deterministic). See fixtures: startLongRun / sendWhileRunning / queuedMessages.
  */
 
-import { test, expect } from "./fixtures.js";
+import { test, expect, platformRestarted } from "./fixtures.js";
 
 // How long the run that everything QUEUES BEHIND stays in flight.
 //
@@ -146,26 +146,50 @@ test.describe("queue durability across refresh + drain", () => {
 
     await page.reload();
     await chat.openQueueTab();
-    // The queued message is re-derived from the server's QUEUE_UPDATED snapshot on replay.
+    // Wait for OUR row, not merely for "a row". A mid-run reassignment kills the run this
+    // queued behind and enqueues the platform's own recovery prose in its place — so the
+    // queue legitimately holds exactly one row that is NOT the user's message, and a
+    // `.first()` read reports platform behaviour as lost user state. Why: PR #680.
+    const ours = page
+      .locator('[data-testid="queued-message-text"]')
+      .filter({ hasText: "survive the reload" });
     // 60s, not 20: the reload re-derives from the integrity log, which on a cluster round-
-    // trips the router to the owning pod.
-    await expect(chat.queuedMessages()).toHaveCount(1, { timeout: 60_000 });
-    await expect(page.locator('[data-testid="queued-message-text"]').first()).toContainText("survive the reload");
+    // trips the router to the owning pod. Poll rather than assert so the restart check below
+    // gets a chance to run before the budget is spent.
+    for (let i = 0; i < 60 && (await ours.count()) === 0; i++) {
+      if (await platformRestarted(page)) break;
+      await page.waitForTimeout(1_000);
+    }
+    // Skip only on the restart marker actually being present: a genuine "the queue vanished
+    // on reload" regression has no such marker and still fails below. Why: PR #680.
+    if ((await ours.count()) === 0 && (await platformRestarted(page))) {
+      test.skip(
+        true,
+        "the conversation was reassigned mid-test: the run this queued behind was killed by the platform, so there is no in-flight queue left to observe",
+      );
+    }
+    // The queued message is re-derived from the server's QUEUE_UPDATED snapshot on replay.
+    await expect(ours).toHaveCount(1);
+    await expect(chat.queuedMessages()).toHaveCount(1);
   });
 
-  test("a queued message DRAINS + executes after the run finishes (its reply lands)", async ({ chat, page }) => {
+  test("a queued message DRAINS + executes after the run finishes (its reply lands)", async ({ chat }) => {
     await chat.open();
-    // A short sleep so the test doesn't wait the full 20s — long enough to queue behind.
-    await chat.send("!sleep 3");
-    await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
+    // 20s via startLongRun, not a bare `!sleep 3` + a hand-rolled 30s bar wait — the exact
+    // bug the sibling test below was already fixed for. On the full target the exec waits
+    // for a ready sandbox pod BEFORE the sleep starts, so a 3s run can begin and END inside
+    // that wait and the bar never renders; and the hand-rolled wait was priced at 30s where
+    // startLongRun budgets 90s for the same assertion. Failed 2 of 3 contention repetitions
+    // on exactly that line. The drain below is funded by its own 90s poll. Why: PR #680.
+    await chat.startLongRun(20);
     const before = await chat.assistantMessages().count();
     await chat.sendWhileRunning("run me after the sleep");
 
     // Once the sleep run + the queued run both complete, there are MORE assistant messages,
-    // and the queued item leaves the queue. 90s, not 45: on the full target the sleep-3
-    // run first waits for a ready sandbox pod (≤25s cold), then the queued turn runs its
-    // own exec + streamed reply (~10s) — the reply lands ~40s after the send when cold,
-    // which leaves a 45s budget no headroom under CI CPU pressure.
+    // and the queued item leaves the queue. 90s, not 45: on the full target the sleep run
+    // first waits for a ready sandbox pod (≤25s cold), then sleeps 20s, then the queued turn
+    // runs its own exec + streamed reply (~10s) — ~55s when cold, which leaves a 45s budget
+    // no headroom under CI CPU pressure.
     await expect.poll(async () => chat.assistantMessages().count(), { timeout: 90_000 }).toBeGreaterThan(before);
     await chat.openQueueTab();
     await expect(chat.queuedMessages()).toHaveCount(0, { timeout: 20_000 });
