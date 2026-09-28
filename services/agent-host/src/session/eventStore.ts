@@ -217,27 +217,40 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
     };
   };
 
-  const onFenced = async (id: SessionId) => {
+  /**
+   * Log WHY, off the write chain.
+   *
+   * Never awaited by an append. appendEvent serializes a conversation's writes through one
+   * promise chain, so anything awaited inside it delays the NEXT event of a live run — a
+   * diagnostic that costs a round trip there is buying an answer with the latency of the
+   * thing it is meant to observe. Detached, the read lands a few ms late and nothing waits
+   * on it. It also cannot throw into the caller's try, where a benign refusal would be
+   * reported as "durable append FAILED (turn lost)". Why: PR #679.
+   */
+  const logRowState = (
+    level: "warn" | "error",
+    msg: string,
+    id: SessionId,
+    fields: Record<string, unknown>,
+  ) => {
+    void fenceReason(id)
+      .catch((error) => ({ row: "unreadable", row_error: formatError(error) }))
+      .then((reason) => log[level](msg, { conversation_id: id, ...fields, ...reason }));
+  };
+
+  const onFenced = (id: SessionId) => {
     // The head came from a log this pod no longer drives; the new owner is advancing seq
     // past it. Drop it so a conversation reassigned BACK re-seeds from the table instead of
     // colliding on the PK.
     heads.delete(id);
     const n = (refusals.get(id) ?? 0) + 1;
     refusals.set(id, n);
+    // Sampled: a fenced pod refuses once per streamed token, so logging each one would bury
+    // the reassignment that caused it — and would queue a read per token.
     if (n !== 1 && n % 100 !== 0) return;
-    // A refusal committed nothing and lost nothing, so the diagnostic must not be able to
-    // turn one into the "turn lost" path by throwing out of the caller's try.
-    let reason: Record<string, unknown> = {};
-    try {
-      reason = await fenceReason(id);
-    } catch (error) {
-      reason = { row: "unreadable", row_error: formatError(error) };
-    }
-    log.warn("append fenced by the conversations row (this pod is not the host)", {
-      conversation_id: id,
+    logRowState("warn", "append fenced by the conversations row (this pod is not the host)", id, {
       pod: config.fence?.pod,
       refused: n,
-      ...reason,
     });
   };
 
@@ -316,7 +329,7 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
               // says this pod is no longer the writer. Do NOT advance the head or notify
               // listeners — nothing was committed, and claiming otherwise would hand the
               // integrity stream a checksum no reader can find.
-              await onFenced(id);
+              onFenced(id);
               return;
             }
             heads.set(id, { seq, checksum });
@@ -338,19 +351,19 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
             // Safe to read unconditionally — a collision is already the error path, and
             // never the hot one. Why: PR #679.
             const collided = isDuplicateKey(error);
-            let reason: Record<string, unknown> = {};
-            if (collided && config.fence) {
-              try {
-                reason = await fenceReason(id);
-              } catch (e) {
-                reason = { row: "unreadable", row_error: formatError(e) };
-              }
-            }
             log.errorWith("durable append FAILED (turn lost)", error, {
               conversation_id: id,
               ...(collided ? { collided: true, pod: config.fence?.pod } : {}),
-              ...reason,
             });
+            // A follow-up line rather than fields on the one above, for the same reason the
+            // refusal read is detached: the chain must not wait on a diagnostic. Join the
+            // two on conversation_id.
+            if (collided && config.fence) {
+              logRowState("error", "the row at the moment of a PK collision", id, {
+                collided: true,
+                pod: config.fence.pod,
+              });
+            }
             for (const cb of errorListeners) cb(id, error);
             // Drop the cached head: after a failure this pod's idea of seq may
             // be wrong (another writer), so re-seed from the table next time.
