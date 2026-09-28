@@ -6,7 +6,7 @@
  * No LISTEN/NOTIFY, no triggers.
  */
 
-import { and, asc, desc, eq, gte, isNull, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lt, sql } from "drizzle-orm";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { agent_host } from "@scooter/schema";
 
@@ -167,18 +167,51 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
   // once per token, and one line each would bury the reassignment that caused it.
   const refusals = new Map<SessionId, number>();
 
-  /** The fence predicate, or nothing when unfenced. See AppendFence for the semantics;
-   *  `not exists (... contradiction ...)` is what makes a missing or unclaimed row allow. */
-  const fenceClause = (id: SessionId) => {
+  /**
+   * CLAIM-AND-FENCE, in one statement. Rides the insert as a data-modifying CTE.
+   *
+   * The separate once-per-process claim this replaces left a hole that CI caught, with the
+   * row state read back at the moment it happened (73a52ba6, e2e full shard 3):
+   *
+   *   17:09:57.328  fptvw  REFUSED   row=held    by 5sdwj
+   *   17:09:57.656  lz2w4  REFUSED   row=held    by 5sdwj
+   *   17:10:59.721  5sdwj  COLLIDES  (turn lost)
+   *   17:10:59.744         the row:  row=UNHELD
+   *
+   * The fence was working; then the row was released, and every pod that had already spent
+   * its one claim attempt never re-took it. An unclaimed row refuses nobody, so two writers
+   * walked straight through. A retry FLOOR does not fix this — any interval leaves a window
+   * — and re-claiming on every append is only safe if the claim and the fence are the same
+   * statement. Why: PR #679.
+   *
+   * Three ways to be allowed, in the order they matter:
+   *   1. `exists (claim)`  — the UPDATE took an unheld row. THIS is the arbiter under
+   *      concurrency: two pods racing both run the UPDATE, one wins, and the loser re-reads
+   *      the locked row (EvalPlanQual), no longer matches `host_pod is null`, and returns no
+   *      rows. A snapshot `select` cannot do this — both would still see NULL and allow.
+   *   2. already ours — steady state. The UPDATE matches nothing, so a streaming run costs
+   *      ZERO row writes; only the unheld window writes at all.
+   *   3. no row — a first turn can append before anything has created one. Deliberately
+   *      permissive: making a missing row refuse is what 8f2b13e tried, and it took e2e
+   *      failures from 5 to 12.
+   */
+  const claimAndFence = (id: SessionId) => {
     const fence = config.fence;
-    if (!fence) return sql.empty();
-    return sql`
-              where not exists (
-                select 1 from ${conversations}
-                 where ${conversations.id} = ${id}
-                   and ${conversations.hostPod} is not null
-                   and ${conversations.hostPod} <> ${fence.pod}
-              )`;
+    if (!fence) return { cte: sql.empty(), where: sql.empty() };
+    return {
+      cte: sql`with claim as (
+                update ${conversations} set host_pod = ${fence.pod}
+                 where ${conversations.id} = ${id} and ${conversations.hostPod} is null
+                returning 1
+              )`,
+      where: sql`
+              where exists (select 1 from claim)
+                 or exists (
+                      select 1 from ${conversations}
+                       where ${conversations.id} = ${id} and ${conversations.hostPod} = ${fence.pod}
+                    )
+                 or not exists (select 1 from ${conversations} where ${conversations.id} = ${id})`,
+    };
   };
 
   /** Postgres 23505 — unique_violation. Here it can only be (conversation_id, seq), which
@@ -254,41 +287,6 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
     });
   };
 
-  /** Conversations this pod has already run the claim for — one attempt per process. */
-  const claimAttempted = new Set<SessionId>();
-
-  /**
-   * TAKE the row if nobody holds it. The fence cannot refuse an unclaimed row (a first turn
-   * appends before anything assigns it), and the controller's assignment arrives on a
-   * reconcile TICK — measured at 6-10s after the first append in #678. A conversation
-   * routed to two pods inside that window had both of them pass the fence and collide on
-   * the PK. No tick can be fast enough, so the claim has to come from the writer.
-   *
-   * `where host_pod is null` makes it first-writer-wins in one statement: the loser updates
-   * nothing and is refused by its own insert a moment later. The controller still overrides
-   * on a real handoff — set_assignment carries a higher epoch and is unconditional on pod.
-   */
-  const claimIfUnheld = async (id: SessionId) => {
-    const fence = config.fence;
-    if (!fence || claimAttempted.has(id)) return;
-    claimAttempted.add(id);
-    try {
-      await db
-        .update(conversations)
-        .set({ hostPod: fence.pod })
-        .where(and(eq(conversations.id, id), isNull(conversations.hostPod)));
-    } catch (error) {
-      // Not fatal: losing the claim write leaves the fence exactly as open as it was
-      // before, and the append still has the PK behind it. Surface it rather than
-      // silently degrading to the racy behaviour this replaces.
-      log.warn("could not claim the conversations row; the append fence stays unarmed", {
-        conversation_id: id,
-        pod: fence.pod,
-        error: formatError(error),
-      });
-    }
-  };
-
   const head = async (id: SessionId) => {
     const cached = heads.get(id);
     if (cached) return cached;
@@ -310,19 +308,20 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
         .catch(() => {}) // a prior failure must not break the CHAIN (ordering)
         .then(async () => {
           try {
-            // Before the first append, not after: the window this closes is measured in
-            // seconds, and an append that beats its own claim is the collision itself.
-            await claimIfUnheld(id);
             const at = await head(id);
             const prevChecksum = at.checksum;
             const seq = at.seq + 1;
             const checksum = chainNext(prevChecksum, event);
-            // INSERT ... SELECT, not VALUES, so the fence can ride the statement (see
-            // AppendFence). NO onConflictDoNothing: the PK is a correctness backstop, and
-            // a duplicate (conversation_id, seq) means a second writer.
+            // INSERT ... SELECT, not VALUES, so the claim-and-fence can ride the statement
+            // (see AppendFence). ONE statement, not a claim then an insert: a claim that is
+            // a separate round trip is a window, and the window is what CI kept finding.
+            // NO onConflictDoNothing: the PK is a correctness backstop, and a duplicate
+            // (conversation_id, seq) means a second writer.
+            const { cte, where } = claimAndFence(id);
             const res = await db.execute(sql`
+              ${cte}
               insert into ${conversationEvents} (conversation_id, seq, event, checksum, prev_checksum)
-              select ${id}::text, ${seq}::bigint, ${JSON.stringify(event)}::jsonb, ${checksum}::text, ${prevChecksum}::text${fenceClause(id)}
+              select ${id}::text, ${seq}::bigint, ${JSON.stringify(event)}::jsonb, ${checksum}::text, ${prevChecksum}::text${where}
             `);
             if ((res.rowCount ?? 0) === 0) {
               // Zero rows is only reachable under a fence, and it is not an error: the row

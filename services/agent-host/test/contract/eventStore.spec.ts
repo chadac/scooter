@@ -61,24 +61,33 @@ function fakeDb(): {
         throw e;
       }
       const head = text.trim().toUpperCase();
-      if (head.startsWith("INSERT")) {
-        const [conversation_id, seq, event, checksum, prev_checksum] = values as [
-          string, number, unknown, string, string,
-        ];
+      // The append is `[with claim as (update ...)] insert ... select ... [where <fence>]`,
+      // so a FENCED statement starts with WITH, not INSERT.
+      if (head.startsWith("INSERT") || head.startsWith("WITH")) {
+        const fenced = head.startsWith("WITH");
+        // Param order follows the SQL text. Fenced: [pod, id] for the claim CTE, then the
+        // five row values, then [id, pod, id] for the three-way fence.
+        const [conversation_id, seq, event, checksum, prev_checksum] = (
+          fenced ? values.slice(2, 7) : values.slice(0, 5)
+        ) as [string, number, unknown, string, string];
         // drizzle SERIALIZES jsonb to a string before binding; Postgres returns
         // it parsed. Model that, or every event->>'type' filter sees a string.
         const parsed = typeof event === "string" ? JSON.parse(event) : event;
-        // The APPEND FENCE rides this statement: `... select $1..$5 where not exists (a row
-        // contradicting the presented claim)`. Evaluated BEFORE the PK, as Postgres does —
-        // a fenced-out append never reaches the constraint.
-        if (/NOT EXISTS/i.test(text)) {
-          // The subquery correlates on the conversation id, which is therefore bound a
-          // SECOND time ahead of the claim: [...5 row values, id, pod].
-          const [, pod] = values.slice(5) as [string, string];
+
+        if (fenced) {
+          const pod = values[0] as string;
           const a = assigned.get(conversation_id);
-          // Pod identity is the whole predicate — the epoch is not read. See AppendFence.
-          if (a?.hostPod != null && a.hostPod !== pod) return { rows: [], rowCount: 0 };
+          // The CTE's UPDATE runs first and is the ARBITER: it takes the row only when
+          // nobody holds it. Under real concurrency the loser re-reads the locked row and
+          // matches nothing — modelled here by the claim simply not firing twice.
+          const claimTook = a !== undefined && a.hostPod == null;
+          if (claimTook) assigned.set(conversation_id, { hostPod: pod });
+          // Allowed if we just took it, if it was already ours, or if there is no row at
+          // all (a first turn may append before anything creates one).
+          const allowed = claimTook || a?.hostPod === pod || a === undefined;
+          if (!allowed) return { rows: [], rowCount: 0 };
         }
+
         // The PK is a CORRECTNESS backstop, not just an index: a second writer
         // must collide loudly rather than interleave silently. Honour ON
         // CONFLICT the way Postgres does, so a store that adds
@@ -351,6 +360,37 @@ describe("eventStore — the append fence", () => {
     expect(rows.map((r) => r.conversation_id)).toEqual([CONV, "conv-no-row"]);
   });
 
+  it("THE RELEASE: a row released mid-conversation is RE-CLAIMED on the next append", async () => {
+    // The defect the diagnostic caught, verbatim (73a52ba6, e2e full shard 3):
+    //
+    //   17:09:57.328  fptvw  REFUSED   row=held by 5sdwj      <- fence working
+    //   17:10:59.721  5sdwj  COLLIDES  (turn lost)
+    //   17:10:59.744         the row:  row=UNHELD             <- released in between
+    //
+    // A claim attempted once per process cannot recover from that: the row comes back
+    // unheld, nobody re-takes it, and an unclaimed row refuses nobody — so every pod that
+    // still has a bridge walks through. Re-claiming on EVERY append is what closes it, and
+    // it is only safe because the claim and the fence are now one statement.
+    const { db, rows, assign } = fakeDb();
+    assign(CONV, { hostPod: "host-1" });
+    const a = fencedStore(db, "host-1");
+    const b = fencedStore(db, "host-2");
+    const errors: unknown[] = [];
+    a.onAppendError((_id, e) => errors.push(e));
+    b.onAppendError((_id, e) => errors.push(e));
+
+    await a.appendEvent(CONV, run(1)[0]);
+    assign(CONV, { hostPod: null }); // released mid-conversation
+
+    // b gets there first this time and re-claims; a must now be refused rather than
+    // writing alongside it.
+    await b.appendEvent(CONV, run(2)[0]);
+    await a.appendEvent(CONV, run(3)[0]);
+
+    expect(errors, "the loser is refused by the fence, not left to the PK").toEqual([]);
+    expect(rows.map((r) => r.seq), "exactly one writer got through after the release").toEqual([1, 2]);
+  });
+
   it("A COLLISION names the row too — the one failure where nobody was refused", async () => {
     // Observed on this branch: conversation 0078363a refused pod kz8zq at 16:01:26 (`held`
     // by rhtv6), then took 59 PK collisions FROM kz8zq between 16:01:35 and :41. So the row
@@ -366,15 +406,16 @@ describe("eventStore — the append fence", () => {
       await s.appendEvent(CONV, run(1)[0]); // seq 1 committed
 
       // A second writer takes seq 2 while this pod's head still says 1. It gets in because
-      // the row was RELEASED: an unclaimed row does not refuse, and host-2's own claim then
-      // takes it.
+      // the row was RELEASED: an unclaimed row refuses nobody, and host-2's claim takes it.
       assign(CONV, { hostPod: null });
       const other = fencedStore(db, "host-2");
       await other.appendEvent(CONV, run(2)[0]);
 
-      // Released AGAIN, which is the state that produces a collision rather than a clean
-      // refusal: host-1 skips its claim (once per process, already attempted above), passes
-      // the fence because nothing contradicts it, and lands on a seq that is taken.
+      // Released again, so host-1's next append re-claims and is allowed — onto a seq that
+      // is already taken. Note what the read-back then reports: `held` by host-1 ITSELF,
+      // because the claim that let it through is the same statement as the insert. That is
+      // the collision shape that survives the atomic claim, and it is a STALE HEAD, not a
+      // second live writer.
       assign(CONV, { hostPod: null });
       await s.appendEvent(CONV, run(3)[0]).catch(() => {}); // collides on (CONV, 2)
 
@@ -383,7 +424,10 @@ describe("eventStore — the append fence", () => {
       const field = (k: string, v: string) => new RegExp(`"${k}":"?${v}"?|\\b${k}=${v}\\b`);
       expect(line, "flagged as a second writer, not a generic db error").toMatch(field("collided", "true"));
       expect(line, "the row state at the moment of the collision is the whole point").toMatch(
-        field("row", "unheld"),
+        field("row", "held"),
+      );
+      expect(line, "named, so held-by-us reads differently from held-by-another").toMatch(
+        field("host_pod", "host-1"),
       );
     } finally {
       errSpy.mockRestore();
