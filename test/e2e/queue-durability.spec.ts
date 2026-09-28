@@ -9,7 +9,7 @@
  * Uses the fake agent (deterministic). See fixtures: startLongRun / sendWhileRunning / queuedMessages.
  */
 
-import { test, expect } from "./fixtures.js";
+import { test, expect, platformRestarted } from "./fixtures.js";
 
 // How long the run that everything QUEUES BEHIND stays in flight.
 //
@@ -146,11 +146,31 @@ test.describe("queue durability across refresh + drain", () => {
 
     await page.reload();
     await chat.openQueueTab();
-    // The queued message is re-derived from the server's QUEUE_UPDATED snapshot on replay.
+    // Wait for OUR row, not merely for "a row". A mid-run reassignment kills the run this
+    // queued behind and enqueues the platform's own recovery prose in its place — so the
+    // queue legitimately holds exactly one row that is NOT the user's message, and a
+    // `.first()` read reports platform behaviour as lost user state. Why: PR #675.
+    const ours = page
+      .locator('[data-testid="queued-message-text"]')
+      .filter({ hasText: "survive the reload" });
     // 60s, not 20: the reload re-derives from the integrity log, which on a cluster round-
-    // trips the router to the owning pod.
-    await expect(chat.queuedMessages()).toHaveCount(1, { timeout: 60_000 });
-    await expect(page.locator('[data-testid="queued-message-text"]').first()).toContainText("survive the reload");
+    // trips the router to the owning pod. Poll rather than assert so the restart check below
+    // gets a chance to run before the budget is spent.
+    for (let i = 0; i < 60 && (await ours.count()) === 0; i++) {
+      if (await platformRestarted(page)) break;
+      await page.waitForTimeout(1_000);
+    }
+    // Skip only on the restart marker actually being present: a genuine "the queue vanished
+    // on reload" regression has no such marker and still fails below. Why: PR #675.
+    if ((await ours.count()) === 0 && (await platformRestarted(page))) {
+      test.skip(
+        true,
+        "the conversation was reassigned mid-test: the run this queued behind was killed by the platform, so there is no in-flight queue left to observe",
+      );
+    }
+    // The queued message is re-derived from the server's QUEUE_UPDATED snapshot on replay.
+    await expect(ours).toHaveCount(1);
+    await expect(chat.queuedMessages()).toHaveCount(1);
   });
 
   test("a queued message DRAINS + executes after the run finishes (its reply lands)", async ({ chat, page }) => {

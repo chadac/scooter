@@ -12,7 +12,7 @@
  * the exact pair of components that diverged.
  */
 
-import { test, expect, snapshot, assertConsistent, assertMatchesServer, checkpoint, type UiSnapshot } from "./fixtures.js";
+import { test, expect, snapshot, assertConsistent, assertMatchesServer, checkpoint, RESTART_MARKER, type UiSnapshot } from "./fixtures.js";
 import type { Page } from "@playwright/test";
 
 /** Snapshot + assert every invariant, and hand back the snapshot for step-specific assertions. */
@@ -238,10 +238,9 @@ test.describe("whole-UI consistency around the QUEUE", () => {
     // was the platform's restart prose, with the user's message gone. Checking only the
     // thread meant the loop below "saw a row", proceeded, and reported the platform's
     // recovery text as the user's lost message.
-    const RESTART = /this conversation was interrupted by a restart/i;
     const restarted = async () => {
-      if ((await page.getByText(RESTART).count()) > 0) return true;
-      return (await snapshot(page)).queued.some((q) => RESTART.test(q));
+      if ((await page.getByText(RESTART_MARKER).count()) > 0) return true;
+      return (await snapshot(page)).queued.some((q) => RESTART_MARKER.test(q));
     };
     // A row that is OURS — not the platform's recovery message wearing a queue row's clothes.
     const sawOurRow = async () =>
