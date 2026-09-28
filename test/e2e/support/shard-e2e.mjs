@@ -103,7 +103,7 @@ export function priorReportWeights(reportPath) {
 
 /** Per-spec MAX across every report.json under `dir` (recursively — `gh run download`
  *  nests one directory per run). MAX, never a mean: a truncated run under-reports the
- *  specs it reached, and averaging that in is what overloads a shard. Why: PR #675. */
+ *  specs it reached, and averaging that in is what overloads a shard. Why: PR #686. */
 export function windowReportWeights(dir) {
   if (!dir || !existsSync(dir)) return {};
   const out = {};
@@ -127,7 +127,7 @@ export function resolveWeights(files, prior, committed) {
   const w = {};
   for (const f of files) {
     // Committed value is a FLOOR on the measured one, not a fallback — otherwise a spec
-    // truncated by every run in the window stays under-weighted forever. Why: PR #675.
+    // truncated by every run in the window stays under-weighted forever. Why: PR #686.
     const measured = prior[f] > 0 ? prior[f] : 0;
     const fallback = committed[f] > 0 ? committed[f] : DEFAULT_WEIGHT;
     w[f] = Math.max(measured, fallback);

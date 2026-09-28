@@ -613,7 +613,7 @@ jobs:
   # cluster (~4m) and runs the cluster smoke (~2.5m) before its specs — that fixed
   # ~7m is the price of a shard, against a ~40m serial test phase. The shard COUNT
   # is set below and is a contention knob; the balance BETWEEN shards comes from
-  # measured weights, not from this comment. Why: PR #675.
+  # measured weights, not from this comment. Why: PR #686.
   e2e-full-distribute:
     name: e2e full distribute (shard)
     needs: cluster-changes
@@ -649,7 +649,7 @@ jobs:
       # A WINDOW of recent reports, NOT the last green run: `--status success` matched
       # nothing for a month and fell back silently, so the plan was never measured.
       # Red runs are safe to weight from because shard-e2e takes a per-spec MAX and
-      # floors it with the committed table. Why: PR #675.
+      # floors it with the committed table. Why: PR #686.
       - name: fetch recent e2e-full reports (for weights)
         continue-on-error: true
         env:

@@ -95,7 +95,7 @@ describe("packShards", () => {
     // The regression this guards: the full target used to shard on the fast suite's
     // table, which planned four ~290s shards and produced a 9-minute one beside a
     // 24-minute one. A table in the wrong units shows up here as a spread, not as a
-    // red nightly three hours later. Why: PR #675.
+    // red nightly three hours later. Why: PR #686.
     const table = JSON.parse(readFileSync(join(import.meta.dirname, "..", "shard-weights.full.json"), "utf8"));
     const files = Object.keys(table).filter((k) => k.endsWith(".spec.ts"));
     const totals = packShards(files, table, 4).map((s) => s.total);

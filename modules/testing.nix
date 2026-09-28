@@ -71,7 +71,7 @@ in
       #
       # REQUESTS must stay something the node can HONOUR, not near-zero: at 50m the
       # scheduler admitted every sandbox a leaking suite could create, and admitted
-      # pods then starved instead of queueing. Don't lower these. Why: PR #675.
+      # pods then starved instead of queueing. Don't lower these. Why: PR #686.
       #
       # LIMITS stay generous: the sandbox is a genuine systemd NixOS pod even under
       # the fake agent, and a tiny memory LIMIT would OOM-kill it at boot — limits
