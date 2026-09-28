@@ -694,7 +694,7 @@ jobs:
     # access), and fork-PR approval is on. `runs-on` is NOT a security boundary
     # on its own -- a fork controls its own workflow file -- so do not relax
     # that gate without revisiting this.
-    runs-on: [self-hosted, linux, arm64, nix]
+    runs-on: [self-hosted, linux, x64, nix]
     strategy:
       fail-fast: false # one shard failing must not cancel the others (collect reports all)
       matrix: ${{ fromJSON(needs.e2e-full-distribute.outputs.matrix) }}
