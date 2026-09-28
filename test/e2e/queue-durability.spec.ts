@@ -173,19 +173,23 @@ test.describe("queue durability across refresh + drain", () => {
     await expect(chat.queuedMessages()).toHaveCount(1);
   });
 
-  test("a queued message DRAINS + executes after the run finishes (its reply lands)", async ({ chat, page }) => {
+  test("a queued message DRAINS + executes after the run finishes (its reply lands)", async ({ chat }) => {
     await chat.open();
-    // A short sleep so the test doesn't wait the full 20s — long enough to queue behind.
-    await chat.send("!sleep 3");
-    await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
+    // 20s via startLongRun, not a bare `!sleep 3` + a hand-rolled 30s bar wait — the exact
+    // bug the sibling test below was already fixed for. On the full target the exec waits
+    // for a ready sandbox pod BEFORE the sleep starts, so a 3s run can begin and END inside
+    // that wait and the bar never renders; and the hand-rolled wait was priced at 30s where
+    // startLongRun budgets 90s for the same assertion. Failed 2 of 3 contention repetitions
+    // on exactly that line. The drain below is funded by its own 90s poll. Why: PR #680.
+    await chat.startLongRun(20);
     const before = await chat.assistantMessages().count();
     await chat.sendWhileRunning("run me after the sleep");
 
     // Once the sleep run + the queued run both complete, there are MORE assistant messages,
-    // and the queued item leaves the queue. 90s, not 45: on the full target the sleep-3
-    // run first waits for a ready sandbox pod (≤25s cold), then the queued turn runs its
-    // own exec + streamed reply (~10s) — the reply lands ~40s after the send when cold,
-    // which leaves a 45s budget no headroom under CI CPU pressure.
+    // and the queued item leaves the queue. 90s, not 45: on the full target the sleep run
+    // first waits for a ready sandbox pod (≤25s cold), then sleeps 20s, then the queued turn
+    // runs its own exec + streamed reply (~10s) — ~55s when cold, which leaves a 45s budget
+    // no headroom under CI CPU pressure.
     await expect.poll(async () => chat.assistantMessages().count(), { timeout: 90_000 }).toBeGreaterThan(before);
     await chat.openQueueTab();
     await expect(chat.queuedMessages()).toHaveCount(0, { timeout: 20_000 });
