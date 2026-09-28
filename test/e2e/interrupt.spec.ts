@@ -62,7 +62,7 @@ test.describe("agent option dropdown (interrupt)", () => {
       // re-rendered from the truncated log — so the options are still visible and enabled
       // and every retry above clicks a request that has no run left to resume. The
       // platform's recovery prose is the only marker that this happened; without it the
-      // failure is a genuine regression and still fails. Why: PR #675.
+      // failure is a genuine regression and still fails. Why: PR #680.
       test.skip(
         await platformRestarted(page),
         "the conversation was reassigned mid-run: the interrupt's run was killed by the platform, so answering it can never resume",

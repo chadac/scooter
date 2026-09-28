@@ -28,12 +28,12 @@ export const sel = {
 /** The platform's own recovery prose, injected when a conversation is reassigned to a new
  *  pod mid-run. The ownership fence DROPS the outgoing pod's remaining events by design
  *  (services/agent-host/src/session/manager.ts), so the run a test is asserting on is
- *  killed and the new owner resumes with this message. Why: PR #675. */
+ *  killed and the new owner resumes with this message. Why: PR #680. */
 export const RESTART_MARKER = /this conversation was interrupted by a restart/i;
 
 /** True when the platform reassigned this conversation mid-test. The recovery prose lands
  *  in the THREAD or in the QUEUE — a test that checks only one reads the other as its own
- *  lost state. Why: PR #675. */
+ *  lost state. Why: PR #680. */
 export async function platformRestarted(page: Page): Promise<boolean> {
   if ((await page.getByText(RESTART_MARKER).count()) > 0) return true;
   return (
@@ -326,7 +326,7 @@ export const test = base.extend<Fixtures>({
       // Last DELETE status per conversation. Without it the give-up error below names an id
       // and nothing else, and "starred" is the only cause it can distinguish — so a row that
       // 404s, 409s for another reason, or 5xxs every pass is indistinguishable from one the
-      // server accepted and never actually destroyed. Why: PR #675.
+      // server accepted and never actually destroyed. Why: PR #680.
       const lastDeleteStatus = new Map<string, number>();
       for (let i = 0; i < attempts; i++) {
         const res = await request.get(`${base}/conversations`);

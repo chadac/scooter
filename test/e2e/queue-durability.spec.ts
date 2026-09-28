@@ -149,7 +149,7 @@ test.describe("queue durability across refresh + drain", () => {
     // Wait for OUR row, not merely for "a row". A mid-run reassignment kills the run this
     // queued behind and enqueues the platform's own recovery prose in its place — so the
     // queue legitimately holds exactly one row that is NOT the user's message, and a
-    // `.first()` read reports platform behaviour as lost user state. Why: PR #675.
+    // `.first()` read reports platform behaviour as lost user state. Why: PR #680.
     const ours = page
       .locator('[data-testid="queued-message-text"]')
       .filter({ hasText: "survive the reload" });
@@ -161,7 +161,7 @@ test.describe("queue durability across refresh + drain", () => {
       await page.waitForTimeout(1_000);
     }
     // Skip only on the restart marker actually being present: a genuine "the queue vanished
-    // on reload" regression has no such marker and still fails below. Why: PR #675.
+    // on reload" regression has no such marker and still fails below. Why: PR #680.
     if ((await ours.count()) === 0 && (await platformRestarted(page))) {
       test.skip(
         true,
