@@ -792,6 +792,10 @@ jobs:
         run: |
           du -sh /nix/store 2>/dev/null || true
           df -h /nix 2>/dev/null || df -h / || true
+          # Is /nix the pooled EBS volume or the instance root disk? The
+          # difference decides whether a store was REUSED or built cold, and
+          # `du` alone cannot tell you -- both report a plausible number.
+          findmnt -no SOURCE,FSTYPE,SIZE /nix 2>/dev/null || echo "/nix is not a separate mount (root disk)"
 
   # The GATE for e2e full: succeeds only when every shard passed; merges the per-shard
   # reports into `e2e-full-report` so the next run's distribute weights by real

@@ -12,6 +12,36 @@
 # `k3d cluster delete scooter-ci`.
 set -euo pipefail
 
+# --- phase timing ------------------------------------------------------------
+# This script is the bulk of an e2e shard's wall clock (~7 of ~12 min), but
+# which PART was never measured -- the image push, the cluster boot, and the
+# platform rollout were all guesses. `phase` stamps each boundary and the trap
+# prints a breakdown at exit, so the next optimisation targets whatever is
+# actually slow rather than whatever looks slow.
+_PHASE_T0=$(date +%s)
+_PHASE_LAST=$_PHASE_T0
+_PHASE_LOG=""
+_PHASE_NAME="startup"
+
+phase() {
+  local now; now=$(date +%s)
+  _PHASE_LOG="${_PHASE_LOG}${_PHASE_NAME}=$((now - _PHASE_LAST))s\n"
+  _PHASE_LAST=$now
+  _PHASE_NAME="$1"
+  echo "::group::[phase] $1"
+}
+
+_phase_summary() {
+  local now; now=$(date +%s)
+  _PHASE_LOG="${_PHASE_LOG}${_PHASE_NAME}=$((now - _PHASE_LAST))s\n"
+  echo "::endgroup::"
+  echo "=== k3d-platform-up phase breakdown ==="
+  printf "%b" "$_PHASE_LOG" | sed 's/^/  /'
+  echo "  TOTAL=$((now - _PHASE_T0))s"
+}
+trap _phase_summary EXIT
+
+phase "cluster+registry"
 # --- cluster + registry ------------------------------------------------------
 # `scooter-reg.localhost` is the trick that makes ONE image ref work on both
 # sides: a `.localhost` name resolves to 127.0.0.1 on the HOST (so skopeo pushes
@@ -41,6 +71,7 @@ until curl -sf http://localhost:5800/v2/ >/dev/null 2>&1; do
 done
 echo "Registry is ready!"
 
+phase "sandbox-crd+controller"
 # --- the Sandbox CRD + controller -------------------------------------------
 # Previously unnecessary here BY ACCIDENT: the job set GOOSE_BIN=fake, which also
 # forced a noop provisioner, so nothing ever touched the Sandbox API. Decoupling
@@ -56,12 +87,20 @@ nix shell nixpkgs#kubectl -c bash -c "
   kubectl wait --for=condition=Available deploy --all -n agent-sandbox-system --timeout=180s
 "
 
+phase "platform-images-push"
 # --- platform images ---------------------------------------------------------
 # attr -> content-tagged registry ref, from the flake (single source of truth with
 # the platform-manifests-k3d render). Pushes run 4-wide: skopeo streams layer blobs
 # straight from /nix/store, and layers shared between images (there are many — same
 # nixpkgs base) upload exactly once.
+# Split the push phase: EVALUATING the refs (a nix build, which may itself be
+# the slow part) is distinct from PUSHING the blobs. @chadac's hypothesis is
+# that the store->registry copy dominates; this tells us whether that is true
+# or whether we are actually waiting on nix eval.
+_push_eval_t0=$(date +%s)
 refs=$(nix build .#k3d-image-refs --no-link --print-out-paths)
+echo "[phase] image-refs-eval=$(( $(date +%s) - _push_eval_t0 ))s"
+_push_copy_t0=$(date +%s)
 nix shell nixpkgs#jq -c jq -r 'to_entries[] | "\(.key)=\(.value)"' "$refs" \
   | xargs -P 4 -I{} bash -c '
       set -euo pipefail
@@ -86,8 +125,10 @@ nix shell nixpkgs#jq -c jq -r 'to_entries[] | "\(.key)=\(.value)"' "$refs" \
       echo "ERROR: Failed to push $attr after $max_retries attempts"
       exit 1
     ' _ {}
+echo "[phase] image-blob-copy=$(( $(date +%s) - _push_copy_t0 ))s"
 echo "All images pushed successfully!"
 
+phase "platform-rollout"
 # --- the platform itself -----------------------------------------------------
 manifests=$(nix build .#platform-manifests-k3d --no-link --print-out-paths)
 nix shell nixpkgs#kubectl -c bash -c "
