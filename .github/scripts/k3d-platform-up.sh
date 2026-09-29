@@ -61,9 +61,27 @@ nix shell nixpkgs#k3d nixpkgs#kubectl -c bash -c '
   # the registry is ephemeral exactly as before.
   reg_vol=""
   [ -d /var/lib/k3d-registry ] && reg_vol="-v /var/lib/k3d-registry:/var/lib/registry"
+
+  # PERSIST THE NODE CONTENT STORE for the same reason, but for the images we do
+  # NOT build: postgres:16-alpine, alpine/k8s:1.30.0, busybox:1.36. Those are
+  # pulled from Docker Hub by containerd inside the node, and the node is fresh
+  # every run, so they download every time. postgres:16-alpine measured 45s for
+  # 201M and gates the whole rollout -- postgres-init waits on it for roles,
+  # db-migrate for schema, every service on both.
+  #
+  # Verified across node recreation and a k3s version change (1.32.5 -> 1.30.2):
+  # no snapshot corruption, and a pod with the default IfNotPresent policy logs
+  # "already present on machine" and starts in ~1s without any network call.
+  #
+  # Same shape as reg_vol: absent directory (GitHub-hosted) means no flag and
+  # the old cold-pull behaviour.
+  ctd_vol=""
+  [ -d /var/lib/k3d-containerd ] && ctd_vol="-v /var/lib/k3d-containerd:/var/lib/rancher/k3s/agent/containerd"
+
   # shellcheck disable=SC2086  # intentional word-split: empty means "no flag"
   k3d registry create scooter-reg.localhost --port 5800 $reg_vol
-  k3d cluster create scooter-ci --no-lb --wait --registry-use k3d-scooter-reg.localhost:5800
+  # shellcheck disable=SC2086  # intentional word-split: empty means "no flag"
+  k3d cluster create scooter-ci --no-lb --wait --registry-use k3d-scooter-reg.localhost:5800 $ctd_vol
   k3d kubeconfig merge scooter-ci --kubeconfig-merge-default
 '
 
