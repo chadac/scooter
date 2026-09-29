@@ -116,6 +116,31 @@ nix shell nixpkgs#jq -c jq -r 'to_entries[] | "\(.key)=\(.value)"' "$refs" \
       set -euo pipefail
       attr="${1%%=*}"; ref="${1#*=}"
       push_ref="localhost:${ref#*.localhost:}"
+
+      # ALREADY THERE? Tags are content-addressed (ghcrContentTag = the store
+      # hash), so a tag that exists in the registry holds exactly the bytes we
+      # are about to push. Asking costs one HTTP HEAD against localhost.
+      #
+      # This is worth more than the blob transfer it avoids. With the registry
+      # blob store persisted on the /nix volume, skopeo already skips layers it
+      # finds present -- measured 85s -> 42s once tags were stable. The 42s that
+      # REMAINED is `nix run` paying Nix evaluation eight times over, once per
+      # image, and that cost is the same whether or not a single byte moves.
+      # Skipping the command skips the eval too.
+      #
+      # The registry is the k3d-managed one on 5800; `|| true` because a
+      # registry that does not answer must fall through to a real push rather
+      # than fail the shard.
+      repo="${push_ref#*/}"; repo="${repo%%:*}"
+      tag="${push_ref##*:}"
+      if curl -sfI -o /dev/null --max-time 5 \
+           "http://localhost:5800/v2/${repo}/manifests/${tag}" \
+           -H "Accept: application/vnd.oci.image.manifest.v1+json" \
+           -H "Accept: application/vnd.docker.distribution.manifest.v2+json" 2>/dev/null; then
+        echo "= $attr already in registry at $tag -- skipping push"
+        exit 0
+      fi
+
       echo "push $attr -> $ref (via $push_ref)"
 
       max_retries=3
