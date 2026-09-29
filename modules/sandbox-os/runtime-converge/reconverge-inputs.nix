@@ -40,11 +40,40 @@ let
   # flake the source is the git tree and it never appears, but a plain-path eval of
   # this repo would otherwise vendor ~1 GB of a dev machine's installed deps and hash
   # differently than CI. Why: PR #614.
-  repoSrc = lib.cleanSourceWith {
-    name = "scooter-src";
-    src = lib.cleanSource ../../..;
-    filter = path: type:
-      !(type == "directory" && baseNameOf path == "node_modules");
+  # AN EXPLICIT FILESET, not a filter over the whole tree.
+  #
+  # WHY IT MATTERS: content tags come from the image's store hash, so anything
+  # vendored here lands in EVERY image's tag. With the whole repo vendored,
+  # editing a workflow comment changed the sandbox-os tag -- verified, a one-line
+  # comment in ci.yml moved it from zd4vniczzw4g to djhfmr3sipms. That
+  # invalidates the k3d registry cache, re-pushes all eight images, and rebuilds
+  # `nix build .#k3d-image-refs` on a run where nothing about the product moved.
+  #
+  # WHY A FILESET AND NOT A FILTER: `lib.cleanSource ../../..` COPIES the tree to
+  # the store first; a cleanSourceWith filter then runs over that already-copied
+  # path, so the inner copy's hash -- .github included -- is what propagates.
+  # Denylisting also loses by construction: every new top-level directory is
+  # vendored by default and silently re-couples CI churn to image identity.
+  # An allowlist fails the other way, which is the safe way: a missing path
+  # breaks the in-pod re-converge loudly instead of quietly polluting hashes.
+  #
+  # WHAT IS HERE is what the re-converge actually resolves at runtime -- the
+  # vendored module makes relative references (`../../pkgs/broker-tools`, which
+  # itself reads `../../services/broker/…/cli.py`), plus the flake lock the stub
+  # overlay checks against. If an in-pod eval starts failing on a missing path,
+  # add it HERE rather than widening back to the whole tree.
+  repoRoot = ../../..;
+  repoSrc = lib.fileset.toSource {
+    root = repoRoot;
+    fileset = lib.fileset.unions [
+      (repoRoot + "/modules")
+      (repoRoot + "/pkgs")
+      (repoRoot + "/services")
+      (repoRoot + "/lib")
+      (repoRoot + "/nix")
+      (repoRoot + "/flake.nix")
+      (repoRoot + "/flake.lock")
+    ];
   };
 
   modulesTree = pkgs.runCommand "sandbox-os-src" { } (''
