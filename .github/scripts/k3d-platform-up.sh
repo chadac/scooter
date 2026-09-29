@@ -138,6 +138,58 @@ _push_eval_t0=$(date +%s)
 # This does NOT reproduce locally, where those derivations are already written
 # and an "evaluation" is really a lookup (4.6s then 1.0s). A local timing
 # under-predicts the CI cost every time; do not use one to judge this.
+# BUILD THE IMAGE MANIFESTS LOCALLY, never substitute them.
+#
+# nix2container image manifests are NOT reproducible across build environments.
+# Proven on this repo: the SAME deriver
+#   1w4irzhbbhxv6h049g84mr6p4zhyw013-image-agent-sandbox-os.json.drv
+# yields two different outputs. The manifest Cachix serves and the one built
+# here differ in exactly one layer -- and that layer lists an IDENTICAL set of
+# 449 store paths. Same inputs, different tar digest.
+#
+# The consequence is a shard that dies deep in the push phase:
+#   writing blob: ... Digest did not match,
+#   expected sha256:fccfa6fa..., got sha256:a3bb524c...
+# skopeo streams layers from /nix/store and hashes them, then compares against
+# the digest recorded in the FETCHED manifest. Fetched manifest + locally built
+# layers = mismatch. Three retries all failed identically, on two separate
+# runners, because both had fetched the same cached manifest.
+#
+# The tag hides it: it is the manifest's own store hash, which IS deterministic,
+# so two manifests that disagree about layer digests still share a tag.
+#
+# Upstream: nlewo/nix2container#97 is this exact symptom ("the store paths are
+# NOT different but the hashes are"), closed without a root cause. #37 and #127
+# are the same error. No open issue covers it.
+#
+# Building locally costs one build per volume -- the /nix store is persisted, so
+# it is not per-run -- and removes the mismatch by construction: the manifest
+# and the layers then come from the same machine.
+# SCOPED to the manifests. `--option substituters ''` on the whole build would
+# force the ENTIRE closure to build from source -- 51 derivations even on a warm
+# store, and effectively all of nixpkgs on a cold one. Instead: delete just the
+# image manifests from the store if a substituted copy is present, so the build
+# below remakes them locally while everything else still comes from the cache.
+for _a in agent-host-image ui-image broker-image webhooks-image sandbox-os-image \
+          conversation-controller-image conversation-router-image db-migrator-image; do
+  _p=$(nix eval --raw ".#${_a}.outPath" 2>/dev/null) || continue
+  [ -n "$_p" ] || continue
+  # Only if it came from a SUBSTITUTER. A path we built ourselves is already
+  # consistent with the layers we will push.
+  #
+  # `ultimate` is the discriminator: true when this machine built the path,
+  # absent (JSON null) when it was substituted. Checked both ways -- a locally
+  # built manifest reports ultimate=true, a cache-fetched one reports null.
+  # Testing for "ultimate":false would never match; the field is omitted, not
+  # set to false.
+  _ult=$(nix path-info --json "$_p" 2>/dev/null | nix shell nixpkgs#jq -c jq -r '.[].ultimate // "null"' 2>/dev/null)
+  if [ -e "$_p" ] && [ "$_ult" != "true" ]; then
+    nix store delete "$_p" >/dev/null 2>&1 \
+      && echo "dropped substituted manifest for $_a (nix2container#97)" \
+      || true
+  fi
+done
+
 deps=$(nix build .#k3d-ci-deps --no-link --print-out-paths)
 refs="$deps/image-refs.json"
 echo "[phase] image-refs-eval=$(( $(date +%s) - _push_eval_t0 ))s"
