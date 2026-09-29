@@ -67,6 +67,13 @@ let
     root = repoRoot;
     fileset = lib.fileset.unions [
       (repoRoot + "/modules")
+      # contrib/: modules/sandbox-os/contribs.nix imports
+      # ../../contrib/sandbox-modules.nix, and each enabled contrib's sandbox
+      # half (contrib/<name>/sandbox.nix) is read from here at re-converge time.
+      # Omitting it broke dev-env-reconverge-eval and dev-env-contrib-sandbox with
+      #   path '/nix/store/...-sandbox-os-src/contrib/sandbox-modules.nix' does not exist
+      # -- the loud failure this allowlist is designed to produce.
+      (repoRoot + "/contrib")
       (repoRoot + "/pkgs")
       (repoRoot + "/services")
       (repoRoot + "/lib")
