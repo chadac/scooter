@@ -678,6 +678,21 @@ jobs:
           report=""
           [ -f prior/report.json ] && report="prior/report.json"
           matrix=$(SPEC_SET=full PRIOR_REPORT="$report" SHARDS="$E2E_FULL_SHARDS" node test/e2e/support/shard-e2e.mjs)
+
+          # `e2e-one-shard` is for INFRASTRUCTURE work on the self-hosted runner,
+          # where the thing under test is the cluster bring-up -- not the specs.
+          # One shard alone does not give that: it gives ONE runner running ALL
+          # 41 specs, which is slower than four. Narrow to a single cheap spec so
+          # the loop measures startup rather than the suite.
+          if [ "$E2E_FULL_SHARDS" = "1" ]; then
+            matrix=$(node -e '
+              const m = JSON.parse(process.argv[1]);
+              m.include = [{ ...m.include[0], specs: "test/e2e/conversation.spec.ts" }];
+              process.stdout.write(JSON.stringify(m));
+            ' "$matrix")
+            echo "one-shard mode: narrowed to test/e2e/conversation.spec.ts"
+          fi
+
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   # PLATFORM SMOKE on a real k3d cluster: deploy the FULL multi-replica platform
