@@ -41,28 +41,6 @@ _phase_summary() {
 }
 trap _phase_summary EXIT
 
-# --- upstream images, pulled IN PARALLEL with the cluster boot -----------------
-# postgres and alpine/k8s are the only images not built by this flake, so they
-# are the only ones not served from the local registry -- every run pulls them
-# from Docker Hub while the eight scooter images come from disk.
-#
-# Measured: agent-shared-db took 62s to roll out ("0 of 1 updated replicas are
-# available"), the single biggest wait inside platform-rollout, on a run where
-# everything else was warm.
-#
-# Starting the pull HERE, backgrounded, overlaps it with the ~79s of cluster and
-# registry creation that follows -- by the time the platform rolls out the layers
-# are in the local docker cache and k3d imports them from there. Failure is
-# non-fatal: a miss just means the old behaviour.
-_upstream_images="postgres:16-alpine alpine/k8s:1.30.0"
-(
-  for img in $_upstream_images; do
-    docker pull --quiet "$img" >/dev/null 2>&1 || echo "[prepull] $img failed; will pull at rollout"
-  done
-  echo "[prepull] upstream images ready"
-) &
-_prepull_pid=$!
-
 phase "cluster+registry"
 # --- cluster + registry ------------------------------------------------------
 # `scooter-reg.localhost` is the trick that makes ONE image ref work on both
@@ -149,15 +127,6 @@ nix shell nixpkgs#jq -c jq -r 'to_entries[] | "\(.key)=\(.value)"' "$refs" \
     ' _ {}
 echo "[phase] image-blob-copy=$(( $(date +%s) - _push_copy_t0 ))s"
 echo "All images pushed successfully!"
-
-# Wait for the background pull, then hand the layers to the cluster. `k3d image
-# import` moves them from the host docker cache into containerd, so the rollout
-# finds them present instead of reaching for Docker Hub.
-wait "$_prepull_pid" 2>/dev/null || true
-_import_t0=$(date +%s)
-nix shell nixpkgs#k3d -c k3d image import $_upstream_images -c scooter-ci >/dev/null 2>&1 \
-  || echo "[prepull] import failed; the rollout will pull from Docker Hub"
-echo "[phase] upstream-image-import=$(( $(date +%s) - _import_t0 ))s"
 
 phase "platform-rollout"
 # --- the platform itself -----------------------------------------------------
