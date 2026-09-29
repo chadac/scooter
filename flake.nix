@@ -768,6 +768,34 @@
             platform-manifests-k3d-backfill = platformK3dBackfill.config.kubernetes.resultYAML;
             k3d-image-refs = pkgs.writeText "k3d-image-refs.json" (builtins.toJSON k3dImagePushMap);
 
+            # ONE attr holding everything .github/scripts/k3d-platform-up.sh needs from
+            # this flake, so the script evaluates ONCE instead of three times.
+            #
+            # The script used to run `nix build .#k3d-image-refs`, then a `nix build`
+            # of the eight images, then `nix build .#platform-manifests-k3d`. Each is a
+            # separate evaluation, and in CI each one re-evaluates the sandbox-os NixOS
+            # system -- the expensive part. The tell is the `stdenv.isLinux is
+            # deprecated` warning, which fires from that evaluation: it appeared 55s
+            # into image-refs-eval and AGAIN 24.5s into image-manifest-build, the same
+            # work twice.
+            #
+            # That does not reproduce locally, where the ~6.4k derivations are already
+            # written and every "evaluation" is a lookup. It is a CI-only cost, so do
+            # not trust a local timing to tell you whether this helps.
+            #
+            # A plain runCommand, NOT symlinkJoin: these are JSON files and YAML, not
+            # bin/ trees, and the script reads each path by name anyway. All this needs
+            # to do is hold references so one realisation covers the lot.
+            k3d-ci-deps = pkgs.runCommand "scooter-k3d-ci-deps" { } ''
+              mkdir -p $out
+              ln -s ${pkgs.writeText "k3d-image-refs.json" (builtins.toJSON k3dImagePushMap)} $out/image-refs.json
+              ln -s ${platformK3d.config.kubernetes.resultYAML} $out/platform-manifests-k3d.yaml
+              ${lib.concatMapStrings (a: ''
+                ln -s ${pubImages.${a}} $out/${a}.json
+                ln -s ${pubImages.${a}.copyTo} $out/${a}.copyTo
+              '') (builtins.attrNames k3dImagePushMap)}
+            '';
+
             # nix build .#platform-manifests-ghcr  ->  the same manifests with every image
             # pinned to its published ghcr CONTENT TAG (from ghcrImages). This is the
             # reproducible deploy render — no `nix build .#ghcr-image-refs` + manual

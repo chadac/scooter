@@ -126,29 +126,22 @@ phase "platform-images-push"
 # that the store->registry copy dominates; this tells us whether that is true
 # or whether we are actually waiting on nix eval.
 _push_eval_t0=$(date +%s)
-refs=$(nix build .#k3d-image-refs --no-link --print-out-paths)
+# ONE build for everything this script needs from the flake: the refs map, the
+# eight image manifests, their copyTo runners, and the k3d platform manifests.
+#
+# WHY ONE. Each `nix build` is its own evaluation, and in CI each one
+# re-evaluates the sandbox-os NixOS system -- the expensive part of this flake.
+# The tell is the `stdenv.isLinux is deprecated` warning, which comes from that
+# evaluation: it fired 55s into image-refs-eval and AGAIN 24.5s into a separate
+# image-manifest-build. The same ~6.4k-derivation instantiation, twice.
+#
+# This does NOT reproduce locally, where those derivations are already written
+# and an "evaluation" is really a lookup (4.6s then 1.0s). A local timing
+# under-predicts the CI cost every time; do not use one to judge this.
+deps=$(nix build .#k3d-ci-deps --no-link --print-out-paths)
+refs="$deps/image-refs.json"
 echo "[phase] image-refs-eval=$(( $(date +%s) - _push_eval_t0 ))s"
 
-# REALISE ALL EIGHT IMAGE MANIFESTS IN ONE `nix build`, and hand the store paths
-# to the push loop. This is what keeps Nix OUT of the parallel section.
-#
-# The old loop ran `nix run .#<attr>.copyTo` per image under `xargs -P 4`. Four
-# Nix processes then opened the SAME eval-cache SQLite file at once; SQLite
-# grants one writer, and the other three got
-#   error (ignored): SQLite database '.../eval-cache-v5/<hash>.sqlite' is busy
-# `error (ignored)` means Nix silently falls back to FULL re-evaluation -- so
-# three of every four workers re-instantiated the ~6.4k-derivation graph that
-# image-refs-eval had just finished computing. Reproduced locally: 4 concurrent
-# evals against one warm cache, 3 lose the lock.
-#
-# One `nix build` of all eight attrs costs ~0s once image-refs-eval has warmed
-# the cache (measured 0.06s locally on the repeat) because it forces the exact
-# same graph. After it, every path is realised and the workers need no Nix at
-# all -- just skopeo, reading a store path.
-#
-# `--print-out-paths` emits one path per line IN THE ORDER THE ATTRS ARE GIVEN,
-# so the join below is positional. Keep the two lists in the same order.
-_push_build_t0=$(date +%s)
 push_attrs=(
   agent-host-image
   ui-image
@@ -159,26 +152,6 @@ push_attrs=(
   conversation-router-image
   db-migrator-image
 )
-# Realise the manifests AND the eight copyTo runners in one build. copyTo is
-# what `nix run` invokes per image below; building it here means that run is a
-# cache hit instead of a fresh realisation inside the parallel section.
-#
-# copyTo bundles nix2container's patched skopeo (1.24.1) and IS substitutable.
-# Do not swap it for the exposed `skopeo-nix2container` attr -- that is a
-# different, uncached derivation (1.21.0) and naming it costs a source build
-# plus ~139 paths / 203 MiB of fetches. Measured, after trying it.
-# Build the manifests and the copyTo runners together: one `nix build`, one
-# eval, everything realised before the parallel section starts.
-_build_targets=()
-for _a in "${push_attrs[@]}"; do
-  _build_targets+=(".#${_a}" ".#${_a}.copyTo")
-done
-mapfile -t push_paths < <(nix build "${_build_targets[@]}" --no-link --print-out-paths)
-if [ "${#push_paths[@]}" -lt "${#push_attrs[@]}" ]; then
-  echo "ERROR: realised ${#push_paths[@]} image manifests, expected ${#push_attrs[@]}"
-  exit 1
-fi
-echo "[phase] image-manifest-build=$(( $(date +%s) - _push_build_t0 ))s"
 
 
 # REFS map -> a bash array in push_attrs order, in ONE jq call. The refs file is
@@ -196,6 +169,10 @@ if [ "${#push_refs[@]}" -ne "${#push_attrs[@]}" ]; then
   echo "ERROR: resolved ${#push_refs[@]} refs, expected ${#push_attrs[@]}"
   exit 1
 fi
+
+# EXPORTED for the xargs subshells: they are separate bash processes and
+# inherit the environment, not shell variables.
+export DEPS="$deps"
 
 _push_copy_t0=$(date +%s)
 # attr=storepath=ref per line. Plain printf -- no per-image process at all.
@@ -245,7 +222,7 @@ done \
         # This still evaluates -- but the batched `nix build` above has already
         # realised the graph, so it is a cache hit rather than the ~6.4k-drv
         # re-instantiation that the lock contention used to force.
-        if nix run ".#${attr}.copyTo" -- "docker://${push_ref}" --dest-tls-verify=false; then
+        if "${DEPS}/${attr}.copyTo/bin/copy-to" "docker://${push_ref}" --dest-tls-verify=false; then
           echo "✓ $attr pushed successfully"
           exit 0
         fi
@@ -264,7 +241,9 @@ echo "All images pushed successfully!"
 
 phase "platform-rollout"
 # --- the platform itself -----------------------------------------------------
-manifests=$(nix build .#platform-manifests-k3d --no-link --print-out-paths)
+# From the single build at the top of the push phase -- not another `nix build`,
+# which would be a third evaluation of the same flake.
+manifests="$deps/platform-manifests-k3d.yaml"
 nix shell nixpkgs#kubectl -c bash -c "
   set -euo pipefail
   kubectl apply -f '${manifests}'
