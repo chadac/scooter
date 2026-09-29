@@ -77,13 +77,28 @@ async function agentHostPassword(): Promise<string> {
   return Buffer.from(b64, "base64").toString("utf8");
 }
 
-/** Run a query as the agent_host role against the agent_host DB (tuples-only, unaligned). */
+/** Run a query as the agent_host role against the agent_host DB (tuples-only, unaligned).
+ *
+ *  Returns the LAST non-empty line, not the whole capture. Every caller here runs a
+ *  single-value aggregate (count/max), so one line is the contract -- and
+ *  `kubectl run --rm -i` occasionally hands back the container's stdout TWICE.
+ *  Observed in CI as
+ *    AssertionError: expected '3\n3' to be '3'
+ *  on the max(seq) assertion, while the two count() assertions either side passed:
+ *  they wrap in Number(), and Number('3\n3') is NaN, so a duplicated capture would
+ *  have failed them too. Only the third call duplicated -- an intermittent
+ *  attach/stream race, not two database rows.
+ *
+ *  Collapsing here rather than in runOnce: runOnce also serves genuinely multi-line
+ *  output (pod logs), where discarding earlier lines would be wrong. */
 async function psql(pw: string, query: string): Promise<string> {
-  return runOnce(
+  const out = await runOnce(
     PSQL_IMAGE,
     { PGPASSWORD: pw },
     ["psql", "-h", "agent-shared-db", "-U", "agent_host", "-d", "agent_host", "-tAc", query],
   );
+  const lines = out.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+  return lines.length > 0 ? lines[lines.length - 1] : "";
 }
 
 /** A valid AG-UI event line. The backfill hashes each into the integrity chain; any flat
