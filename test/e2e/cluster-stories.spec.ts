@@ -86,7 +86,9 @@ fullOnly("needs kubectl access to delete the owner pod mid-run")(
       // the part the user actually feels — the SAME browser tab must end up idle
       // and able to run another turn. Before the deletion-cost + dangling-run
       // fixes this exact sequence left "Working…" on screen forever.
-      test.setTimeout(300_000);
+      // Must cover the worst case of every wait below in sequence — the longer turn
+      // and the hostPod poll both spend from this ceiling.
+      test.setTimeout(420_000);
       const hook = process.env.E2E_ROLLOUT_HOOK ?? "";
       test.skip(!hook, "no rollout hook configured for this run");
 
@@ -95,11 +97,24 @@ fullOnly("needs kubectl access to delete the owner pod mid-run")(
       const thread = new URL(page.url()).searchParams.get("thread");
       expect(thread, "the URL must name a conversation").toBeTruthy();
 
-      // A turn long enough that the pod deletion lands MID-run.
-      await chat.send("!sleep 15");
+      // A turn long enough that the pod deletion lands MID-run, with room for the
+      // hostPod poll below to finish while the turn is still going.
+      await chat.send("!sleep 45");
       await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
-      const moved = await request.post(`${hook}/move/${thread}`);
-      expect(moved.ok(), `the hook must delete the owner pod: ${await moved.text()}`).toBeTruthy();
+
+      // The hook resolves the owner from `status.hostPod`, which the controller
+      // publishes independently of the run — so a visible status bar does NOT mean
+      // the owner is readable yet, and the hook's 409 is a race, not a verdict.
+      // Poll past it. Why: PR #689.
+      let moved = await request.post(`${hook}/move/${thread}`);
+      let body = await moved.text();
+      const deadline = Date.now() + 30_000;
+      while (moved.status() === 409 && Date.now() < deadline) {
+        await page.waitForTimeout(1_000);
+        moved = await request.post(`${hook}/move/${thread}`);
+        body = await moved.text();
+      }
+      expect(moved.ok(), `the hook must delete the owner pod: ${body}`).toBeTruthy();
 
       // The run must reach a terminal state — completed by the resumed run or ended
       // cleanly — well within the reassign + revive + resume budget. "Forever" is
