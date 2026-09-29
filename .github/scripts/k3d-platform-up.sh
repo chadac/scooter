@@ -128,11 +128,85 @@ phase "platform-images-push"
 _push_eval_t0=$(date +%s)
 refs=$(nix build .#k3d-image-refs --no-link --print-out-paths)
 echo "[phase] image-refs-eval=$(( $(date +%s) - _push_eval_t0 ))s"
+
+# REALISE ALL EIGHT IMAGE MANIFESTS IN ONE `nix build`, and hand the store paths
+# to the push loop. This is what keeps Nix OUT of the parallel section.
+#
+# The old loop ran `nix run .#<attr>.copyTo` per image under `xargs -P 4`. Four
+# Nix processes then opened the SAME eval-cache SQLite file at once; SQLite
+# grants one writer, and the other three got
+#   error (ignored): SQLite database '.../eval-cache-v5/<hash>.sqlite' is busy
+# `error (ignored)` means Nix silently falls back to FULL re-evaluation -- so
+# three of every four workers re-instantiated the ~6.4k-derivation graph that
+# image-refs-eval had just finished computing. Reproduced locally: 4 concurrent
+# evals against one warm cache, 3 lose the lock.
+#
+# One `nix build` of all eight attrs costs ~0s once image-refs-eval has warmed
+# the cache (measured 0.06s locally on the repeat) because it forces the exact
+# same graph. After it, every path is realised and the workers need no Nix at
+# all -- just skopeo, reading a store path.
+#
+# `--print-out-paths` emits one path per line IN THE ORDER THE ATTRS ARE GIVEN,
+# so the join below is positional. Keep the two lists in the same order.
+_push_build_t0=$(date +%s)
+push_attrs=(
+  agent-host-image
+  ui-image
+  broker-image
+  webhooks-image
+  sandbox-os-image
+  conversation-controller-image
+  conversation-router-image
+  db-migrator-image
+)
+mapfile -t push_paths < <(nix build "${push_attrs[@]/#/.#}" --no-link --print-out-paths)
+if [ "${#push_paths[@]}" -ne "${#push_attrs[@]}" ]; then
+  echo "ERROR: realised ${#push_paths[@]} image manifests, expected ${#push_attrs[@]}"
+  exit 1
+fi
+echo "[phase] image-manifest-build=$(( $(date +%s) - _push_build_t0 ))s"
+
+# nix2container's PATCHED skopeo -- upstream skopeo has no `nix:` transport and
+# fails with `unknown transport "nix"`. `nix run .#<attr>.copyTo` was pulling
+# this in implicitly; now it is named, resolved ONCE here rather than per image.
+# EXPORTED: the xargs subshells below are separate bash processes and inherit
+# only the environment, not shell variables.
+export SKOPEO
+# `grep -v -- -man`: the derivation is multi-output and --print-out-paths emits
+# the man output too; taking head -1 blind picks whichever sorts first.
+SKOPEO=$(nix build 'github:nlewo/nix2container#skopeo-nix2container' --no-link --print-out-paths | grep -v -- '-man$' | head -1)/bin/skopeo
+if [ ! -x "$SKOPEO" ]; then
+  echo "ERROR: could not resolve nix2container's skopeo at '$SKOPEO'"
+  exit 1
+fi
+
+# REFS map -> a bash array in push_attrs order, in ONE jq call. The refs file is
+# attr -> "k3d-scooter-reg.localhost:5800/<name>:<tag>"; jq emits just the values,
+# ordered by the attr list, so the three arrays line up by index.
+# `--args` AFTER the file, not before: jq treats everything following --args as
+# positional, so putting it first makes jq read the filename as an arg and then
+# block forever on stdin. (It does exactly that; caught before this shipped.)
+mapfile -t push_refs < <(
+  nix shell nixpkgs#jq -c jq -r '
+      . as $m | $ARGS.positional[] | $m[.]
+    ' "$refs" --args "${push_attrs[@]}"
+)
+if [ "${#push_refs[@]}" -ne "${#push_attrs[@]}" ]; then
+  echo "ERROR: resolved ${#push_refs[@]} refs, expected ${#push_attrs[@]}"
+  exit 1
+fi
+
 _push_copy_t0=$(date +%s)
-nix shell nixpkgs#jq -c jq -r 'to_entries[] | "\(.key)=\(.value)"' "$refs" \
+# attr=storepath=ref per line. Plain printf -- no per-image process at all.
+for _i in "${!push_attrs[@]}"; do
+  printf '%s=%s=%s\n' "${push_attrs[$_i]}" "${push_paths[$_i]}" "${push_refs[$_i]}"
+done \
   | xargs -P 4 -I{} bash -c '
       set -euo pipefail
-      attr="${1%%=*}"; ref="${1#*=}"
+      # attr=storepath=ref, built above. Splitting on "=" rather than passing
+      # three args because xargs -I{} substitutes a single token.
+      attr="${1%%=*}"; _rest="${1#*=}"
+      img_path="${_rest%%=*}"; ref="${_rest#*=}"
       push_ref="localhost:${ref#*.localhost:}"
 
       # ALREADY THERE? Tags are content-addressed (ghcrContentTag = the store
@@ -164,7 +238,10 @@ nix shell nixpkgs#jq -c jq -r 'to_entries[] | "\(.key)=\(.value)"' "$refs" \
       max_retries=3
       retry=0
       while [ $retry -lt $max_retries ]; do
-        if nix run ".#${attr}.copyTo" -- "docker://${push_ref}" --dest-tls-verify=false; then
+        # skopeo reads the already-realised manifest straight from the store.
+        # No `nix run`, so no evaluation and no eval-cache lock to contend on.
+        if "$SKOPEO" --insecure-policy copy "nix:${img_path}" \
+             "docker://${push_ref}" --dest-tls-verify=false; then
           echo "✓ $attr pushed successfully"
           exit 0
         fi
