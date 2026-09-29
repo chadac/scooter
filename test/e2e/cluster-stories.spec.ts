@@ -105,7 +105,7 @@ fullOnly("needs kubectl access to delete the owner pod mid-run")(
       // The hook resolves the owner from `status.hostPod`, which the controller
       // publishes independently of the run — so a visible status bar does NOT mean
       // the owner is readable yet, and the hook's 409 is a race, not a verdict.
-      // Poll past it. Why: PR #676.
+      // Poll past it. Why: PR #689.
       let moved = await request.post(`${hook}/move/${thread}`);
       let body = await moved.text();
       const deadline = Date.now() + 30_000;
