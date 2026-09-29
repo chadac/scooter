@@ -52,7 +52,17 @@ phase "cluster+registry"
 # docker save tar -> ctr import); now skopeo streams blobs from /nix/store into
 # the registry once, skipping any layer already present.
 nix shell nixpkgs#k3d nixpkgs#kubectl -c bash -c '
-  k3d registry create scooter-reg.localhost --port 5800
+  # PERSIST THE BLOB STORE when the runner provides one (self-hosted: the cache
+  # volume bind-mounts /var/lib/k3d-registry). k3d registry create makes a fresh
+  # container every run, so without this skopeo re-uploads all eight images into
+  # an empty registry -- measured at 103s, the largest single item in this
+  # script. The push already skips layers "already present"; this is what makes
+  # any be present. On a GitHub-hosted runner the directory does not exist and
+  # the registry is ephemeral exactly as before.
+  reg_vol=""
+  [ -d /var/lib/k3d-registry ] && reg_vol="-v /var/lib/k3d-registry:/var/lib/registry"
+  # shellcheck disable=SC2086  # intentional word-split: empty means "no flag"
+  k3d registry create scooter-reg.localhost --port 5800 $reg_vol
   k3d cluster create scooter-ci --no-lb --wait --registry-use k3d-scooter-reg.localhost:5800
   k3d kubeconfig merge scooter-ci --kubeconfig-merge-default
 '
