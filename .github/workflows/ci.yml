@@ -640,7 +640,14 @@ jobs:
       # thread fill timed out with only its FIRST turn on screen, at a 90s per-turn budget,
       # which is a pod it never got rather than a scroll bug. This link carries the whole
       # 26-spec allowlist, so it needs the most splitting.
-      E2E_FULL_SHARDS: "4"
+      #
+      # ONE SHARD when the PR carries `e2e-one-shard`. Infrastructure work on the
+      # self-hosted fleet needs a fast round trip -- four shards is four instances
+      # and ~13 min to learn one thing about the runner, and the shards are
+      # independent, so a single one exercises the whole path (attach, mount,
+      # k3d, platform, specs) just as well. The nightly and any normal `e2e-full`
+      # run keep the full four.
+      E2E_FULL_SHARDS: ${{ contains(github.event.pull_request.labels.*.name, 'e2e-one-shard') && '1' || '4' }}
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
