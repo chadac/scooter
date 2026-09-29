@@ -20,7 +20,7 @@ import { test, expect } from "./fixtures.js";
  *
  * NOT `assistantMessages().last()`: the platform appends turns of its own (a resume
  * prompt when the host pod is replaced mid-test), so the newest message is not
- * reliably the reply under test. Why: PR #675.
+ * reliably the reply under test. Why: PR #688.
  */
 function assistantSaying(chat: { assistantMessages(): Locator }, pattern: RegExp): Locator {
   return chat.assistantMessages().filter({ hasText: pattern }).first();
