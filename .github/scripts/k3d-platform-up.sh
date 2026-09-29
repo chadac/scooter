@@ -159,26 +159,27 @@ push_attrs=(
   conversation-router-image
   db-migrator-image
 )
-mapfile -t push_paths < <(nix build "${push_attrs[@]/#/.#}" --no-link --print-out-paths)
-if [ "${#push_paths[@]}" -ne "${#push_attrs[@]}" ]; then
+# Realise the manifests AND the eight copyTo runners in one build. copyTo is
+# what `nix run` invokes per image below; building it here means that run is a
+# cache hit instead of a fresh realisation inside the parallel section.
+#
+# copyTo bundles nix2container's patched skopeo (1.24.1) and IS substitutable.
+# Do not swap it for the exposed `skopeo-nix2container` attr -- that is a
+# different, uncached derivation (1.21.0) and naming it costs a source build
+# plus ~139 paths / 203 MiB of fetches. Measured, after trying it.
+# Build the manifests and the copyTo runners together: one `nix build`, one
+# eval, everything realised before the parallel section starts.
+_build_targets=()
+for _a in "${push_attrs[@]}"; do
+  _build_targets+=(".#${_a}" ".#${_a}.copyTo")
+done
+mapfile -t push_paths < <(nix build "${_build_targets[@]}" --no-link --print-out-paths)
+if [ "${#push_paths[@]}" -lt "${#push_attrs[@]}" ]; then
   echo "ERROR: realised ${#push_paths[@]} image manifests, expected ${#push_attrs[@]}"
   exit 1
 fi
 echo "[phase] image-manifest-build=$(( $(date +%s) - _push_build_t0 ))s"
 
-# nix2container's PATCHED skopeo -- upstream skopeo has no `nix:` transport and
-# fails with `unknown transport "nix"`. `nix run .#<attr>.copyTo` was pulling
-# this in implicitly; now it is named, resolved ONCE here rather than per image.
-# EXPORTED: the xargs subshells below are separate bash processes and inherit
-# only the environment, not shell variables.
-export SKOPEO
-# `grep -v -- -man`: the derivation is multi-output and --print-out-paths emits
-# the man output too; taking head -1 blind picks whichever sorts first.
-SKOPEO=$(nix build 'github:nlewo/nix2container#skopeo-nix2container' --no-link --print-out-paths | grep -v -- '-man$' | head -1)/bin/skopeo
-if [ ! -x "$SKOPEO" ]; then
-  echo "ERROR: could not resolve nix2container's skopeo at '$SKOPEO'"
-  exit 1
-fi
 
 # REFS map -> a bash array in push_attrs order, in ONE jq call. The refs file is
 # attr -> "k3d-scooter-reg.localhost:5800/<name>:<tag>"; jq emits just the values,
@@ -199,14 +200,11 @@ fi
 _push_copy_t0=$(date +%s)
 # attr=storepath=ref per line. Plain printf -- no per-image process at all.
 for _i in "${!push_attrs[@]}"; do
-  printf '%s=%s=%s\n' "${push_attrs[$_i]}" "${push_paths[$_i]}" "${push_refs[$_i]}"
+  printf '%s=%s\n' "${push_attrs[$_i]}" "${push_refs[$_i]}"
 done \
   | xargs -P 4 -I{} bash -c '
       set -euo pipefail
-      # attr=storepath=ref, built above. Splitting on "=" rather than passing
-      # three args because xargs -I{} substitutes a single token.
-      attr="${1%%=*}"; _rest="${1#*=}"
-      img_path="${_rest%%=*}"; ref="${_rest#*=}"
+      attr="${1%%=*}"; ref="${1#*=}"
       push_ref="localhost:${ref#*.localhost:}"
 
       # ALREADY THERE? Tags are content-addressed (ghcrContentTag = the store
@@ -238,10 +236,16 @@ done \
       max_retries=3
       retry=0
       while [ $retry -lt $max_retries ]; do
-        # skopeo reads the already-realised manifest straight from the store.
-        # No `nix run`, so no evaluation and no eval-cache lock to contend on.
-        if "$SKOPEO" --insecure-policy copy "nix:${img_path}" \
-             "docker://${push_ref}" --dest-tls-verify=false; then
+        # `nix run .#<attr>.copyTo`, NOT a skopeo we name ourselves. copyTo
+        # bundles skopeo 1.24.1 and is SUBSTITUTABLE; the exposed
+        # `skopeo-nix2container` attr is a DIFFERENT derivation (1.21.0) that
+        # nothing has cached, so naming it costs a source build plus ~139 paths
+        # / 203 MiB of fetches. Measured, after trying exactly that.
+        #
+        # This still evaluates -- but the batched `nix build` above has already
+        # realised the graph, so it is a cache hit rather than the ~6.4k-drv
+        # re-instantiation that the lock contention used to force.
+        if nix run ".#${attr}.copyTo" -- "docker://${push_ref}" --dest-tls-verify=false; then
           echo "✓ $attr pushed successfully"
           exit 0
         fi
