@@ -104,6 +104,23 @@ export function inventory({ project } = {}) {
  *  "suite > test" path that list reports -- passing the whole thing selects 0.
  *  Verified: the leaf "…assigned a hostPod + hostIP", escaped, selects 1; the
  *  full name selects 0. */
+/** The cluster spec files the e2e-full shards are responsible for.
+ *
+ *  ONLY THE SMOKE PAIR. test/cluster holds 47 tests across 15 files, but the
+ *  shards only ever ran these two -- the workflow passed them to vitest as
+ *  positional filters. The rest belong to `cluster image boot`, a SEPARATE job
+ *  with its own cluster (sandbox-os, overlay-store, scooter-converge,
+ *  scooterRebuildTwice, warm-store) and to suites nothing schedules per-shard.
+ *
+ *  Distributing all 47 was a scoping mistake, and it is not a quiet one: a
+ *  shard assigned a warmpool or self-modify test loads that file and runs
+ *  infrastructure work its cluster was never prepared for. Observed as 8 failed
+ *  test FILES in a shard that had been assigned 11 cluster tests.
+ *
+ *  Adding a file here means the shards start running it, so it is a deliberate
+ *  list rather than a glob. */
+export const SHARDED_CLUSTER_SPECS = ["platform-smoke", "event-backfill"];
+
 export function clusterInventory() {
   const raw = execFileSync(join(REPO_ROOT, "node_modules", ".bin", "vitest"), ["list", "--project", "cluster", "--json"], {
     cwd: REPO_ROOT,
@@ -112,12 +129,15 @@ export function clusterInventory() {
     env: { ...process.env, RUN_CLUSTER_TESTS: "1" },
     stdio: ["ignore", "pipe", "ignore"],
   });
-  return JSON.parse(raw).map((t) => ({
-    file: t.file,
-    name: t.name,
-    title: t.name.split(" > ").pop(),
-    kind: "cluster",
-  }));
+  return JSON.parse(raw)
+    // Keep only the smoke pair -- see SHARDED_CLUSTER_SPECS.
+    .filter((t) => SHARDED_CLUSTER_SPECS.some((s) => (t.file ?? "").includes(s)))
+    .map((t) => ({
+      file: t.file,
+      name: t.name,
+      title: t.name.split(" > ").pop(),
+      kind: "cluster",
+    }));
 }
 
 /** The combined pool: playwright + cluster tests, each tagged with `kind` so the

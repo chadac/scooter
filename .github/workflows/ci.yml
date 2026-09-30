@@ -814,7 +814,18 @@ jobs:
         # ONLY tier that exercises the rendered Job's image/DB-env/volume wiring — Tier 1
         # covers the verify logic against a fake db. See modules/event-backfill.nix, PR #463.
         run: |
-          nix develop --command bash -c 'npm install && npx vitest run --project cluster --no-file-parallelism -t "$CLUSTER_GREP"'
+          # THE FILE FILTERS ARE NOT OPTIONAL. `-t` selects by NAME, but vitest
+          # still LOADS every file in the project first -- all 15 of them, 47
+          # tests. A shard assigned a warmpool or self-modify test would then run
+          # infrastructure work its cluster was never prepared for. Observed
+          # before these filters were restored: 8 failed test FILES in a shard
+          # that had been given 11 cluster tests.
+          #
+          # These are the same two the step passed before per-test sharding, and
+          # they must stay in step with SHARDED_CLUSTER_SPECS in
+          # test/e2e/support/test-inventory.mjs -- the planner only ever assigns
+          # tests from these files.
+          nix develop --command bash -c 'npm install && npx vitest run --project cluster --no-file-parallelism platform-smoke event-backfill -t "$CLUSTER_GREP"'
 
       # e2e FULL browser stories: the same Playwright specs, against the REAL cluster.
       # This is the seam nothing else covers — test/cluster is curl-only (no UI) and the
