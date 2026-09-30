@@ -26,6 +26,17 @@
  * source. Playwright resolves projects, testMatch and testIgnore; a regex does
  * not, and would drift from what actually runs.
  *
+ * BOTH RUNNERS behave the same way, verified separately:
+ *   playwright  --grep <regex>   no match -> 0 tests, exit 0   59/170 titles have metachars
+ *   vitest      -t <regex>       no match -> all skipped, exit 0   25/47 titles have metachars
+ * so one escaping rule and one completeness check covers both.
+ *
+ * ONE VITEST QUIRK worth not rediscovering: `vitest list --json` reports `name` as
+ * the full "suite > test" path, but `-t` does NOT match against that string -- the
+ * full name selects 0. The LEAF title alone, escaped, selects exactly 1. So the
+ * cluster inventory keeps both: `name` for diagnostics, `title` (the leaf) for
+ * selection.
+ *
  * Usage:
  *   node test/e2e/support/test-inventory.mjs list      # JSON inventory to stdout
  *   node test/e2e/support/test-inventory.mjs verify    # uniqueness + selector round-trip
@@ -84,24 +95,67 @@ export function inventory({ project } = {}) {
   return out;
 }
 
+/** Every CLUSTER (vitest) test, as { file, title, name, kind }.
+ *
+ *  RUN_CLUSTER_TESTS=1 is required: these specs self-skip without it, and a
+ *  listing with it unset comes back EMPTY rather than erroring.
+ *
+ *  `title` is the LEAF, not `name`. vitest's -t does not match the full
+ *  "suite > test" path that list reports -- passing the whole thing selects 0.
+ *  Verified: the leaf "…assigned a hostPod + hostIP", escaped, selects 1; the
+ *  full name selects 0. */
+export function clusterInventory() {
+  const raw = execFileSync(join(REPO_ROOT, "node_modules", ".bin", "vitest"), ["list", "--project", "cluster", "--json"], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+    maxBuffer: 64 << 20,
+    env: { ...process.env, RUN_CLUSTER_TESTS: "1" },
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  return JSON.parse(raw).map((t) => ({
+    file: t.file,
+    name: t.name,
+    title: t.name.split(" > ").pop(),
+    kind: "cluster",
+  }));
+}
+
+/** The combined pool: playwright + cluster tests, each tagged with `kind` so the
+ *  packer can emit the right selector for each. ONE pool on purpose -- a shard
+ *  carrying platform-smoke's slowest test should get less playwright work, and
+ *  that only balances if both kinds share a weight list. */
+export function combinedInventory() {
+  return [
+    ...inventory().map((t) => ({ ...t, kind: "e2e" })),
+    ...clusterInventory(),
+  ];
+}
+
 /** Fail loudly on anything that would make title selection lose a test.
  *  Returns { ok, tests, problems[] }. */
 export function verify(tests = inventory()) {
   const problems = [];
 
-  // 1. DUPLICATE TITLES. Two tests with one title means a --grep for either
-  //    selects both, so whichever shard did not ask for it runs it anyway and
-  //    the shard that did may double-count. Enforced rather than assumed.
+  // 1. DUPLICATE TITLES. Two tests with one title means a --grep (or -t) for
+  //    either selects both, so whichever shard did not ask for it runs it anyway
+  //    and the shard that did may double-count. Enforced rather than assumed.
+  //
+  //    Scoped PER KIND, not globally: a playwright --grep only ever searches
+  //    playwright tests and a vitest -t only ever searches cluster tests, so an
+  //    e2e title colliding with a cluster title is harmless. Checking globally
+  //    would reject a safe suite.
   const byTitle = new Map();
   for (const t of tests) {
-    if (!byTitle.has(t.title)) byTitle.set(t.title, []);
-    byTitle.get(t.title).push(t);
+    const key = `${t.kind ?? "e2e"}\u0000${t.title}`;
+    if (!byTitle.has(key)) byTitle.set(key, []);
+    byTitle.get(key).push(t);
   }
-  for (const [title, group] of byTitle) {
+  for (const [key, group] of byTitle) {
     if (group.length > 1) {
+      const [kind, title] = key.split("\u0000");
       problems.push(
-        `duplicate title (${group.length}x): ${JSON.stringify(title)}\n` +
-          group.map((g) => `      ${g.file}:${g.line}`).join("\n"),
+        `duplicate ${kind} title (${group.length}x): ${JSON.stringify(title)}\n` +
+          group.map((g) => `      ${g.file}${g.line ? `:${g.line}` : ""}`).join("\n"),
       );
     }
   }
@@ -109,7 +163,27 @@ export function verify(tests = inventory()) {
   // 2. EMPTY OR WHITESPACE TITLES cannot be selected at all.
   for (const t of tests) {
     if (!t.title || !t.title.trim()) {
-      problems.push(`empty title at ${t.file}:${t.line}`);
+      problems.push(`empty title at ${t.file}${t.line ? `:${t.line}` : ""}`);
+    }
+  }
+
+  // 3. THE ESCAPED TITLE MUST MATCH THE ORIGINAL. This is the check that would
+  //    have caught the metacharacter trap: 59 of 170 playwright titles and 25 of
+  //    47 cluster titles contain a regex metacharacter, and an unescaped one
+  //    matches NOTHING while exiting 0. Compiling the escaped form and testing it
+  //    against the source string proves the selector we will emit actually
+  //    selects this test.
+  for (const t of tests) {
+    if (!t.title) continue;
+    let re;
+    try {
+      re = new RegExp(escapeForGrep(t.title));
+    } catch (e) {
+      problems.push(`title does not escape to a valid regex at ${t.file}: ${e.message}`);
+      continue;
+    }
+    if (!re.test(t.title)) {
+      problems.push(`escaped title does not match itself at ${t.file}: ${JSON.stringify(t.title)}`);
     }
   }
 
@@ -119,12 +193,14 @@ export function verify(tests = inventory()) {
 function main() {
   const cmd = process.argv[2] ?? "list";
   if (cmd === "list") {
-    process.stdout.write(JSON.stringify(inventory(), null, 2));
+    process.stdout.write(JSON.stringify(combinedInventory(), null, 2));
     return;
   }
   if (cmd === "verify") {
-    const { ok, tests, problems } = verify();
-    process.stderr.write(`[test-inventory] ${tests.length} tests, ${new Set(tests.map((t) => t.title)).size} distinct titles\n`);
+    const { ok, tests, problems } = verify(combinedInventory());
+    const e2e = tests.filter((t) => t.kind === "e2e").length;
+    const cluster = tests.filter((t) => t.kind === "cluster").length;
+    process.stderr.write(`[test-inventory] ${tests.length} tests (${e2e} e2e + ${cluster} cluster)\n`);
     if (!ok) {
       process.stderr.write(
         `[test-inventory] ${problems.length} problem(s) that would LOSE TESTS in a sharded run:\n` +
