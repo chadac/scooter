@@ -492,7 +492,14 @@ export const Sidebar = memo(function Sidebar() {
         )}
       </div>
 
-      <nav data-testid="session-list" className="flex-1 overflow-y-auto px-2 pb-2">
+      {/* data-query is the query `rows` above was ACTUALLY filtered by — same state, same
+          render. A controlled input's DOM value proves only that the keystrokes landed,
+          not that the component consumed them. Why: PR #690. */}
+      <nav
+        data-testid="session-list"
+        data-query={query}
+        className="flex-1 overflow-y-auto px-2 pb-2"
+      >
         {rows.length === 0 && (
           <p data-testid="session-empty" className="px-3 py-2 text-sm text-muted-foreground">
             No chats match.

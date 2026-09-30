@@ -10,7 +10,7 @@
  * (assertConsistent) — so touching one component can't quietly corrupt another.
  */
 
-import { test, expect, snapshot, assertConsistent, fillStable } from "./fixtures.js";
+import { test, expect, snapshot, assertConsistent, searchSidebar } from "./fixtures.js";
 
 const sb = {
   list: '[data-testid="session-list"]',
@@ -19,7 +19,6 @@ const sb = {
   star: '[data-testid="session-star"]',
   rename: '[data-testid="session-rename"]',
   renameInput: '[data-testid="session-rename-input"]',
-  search: '[data-testid="session-search"]',
   newSession: '[data-testid="new-session"]',
   filtersToggle: '[data-testid="filters-toggle"]',
 };
@@ -148,9 +147,9 @@ test.describe("sidebar / session components", () => {
     const total = await page.locator(sb.item).count();
     expect(total, "both conversations are listed").toBeGreaterThanOrEqual(2);
 
-    await fillStable(page.locator(sb.search), "alpha");
+    await searchSidebar(page, "alpha");
     await expect.poll(async () => page.locator(sb.item).count(), { timeout: 20_000 }).toBeLessThan(total);
-    await fillStable(page.locator(sb.search), "");
+    await searchSidebar(page, "");
     // Restoring means "the narrowing is undone", not "the list is byte-identical to a sample
     // taken 20s ago". `total` came from the AGGREGATED list of a shared fleet, which other
     // specs are concurrently adding to and deleting from, and which can also serve a degraded
