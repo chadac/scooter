@@ -417,13 +417,39 @@ in
                     { name = "PGDATA"; value = "/var/lib/postgresql/data/pgdata"; }
                   ];
                   volumeMounts = [{ name = "data"; mountPath = "/var/lib/postgresql/data"; }];
+                  # POLL FAST, so readiness tracks the database instead of the
+                  # probe schedule. MEASURED on postgres:16-alpine:
+                  #   fresh PGDATA (initdb runs):  pg_isready succeeds at 9s
+                  #   warm PGDATA (already init):  pg_isready succeeds at 1s
+                  #
+                  # At 10s/10s the first probe lands at 10s, so a warm database
+                  # ready at 1s still waited 10s. At 2s/2s it is marked ready at
+                  # 2s. On a FRESH volume both settings report at 10s and this
+                  # changes nothing -- which is today's CI case, since the PVC is
+                  # new each run. The win arrives if the DB volume is ever
+                  # persisted alongside the store.
+                  #
+                  # Everything downstream waits on this: agent-postgres-init for
+                  # roles, agent-db-migrate for schema, every service for both.
+                  #
+                  # 2s/2s costs nothing -- a local exec, not a network call --
+                  # and failureThreshold defaults to 3, so a premature success
+                  # that flips back simply makes the deployment wait again.
+                  # (Checked for that flap on a fresh PGDATA: none observed;
+                  # the initdb temporary server is not externally reachable.)
                   readinessProbe = {
                     exec.command = [ "pg_isready" "-U" "postgres" "-d" "postgres" ];
-                    timeoutSeconds = 5; initialDelaySeconds = 10; periodSeconds = 10;
+                    timeoutSeconds = 5; initialDelaySeconds = 2; periodSeconds = 2;
                   };
+                  # LIVENESS STAYS CONSERVATIVE. Readiness only gates traffic;
+                  # liveness RESTARTS the container, and restarting Postgres
+                  # mid-initdb on a cold volume turns a slow start into a crash
+                  # loop. The initial delay keeps the watchdog clear of that
+                  # window; only the poll interval tightens, so a genuinely
+                  # wedged database is still caught in ~15s + 6 failures.
                   livenessProbe = {
                     exec.command = [ "pg_isready" "-U" "postgres" "-d" "postgres" ];
-                    timeoutSeconds = 5; initialDelaySeconds = 15; periodSeconds = 10; failureThreshold = 6;
+                    timeoutSeconds = 5; initialDelaySeconds = 15; periodSeconds = 5; failureThreshold = 6;
                   };
                 };
                 volumes = [{ name = "data"; persistentVolumeClaim.claimName = "agent-shared-db"; }];

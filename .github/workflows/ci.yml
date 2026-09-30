@@ -640,7 +640,14 @@ jobs:
       # thread fill timed out with only its FIRST turn on screen, at a 90s per-turn budget,
       # which is a pod it never got rather than a scroll bug. This link carries the whole
       # 26-spec allowlist, so it needs the most splitting.
-      E2E_FULL_SHARDS: "4"
+      #
+      # ONE SHARD when the PR carries `e2e-one-shard`. Infrastructure work on the
+      # self-hosted fleet needs a fast round trip -- four shards is four instances
+      # and ~13 min to learn one thing about the runner, and the shards are
+      # independent, so a single one exercises the whole path (attach, mount,
+      # k3d, platform, specs) just as well. The nightly and any normal `e2e-full`
+      # run keep the full four.
+      E2E_FULL_SHARDS: ${{ contains(github.event.pull_request.labels.*.name, 'e2e-one-shard') && '1' || '4' }}
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
@@ -671,6 +678,21 @@ jobs:
           report=""
           [ -f prior/report.json ] && report="prior/report.json"
           matrix=$(SPEC_SET=full PRIOR_REPORT="$report" SHARDS="$E2E_FULL_SHARDS" node test/e2e/support/shard-e2e.mjs)
+
+          # `e2e-one-shard` is for INFRASTRUCTURE work on the self-hosted runner,
+          # where the thing under test is the cluster bring-up -- not the specs.
+          # One shard alone does not give that: it gives ONE runner running ALL
+          # 41 specs, which is slower than four. Narrow to a single cheap spec so
+          # the loop measures startup rather than the suite.
+          if [ "$E2E_FULL_SHARDS" = "1" ]; then
+            matrix=$(node -e '
+              const m = JSON.parse(process.argv[1]);
+              m.include = [{ ...m.include[0], specs: "test/e2e/conversation.spec.ts" }];
+              process.stdout.write(JSON.stringify(m));
+            ' "$matrix")
+            echo "one-shard mode: narrowed to test/e2e/conversation.spec.ts"
+          fi
+
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   # PLATFORM SMOKE on a real k3d cluster: deploy the FULL multi-replica platform
@@ -684,17 +706,32 @@ jobs:
     needs: [cluster-changes, e2e-full-distribute]
     # Runs only when distribute did — that job carries the opt-in decision.
     if: needs.e2e-full-distribute.result == 'success'
-    runs-on: ubuntu-latest
+    # THE SELF-HOSTED FLEET (infra/runners.tf in server-config). This job, and
+    # ONLY this job: an e2e shard is ~25 min of k3d + platform deploy, and
+    # measured queue wait dominates actual work 4.6:1. Everything else in this
+    # workflow stays on GitHub-hosted runners, where it is free.
+    #
+    # SAFE because the gate above is `schedule` / `workflow_dispatch` / an
+    # `e2e-full` LABEL: a fork can trigger none of those (labelling needs write
+    # access), and fork-PR approval is on. `runs-on` is NOT a security boundary
+    # on its own -- a fork controls its own workflow file -- so do not relax
+    # that gate without revisiting this.
+    runs-on: [self-hosted, linux, x64, nix]
     strategy:
       fail-fast: false # one shard failing must not cancel the others (collect reports all)
       matrix: ${{ fromJSON(needs.e2e-full-distribute.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v5
       - uses: nixbuild/nix-quick-install-action@v30
+      # READ-ONLY on purpose: no authToken. This job runs on the SELF-HOSTED
+      # fleet, and the runner spec's rule is "no secrets on self-hosted runners"
+      # -- CACHIX_AUTH_TOKEN is a WRITE token, and a shard only ever needs to
+      # PULL. Cache population stays with the GitHub-hosted jobs that already do
+      # it. Dropping the token costs nothing here and keeps the blast radius of
+      # a compromised runner to the instance itself.
       - uses: cachix/cachix-action@v15
         with:
           name: scooter
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       # Cluster, registry, agent-sandbox controller, platform images, and the
       # deployed platform — all of it in one script so the label-gated
@@ -766,6 +803,21 @@ jobs:
       - name: tear down k3d
         if: always()
         run: nix shell nixpkgs#k3d -c k3d cluster delete scooter-ci || true
+
+      # The input that sizes the persistent /nix volumes (server-config
+      # docs/github-runners-spec.md §11): volume = 3x this, rotate at 2.5x.
+      # Measured AFTER the job so it includes the platform images and browsers,
+      # not just the devshell closure. `always()` so a failed shard still
+      # reports -- a shard that dies late has done most of the building.
+      - name: report /nix/store size
+        if: always()
+        run: |
+          du -sh /nix/store 2>/dev/null || true
+          df -h /nix 2>/dev/null || df -h / || true
+          # Is /nix the pooled EBS volume or the instance root disk? The
+          # difference decides whether a store was REUSED or built cold, and
+          # `du` alone cannot tell you -- both report a plausible number.
+          findmnt -no SOURCE,FSTYPE,SIZE /nix 2>/dev/null || echo "/nix is not a separate mount (root disk)"
 
   # The GATE for e2e full: succeeds only when every shard passed; merges the per-shard
   # reports into `e2e-full-report` so the next run's distribute weights by real
