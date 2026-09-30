@@ -471,7 +471,14 @@ export { expect };
 export async function fillStable(input: Locator, value: string, timeout = 15_000): Promise<void> {
   const deadline = Date.now() + timeout;
   for (let attempt = 1; ; attempt++) {
-    await input.fill(value);
+    // Real key events (select-all, Delete, then per-character) rather than fill()'s
+    // programmatic value set: a controlled React input dedupes a change whose value
+    // already matches the one it last wrote, so a bare assignment can leave the DOM
+    // showing the text while the component's state never moves. Why: PR #690.
+    await input.focus();
+    await input.press("ControlOrMeta+a");
+    await input.press("Delete");
+    if (value) await input.pressSequentially(value, { delay: 10 });
     try {
       await expect(input).toHaveValue(value, { timeout: 2_000 });
       return;
@@ -483,6 +490,37 @@ export async function fillStable(input: Locator, value: string, timeout = 15_000
         );
       }
       await input.page().waitForTimeout(250);
+    }
+  }
+}
+
+/**
+ * Type a query into the sidebar search and PROVE the sidebar filtered by it.
+ *
+ * `fillStable` proves only that the characters are in the input. A query the component
+ * never consumed leaves the list UNFILTERED, so every row assertion after it measures the
+ * unfiltered list and fails as a CONSTANT no timeout can fix. `data-query` on
+ * `session-list` is the query that render filtered by. Why: PR #690.
+ */
+export async function searchSidebar(page: Page, value: string, timeout = 30_000): Promise<void> {
+  const input = page.locator('[data-testid="session-search"]');
+  const list = page.locator('[data-testid="session-list"]');
+  const deadline = Date.now() + timeout;
+  for (let attempt = 1; ; attempt++) {
+    await fillStable(input, value, Math.max(2_000, deadline - Date.now()));
+    try {
+      await expect(list).toHaveAttribute("data-query", value, { timeout: 2_000 });
+      return;
+    } catch (err) {
+      if (Date.now() >= deadline) {
+        const applied = await list.getAttribute("data-query").catch(() => null);
+        throw new Error(
+          `searchSidebar: the sidebar never filtered by "${value}" after ${attempt} attempts ` +
+            `(input holds it, session-list applied ${JSON.stringify(applied)}) — the query is ` +
+            `not reaching the store, so any row assertion below would measure an unfiltered list.\n${String(err)}`,
+        );
+      }
+      await page.waitForTimeout(250);
     }
   }
 }
