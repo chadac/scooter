@@ -698,7 +698,19 @@ jobs:
           # otherwise -- so a plan that would silently drop a test fails here
           # rather than in four green shards. See test-inventory.mjs for the three
           # ways title selection can lose a test.
-          matrix=$(nix develop --command bash -c "npm install --silent && PRIOR_REPORT='$report' SHARDS='$E2E_FULL_SHARDS' node test/e2e/support/shard-tests.mjs")
+          # WRITE THE JSON TO A FILE, do not capture stdout. `nix develop` prints
+          # a welcome banner to stdout before the command runs, so $(...) picked
+          # up the banner AND the JSON, and $GITHUB_OUTPUT rejected the result:
+          #   Invalid format '  just  -- task runner (test-quick, test, ...)'
+          # The planner itself was fine -- it logged "217 tests -> 4 shards" and
+          # its coverage assertion passed. Only the capture was wrong.
+          nix develop --command bash -c \
+            "npm install --silent && PRIOR_REPORT='$report' SHARDS='$E2E_FULL_SHARDS' node test/e2e/support/shard-tests.mjs > /tmp/matrix.json"
+          matrix=$(cat /tmp/matrix.json)
+          # A banner or a stray log line here would break the matrix in a way
+          # that is hard to read downstream; fail on it now instead.
+          echo "$matrix" | jq -e 'has("include")' >/dev/null \
+            || { echo "::error::planner did not emit a matrix"; head -c 400 /tmp/matrix.json; exit 1; }
 
           # `e2e-one-shard` is for INFRASTRUCTURE work on the self-hosted runner,
           # where the thing under test is the cluster bring-up -- not the specs.
