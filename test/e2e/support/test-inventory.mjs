@@ -68,6 +68,10 @@ export function inventory({ project } = {}) {
     cwd: REPO_ROOT,
     encoding: "utf8",
     maxBuffer: 64 << 20,
+    // E2E_TARGET gates whether the `full` project is defined at all -- see
+    // playwright.config.ts. Asking for a project the config did not define
+    // yields an empty list rather than an error.
+    env: project ? { ...process.env, E2E_TARGET: project } : process.env,
     // --list writes the JSON to stdout; warnings go to stderr and are noise here.
     stdio: ["ignore", "pipe", "ignore"],
   });
@@ -146,7 +150,19 @@ export function clusterInventory() {
  *  that only balances if both kinds share a weight list. */
 export function combinedInventory() {
   return [
-    ...inventory().map((t) => ({ ...t, kind: "e2e" })),
+    // --project=full, NOT an unfiltered --list. The `full` project carries
+    // `testMatch: fullSpecs` (playwright.config.ts), so only the 26 files in
+    // full-specs.json run there -- 124 tests, where an unfiltered list reports
+    // 170 across 37 files.
+    //
+    // Distributing all 170 put 46 tests into selectors that the full project
+    // will never match, so those tests ran NOWHERE while the planner's coverage
+    // assertion still passed -- it was checking its own arithmetic against the
+    // wrong universe. Observed as a shard planned for 42 tests running 31.
+    //
+    // E2E_TARGET=full is what makes the project exist at all; without it the
+    // config omits it and the list comes back empty.
+    ...inventory({ project: "full" }).map((t) => ({ ...t, kind: "e2e" })),
     ...clusterInventory(),
   ];
 }
