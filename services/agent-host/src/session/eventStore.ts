@@ -43,21 +43,22 @@ export interface PgEventStoreConfig {
  * the seven appendEvent call sites, while a fence on the statement cannot be forgotten by
  * a new one.
  *
+ * POD IDENTITY IS THE WHOLE FENCE. One writer per conversation, ever: `host_pod` moves
+ * only on a handoff, and the pod it moves away from never writes again. The epoch is NOT
+ * consulted — agent-host is a Deployment, so a pod name carries a ReplicaSet hash and a
+ * random suffix and is never reused. The epoch clause only ever refused a rightful owner
+ * holding a lagging cached generation.
+ *
  * It fences on CONTRADICTION only: an append is refused when the row names a different
- * host, or this pod at a different epoch. A row that names nobody — or no row at all —
- * does not refuse, because existence is not this fence's job and a brand-new conversation
- * appends before anything has assigned it. Refusing an absent claim outright ("no
- * generation => no writes") requires reading the claim from the ROW; while it comes from
- * the CR watch, an unobserved-but-assigned conversation is indistinguishable from an
- * unassigned one, and failing closed there would drop first turns.
+ * host. A row that names nobody — or no row at all — does not refuse, because a brand-new
+ * conversation appends before anything has assigned it, and failing closed there would drop
+ * first turns. That concession is safe ONLY while "nobody" means "not yet assigned": the
+ * controller must never release a claim back to NULL mid-conversation, or two pods pass
+ * this fence at once and collide on the PK. See #678 and rows.py.
  */
 export interface AppendFence {
   /** This pod's name — the identity the row must not contradict. */
   pod: string;
-  /** The epoch this pod believes it holds `id` under, or undefined when it has observed no
-   *  assignment. Undefined narrows the fence to pod identity rather than widening it to
-   *  allow-all: presenting an epoch nobody assigned would refuse every append. */
-  generation(id: SessionId): number | undefined;
 }
 
 /** The event-log half of ConversationStore, backed by conversation_events. */
@@ -166,38 +167,124 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
   // once per token, and one line each would bury the reassignment that caused it.
   const refusals = new Map<SessionId, number>();
 
-  /** The fence predicate, or nothing when unfenced. See AppendFence for the semantics;
-   *  `not exists (... contradiction ...)` is what makes a missing or unclaimed row allow. */
-  const fenceClause = (id: SessionId, gen: number | undefined) => {
+  /**
+   * CLAIM-AND-FENCE, in one statement. Rides the insert as a data-modifying CTE.
+   *
+   * The separate once-per-process claim this replaces left a hole that CI caught, with the
+   * row state read back at the moment it happened (73a52ba6, e2e full shard 3):
+   *
+   *   17:09:57.328  fptvw  REFUSED   row=held    by 5sdwj
+   *   17:09:57.656  lz2w4  REFUSED   row=held    by 5sdwj
+   *   17:10:59.721  5sdwj  COLLIDES  (turn lost)
+   *   17:10:59.744         the row:  row=UNHELD
+   *
+   * The fence was working; then the row was released, and every pod that had already spent
+   * its one claim attempt never re-took it. An unclaimed row refuses nobody, so two writers
+   * walked straight through. A retry FLOOR does not fix this — any interval leaves a window
+   * — and re-claiming on every append is only safe if the claim and the fence are the same
+   * statement. Why: PR #679.
+   *
+   * Three ways to be allowed, in the order they matter:
+   *   1. `exists (claim)`  — the UPDATE took an unheld row. THIS is the arbiter under
+   *      concurrency: two pods racing both run the UPDATE, one wins, and the loser re-reads
+   *      the locked row (EvalPlanQual), no longer matches `host_pod is null`, and returns no
+   *      rows. A snapshot `select` cannot do this — both would still see NULL and allow.
+   *   2. already ours — steady state. The UPDATE matches nothing, so a streaming run costs
+   *      ZERO row writes; only the unheld window writes at all.
+   *   3. no row — a first turn can append before anything has created one. Deliberately
+   *      permissive: making a missing row refuse is what 8f2b13e tried, and it took e2e
+   *      failures from 5 to 12.
+   */
+  const claimAndFence = (id: SessionId) => {
     const fence = config.fence;
-    if (!fence) return sql.empty();
-    const wrongEpoch = gen === undefined ? sql.empty() : sql` or ${conversations.hostGeneration} <> ${gen}`;
-    return sql`
-              where not exists (
-                select 1 from ${conversations}
-                 where ${conversations.id} = ${id}
-                   and ${conversations.hostPod} is not null
-                   and (${conversations.hostPod} <> ${fence.pod}${wrongEpoch})
-              )`;
+    if (!fence) return { cte: sql.empty(), where: sql.empty() };
+    return {
+      cte: sql`with claim as (
+                update ${conversations} set host_pod = ${fence.pod}
+                 where ${conversations.id} = ${id} and ${conversations.hostPod} is null
+                returning 1
+              )`,
+      where: sql`
+              where exists (select 1 from claim)
+                 or exists (
+                      select 1 from ${conversations}
+                       where ${conversations.id} = ${id} and ${conversations.hostPod} = ${fence.pod}
+                    )
+                 or not exists (select 1 from ${conversations} where ${conversations.id} = ${id})`,
+    };
   };
 
-  const onFenced = (id: SessionId, presented: number | undefined) => {
+  /** Postgres 23505 — unique_violation. Here it can only be (conversation_id, seq), which
+   *  is a SECOND WRITER, not a retry: the store never uses onConflictDoNothing. */
+  const isDuplicateKey = (error: unknown): boolean => {
+    for (let e: unknown = error, depth = 0; e && depth < 4; depth++) {
+      const o = e as { code?: unknown; message?: unknown; cause?: unknown };
+      // Drizzle WRAPS the driver error ("Failed query: ..."), so the pg code lives on
+      // `cause`, not on what the catch receives. Walk the chain rather than trusting
+      // either shape; the message is the last resort for a wrapper that drops `cause`.
+      if (o.code === "23505") return true;
+      if (typeof o.message === "string" && o.message.includes("conversation_events_pkey")) return true;
+      e = o.cause;
+    }
+    return false;
+  };
+
+  /** Why the fence said no, read back from the row. The predicate rides the insert, so a
+   *  refusal arrives as rowCount 0 and carries NO reason — and the two reasons need
+   *  different fixes: `held` is the fence working (another pod owns the conversation),
+   *  `missing` is a deleted or never-created row, which under a fence that requires the
+   *  row would be a DROPPED turn. Read only on a sampled line; a fenced pod refuses once
+   *  per streamed token, so one query each would be a query per token. Why: PR #679. */
+  const fenceReason = async (id: SessionId) => {
+    const rows = await db
+      .select({ hostPod: conversations.hostPod, hostGeneration: conversations.hostGeneration })
+      .from(conversations)
+      .where(eq(conversations.id, id))
+      .limit(1);
+    const row = rows[0];
+    if (!row) return { row: "missing" as const };
+    return {
+      row: row.hostPod ? ("held" as const) : ("unheld" as const),
+      host_pod: row.hostPod ?? undefined,
+      host_generation: row.hostGeneration,
+    };
+  };
+
+  /**
+   * Log WHY, off the write chain.
+   *
+   * Never awaited by an append. appendEvent serializes a conversation's writes through one
+   * promise chain, so anything awaited inside it delays the NEXT event of a live run — a
+   * diagnostic that costs a round trip there is buying an answer with the latency of the
+   * thing it is meant to observe. Detached, the read lands a few ms late and nothing waits
+   * on it. It also cannot throw into the caller's try, where a benign refusal would be
+   * reported as "durable append FAILED (turn lost)". Why: PR #679.
+   */
+  const logRowState = (
+    level: "warn" | "error",
+    msg: string,
+    id: SessionId,
+    fields: Record<string, unknown>,
+  ) => {
+    void fenceReason(id)
+      .catch((error) => ({ row: "unreadable", row_error: formatError(error) }))
+      .then((reason) => log[level](msg, { conversation_id: id, ...fields, ...reason }));
+  };
+
+  const onFenced = (id: SessionId) => {
     // The head came from a log this pod no longer drives; the new owner is advancing seq
     // past it. Drop it so a conversation reassigned BACK re-seeds from the table instead of
     // colliding on the PK.
     heads.delete(id);
     const n = (refusals.get(id) ?? 0) + 1;
     refusals.set(id, n);
-    if (n === 1 || n % 100 === 0) {
-      // presented_generation is the epoch the STATEMENT carried, not a fresh read of the
-      // cache: an investigation into a refusal needs what was actually presented.
-      log.warn("append fenced by the conversations row (this pod is not the host)", {
-        conversation_id: id,
-        pod: config.fence?.pod,
-        presented_generation: presented,
-        refused: n,
-      });
-    }
+    // Sampled: a fenced pod refuses once per streamed token, so logging each one would bury
+    // the reassignment that caused it — and would queue a read per token.
+    if (n !== 1 && n % 100 !== 0) return;
+    logRowState("warn", "append fenced by the conversations row (this pod is not the host)", id, {
+      pod: config.fence?.pod,
+      refused: n,
+    });
   };
 
   const head = async (id: SessionId) => {
@@ -225,22 +312,23 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
             const prevChecksum = at.checksum;
             const seq = at.seq + 1;
             const checksum = chainNext(prevChecksum, event);
-            // Resolved ONCE, so the statement's predicate and the refusal log cannot
-            // disagree about which epoch was presented.
-            const presented = config.fence?.generation(id);
-            // INSERT ... SELECT, not VALUES, so the fence can ride the statement (see
-            // AppendFence). NO onConflictDoNothing: the PK is a correctness backstop, and
-            // a duplicate (conversation_id, seq) means a second writer.
+            // INSERT ... SELECT, not VALUES, so the claim-and-fence can ride the statement
+            // (see AppendFence). ONE statement, not a claim then an insert: a claim that is
+            // a separate round trip is a window, and the window is what CI kept finding.
+            // NO onConflictDoNothing: the PK is a correctness backstop, and a duplicate
+            // (conversation_id, seq) means a second writer.
+            const { cte, where } = claimAndFence(id);
             const res = await db.execute(sql`
+              ${cte}
               insert into ${conversationEvents} (conversation_id, seq, event, checksum, prev_checksum)
-              select ${id}::text, ${seq}::bigint, ${JSON.stringify(event)}::jsonb, ${checksum}::text, ${prevChecksum}::text${fenceClause(id, presented)}
+              select ${id}::text, ${seq}::bigint, ${JSON.stringify(event)}::jsonb, ${checksum}::text, ${prevChecksum}::text${where}
             `);
             if ((res.rowCount ?? 0) === 0) {
               // Zero rows is only reachable under a fence, and it is not an error: the row
               // says this pod is no longer the writer. Do NOT advance the head or notify
               // listeners — nothing was committed, and claiming otherwise would hand the
               // integrity stream a checksum no reader can find.
-              onFenced(id, presented);
+              onFenced(id);
               return;
             }
             heads.set(id, { seq, checksum });
@@ -253,7 +341,28 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
             // appendEvent is `void`-called, so nobody sees this rejection. With
             // no file fallback it is a LOST TURN — surface it, then rethrow for
             // any caller that did await.
-            log.errorWith("durable append FAILED (turn lost)", error, { conversation_id: id });
+            //
+            // A PK collision is the ONE failure where the row is the answer: it means a
+            // second writer got here, so the row either named the other pod (the fence was
+            // not applied) or named NOBODY (it was released, and this pod's claim never
+            // re-ran). Those need opposite fixes and the refusal log cannot tell them
+            // apart, because a collision is precisely the case where nobody was refused.
+            // Safe to read unconditionally — a collision is already the error path, and
+            // never the hot one. Why: PR #679.
+            const collided = isDuplicateKey(error);
+            log.errorWith("durable append FAILED (turn lost)", error, {
+              conversation_id: id,
+              ...(collided ? { collided: true, pod: config.fence?.pod } : {}),
+            });
+            // A follow-up line rather than fields on the one above, for the same reason the
+            // refusal read is detached: the chain must not wait on a diagnostic. Join the
+            // two on conversation_id.
+            if (collided && config.fence) {
+              logRowState("error", "the row at the moment of a PK collision", id, {
+                collided: true,
+                pod: config.fence.pod,
+              });
+            }
             for (const cb of errorListeners) cb(id, error);
             // Drop the cached head: after a failure this pod's idea of seq may
             // be wrong (another writer), so re-seed from the table next time.

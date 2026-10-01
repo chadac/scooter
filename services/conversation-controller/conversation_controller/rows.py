@@ -171,6 +171,14 @@ class ConversationRows:
     def set_assignment(self, conversation_id: str, host_pod: str, generation: int) -> bool:
         """Claim a conversation for a pod, at an epoch. True when the claim won.
 
+        THE ONLY WRITER OF host_pod, and it only ever moves the claim A -> B. There is no
+        release: the CR's hostPod clears on suspend because that is ROUTING, but the row's
+        host_pod is the append fence's single-writer identity, and an unclaimed row does not
+        refuse (a first turn must append before anything has assigned it). Passing through
+        NULL mid-conversation therefore opens the fence to every pod at once — which is #678,
+        where the old owner and the pod the router's fallback picked both wrote and collided
+        on the conversation_events PK, losing a turn each.
+
         `WHERE %s > host_generation` is the whole point of the column, and it is not defensive
         programming — it is where the monotonicity comes from. Today the CR gets it from apiserver
         optimistic concurrency; a blind mirror would throw that away, letting a paused controller
@@ -204,40 +212,19 @@ class ConversationRows:
             )
             return False
 
-    def release_assignment(self, conversation_id: str, generation: int) -> bool:
-        """Clear placement — the row half of the CR patch that sets hostPod to null.
-
-        host_generation is deliberately LEFT where it is. Clearing it would reset the fence to 0 and
-        let any stale epoch claim the conversation next; the epoch is a high-water mark, and a
-        release is not a reason to forget how far ownership has advanced.
-
-        `>=`, not `>`: a release carries the CURRENT epoch rather than a new one, so the controller
-        that legitimately owns the decision matches exactly. A stale controller holds a lower epoch
-        and cannot detach a pod that has since been assigned a newer one.
-        """
-        try:
-            with self._cursor() as cur:
-                cur.execute(
-                    "UPDATE conversations SET host_pod = NULL "
-                    "WHERE id = %s AND %s >= host_generation AND host_pod IS NOT NULL",
-                    (conversation_id, generation),
-                )
-                return cur.rowcount > 0
-        except Exception as err:  # noqa: BLE001 - best-effort by contract
-            self._drop()
-            logger.warning(
-                "conversations row release failed",
-                extra={**_C, "conversation_id": conversation_id, "error": str(err)},
-            )
-            return False
-
     def sync_assignments(self, assignments: list[tuple[str, str | None, int]]) -> int:
         """Converge host_pod/host_generation on the CRs this pass listed. Returns rows changed.
 
-        The same convergence sync_phases does, and needed for a sharper reason. Appends fence on the
-        row (D3), where "no generation" means "do not write" — so a settled conversation with an
-        untouched row is not merely stale, it is BLOCKED. Every assignment must therefore reach the
-        row from this pass, not only from a reassignment event that may never come.
+        The same convergence sync_phases does, and needed for a sharper reason: set_assignment's
+        conditional claim is silently lost when the row does not exist yet (the CR is created before
+        agent-host's first metadata write), and until it lands the fence has no claim to enforce.
+        Every assignment must therefore reach the row from this pass, not only from the reassignment
+        event that may have missed.
+
+        `coalesce`, so a CR carrying hostPod=null does NOT clear the claim. A suspended conversation
+        is listed every pass with no host, and a straight mirror re-opened the fence on every tick —
+        see set_assignment for why passing through NULL is the #678 bug. The claim moves on handoff
+        only; this method may refresh the epoch under it but never erases the writer.
 
         `>=`, not `>`: this carries the CR's current epoch rather than a new one, so a controller
         holding the same epoch as the row is the current one and may refresh it. A stale controller
@@ -257,10 +244,11 @@ class ConversationRows:
                 with self._cursor() as cur:
                     cur.execute(
                         "UPDATE conversations AS c "
-                        "SET host_pod = v.host_pod, host_generation = v.gen "
+                        "SET host_pod = coalesce(v.host_pod, c.host_pod), host_generation = v.gen "
                         f"FROM (VALUES {values}) AS v(id, host_pod, gen) "
                         "WHERE c.id = v.id AND v.gen >= c.host_generation "
-                        "AND (c.host_pod IS DISTINCT FROM v.host_pod OR c.host_generation <> v.gen)",
+                        "AND (c.host_pod IS DISTINCT FROM coalesce(v.host_pod, c.host_pod) "
+                        "OR c.host_generation <> v.gen)",
                         params,
                     )
                     changed += max(cur.rowcount, 0)
