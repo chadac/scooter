@@ -415,6 +415,9 @@ jobs:
               # would land in the allowlist. Then every spec the allowlist selects: a
               # changed spec must run on the cluster, not just on the fake stack.
               - 'test/e2e/support/shard-e2e.mjs'
+              - 'test/e2e/support/shard-tests.mjs'
+              - 'test/e2e/support/test-inventory.mjs'
+              - 'test/e2e/test-weights.json'
               - 'test/e2e/client-server-identity.spec.ts'
               - 'test/e2e/long-conversation.spec.ts'
               - 'test/e2e/multi-turn-integrity.spec.ts'
@@ -653,6 +656,19 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # NIX + npm install are REQUIRED here now, where the old file-level sharder
+      # needed only `node`. The planner's inventory comes from
+      # `playwright test --list` and `vitest list`, which is the whole point: those
+      # resolve projects, testMatch and testIgnore, so the plan cannot drift from
+      # what actually runs. A regex over spec sources would be cheaper and would
+      # drift. This job is ubuntu-latest, so the extra ~1-2 min is free runner time
+      # and it removes ~46s x 4 of duplicated work from the PAID fleet.
+      - uses: nixbuild/nix-quick-install-action@v30
+      - uses: cachix/cachix-action@v15
+        with:
+          name: scooter
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
       # Weights from the last green full run (best-effort), mirroring e2e fast.
       - name: fetch prior e2e-full report (for weights)
         continue-on-error: true
@@ -677,20 +693,49 @@ jobs:
           set -euo pipefail
           report=""
           [ -f prior/report.json ] && report="prior/report.json"
-          matrix=$(SPEC_SET=full PRIOR_REPORT="$report" SHARDS="$E2E_FULL_SHARDS" node test/e2e/support/shard-e2e.mjs)
+          # PER-TEST sharding. shard-tests.mjs asserts that the union of every
+          # shard's selection equals the inventory exactly once, and EXITS NON-ZERO
+          # otherwise -- so a plan that would silently drop a test fails here
+          # rather than in four green shards. See test-inventory.mjs for the three
+          # ways title selection can lose a test.
+          # WRITE THE JSON TO A FILE, do not capture stdout. `nix develop` prints
+          # a welcome banner to stdout before the command runs, so $(...) picked
+          # up the banner AND the JSON, and $GITHUB_OUTPUT rejected the result:
+          #   Invalid format '  just  -- task runner (test-quick, test, ...)'
+          # The planner itself was fine -- it logged "217 tests -> 4 shards" and
+          # its coverage assertion passed. Only the capture was wrong.
+          nix develop --command bash -c \
+            "npm install --silent && PRIOR_REPORT='$report' SHARDS='$E2E_FULL_SHARDS' node test/e2e/support/shard-tests.mjs > /tmp/matrix.json"
+          matrix=$(cat /tmp/matrix.json)
+          # A banner or a stray log line here would break the matrix in a way
+          # that is hard to read downstream; fail on it now instead.
+          echo "$matrix" | jq -e 'has("include")' >/dev/null \
+            || { echo "::error::planner did not emit a matrix"; head -c 400 /tmp/matrix.json; exit 1; }
 
           # `e2e-one-shard` is for INFRASTRUCTURE work on the self-hosted runner,
           # where the thing under test is the cluster bring-up -- not the specs.
           # One shard alone does not give that: it gives ONE runner running ALL
           # 41 specs, which is slower than four. Narrow to a single cheap spec so
           # the loop measures startup rather than the suite.
+          # `e2e-one-shard` is for INFRASTRUCTURE work on the self-hosted runner,
+          # where the thing under test is the cluster bring-up -- not the specs.
+          # One shard alone does not give that: it gives ONE runner running the
+          # WHOLE suite, which is slower than four. Narrow to one cheap test so the
+          # loop measures startup rather than the suite.
+          #
+          # Narrowing by TEST now, not by spec file. The selector is a --grep, so
+          # the replacement has to be a title -- and it must be one that exists, or
+          # the shard silently runs nothing (an unmatched --grep exits 0).
           if [ "$E2E_FULL_SHARDS" = "1" ]; then
             matrix=$(node -e '
               const m = JSON.parse(process.argv[1]);
-              m.include = [{ ...m.include[0], specs: "test/e2e/conversation.spec.ts" }];
+              m.include = [{ ...m.include[0],
+                e2e_grep: "sending a message streams an assistant reply",
+                cluster_grep: "",
+                e2e_count: 1, cluster_count: 0 }];
               process.stdout.write(JSON.stringify(m));
             ' "$matrix")
-            echo "one-shard mode: narrowed to test/e2e/conversation.spec.ts"
+            echo "one-shard mode: narrowed to a single e2e test"
           fi
 
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
@@ -740,11 +785,27 @@ jobs:
       - name: bring up k3d + the platform
         run: .github/scripts/k3d-platform-up.sh
 
-      - name: cluster smoke
+      # Only the cluster tests THIS shard was assigned. Previously every shard ran
+      # platform-smoke + event-backfill in full (127s + 30s) against four
+      # identical clusters -- the same 6 tests, 24 times. They are now scheduled
+      # like any other test and run ONCE across the matrix.
+      #
+      # `if` GUARDS THE EMPTY CASE, and it is load-bearing: vitest -t with an
+      # empty pattern matches EVERYTHING, so a shard with no cluster tests would
+      # silently run the whole cluster suite instead of nothing.
+      - name: cluster smoke (shard ${{ matrix.shard }})
+        if: matrix.cluster_grep != ''
         env:
           RUN_CLUSTER_TESTS: "1"
           CLUSTER_PROVIDER: existing
           CI: "1"
+          # THE PATTERN TRAVELS AS AN ENV VAR, never interpolated into the shell.
+          # Four of the four shard selectors contain an apostrophe -- "each
+          # conversation's messages", "don't wedge", "THAT CONTRIB'S words" --
+          # and inlining one into a single-quoted string ends the string early:
+          # verified, bash reports `unexpected EOF while looking for matching '`.
+          # ${{ }} here is a YAML value, so the quote is data rather than syntax.
+          CLUSTER_GREP: ${{ matrix.cluster_grep }}
         # platform-smoke: the multi-replica topology comes up + a conversation routes.
         # event-backfill: the one-shot mirror→Postgres migration Job, end-to-end against
         # this deployed platform's Postgres + agent-host-history PVC (both in the k3d
@@ -752,7 +813,19 @@ jobs:
         # mirror, runs it, and asserts rows land + a corrupt log FAILS the Job. This is the
         # ONLY tier that exercises the rendered Job's image/DB-env/volume wiring — Tier 1
         # covers the verify logic against a fake db. See modules/event-backfill.nix, PR #463.
-        run: nix develop --command bash -c 'npm install && npm run test:cluster -- platform-smoke event-backfill --no-file-parallelism'
+        run: |
+          # THE FILE FILTERS ARE NOT OPTIONAL. `-t` selects by NAME, but vitest
+          # still LOADS every file in the project first -- all 15 of them, 47
+          # tests. A shard assigned a warmpool or self-modify test would then run
+          # infrastructure work its cluster was never prepared for. Observed
+          # before these filters were restored: 8 failed test FILES in a shard
+          # that had been given 11 cluster tests.
+          #
+          # These are the same two the step passed before per-test sharding, and
+          # they must stay in step with SHARDED_CLUSTER_SPECS in
+          # test/e2e/support/test-inventory.mjs -- the planner only ever assigns
+          # tests from these files.
+          nix develop --command bash -c 'npm install && npx vitest run --project cluster --no-file-parallelism platform-smoke event-backfill -t "$CLUSTER_GREP"'
 
       # e2e FULL browser stories: the same Playwright specs, against the REAL cluster.
       # This is the seam nothing else covers — test/cluster is curl-only (no UI) and the
@@ -763,18 +836,28 @@ jobs:
       # Port-forward the `ui` Service (nginx: static build + API proxy, so ONE origin
       # serves both the app and /conversations — exactly the browser's real topology).
       - name: e2e full browser stories (shard ${{ matrix.shard }})
+        # Same empty-pattern hazard as the smoke step: an empty --grep matches
+        # EVERYTHING, so a shard with no e2e tests must skip rather than run all.
+        if: matrix.e2e_grep != ''
         env:
           E2E_TARGET: full
           E2E_CLUSTER_URL: http://127.0.0.1:8899
           E2E_ROLLOUT_HOOK: http://127.0.0.1:8898
           CI: "1"
           PLAYWRIGHT_JSON_OUTPUT_NAME: "report-full-shard-${{ matrix.shard }}.json"
+          # An env var, not an inlined string -- see the cluster step for why.
+          # Apostrophes in test titles break shell quoting otherwise.
+          E2E_GREP: ${{ matrix.e2e_grep }}
         run: |
           set -euo pipefail
           # Sourced, not executed: the background PIDs + cleanup trap must live in
           # THIS shell so they outlast the helper and are reaped with the step.
           . .github/scripts/e2e-full-serve.sh
-          nix develop --command bash -c 'npm install && npx playwright test --project=full --reporter=json,list ${{ matrix.specs }}'
+          # --grep, not positional spec paths: the shard plan is per-TEST now.
+          # The pattern is an alternation of escaped titles built by
+          # shard-tests.mjs; an EMPTY one would match every test, which is why the
+          # step is guarded by `if` above.
+          nix develop --command bash -c 'npm install && npx playwright test --project=full --reporter=json,list --grep "$E2E_GREP"'
 
       - name: upload shard report
         if: always()
