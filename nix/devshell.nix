@@ -37,11 +37,10 @@ pkgs.mkShell {
     jq
     yq-go
     just
-    # DB schema: Atlas owns lib/sql. Its `just db-migrate`/`db-validate` recipes need
-    # an ephemeral dev Postgres, which scripts/atlas-dev.sh pulls on demand via
-    # `nix shell nixpkgs#postgresql_16` — so it is NOT a standing dev-shell dep. atlas
-    # stays here for direct `atlas` use.
-    atlas
+    # DB schema: Ptah Compat keeps the `atlas` CLI and diffs functions/triggers.
+    # scripts/atlas-dev.sh starts an ephemeral Postgres for each invocation and
+    # pulls missing tools on demand when used outside this shell.
+    (callPackage ../pkgs/ptah-compat { })
     # `just db-generate` runs the Drizzle side from the npm workspace (pglite) and the
     # SQLAlchemy side via `uv run` (pinned sqlacodegen). uv needs a system Python on
     # NixOS (its downloaded interpreters are dynamically linked and don't work here).

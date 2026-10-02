@@ -2,7 +2,7 @@
 
 # OCI image for the shared-database migration Job (modules/db-migrate.nix).
 #
-# Bakes the Atlas CLI + the migrations from lib/sql and a small driver script that
+# Bakes Ptah Compat (as `atlas`) + the migrations from lib/sql and a small driver script that
 # runs `atlas migrate apply --baseline <baseline>` against each per-service
 # database. `--baseline` adopts the tables production already has (created by the
 # services) on the first deploy without re-executing the baseline, then applies any
@@ -10,6 +10,7 @@
 # NO dev database — `migrate apply` replays the reviewed migrations directly.
 
 let
+  ptahCompat = pkgs.callPackage ../ptah-compat { };
   # The reviewed migration payload (all envs' schema.sql + migrations/), copied into
   # the store so the image carries exactly what is committed under lib/sql.
   sqlPayload = pkgs.runCommandNoCC "scooter-sql" { } ''
@@ -20,7 +21,7 @@ let
   runScript = pkgs.writeShellApplication {
     name = "agent-db-migrate";
     # gnugrep is REQUIRED: apply_env greps for "not clean". Why: PR #420.
-    runtimeInputs = [ pkgs.atlas pkgs.coreutils pkgs.gnugrep ];
+    runtimeInputs = [ ptahCompat pkgs.coreutils pkgs.gnugrep ];
     text = ''
       # SQL_DIR defaults to the baked migrations; overridable for local runs.
       SQL_DIR="''${SQL_DIR:-${sqlPayload}}"
@@ -101,7 +102,7 @@ in
     tag = "latest";
     copyToRoot = pkgs.buildEnv {
       name = "db-migrator-root";
-      paths = [ runScript pkgs.atlas pkgs.bashInteractive pkgs.coreutils pkgs.cacert ];
+      paths = [ runScript ptahCompat pkgs.bashInteractive pkgs.coreutils pkgs.cacert ];
       pathsToLink = [ "/bin" "/etc/ssl" ];
     };
     config = {

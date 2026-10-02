@@ -318,7 +318,7 @@
             inherit pkgs lib n2c broker;
           };
 
-          # Shared-DB migration Job image: Atlas CLI + lib/sql migrations + a driver
+          # Shared-DB migration Job image: Ptah Compat + lib/sql migrations + a driver
           # that `atlas migrate apply --baseline`s each per-service database. See
           # modules/db-migrate.nix.
           dbMigratorImage = import ./pkgs/db-migrator-image {
@@ -710,6 +710,7 @@
 
             # nix build .#db-migrator-image  ->  shared-DB migration Job image
             db-migrator-image = dbMigratorImage.image;
+            ptah-compat = pkgs.callPackage ./pkgs/ptah-compat { };
 
             # nix build .#webhooks-image  ->  webhooks OCI image
             webhooks-image = webhooksImage.image;
