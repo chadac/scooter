@@ -1,6 +1,6 @@
 -- agent_host database — declarative end-state schema (SOURCE OF TRUTH).
 --
--- Atlas owns this file; `atlas migrate diff` writes migrations/ from it and the ORM
+-- Ptah Compat (installed as `atlas`) owns this file; `atlas migrate diff` writes migrations/ from it and the ORM
 -- bindings are GENERATED via `just db-generate`. Edit tables HERE, never in a service's
 -- inline DDL. Consumer: agent-host.
 --
@@ -79,16 +79,31 @@ CREATE INDEX "conversations_by_owner" ON "conversations" ("owner");
 
 -- LIVE CONVERSATION-LIST PUSH — a NOTIFY trigger on this table (channel
 -- 'conversations_changed') lets the conversation-router serve GET /conversations/events by
--- LISTENing instead of fanning SSE out to every agent-host pod. It is NOT declared here:
--- Atlas Community does not diff FUNCTION/TRIGGER objects (`migrate diff` reports "synced,
--- no changes" for them), so a declaration in this file would silently never reach a
--- migration — and production is built by REPLAYING migrations, not by applying this file.
--- The trigger's source of truth is therefore its migration:
---   migrations/<ts>_notify_conversation_changes.sql
--- Keep the two in sync by hand when the notified columns change (that migration and the
--- router's assembleList are the only two places that must agree on which changes push).
+-- LISTENing instead of fanning SSE out to every agent-host pod. Ptah Compat diffs
+-- this function and its triggers along with the tables. Keep the WHEN columns in
+-- sync with the router's assembleList when changing which updates push.
 -- The assignment columns are deliberately NOT notified: reassignment churn would wake every
 -- listening sidebar for a change no sidebar renders.
+
+CREATE FUNCTION "conversations_notify"() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM pg_notify('conversations_changed',
+    json_build_object('id', COALESCE(NEW.id, OLD.id),
+                      'op', CASE WHEN TG_OP = 'DELETE' THEN 'delete' ELSE 'upsert' END)::text);
+  RETURN NULL; -- AFTER trigger: the return value is ignored.
+END;
+$$;
+
+CREATE TRIGGER "conversations_notify_ins_del" AFTER INSERT OR DELETE ON "conversations"
+  FOR EACH ROW EXECUTE FUNCTION "conversations_notify"();
+
+CREATE TRIGGER "conversations_notify_upd" AFTER UPDATE ON "conversations"
+  FOR EACH ROW WHEN (
+    OLD."title"       IS DISTINCT FROM NEW."title"       OR
+    OLD."starred"     IS DISTINCT FROM NEW."starred"     OR
+    OLD."user_titled" IS DISTINCT FROM NEW."user_titled" OR
+    OLD."owner"       IS DISTINCT FROM NEW."owner"
+  ) EXECUTE FUNCTION "conversations_notify"();
 
 -- The conversation EVENT LOG — the durable replacement for events.jsonl on the
 -- wiped emptyDir, and for the NFS mirror that existed only to survive that.

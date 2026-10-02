@@ -7,7 +7,7 @@
 #
 # Self-contained: if `initdb`/`atlas` aren't already on PATH (i.e. you're not in the
 # dev shell), it re-execs itself inside `nix shell nixpkgs#postgresql_16
-# nixpkgs#atlas`, so it works standalone from a bare checkout.
+# .#ptah-compat`, so it works standalone from a bare checkout.
 #
 # Usage: scripts/atlas-dev.sh <atlas args...>
 #   scripts/atlas-dev.sh migrate diff my_change --env webhooks
@@ -15,14 +15,15 @@
 # ATLAS_DEV_URL is exported into the atlas invocation; atlas.hcl reads it as `dev`.
 set -euo pipefail
 
+here="$(cd "$(dirname "$0")/.." && pwd)"
+
 # Pull Postgres (+ Atlas) from nixpkgs on demand rather than requiring them in the
 # ambient shell. The guard var stops an infinite re-exec.
 if [ -z "${ATLAS_DEV_NIX:-}" ] && { ! command -v initdb >/dev/null 2>&1 || ! command -v atlas >/dev/null 2>&1; }; then
   export ATLAS_DEV_NIX=1
-  exec nix shell nixpkgs#postgresql_16 nixpkgs#atlas -c "$0" "$@"
+  exec nix shell nixpkgs#postgresql_16 "$here#ptah-compat" -c "$0" "$@"
 fi
 
-here="$(cd "$(dirname "$0")/.." && pwd)"
 tmp="$(mktemp -d)"
 pgdata="$tmp/data"
 sock="$tmp/sock"
@@ -50,6 +51,10 @@ done
 createdb -h 127.0.0.1 -p "$port" -U postgres atlasdev
 
 export ATLAS_DEV_URL="postgres://postgres@127.0.0.1:$port/atlasdev?sslmode=disable&search_path=public"
+
+# This script owns the entire server and removes its data directory on exit.
+# Let Ptah replay functions/triggers within that disposable server.
+export PTAH_DEV_SERVER_DISPOSABLE=1
 
 cd "$here/lib/sql"
 atlas "$@"

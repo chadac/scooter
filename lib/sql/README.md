@@ -1,4 +1,4 @@
-# `lib/sql` — the declarative shared-database schema (Atlas-owned)
+# `lib/sql` — the declarative shared-database schema (Ptah Compat)
 
 This directory holds the **DDL** for every Postgres table Scooter's services share.
 The per-language ORM bindings (`@scooter/schema` for TypeScript, `scooter_schema` for
@@ -36,6 +36,15 @@ are `character varying`; the agent-host raw-DDL stores are `text`. A type change
 here is a real migration; do not "tidy" them apart.
 
 ## Workflow
+
+The pinned [Ptah Compat](https://ptah.run/) package is installed as `atlas` in
+both the Nix dev shell and the migration image. Existing commands, `atlas.hcl`,
+`atlas.sum`, and applied migration history stay in place. PostgreSQL functions
+and triggers now belong in `schema.sql`: `just db-migrate` generates their
+changes too, without an Atlas login. Keep historical migrations unchanged.
+`just db-migrate-check` also tests a function-body and trigger-condition change
+on a temporary copy, replays the result, and checks that the next diff is empty.
+
 
 Everything runs against an **ephemeral, per-invocation local Postgres** (Atlas's
 "dev database"), spun up and torn down by `scripts/atlas-dev.sh`. Nothing touches a

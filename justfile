@@ -524,6 +524,7 @@ db-migrate-check:
         exit 1
       fi
     done
+    scripts/db-trigger-check.sh
     echo "✅ every schema.sql is fully expressed by its migrations"
 
 # Validate every database's migration directory (order, checksums, replayability).

@@ -1,6 +1,6 @@
 -- webhooks database — declarative end-state schema (SOURCE OF TRUTH).
 --
--- Atlas owns this file; `atlas migrate diff` writes migrations/ from it and the
+-- Ptah Compat (installed as `atlas`) owns this file; `atlas migrate diff` writes migrations/ from it and the
 -- ORM bindings (@scooter/schema, scooter_schema) are GENERATED from it via
 -- `just db-generate`. Edit tables HERE, never in a service's inline DDL.
 --

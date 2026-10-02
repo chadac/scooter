@@ -1,6 +1,6 @@
 -- broker database — declarative end-state schema (SOURCE OF TRUTH).
 --
--- Atlas owns this file; `atlas migrate diff` writes migrations/ from it and the
+-- Ptah Compat (installed as `atlas`) owns this file; `atlas migrate diff` writes migrations/ from it and the
 -- ORM bindings are GENERATED from it via `just db-generate`. Edit tables HERE,
 -- never in the service's inline DDL. Consumer: broker. Types mirror production
 -- (SQLAlchemy `String` -> `character varying`, `Text` -> `text`).
