@@ -3,12 +3,12 @@
 # Keep the Atlas command/config surface; Ptah Compat also diffs PostgreSQL
 # functions and triggers. Pin the release bytes for every supported platform.
 let
-  version = "0.11.4";
+  version = "0.12.0";
   release = {
-    x86_64-linux = { archive = "linux_amd64"; hash = "sha256-3g8tSVcO1XVFtQttTeg+WJGEenmSHQ7O8mJGe9s4pTs="; };
-    aarch64-linux = { archive = "linux_arm64"; hash = "sha256-WN1+jDKL+CU9fPhg832o9GGcWeXg2Be8YwlHB8xusUw="; };
-    x86_64-darwin = { archive = "darwin_amd64"; hash = "sha256-0naDD2NlcW4sc4EpZcMm0vn5ciOcfyCAkgQ6l3zzyHY="; };
-    aarch64-darwin = { archive = "darwin_arm64"; hash = "sha256-HXK4+AHVcPXQp053XEP3pjAWo3Wcw0cYBXyq+UovsjA="; };
+    x86_64-linux = { archive = "linux_amd64"; hash = "sha256-sQnmHUHy+QdRE/dY/DhtzlsON9GiCuwfIhLgtfVcd90="; };
+    aarch64-linux = { archive = "linux_arm64"; hash = "sha256-2Mb7uxQ2bSeA+INq3RczhW+GaDa9VOs9ne5MS9zuf9o="; };
+    x86_64-darwin = { archive = "darwin_amd64"; hash = "sha256-TAwnQLyFSG9Ncg4Rr6UCwDzgofTHs8HpKJso41uDmPA="; };
+    aarch64-darwin = { archive = "darwin_arm64"; hash = "sha256-HC5tX+PZ0D3Xjhnz9Cw4b9n/CUlSLo3015vlyTN7/iY="; };
   }.${stdenvNoCC.hostPlatform.system};
 in
 stdenvNoCC.mkDerivation {

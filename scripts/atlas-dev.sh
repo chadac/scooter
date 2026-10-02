@@ -17,7 +17,7 @@ set -euo pipefail
 
 here="$(cd "$(dirname "$0")/.." && pwd)"
 
-# Pull Postgres (+ Atlas) from nixpkgs on demand rather than requiring them in the
+# Pull Postgres and Ptah Compat on demand rather than requiring them in the
 # ambient shell. The guard var stops an infinite re-exec.
 if [ -z "${ATLAS_DEV_NIX:-}" ] && { ! command -v initdb >/dev/null 2>&1 || ! command -v atlas >/dev/null 2>&1; }; then
   export ATLAS_DEV_NIX=1

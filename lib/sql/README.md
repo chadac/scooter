@@ -45,7 +45,6 @@ changes too, without an Atlas login. Keep historical migrations unchanged.
 `just db-migrate-check` also tests a function-body and trigger-condition change
 on a temporary copy, replays the result, and checks that the next diff is empty.
 
-
 Everything runs against an **ephemeral, per-invocation local Postgres** (Atlas's
 "dev database"), spun up and torn down by `scripts/atlas-dev.sh`. Nothing touches a
 shared or production server, so concurrent runs never interfere.

@@ -37,7 +37,9 @@ pkgs.mkShell {
     jq
     yq-go
     just
-    # Ptah Compat keeps `atlas` commands while diffing functions and triggers too.
+    # DB schema: Ptah Compat keeps the `atlas` CLI and diffs functions/triggers.
+    # scripts/atlas-dev.sh starts an ephemeral Postgres for each invocation and
+    # pulls missing tools on demand when used outside this shell.
     (callPackage ../pkgs/ptah-compat { })
     # `just db-generate` runs the Drizzle side from the npm workspace (pglite) and the
     # SQLAlchemy side via `uv run` (pinned sqlacodegen). uv needs a system Python on
