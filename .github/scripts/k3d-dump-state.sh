@@ -34,4 +34,24 @@ nix shell nixpkgs#kubectl -c bash -c '
       kubectl -n agent-sandbox logs "$pod" --previous --tail=200 || true
     done
   done
+  # The conv-* sandbox pods. agent-sandbox creates them, so they carry none of the
+  # `app` labels every selector above uses — they were invisible in the dump. A
+  # sandbox that never goes ready is what the agent-host reports as "ready-pod
+  # deadline expired", so ONE broken sandbox reads as a dozen unrelated spec
+  # failures. Why: PR #694.
+  for pod in $(kubectl -n agent-sandbox get pods -o name 2>/dev/null | grep "^pod/conv-"); do
+    ready=$(kubectl -n agent-sandbox get "$pod" \
+      -o jsonpath="{.status.containerStatuses[0].ready}" 2>/dev/null || echo unknown)
+    restarts=$(kubectl -n agent-sandbox get "$pod" \
+      -o jsonpath="{.status.containerStatuses[0].restartCount}" 2>/dev/null || echo 0)
+    [ "$ready" = "true" ] && [ "${restarts:-0}" -eq 0 ] && continue
+    echo "===== NOT-READY sandbox: $pod (ready=$ready restarts=$restarts) ====="
+    kubectl -n agent-sandbox describe "$pod" || true
+    kubectl -n agent-sandbox logs "$pod" --tail=200 || true
+    [ "${restarts:-0}" -gt 0 ] || continue
+    echo "===== PREVIOUS container log: $pod (restarts=$restarts) ====="
+    kubectl -n agent-sandbox logs "$pod" --previous --tail=200 || true
+  done
+  # The step runs under `bash -e`; a trailing failed test would fail the dump.
+  true
 '
