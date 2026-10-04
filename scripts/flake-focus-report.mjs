@@ -299,8 +299,13 @@ export function renderMarkdown(summary, opts = {}) {
           : `⚠️ **The control is too weak to conclude much.** The base only failed ${control.baseFailed}/${control.baseRuns} (**${pct(control.baseRate)}**), so even if this branch still flaked at exactly that rate, ${plural(summary.runs, "clean run")} in a row would happen about **${pct(control.pAllCleanAtBaseRate)}** of the time — luck explains this result almost as well as a fix does. Raise the repetition budget until the base fails often enough to make a clean run here meaningful.`,
       );
     else if (control.kind === "inconclusive")
+      // The remedy differs by target, and offering the wrong one wastes a cycle:
+      // telling a full run to "add the e2e-full-flake-check label" names the
+      // label it is already running under.
       L.push(
-        `**The experiment had no power.** The flake did not fire on the base either, so this run cannot distinguish "fixed" from "did not happen to fire". Raise the repetition budget, add \`flake-specs:\` so it runs under contention, or — if it was seen on the nightly \`e2e-full\` — use the \`e2e-full-flake-check\` label, since the fast stack cannot produce those conditions at all.`,
+        target === "full"
+          ? `**The experiment had no power.** The flake did not fire on the base either, so this run cannot distinguish "fixed" from "did not happen to fire". This is already the strongest target there is, so the budget is the only knob left: raise \`FULL_REPEAT_TARGETED\` / \`FULL_REPEAT_CONTENTION\` in the \`flake-focus-full\` job, or add \`flake-specs:\` so the test runs under cross-spec contention rather than alone.`
+          : `**The experiment had no power.** The flake did not fire on the base either, so this run cannot distinguish "fixed" from "did not happen to fire". Raise the repetition budget, add \`flake-specs:\` so it runs under contention, or — if it was seen on the nightly \`e2e-full\` — use the \`e2e-full-flake-check\` label, since the fast stack cannot produce those conditions at all.`,
       );
     else if (control.kind === "worse")
       L.push(

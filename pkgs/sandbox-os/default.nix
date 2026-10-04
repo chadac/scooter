@@ -177,6 +177,95 @@ let
   # `mount -o remount,rw /sys/fs/cgroup` succeeds. Best-effort: if the cgroupfs is
   # already rw (e.g. a privileged rollback), the remount is a harmless no-op; we never
   # fail the boot on it. Then exec the real NixOS stage-2 init as PID 1.
+  # ── IMAGE LAYERS ─────────────────────────────────────────────────────────────
+  #
+  # TWO EXPLICIT LAYERS, both with `reproducible = false`, replacing what used to
+  # be `copyToRoot = [ rootExtras nixDb ]; maxLayers = 100;`.
+  #
+  # WHY NOT THE DEFAULT. buildImage's popularity algorithm
+  # (nix2container closure/popularity.go, SortedPathsByPopularity) grouped this
+  # image into 100 layers: 99 holding ONE path each, and a 100th overflow bucket
+  # holding 449 paths and 968 MB -- 81% of the image. Two problems with that
+  # bucket:
+  #
+  #   1. IT IS NOT REPRODUCIBLE ACROSS MACHINES. The same deriver produced two
+  #      different outputs. Fetching the Cachix NAR and diffing it against a
+  #      locally built one: same 85374 bytes, differing in exactly ONE layer --
+  #      that bucket -- whose 449 input store paths were IDENTICAL. Same inputs,
+  #      different tar digest. skopeo then streams layers from /nix/store, hashes
+  #      them, and compares against the digest in the FETCHED manifest, so a
+  #      cache-fetched manifest plus locally built layers fails:
+  #        writing blob: ... Digest did not match,
+  #        expected sha256:fccfa6fa..., got sha256:a3bb524c...
+  #      Three identical retries, two separate runners. (Upstream
+  #      nlewo/nix2container#97 is the same symptom, closed without a root cause;
+  #      #37 and #127 are the same error.)
+  #
+  #   2. It welded ~19 MB of scooter-owned content to ~950 MB of base packages.
+  #      24 of the bucket's 449 paths were scooter-owned; the rest were systemd,
+  #      perl, util-linux, fontconfig.
+  #
+  # `reproducible = false` is what fixes (1), and the flag name is misleading: it
+  # is an assertion ABOUT THE INPUTS, not a property it grants. Upstream's comment
+  # is "Store the layer tar in the derivation. This is useful when the layer
+  # dependencies are not bit reproducible." With it set, the tar is written into
+  # the derivation output and the recorded digest names bytes that exist on disk,
+  # so there is nothing to recompute and nothing to disagree about. Both modes run
+  # the same popularity code, so this does not make the GROUPING deterministic --
+  # it makes the grouping irrelevant, which is why the split below is by hand.
+  #
+  # maxLayers = 1 ON EACH LAYER, deliberately: one tar per layer, no popularity
+  # pass inside it. A layer built with maxLayers > 1 would re-run the very
+  # algorithm this is working around.
+  #
+  # WHAT THIS DOES NOT BUY: smaller pushes. The split was shaped by `git log`
+  #   services/ 381 commits   modules/ 189   pkgs/ 58   lib/ 33
+  #   flake.nix 73            flake.lock 15  contrib/ 20  nix/ 6
+  # on the theory that the base layer would hold still while scooter churned. IT
+  # DOES NOT. Measured by appending one line to services/agent-host/src/index.ts
+  # and rebuilding: BOTH layer digests moved.
+  #
+  # The reason is that sandbox-os-src -- the vendored source tree that
+  # reconverge-inputs.nix assembles for the in-pod re-converge -- is INSIDE
+  # toplevel's closure, pulled in by scooter-apply-module. So a services/ change
+  # rewrites part of the "stable" layer and all ~1176 MB is re-pushed, exactly as
+  # before.
+  #
+  # Splitting for push size would mean getting sandbox-os-src out of toplevel,
+  # which is a change to how the re-converge resolves its inputs, not a layering
+  # change. The two layers below are kept because they are what make the image
+  # pushable at all (point 1 above); treating them as a size optimisation would be
+  # wrong.
+
+  # STABLE: the whole NixOS system closure. toplevel is what rootExtras's
+  # /sbin/init symlink points at, so naming it here is what puts the ~950 MB of
+  # systemd/perl/util-linux/glibc in this layer instead of alongside the volatile
+  # files.
+  baseLayer = n2c.buildLayer {
+    deps = [ toplevel ];
+    maxLayers = 1;
+    reproducible = false;
+  };
+
+  # VOLATILE: the image-root files and the baked Nix DB, ~19 MB. These are what
+  # a services/ or modules/ change moves.
+  #
+  # `layers = [ baseLayer ]` is not decoration -- it tells buildLayer to SKIP any
+  # path already in baseLayer, so the system closure is not duplicated here.
+  # `deps = [ initWrapper ]` as well as copyToRoot: the entrypoint in `config`
+  # references initWrapper (and through it busybox), and buildImage puts
+  # config-referenced paths in its implicit customizationLayer -- which never gets
+  # `reproducible` and so stays computed-at-push. Naming them here is what empties
+  # that layer. Verified: without this the image built 2 stored layers plus a 1 MB
+  # COMPUTED one holding exactly busybox + sandbox-init-wrapper.
+  volatileLayer = n2c.buildLayer {
+    copyToRoot = [ rootExtras nixDb ];
+    deps = [ initWrapper ];
+    layers = [ baseLayer ];
+    maxLayers = 1;
+    reproducible = false;
+  };
+
   initWrapper = pkgs.writeScript "sandbox-init-wrapper" ''
     #!${pkgs.busybox}/bin/sh
     ${pkgs.util-linux}/bin/mount -o remount,rw /sys/fs/cgroup 2>/dev/null || true
@@ -195,8 +284,22 @@ in
     # symlink references ${toplevel}, so the WHOLE NixOS system closure is pulled into
     # the image without unpacking the system root at /. (We bake the DB ourselves via
     # nixDb rather than n2c's initializeNixDatabase — see the nixDb comment for why.)
-    copyToRoot = [ rootExtras nixDb ];
-    maxLayers = 100;
+    # EXPLICIT LAYERS, and copyToRoot DELIBERATELY EMPTY. Both are required; see
+    # baseLayer/volatileLayer above for the why.
+    #
+    # Anything left in copyToRoot goes through buildImage's implicit
+    # customizationLayer, which never receives `reproducible` and so keeps the
+    # recompute-at-push behaviour this split exists to remove. Verified on a
+    # throwaway image: an explicit layer PLUS copyToRoot produced 1 stored tar and
+    # 3 computed layers; moving everything into explicit layers produced 2 stored
+    # and 0 computed.
+    layers = [ baseLayer volatileLayer ];
+
+    # maxLayers applies to the customizationLayer, which is now empty. Left at 1
+    # rather than 100: with nothing to split there is nothing for the popularity
+    # algorithm to do, and a high value here would only re-invite it if something
+    # is ever added back to copyToRoot.
+    maxLayers = 1;
 
     config = {
       # Boot systemd PID 1 via the init WRAPPER (remounts /sys/fs/cgroup rw so systemd

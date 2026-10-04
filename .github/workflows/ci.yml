@@ -415,6 +415,9 @@ jobs:
               # would land in the allowlist. Then every spec the allowlist selects: a
               # changed spec must run on the cluster, not just on the fake stack.
               - 'test/e2e/support/shard-e2e.mjs'
+              - 'test/e2e/support/shard-tests.mjs'
+              - 'test/e2e/support/test-inventory.mjs'
+              - 'test/e2e/test-weights.json'
               - 'test/e2e/client-server-identity.spec.ts'
               - 'test/e2e/long-conversation.spec.ts'
               - 'test/e2e/multi-turn-integrity.spec.ts'
@@ -640,11 +643,31 @@ jobs:
       # thread fill timed out with only its FIRST turn on screen, at a 90s per-turn budget,
       # which is a pod it never got rather than a scroll bug. This link carries the whole
       # 26-spec allowlist, so it needs the most splitting.
-      E2E_FULL_SHARDS: "4"
+      #
+      # ONE SHARD when the PR carries `e2e-one-shard`. Infrastructure work on the
+      # self-hosted fleet needs a fast round trip -- four shards is four instances
+      # and ~13 min to learn one thing about the runner, and the shards are
+      # independent, so a single one exercises the whole path (attach, mount,
+      # k3d, platform, specs) just as well. The nightly and any normal `e2e-full`
+      # run keep the full four.
+      E2E_FULL_SHARDS: ${{ contains(github.event.pull_request.labels.*.name, 'e2e-one-shard') && '1' || '4' }}
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
       - uses: actions/checkout@v5
+
+      # NIX + npm install are REQUIRED here now, where the old file-level sharder
+      # needed only `node`. The planner's inventory comes from
+      # `playwright test --list` and `vitest list`, which is the whole point: those
+      # resolve projects, testMatch and testIgnore, so the plan cannot drift from
+      # what actually runs. A regex over spec sources would be cheaper and would
+      # drift. This job is ubuntu-latest, so the extra ~1-2 min is free runner time
+      # and it removes ~46s x 4 of duplicated work from the PAID fleet.
+      - uses: nixbuild/nix-quick-install-action@v30
+      - uses: cachix/cachix-action@v15
+        with:
+          name: scooter
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       # Weights from the last green full run (best-effort), mirroring e2e fast.
       - name: fetch prior e2e-full report (for weights)
@@ -670,7 +693,51 @@ jobs:
           set -euo pipefail
           report=""
           [ -f prior/report.json ] && report="prior/report.json"
-          matrix=$(SPEC_SET=full PRIOR_REPORT="$report" SHARDS="$E2E_FULL_SHARDS" node test/e2e/support/shard-e2e.mjs)
+          # PER-TEST sharding. shard-tests.mjs asserts that the union of every
+          # shard's selection equals the inventory exactly once, and EXITS NON-ZERO
+          # otherwise -- so a plan that would silently drop a test fails here
+          # rather than in four green shards. See test-inventory.mjs for the three
+          # ways title selection can lose a test.
+          # WRITE THE JSON TO A FILE, do not capture stdout. `nix develop` prints
+          # a welcome banner to stdout before the command runs, so $(...) picked
+          # up the banner AND the JSON, and $GITHUB_OUTPUT rejected the result:
+          #   Invalid format '  just  -- task runner (test-quick, test, ...)'
+          # The planner itself was fine -- it logged "217 tests -> 4 shards" and
+          # its coverage assertion passed. Only the capture was wrong.
+          nix develop --command bash -c \
+            "npm install --silent && PRIOR_REPORT='$report' SHARDS='$E2E_FULL_SHARDS' node test/e2e/support/shard-tests.mjs > /tmp/matrix.json"
+          matrix=$(cat /tmp/matrix.json)
+          # A banner or a stray log line here would break the matrix in a way
+          # that is hard to read downstream; fail on it now instead.
+          echo "$matrix" | jq -e 'has("include")' >/dev/null \
+            || { echo "::error::planner did not emit a matrix"; head -c 400 /tmp/matrix.json; exit 1; }
+
+          # `e2e-one-shard` is for INFRASTRUCTURE work on the self-hosted runner,
+          # where the thing under test is the cluster bring-up -- not the specs.
+          # One shard alone does not give that: it gives ONE runner running ALL
+          # 41 specs, which is slower than four. Narrow to a single cheap spec so
+          # the loop measures startup rather than the suite.
+          # `e2e-one-shard` is for INFRASTRUCTURE work on the self-hosted runner,
+          # where the thing under test is the cluster bring-up -- not the specs.
+          # One shard alone does not give that: it gives ONE runner running the
+          # WHOLE suite, which is slower than four. Narrow to one cheap test so the
+          # loop measures startup rather than the suite.
+          #
+          # Narrowing by TEST now, not by spec file. The selector is a --grep, so
+          # the replacement has to be a title -- and it must be one that exists, or
+          # the shard silently runs nothing (an unmatched --grep exits 0).
+          if [ "$E2E_FULL_SHARDS" = "1" ]; then
+            matrix=$(node -e '
+              const m = JSON.parse(process.argv[1]);
+              m.include = [{ ...m.include[0],
+                e2e_grep: "sending a message streams an assistant reply",
+                cluster_grep: "",
+                e2e_count: 1, cluster_count: 0 }];
+              process.stdout.write(JSON.stringify(m));
+            ' "$matrix")
+            echo "one-shard mode: narrowed to a single e2e test"
+          fi
+
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   # PLATFORM SMOKE on a real k3d cluster: deploy the FULL multi-replica platform
@@ -684,17 +751,32 @@ jobs:
     needs: [cluster-changes, e2e-full-distribute]
     # Runs only when distribute did — that job carries the opt-in decision.
     if: needs.e2e-full-distribute.result == 'success'
-    runs-on: ubuntu-latest
+    # THE SELF-HOSTED FLEET (infra/runners.tf in server-config). This job, and
+    # ONLY this job: an e2e shard is ~25 min of k3d + platform deploy, and
+    # measured queue wait dominates actual work 4.6:1. Everything else in this
+    # workflow stays on GitHub-hosted runners, where it is free.
+    #
+    # SAFE because the gate above is `schedule` / `workflow_dispatch` / an
+    # `e2e-full` LABEL: a fork can trigger none of those (labelling needs write
+    # access), and fork-PR approval is on. `runs-on` is NOT a security boundary
+    # on its own -- a fork controls its own workflow file -- so do not relax
+    # that gate without revisiting this.
+    runs-on: [self-hosted, linux, x64, nix]
     strategy:
       fail-fast: false # one shard failing must not cancel the others (collect reports all)
       matrix: ${{ fromJSON(needs.e2e-full-distribute.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v5
       - uses: nixbuild/nix-quick-install-action@v30
+      # READ-ONLY on purpose: no authToken. This job runs on the SELF-HOSTED
+      # fleet, and the runner spec's rule is "no secrets on self-hosted runners"
+      # -- CACHIX_AUTH_TOKEN is a WRITE token, and a shard only ever needs to
+      # PULL. Cache population stays with the GitHub-hosted jobs that already do
+      # it. Dropping the token costs nothing here and keeps the blast radius of
+      # a compromised runner to the instance itself.
       - uses: cachix/cachix-action@v15
         with:
           name: scooter
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       # Cluster, registry, agent-sandbox controller, platform images, and the
       # deployed platform — all of it in one script so the label-gated
@@ -703,11 +785,27 @@ jobs:
       - name: bring up k3d + the platform
         run: .github/scripts/k3d-platform-up.sh
 
-      - name: cluster smoke
+      # Only the cluster tests THIS shard was assigned. Previously every shard ran
+      # platform-smoke + event-backfill in full (127s + 30s) against four
+      # identical clusters -- the same 6 tests, 24 times. They are now scheduled
+      # like any other test and run ONCE across the matrix.
+      #
+      # `if` GUARDS THE EMPTY CASE, and it is load-bearing: vitest -t with an
+      # empty pattern matches EVERYTHING, so a shard with no cluster tests would
+      # silently run the whole cluster suite instead of nothing.
+      - name: cluster smoke (shard ${{ matrix.shard }})
+        if: matrix.cluster_grep != ''
         env:
           RUN_CLUSTER_TESTS: "1"
           CLUSTER_PROVIDER: existing
           CI: "1"
+          # THE PATTERN TRAVELS AS AN ENV VAR, never interpolated into the shell.
+          # Four of the four shard selectors contain an apostrophe -- "each
+          # conversation's messages", "don't wedge", "THAT CONTRIB'S words" --
+          # and inlining one into a single-quoted string ends the string early:
+          # verified, bash reports `unexpected EOF while looking for matching '`.
+          # ${{ }} here is a YAML value, so the quote is data rather than syntax.
+          CLUSTER_GREP: ${{ matrix.cluster_grep }}
         # platform-smoke: the multi-replica topology comes up + a conversation routes.
         # event-backfill: the one-shot mirror→Postgres migration Job, end-to-end against
         # this deployed platform's Postgres + agent-host-history PVC (both in the k3d
@@ -715,7 +813,19 @@ jobs:
         # mirror, runs it, and asserts rows land + a corrupt log FAILS the Job. This is the
         # ONLY tier that exercises the rendered Job's image/DB-env/volume wiring — Tier 1
         # covers the verify logic against a fake db. See modules/event-backfill.nix, PR #463.
-        run: nix develop --command bash -c 'npm install && npm run test:cluster -- platform-smoke event-backfill --no-file-parallelism'
+        run: |
+          # THE FILE FILTERS ARE NOT OPTIONAL. `-t` selects by NAME, but vitest
+          # still LOADS every file in the project first -- all 15 of them, 47
+          # tests. A shard assigned a warmpool or self-modify test would then run
+          # infrastructure work its cluster was never prepared for. Observed
+          # before these filters were restored: 8 failed test FILES in a shard
+          # that had been given 11 cluster tests.
+          #
+          # These are the same two the step passed before per-test sharding, and
+          # they must stay in step with SHARDED_CLUSTER_SPECS in
+          # test/e2e/support/test-inventory.mjs -- the planner only ever assigns
+          # tests from these files.
+          nix develop --command bash -c 'npm install && npx vitest run --project cluster --no-file-parallelism platform-smoke event-backfill -t "$CLUSTER_GREP"'
 
       # e2e FULL browser stories: the same Playwright specs, against the REAL cluster.
       # This is the seam nothing else covers — test/cluster is curl-only (no UI) and the
@@ -726,18 +836,28 @@ jobs:
       # Port-forward the `ui` Service (nginx: static build + API proxy, so ONE origin
       # serves both the app and /conversations — exactly the browser's real topology).
       - name: e2e full browser stories (shard ${{ matrix.shard }})
+        # Same empty-pattern hazard as the smoke step: an empty --grep matches
+        # EVERYTHING, so a shard with no e2e tests must skip rather than run all.
+        if: matrix.e2e_grep != ''
         env:
           E2E_TARGET: full
           E2E_CLUSTER_URL: http://127.0.0.1:8899
           E2E_ROLLOUT_HOOK: http://127.0.0.1:8898
           CI: "1"
           PLAYWRIGHT_JSON_OUTPUT_NAME: "report-full-shard-${{ matrix.shard }}.json"
+          # An env var, not an inlined string -- see the cluster step for why.
+          # Apostrophes in test titles break shell quoting otherwise.
+          E2E_GREP: ${{ matrix.e2e_grep }}
         run: |
           set -euo pipefail
           # Sourced, not executed: the background PIDs + cleanup trap must live in
           # THIS shell so they outlast the helper and are reaped with the step.
           . .github/scripts/e2e-full-serve.sh
-          nix develop --command bash -c 'npm install && npx playwright test --project=full --reporter=json,list ${{ matrix.specs }}'
+          # --grep, not positional spec paths: the shard plan is per-TEST now.
+          # The pattern is an alternation of escaped titles built by
+          # shard-tests.mjs; an EMPTY one would match every test, which is why the
+          # step is guarded by `if` above.
+          nix develop --command bash -c 'npm install && npx playwright test --project=full --reporter=json,list --grep "$E2E_GREP"'
 
       - name: upload shard report
         if: always()
@@ -766,6 +886,21 @@ jobs:
       - name: tear down k3d
         if: always()
         run: nix shell nixpkgs#k3d -c k3d cluster delete scooter-ci || true
+
+      # The input that sizes the persistent /nix volumes (server-config
+      # docs/github-runners-spec.md §11): volume = 3x this, rotate at 2.5x.
+      # Measured AFTER the job so it includes the platform images and browsers,
+      # not just the devshell closure. `always()` so a failed shard still
+      # reports -- a shard that dies late has done most of the building.
+      - name: report /nix/store size
+        if: always()
+        run: |
+          du -sh /nix/store 2>/dev/null || true
+          df -h /nix 2>/dev/null || df -h / || true
+          # Is /nix the pooled EBS volume or the instance root disk? The
+          # difference decides whether a store was REUSED or built cold, and
+          # `du` alone cannot tell you -- both report a plausible number.
+          findmnt -no SOURCE,FSTYPE,SIZE /nix 2>/dev/null || echo "/nix is not a separate mount (root disk)"
 
   # The GATE for e2e full: succeeds only when every shard passed; merges the per-shard
   # reports into `e2e-full-report` so the next run's distribute weights by real
@@ -1470,9 +1605,15 @@ jobs:
   # of no REGRESSION; it is not evidence the flake is fixed. Three PRs shipped
   # green on that basis and only a nightly could confirm them.
   #
-  # The cost is real (a cluster per run, ~13-25m of setup before the first
-  # repetition), which is why it is opt-in per PR rather than always-on — and why
-  # the repeat counts below are far lower than the fast job's ×20.
+  # The cost is real, and measured end-to-end on #697 (run 37222327127): 3m37s
+  # to stand up k3d and roll out the platform, 3m18s for 5 targeted repetitions,
+  # 5m25s for the control, 13m08s total. Opt-in per PR rather than always-on,
+  # and the repeat counts stay far lower than the fast job's ×20.
+  #
+  # GitHub-hosted, like everything here except the `e2e-full` shards. So there is
+  # no persistent registry/containerd cache between RUNS (k3d-platform-up.sh only
+  # mounts those when the self-hosted volumes exist) — the reuse that makes the
+  # control cheap is within this one job, not across jobs.
   flake-focus-full:
     name: flake focus full (k3d, targeted ×5)
     # Label ONLY — deliberately NOT gated on `cluster-changes`. A flake fix is
@@ -1494,6 +1635,10 @@ jobs:
       FULL_REPEAT_CONTENTION: "3"
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Full history: the control step below builds a worktree at the PR's
+          # BASE commit, which a depth-1 checkout does not have.
+          fetch-depth: 0
       - uses: nixbuild/nix-quick-install-action@v30
       - uses: cachix/cachix-action@v15
         with:
@@ -1546,18 +1691,105 @@ jobs:
           . .github/scripts/e2e-full-serve.sh
           nix develop --command bash -c 'npm install && npx playwright test --project=full -g "$FLAKE_PATTERN" --repeat-each="$FULL_REPEAT_TARGETED" --trace on --reporter=list,json'
 
+      # BEFORE the control, which deletes this cluster and builds the base's in
+      # its place. Dumping after it would hand someone debugging a red PR run the
+      # state of a DIFFERENT platform — the one commit that is known not to carry
+      # the change under test.
+      - name: dump platform state on failure
+        if: failure()
+        run: .github/scripts/k3d-dump-state.sh
+
+      # Resolve the verdict BEFORE commenting: the control below runs only when
+      # the PR's own repetitions came back clean, and that decision needs the
+      # verdict. Writes outputs only — the comment is posted after the control.
+      - name: resolve the verdict (no comment yet)
+        id: summary
+        if: always()
+        env:
+          # Via env, never inline `${{ }}`: these come from the PR DESCRIPTION,
+          # so interpolating them into `run:` would let a PR body execute shell.
+          FLAKE_PATTERN: ${{ steps.pat.outputs.pattern }}
+          FLAKE_SPECS: ${{ steps.pat.outputs.specs_full }}
+        run: |
+          set -euo pipefail
+          mode=targeted; [ -n "$FLAKE_SPECS" ] && mode=contention
+          node scripts/flake-focus-report.mjs "$PLAYWRIGHT_JSON_OUTPUT_NAME" \
+            --pattern "$FLAKE_PATTERN" --target full --mode "$mode" > /dev/null
+
+      # THE CONTROL. "0 failures in 5 runs" is unfalsifiable on its own — a test
+      # that fires once in 50 runs produces exactly that on a branch that fixed
+      # nothing — so run the SAME test with the SAME budget at the PR's base and
+      # report both rates. Without it this job can only ever say "it did not
+      # happen here", which is no way to demonstrate a fix.
+      #
+      # The base's PLATFORM, not just its specs. A flake fix that touches a
+      # service measured against the PR's own deployment is not a control at all;
+      # that mismatch is only meaningful when the fix happens to be test-side,
+      # and whether it is test-side is precisely what nobody knows up front.
+      #
+      # ONE CLUSTER AT A TIME. k3d-platform-up.sh names its cluster `scooter-ci`,
+      # and a 4-vCPU runner cannot host two platforms anyway — so the PR's
+      # cluster is torn down first. The registry SURVIVES that (it is a separate
+      # k3d object) and its tags are content-addressed, so every image the base
+      # shares with the PR is already in the blob store and skips the push.
+      #
+      # Only when the PR's own run came back clean: a flake that still reproduces
+      # here already has its answer, and a control would just burn the time.
+      # continue-on-error + `|| true` because the control is EXPECTED to fail
+      # tests — a red baseline is the good outcome and must never fail this job.
+      - name: control — does it still reproduce on the base?
+        id: control
+        # !cancelled(), not always(): a superseded run (every push and label
+        # event cancels the previous one) must not spend ten minutes on a control
+        # whose verdict nobody will read.
+        if: "!cancelled() && steps.summary.outputs.verdict == 'fixed'"
+        continue-on-error: true
+        env:
+          E2E_TARGET: full
+          E2E_CLUSTER_URL: http://127.0.0.1:8899
+          E2E_ROLLOUT_HOOK: http://127.0.0.1:8898
+          CI: "1"
+          FLAKE_PATTERN: ${{ steps.pat.outputs.pattern }}
+          FLAKE_SPECS: ${{ steps.pat.outputs.specs_full }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # The report the comment step diffs against. Absolute, and under the
+          # PR's workspace rather than the baseline worktree, so it outlives the
+          # worktree and the comment step can find it by name.
+          PLAYWRIGHT_JSON_OUTPUT_NAME: ${{ github.workspace }}/flake-baseline.json
+          # No E2E_PG_PORT override, unlike the fast job's control: the `full`
+          # project sets `webServer: undefined` (playwright.config.ts), so this
+          # run starts no local Postgres for the first one's to collide with.
+        run: |
+          set -euo pipefail
+          nix shell nixpkgs#k3d -c k3d cluster delete scooter-ci || true
+          git fetch --no-tags --depth=1 origin "$BASE_SHA" 2>/dev/null || true
+          git worktree add --detach ../baseline "$BASE_SHA"
+          cd ../baseline
+          # The BASE's own bring-up script and manifests, not the PR's. That cuts
+          # both ways: a change to k3d-platform-up.sh does not reach this run
+          # until it is ON the base. Until the registry-reuse guard lands there,
+          # the base's older script still calls `k3d registry create` and logs
+          #   FATA Failed to create registry: A registry node with that name
+          #   already exists
+          # which is NOISE, not a failure — the inner `bash -c` block sets no
+          # `-e`, so it continues and `--registry-use` attaches to the registry
+          # that is already there (verified on #697: pushes skipped, rollout
+          # fine). Do not add `set -e` to that block without also landing the
+          # guard, or this step starts failing on a cosmetic error.
+          .github/scripts/k3d-platform-up.sh
+          . .github/scripts/e2e-full-serve.sh
+          # Same project, same repetition counts as the run above — an unmatched
+          # budget makes the two rates incomparable, which is the measurement.
+          if [ -n "$FLAKE_SPECS" ]; then
+            nix develop --command bash -c 'npm install && npx playwright test --project=full --repeat-each="$FULL_REPEAT_CONTENTION" --reporter=list,json $FLAKE_SPECS' || true
+          else
+            nix develop --command bash -c 'npm install && npx playwright test --project=full -g "$FLAKE_PATTERN" --repeat-each="$FULL_REPEAT_TARGETED" --reporter=list,json' || true
+          fi
+
       # The verdict on the PR — identical contract to the fast job, but this one is
       # the evidence that actually counts for a flake first seen on `e2e-full`, so
       # its comment says "real k3d cluster" and carries no full-target nudge.
-      #
-      # NO CONTROL RUN here, deliberately. The fast job re-runs the test on the
-      # base commit to show the flake fires there; doing that on this target means
-      # building and deploying the BASE's whole platform to a second cluster (~25m
-      # on top of an already ~25m job). Running the base's tests against the PR's
-      # deployed platform would be cheaper and worse: a mismatched control that is
-      # only meaningful when the fix happens to be test-side.
       - name: flake verdict comment
-        id: summary
         # !cancelled(): a CANCELLED run has no report, so its comment step would
         # overwrite a good verdict in the SHARED comment with "no report to
         # summarise" — about a run that was superseded and nobody is waiting on.
@@ -1572,12 +1804,18 @@ jobs:
           FLAKE_PATTERN: ${{ steps.pat.outputs.pattern }}
           FLAKE_SPECS: ${{ steps.pat.outputs.specs_full }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
           mode=targeted; [ -n "$FLAKE_SPECS" ] && mode=contention
+          # Absent when the control was skipped (the flake still reproduces, so
+          # the answer is already in) — the comment then has no control section.
+          base=()
+          [ -f flake-baseline.json ] && base=(--baseline flake-baseline.json --baseline-ref "$BASE_REF@${BASE_SHA:0:7}")
           node scripts/flake-focus-report.mjs "$PLAYWRIGHT_JSON_OUTPUT_NAME" \
             --pattern "$FLAKE_PATTERN" --target full --mode "$mode" \
-            --specs "$FLAKE_SPECS" --run-url "$RUN_URL" > flake-comment.md
+            --specs "$FLAKE_SPECS" --run-url "$RUN_URL" "${base[@]}" > flake-comment.md
           cat flake-comment.md >> "$GITHUB_STEP_SUMMARY"
           # ONE section of the shared CI comment (scripts/ci-report.mjs). The report
           # renders its own heading, so ci-report is given a summary line and folds the
@@ -1592,17 +1830,14 @@ jobs:
             --body flake-comment.md --labels "$LABELS"
 
       # Zero repetitions of the targeted test = a false green (see the fast job).
-      # Costlier here: a cluster run that proved nothing burned ~25 minutes.
+      # Costlier here: a cluster run that proved nothing burned ~11 minutes. (It
+      # does not also pay for the control — that runs only on a `fixed` verdict.)
       - name: gate — the targeted test must have run
         if: always() && steps.summary.outputs.verdict == 'not-run'
         run: |
           echo "::error::The PR's 'flake-test:' pattern matched no test that ran on the" \
                "full target — this check proved nothing about the flake. See the PR comment."
           exit 1
-
-      - name: dump platform state on failure
-        if: failure()
-        run: .github/scripts/k3d-dump-state.sh
 
       # always(), not failure(): capturing the trace/sampler is the whole point of
       # this job, and a cancelled run is the one that most needs them.
@@ -1614,6 +1849,7 @@ jobs:
           path: |
             test-results/
             flake-report.json
+            flake-baseline.json
             /tmp/pf.log
             /tmp/cluster-sampler.log
             /tmp/rollout-hook.log

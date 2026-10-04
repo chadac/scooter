@@ -462,6 +462,13 @@ check-npm-hashes:
 check-image-coverage:
     @scripts/check-image-coverage.sh
 
+# `bash -n` the CI scripts. They are only executed by jobs that first spend
+# minutes on a cluster, so a syntax error otherwise surfaces four minutes into
+# the expensive job — and shellcheck cannot see inside their `bash -c '...'`
+# blocks, where a stray single quote breaks the outer parse.
+check-shell-syntax:
+    @.github/scripts/check-shell-syntax.sh
+
 # Every contrib directory must be imported by contrib/all-modules.nix. The import
 # list is explicit for eval performance; this is what stops a contrib being added
 # and silently never built or tested. Why: PR #585.
@@ -535,7 +542,7 @@ db-validate:
       scripts/atlas-dev.sh migrate validate --env "$env"
     done
 
-ci: check-flake check-manifests check-image-coverage check-contrib-coverage check-lockfiles check-npm-hashes lint db-generate-check db-migrate-check test-unit
+ci: check-flake check-manifests check-image-coverage check-contrib-coverage check-lockfiles check-npm-hashes check-shell-syntax lint db-generate-check db-migrate-check test-unit
     @echo "✅ ci (fast) passed — run `just test` for cluster + e2e tiers"
 
 # Build + serve the docs site locally (mkdocs + the GENERATED kubenix option pages).
