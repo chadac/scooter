@@ -20,7 +20,7 @@ from fastmcp import FastMCP
 
 from scooter_broker_lib.links import first_target, ref_of
 from scooter_broker_lib.mcp import ToolContext, ToolContextDep, ToolResult, gate
-from scooter_broker_lib.refs import GithubTarget, parse_github_url
+from scooter_broker_lib.refs import GithubTarget, parse_github_resource_id
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +36,10 @@ def _target_from_link(link: dict) -> GithubTarget | None:
     (the broker's auto-link injector, `agent-broker link add`) carries only url+title,
     which is the majority of real rows.
 
+    The resource-id parser is used rather than the URL one because it tries the
+    short form FIRST and then falls back to the URL — so one call covers both an
+    html_url link and a synthetic conversation_map row (routes.py `_resource_map`).
+
     COMPLETENESS IS PER LINK: all three of owner/repo/number come from the ref, or the
     ref is abandoned and the URL is parsed whole. Mixing them once produced an owner
     from one repo and a number from another — a comment on an unrelated PR.
@@ -44,7 +48,7 @@ def _target_from_link(link: dict) -> GithubTarget | None:
     owner, repo, number = ref.get("owner"), ref.get("repo"), ref.get("number")
     if owner and repo and number is not None:
         return GithubTarget(owner=owner, repo=repo, number=int(number))
-    return parse_github_url(link.get("url"))
+    return parse_github_resource_id(link.get("url") or "")
 
 
 async def github_target(ctx: ToolContext) -> GithubTarget | None:

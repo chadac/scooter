@@ -14,7 +14,7 @@ from fastmcp import FastMCP
 
 from scooter_broker_lib.links import first_target, ref_of, resource_type_is
 from scooter_broker_lib.mcp import ToolContext, ToolContextDep, ToolResult, gate
-from scooter_broker_lib.refs import GitlabTarget, parse_gitlab_url
+from scooter_broker_lib.refs import GitlabTarget, parse_gitlab_resource_id
 
 mcp = FastMCP(name="gitlab")
 
@@ -32,7 +32,7 @@ def _target_from_link(link: dict) -> GitlabTarget | None:
     iid = mr_iid or ref.get("iid")
     project_id = ref.get("projectId")
     if not project_id or not iid:
-        return parse_gitlab_url(link.get("url"))
+        return parse_gitlab_resource_id(link.get("url") or "")
     # resourceType decides the ENDPOINT. An issue link whose iid landed in `mrIid`
     # (what webhooks wrote before #563) must NOT comment on the merge request of that
     # number. An unrecognised spelling falls back to which ref field carried the iid.

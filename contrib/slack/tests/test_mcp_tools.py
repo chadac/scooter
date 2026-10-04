@@ -233,3 +233,19 @@ async def test_the_provider_contributes_the_three_tools():
 async def test_no_tool_exposes_ctx_to_the_model():
     for tool in await slack_tools.mcp.list_tools(run_middleware=False):
         assert "ctx" not in tool.parameters.get("properties", {}), tool.name
+
+
+# --- the conversation_map fallback (issue #700) ------------------------------------
+
+async def test_a_mapping_row_supplies_the_channel_and_thread():
+    """Slack is the one source whose channel/ts are their own columns, so the broker
+    turns them into a real `ref` rather than a raw resource_id."""
+    ctx = _ctx(links=[{"source": "slack", "resourceType": "thread", "url": "C9:1700.1",
+                       "ref": {"channel": "C9", "threadTs": "1700.1"}}])
+    assert await slack_tools.slack_target(ctx) == {"channel": "C9", "thread_ts": "1700.1"}
+
+
+async def test_a_real_link_WINS_over_the_appended_mapping_row():
+    ctx = _ctx(links=[_link(channel="C-real"), {"source": "slack", "resourceType": "thread",
+               "url": "", "ref": {"channel": "C-fallback"}}])
+    assert (await slack_tools.slack_target(ctx))["channel"] == "C-real"

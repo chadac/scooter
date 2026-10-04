@@ -112,3 +112,17 @@ async def test_comment_surfaces_a_failure_VERBATIM():
                responses=[httpx.Response(403, text="forbidden")])
     res = await tools.gitlab_comment(body="hi", ctx=ctx)
     assert res.is_error is True and "forbidden" in res.text
+
+
+# --- the conversation_map fallback (issue #700) ------------------------------------
+
+async def test_a_SHORT_FORM_mr_mapping_row_resolves():
+    ctx = _ctx(links=[_link(url="g/p!3")])
+    t = await tools.gitlab_target(ctx)
+    assert (t.project_id, t.iid, t.is_mr) == ("g/p", "3", True)
+
+
+async def test_a_SHORT_FORM_issue_mapping_row_resolves_as_an_ISSUE():
+    """`g/p#3` is an issue. Resolving it as an MR would comment on a different object."""
+    ctx = _ctx(links=[_link(url="g/p#3")])
+    assert (await tools.gitlab_target(ctx)).is_mr is False

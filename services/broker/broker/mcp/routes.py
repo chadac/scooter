@@ -107,7 +107,11 @@ class _Links:
     async def list(self) -> list[dict[str, Any]]:
         if self._cached is None:
             try:
-                self._cached = await list_links(self._agent_host_url, self._conversation_id)
+                links = await list_links(self._agent_host_url, self._conversation_id)
+                # APPENDED, never prepended: the conversation_map is the FALLBACK, so a
+                # real link always wins. first_target takes the first COMPLETE target in
+                # order, so position is the whole precedence rule.
+                self._cached = links + await self._resource_map()
             except httpx.HTTPError as exc:
                 # A gate that cannot read the links must not CRASH tools/list — the
                 # agent would get no tools at all, including the ungated ones. Degrade
@@ -119,6 +123,57 @@ class _Links:
                 )
                 self._cached = []
         return self._cached
+
+    async def _resource_map(self) -> list[dict[str, Any]]:
+        """The webhooks conversation_map rows, shaped as links.
+
+        THE FALLBACK the agent-host's tools had, which this must not silently lose: a
+        conversation created before `ref` existed has a link carrying neither a usable
+        ref nor a parseable URL, and the mapping is the only record of its target.
+
+        Read from the AGENT-HOST (GET /conversations/{id}/resource-map), not from the
+        table — the broker reading the webhooks service's own table would breach the
+        per-service split contrib/README.md exists to keep.
+
+        `resource_id` goes in `url` deliberately. Each provider resolves a link with its
+        `parse_*_resource_id`, which tries the short form FIRST and then falls back to
+        the URL parser — so one field covers both an html_url link and an `o/r#7`
+        mapping, with no second code path in any contrib. Slack is the exception: its
+        channel/ts are their own columns, so they become a real `ref`.
+        """
+        if not self._agent_host_url or not self._conversation_id:
+            return []
+        url = f"{self._agent_host_url.rstrip('/')}/conversations/{self._conversation_id}/resource-map"
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                mappings = (response.json() or {}).get("mappings") or []
+        except (httpx.HTTPError, ValueError) as exc:
+            # Best-effort, exactly as the agent-host's lookup was: a DB blip must not
+            # break a tool call, it just means "no fallback target".
+            logger.warning(
+                "could not read the conversation resource-map; using links alone",
+                extra={"conversation_id": self._conversation_id, "error": format_error(exc)},
+            )
+            return []
+        rows: list[dict[str, Any]] = []
+        for mapping in mappings:
+            if not isinstance(mapping, dict):
+                continue
+            source = mapping.get("source") or ""
+            ref: dict[str, Any] = {}
+            if source == "slack":
+                channel = mapping.get("slackChannel")
+                if channel:
+                    ref = {"channel": channel, "threadTs": mapping.get("slackTs")}
+            rows.append({
+                "source": source,
+                "resourceType": mapping.get("resourceType") or "",
+                "url": mapping.get("resourceId") or "",
+                "ref": ref,
+            })
+        return rows
 
 
 def _identity_from_scope() -> Identity | None:

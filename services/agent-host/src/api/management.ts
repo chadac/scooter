@@ -134,6 +134,10 @@ export interface ManagementDeps {
   /** The broker-MCP proxy handler (agent/brokerMcpProxy.ts). Absent when the broker
    *  or the conversation-token secret is not configured — then the contrib tools are
    *  simply not offered. Why: issue #700. */
+  /** The webhooks conversation_map lookup, served at GET /conversations/:id/resource-map
+   *  for the broker's provider tools. Absent when no webhooks DSN is configured — then
+   *  the tools rely on the conversation's links alone. Why: issue #700. */
+  resourceLookup?: { lookup(conversationId: string, source: string): Promise<unknown | undefined> };
   brokerMcpHandler?: (req: IncomingMessage, res: ServerResponse, body: unknown) => Promise<void>;
   /** How to resolve the caller's identity per request (provider-agnostic; may be
    *  store-enriched). Defaults to the env-configured resolver (header/alb-oidc). */
@@ -968,6 +972,31 @@ export function createManagementApi(deps: ManagementDeps): Router {
     const conv = sessions.get(id) ?? (await sessions.getByShortId(id));
     return conv?.id ?? null;
   };
+
+  // The webhooks `conversation_map` row for a conversation — the FALLBACK target
+  // source for a provider reply tool whose link carries neither a usable `ref` nor a
+  // parseable URL (a conversation predating `ref`).
+  //
+  // Exposed here because the tools moved to the broker (#700) and the broker must not
+  // read the webhooks service's table directly — that is the per-service split
+  // contrib/README.md exists to keep. The agent-host already has read access, so it
+  // fronts it. Separate from GET /links on purpose: the UI renders that list, and
+  // folding synthetic rows into it would show phantom links in the sidebar.
+  r.get("/conversations/:id/resource-map", async (ctx) => {
+    if (!deps.resourceLookup) return { json: { mappings: [] } };
+    const source = ctx.query.get("source") ?? "";
+    const sources = source ? [source] : ["slack", "github", "gitlab", "jira"];
+    const mappings = (
+      await Promise.all(
+        sources.map((s) =>
+          deps
+            .resourceLookup!.lookup(ctx.params.id, s)
+            .catch(() => undefined),
+        ),
+      )
+    ).filter((m): m is NonNullable<typeof m> => m !== undefined);
+    return { json: { mappings } };
+  });
 
   r.get("/conversations/:id/links", async (ctx) => {
     const id = (await resolveConvId(ctx.params.id)) ?? ctx.params.id;

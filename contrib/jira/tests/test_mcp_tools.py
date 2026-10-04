@@ -86,3 +86,28 @@ async def test_comment_surfaces_a_failure_VERBATIM():
                responses=[httpx.Response(404, text="issue does not exist")])
     res = await tools.jira_comment(body="hi", ctx=ctx)
     assert res.is_error is True and "issue does not exist" in res.text
+
+
+# --- the conversation_map fallback (issue #700) ------------------------------------
+
+async def test_a_BARE_issue_key_resolves():
+    """jira's conversation_map resource_id IS the key, where a resource_links row holds
+    the browse URL. The broker feeds both through the link's `url`, so both must work."""
+    ctx = _ctx(links=[_link(url="ENG-12")])
+    assert (await tools.jira_target(ctx)).issue_key == "ENG-12"
+
+
+async def test_a_bare_key_is_upcased():
+    assert (await tools.jira_target(_ctx(links=[_link(url="eng-12")]))).issue_key == "ENG-12"
+
+
+async def test_a_non_key_string_does_NOT_resolve():
+    """A garbage mapping row must be skipped, not turned into a wrong issue key."""
+    assert await tools.jira_target(_ctx(links=[_link(url="just some text")])) is None
+
+
+async def test_a_real_link_WINS_over_the_appended_mapping_row():
+    """The broker appends mapping rows AFTER the real links, and first_target takes the
+    first complete target — so position is the whole precedence rule."""
+    ctx = _ctx(links=[_link(ref={"issueKey": "REAL-1"}), _link(url="FALLBACK-2")])
+    assert (await tools.jira_target(ctx)).issue_key == "REAL-1"

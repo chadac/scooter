@@ -47,7 +47,10 @@ class JiraTarget:
 
 
 _DIGITS = re.compile(r"^\d+$")
-_ISSUE_KEY = re.compile(r"^[A-Za-z][A-Za-z0-9_]*-\d+$")
+# Exported: jira's conversation_map resource_id is a BARE key, so the contrib needs
+# the same grammar to recognise one.
+ISSUE_KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*-\d+$")
+_ISSUE_KEY = ISSUE_KEY_RE
 
 
 def _segments(url: str | None) -> list[str] | None:

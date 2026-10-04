@@ -172,3 +172,18 @@ async def test_no_graphql_check_when_not_replying_in_a_thread():
 async def test_ctx_is_not_exposed_to_the_model():
     for tool in await tools.mcp.list_tools(run_middleware=False):
         assert "ctx" not in tool.parameters.get("properties", {}), tool.name
+
+
+# --- the conversation_map fallback (issue #700) ------------------------------------
+
+async def test_a_SHORT_FORM_mapping_row_resolves():
+    """The broker appends conversation_map rows as links carrying the raw resource_id
+    (`o/r#7`) in `url`. One parser call covers that and an html_url."""
+    ctx = _ctx(links=[_link(url="o/r#7")])
+    t = await tools.github_target(ctx)
+    assert (t.owner, t.repo, t.number) == ("o", "r", 7)
+
+
+async def test_a_real_link_WINS_over_the_appended_mapping_row():
+    ctx = _ctx(links=[_link(ref={"owner": "o", "repo": "real", "number": 1}), _link(url="o/fallback#2")])
+    assert (await tools.github_target(ctx)).repo == "real"

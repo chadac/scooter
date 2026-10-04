@@ -11,7 +11,7 @@ from fastmcp import FastMCP
 
 from scooter_broker_lib.links import first_target, ref_of
 from scooter_broker_lib.mcp import ToolContext, ToolContextDep, ToolResult, gate
-from scooter_broker_lib.refs import JiraTarget, parse_jira_url
+from scooter_broker_lib.refs import ISSUE_KEY_RE, JiraTarget, parse_jira_url
 
 mcp = FastMCP(name="jira")
 
@@ -22,7 +22,14 @@ def _target_from_link(link: dict) -> JiraTarget | None:
     key = ref_of(link).get("issueKey")
     if key:
         return JiraTarget(issue_key=str(key))
-    return parse_jira_url(link.get("url"))
+    # The browse-URL form first, then a BARE key: jira's conversation_map resource_id
+    # is the key itself ("ENG-12"), while a resource_links row holds the browse URL.
+    raw = (link.get("url") or "").strip()
+    if not raw:
+        return None
+    return parse_jira_url(raw) or (
+        JiraTarget(issue_key=raw.upper()) if ISSUE_KEY_RE.match(raw) else None
+    )
 
 
 async def jira_target(ctx: ToolContext) -> JiraTarget | None:

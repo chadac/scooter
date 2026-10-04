@@ -158,3 +158,34 @@ def test_resource_type_is_refuses_to_guess(spelling, expected):
     rather than defaulting to MR and commenting on the wrong object."""
     assert resource_type_is(spelling, truthy=("merge_request", "merge_requests", "mr"),
                             falsy=("issue", "issues")) is expected
+
+
+# --- the conversation_map fallback shapes (issue #700) -----------------------------
+#
+# The broker turns each conversation_map row into a link whose `url` carries the raw
+# resource_id (broker/mcp/routes.py `_resource_map`). That only works because the
+# resource-id parsers try the short form FIRST and then fall back to the URL parser —
+# which is what lets every contrib resolve both shapes with ONE call.
+
+@pytest.mark.parametrize("raw,expected", [
+    ("o/r#7", ("o", "r", 7)),                              # a conversation_map row
+    ("https://github.com/o/r/pull/7", ("o", "r", 7)),       # a resource_links row
+])
+def test_one_github_call_covers_both_row_shapes(raw, expected):
+    t = parse_github_resource_id(raw)
+    assert (t.owner, t.repo, t.number) == expected
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("g/p!3", ("g/p", "3", True)),
+    ("g/p#3", ("g/p", "3", False)),
+    ("https://gitlab.com/g/p/-/merge_requests/3", ("g/p", "3", True)),
+])
+def test_one_gitlab_call_covers_both_row_shapes(raw, expected):
+    t = parse_gitlab_resource_id(raw)
+    assert (t.project_id, t.iid, t.is_mr) == expected
+
+
+def test_a_github_resource_id_that_is_neither_shape_is_none():
+    """So a garbage mapping row is SKIPPED rather than resolving to a wrong target."""
+    assert parse_github_resource_id("not-a-resource") is None

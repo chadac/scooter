@@ -1489,6 +1489,7 @@ export async function main(
       },
       resolveUser,
       mcpHandler: mcpEndpoint ? (req, res, body) => mcpEndpoint.handle(req, res, body) : undefined,
+      resourceLookup,
       brokerMcpHandler: brokerMcpProxy ? (req, res, body) => brokerMcpProxy.handle(req, res, body) : undefined,
       answerPermission: async (sessionId, toolCallId, optionId, approver) => {
         // Route the user's choice to the conversation's bridge, which resolves
