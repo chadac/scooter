@@ -57,6 +57,10 @@ in
   # The heavy VM test is nightly-only, so without this a pure-eval break is invisible
   # until a red nightly nobody reads (#609). Fast eval-check, no VM.
   dev-env-reconverge-eval = runTest ./reconverge-eval.nix;
+  # The SHELL half of the same guard: the re-converge expression reaches Nix intact
+  # through scooter-apply-module's double-quoted `--expr`. Eval cannot see a quote
+  # bash ate, so this is its own check. Fast build, no VM. Why: PR #696.
+  dev-env-reconverge-quoting = runTest ./reconverge-quoting.nix;
   # The deployment-DEFAULT module fetch: broker-modules.nix fetches the broker's
   # default.tar.gz and imports the modules it contains; fail-safe to no imports when
   # unconfigured. A fast pure-eval check (not a VM); the in-pod switch is Tier-2.
