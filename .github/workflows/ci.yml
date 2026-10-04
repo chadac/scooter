@@ -879,6 +879,14 @@ jobs:
             /tmp/cluster-sampler.log
             /tmp/rollout-hook.log
           retention-days: 7
+      # ALWAYS, not on failure. The sandbox crash loop does not reliably fail the
+      # suite: a sandbox can crash, be retried by the kubelet, and the spec still
+      # pass. Job 111556690687 passed 5/5 with the dump skipped and so reported
+      # nothing about whether a sandbox crashed. Cheap (two kubectl reads) and never
+      # a gate -- it exits 0 and annotates.
+      - name: sandbox crash census
+        if: always()
+        run: .github/scripts/k3d-sandbox-census.sh
       - name: dump platform state on failure
         if: failure()
         run: .github/scripts/k3d-dump-state.sh
@@ -1697,6 +1705,14 @@ jobs:
       # its place. Dumping after it would hand someone debugging a red PR run the
       # state of a DIFFERENT platform — the one commit that is known not to carry
       # the change under test.
+      # ALWAYS, not on failure. The sandbox crash loop does not reliably fail the
+      # suite: a sandbox can crash, be retried by the kubelet, and the spec still
+      # pass. Job 111556690687 passed 5/5 with the dump skipped and so reported
+      # nothing about whether a sandbox crashed. Cheap (two kubectl reads) and never
+      # a gate -- it exits 0 and annotates.
+      - name: sandbox crash census
+        if: always()
+        run: .github/scripts/k3d-sandbox-census.sh
       - name: dump platform state on failure
         if: failure()
         run: .github/scripts/k3d-dump-state.sh

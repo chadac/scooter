@@ -4,6 +4,8 @@
 #
 # Shared by `e2e full shard` and `flake focus full` — a flake check that fails
 # with a thinner dump than the job that found the flake is a wasted run.
+# The crash census, shared with the always-on CI step so the two cannot drift.
+"$(dirname "$0")/k3d-sandbox-census.sh" || true
 nix shell nixpkgs#kubectl nixpkgs#jq nixpkgs#docker-client -c bash -c '
   kubectl -n agent-sandbox get pods,deploy,svc,pvc,conversations -o wide || true
   # describe the not-ready workloads so a Pending pod shows its scheduling reason
@@ -90,20 +92,6 @@ nix shell nixpkgs#kubectl nixpkgs#jq nixpkgs#docker-client -c bash -c '
       done
     fi
   fi
-  # RESTART SUMMARY for every conv pod, healthy ones included. A pod that crashed and
-  # then came up clean reads as fine in `get pods`, and its restart count is the only
-  # trace left. Printed unconditionally so a run can be checked for crashes even when
-  # nothing is broken at dump time.
-  echo "===== SANDBOX RESTART SUMMARY (all conv pods) ====="
-  kubectl -n agent-sandbox get pods -o json 2>/dev/null \
-    | jq -r ".items[] | select(.metadata.name | startswith(\"conv-\")) | \"  \(.metadata.name) ready=\(.status.containerStatuses[0].ready | tostring) restarts=\(.status.containerStatuses[0].restartCount // 0)\"" || true
-  # Events OUTLIVE the pod (they carry their own TTL), so this is the one place a
-  # crash whose pod was already deleted still shows up. The namespace tail above is
-  # capped and time-ordered; this is filtered to the reasons that mean a crash.
-  echo "===== BACKOFF / FAILED EVENTS (these survive pod deletion) ====="
-  kubectl -n agent-sandbox get events --sort-by=.lastTimestamp -o json 2>/dev/null \
-    | jq -r ".items[] | select(.reason | test(\"BackOff|Failed|Unhealthy|Killing|OOM|Evicted\")) | \"  \(.lastTimestamp) \(.reason) \(.involvedObject.name) \(.message)\"" \
-    | tail -60 || true
   # The host ring buffer. The k3d nodes are containers on this runner and share its
   # kernel, so cgroup exhaustion or a kernel-side refusal lands HERE -- `dmesg` does
   # not exist inside the node image at all.
