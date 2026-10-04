@@ -12,7 +12,28 @@
  * and is thrown, rather than silently downgrading to an unauthenticated call.
  */
 
-import type { BrokerClient, BrokerResponse } from "./agentTools.js";
+/** A broker HTTP call bound to a conversation's identity. Returns the raw upstream
+ *  outcome so the caller can echo errors faithfully (never hide them).
+ *
+ *  Declared here rather than in agentTools.ts since #700 moved the provider reply
+ *  tools — its only other consumer — into the contribs. */
+export interface BrokerClient {
+  call(
+    conversationId: string,
+    method: "GET" | "POST",
+    path: string,
+    body?: unknown,
+  ): Promise<BrokerResponse>;
+}
+
+export interface BrokerResponse {
+  /** HTTP status from the broker/upstream. */
+  status: number;
+  /** Parsed JSON body when the response was JSON; else undefined. */
+  data?: unknown;
+  /** Raw text body (always present) — the verbatim upstream error on failure. */
+  raw: string;
+}
 
 export interface HttpBrokerClientDeps {
   /** The broker base URL (no trailing slash needed — normalized here). */

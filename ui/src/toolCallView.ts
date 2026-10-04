@@ -35,8 +35,15 @@ export interface ToolCallVisual {
   action: string;
 }
 
-/** Keyed by the underlying tool NAME (the stable identity). The app's own tools;
- *  a contrib's arrive through the manifest. */
+/** Keyed by the underlying tool NAME (the stable identity).
+ *
+ *  KEPT after #700 moved slack_respond / slack_react / github_comment into
+ *  contrib/slack and contrib/github, which now declare them under `ui.tools` as well.
+ *  These are the NO-MANIFEST FALLBACK, not stale duplicates: `npm run dev` and the
+ *  Playwright fast stack serve no manifest at all (contrib/README.md), so emptying this
+ *  table would leave local development with no provider cards — which is what
+ *  contribManifest.test.ts guards. cardFor consults the manifest FIRST, so a deployment
+ *  still gets its rows from the contrib that owns the tool. */
 const BUILTIN_BY_TOOL: Record<string, ContribToolCard> = {
   slack_respond: { provider: "slack", argKey: "text", action: "replied in Slack" },
   slack_react: { provider: "slack", argKey: "emoji", action: "reacted in Slack" },
