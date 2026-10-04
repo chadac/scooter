@@ -7,7 +7,13 @@ some `see docs/…` pointers in the code refer to that local copy. The committed
 
 ## What this is
 
-A Nix-powered agent platform layered over the Kubernetes
+**"NixOS for your agents"** — an agent platform where the whole thing is one
+typed Nix configuration: the sandboxes agents work in, the MCP servers and web
+services they expose, the credentials they can borrow, the models they may use.
+The sandbox is a real NixOS machine, and an agent changes its own environment the
+NixOS way — author a module, switch, with generations and auto-rollback.
+
+Mechanically it layers over the Kubernetes
 [agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) controller.
 agent-sandbox provides the execution **body** (pods, warm pools,
 suspend/resume); Scooter adds the **brain** (an off-the-shelf ACP agent — Goose
@@ -15,6 +21,10 @@ suspend/resume); Scooter adds the **brain** (an off-the-shelf ACP agent — Goos
 The agent drives the sandbox via the agent-sandbox API; nothing is an in-pod
 agent. See `docs/DESIGN.md` for the full architecture and the reasoning behind
 the agent-outside inversion, the two-PVC persistence model, and broker auth.
+
+When writing user-facing copy (README, docs site, flake description), lead with
+the NixOS framing — declarative, composable, reversible — and keep the
+body/brain architecture as the explanation underneath it, not the headline.
 
 ## Status
 

@@ -1,5 +1,5 @@
 {
-  description = "Nix-powered agent sandbox platform layered over the Kubernetes agent-sandbox controller";
+  description = "NixOS for your agents — a declarative, extensible agent platform on Kubernetes";
 
   inputs = {
     # The single nixpkgs the platform AND the sandbox build from. The sandbox's

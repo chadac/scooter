@@ -4,7 +4,7 @@
 # kubenix option reference (reference/options.md) is GENERATED from the module system
 # (`nix build .#options-doc`) at build time — never committed, never hand-edited.
 site_name: Scooter
-site_description: A Nix-powered agent platform on Kubernetes
+site_description: NixOS for your agents — a declarative, extensible agent platform on Kubernetes
 site_url: https://chadac.github.io/scooter/
 repo_url: https://github.com/chadac/scooter
 repo_name: chadac/scooter
