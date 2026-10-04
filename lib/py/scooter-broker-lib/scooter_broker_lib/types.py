@@ -120,14 +120,16 @@ class Transport(Protocol):
         """
         ...
 
-    # OPTIONAL second half: the agent tools this transport contributes, served by the
-    # broker's single /mcp endpoint rather than mounted under the provider's prefix.
-    # Declared here so a transport can be TYPED against it, and discovered by
-    # `hasattr` so the four shipped transports that have no tools needed no change —
-    # the same arity-not-a-flag trick `registry.wants_context` uses.
+    # OPTIONAL second half: `mcp_server`, a `FastMCP` carrying the agent tools this
+    # transport contributes. Served by the broker's single /mcp endpoint rather than
+    # mounted under the provider's prefix, and mounted NAMESPACE-LESS so tool names
+    # stay flat.
     #
-    # Not part of the Protocol's runtime_checkable surface on purpose: adding it to
-    # the required set would make every existing transport fail isinstance().
+    # Discovered by `hasattr` rather than declared in the Protocol's required surface:
+    # adding it there would make every existing transport fail isinstance(), which is
+    # why the four shipped transports that have no tools needed no change. The same
+    # arity-not-a-flag reasoning as `registry.wants_context`.
+    #
     # See scooter_broker_lib/mcp.py and transports/mcp_tools.py. Why: issue #700.
 
 

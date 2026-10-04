@@ -11,35 +11,52 @@ A tool declared here ships iff its provider is enabled, which is the same gate
 isn't wired teaches the agent to call something that 404s, and then to read that 404
 as the feature being broken.
 
-WHAT A TOOL GETS. Handlers take a `ToolContext` carrying the verified caller, the
-provider, an upstream caller with the credential already injected, and the
-conversation's links. The upstream caller is the SAME injection path `HttpProxy` uses,
-so a tool and the raw proxy route for one provider cannot drift apart in how they
-authenticate.
+A CONTRIB DECLARES TOOLS ON ITS OWN `FastMCP` SERVER, with the decorator and the
+schema derived from type hints:
 
-TWO INVARIANTS ARE CARRIED OVER VERBATIM from the agent-host implementation this
-replaces (services/agent-host/src/agent/agentTools.ts), because both were learned the
-hard way:
+    mcp = FastMCP(name="echo")
 
-  * ERRORS ARE NEVER HIDDEN. `ToolResult.from_upstream` surfaces the real status and
-    the upstream body, so the agent sees what it would have seen from the raw route.
-    The agent used to hand-run `curl -sf`, which fails SILENTLY — and a silent failure
-    is how it retried and posted duplicate Slack messages.
-  * ATTACHMENT GATING. A provider's reply tool is offered only when that provider is
-    actually linked to the conversation, via `gate`. An ungated reply tool is what led
-    the agent to raw-curl Slack into the root channel.
+    @mcp.tool
+    async def echo_say(message: str, ctx: ToolContext = ToolContextDep) -> str:
+        '''Echo a message back.'''
+        return f"echo: {message}"
+
+and hands it to the broker via `McpTools(server=mcp, upstream=...)`. The broker mounts
+it NAMESPACE-LESS, so names stay flat (`echo_say`, not `echo_echo_say`) — the skills
+name these tools and `ui/src/toolCallView.ts` matches on the tool name.
+
+WHAT THIS MODULE IS AND IS NOT. fastmcp owns the protocol, the schema generation, the
+tool registry and the per-request middleware; there is no reason for us to own any of
+that (an earlier revision of this PR hand-wrote a JSON-RPC layer on the wrong premise
+that per-caller tool lists didn't fit the library — `on_list_tools` middleware is
+built for exactly that). What stays here is the part fastmcp has no opinion about:
+
+  * `ToolContext` — the VERIFIED caller, a credential-injecting upstream caller, and
+    the conversation's links, injected per call.
+  * `ToolResult.from_upstream` — the "never hide an error" rule.
+
+Both are carried over verbatim from the agent-host implementation this replaces
+(services/agent-host/src/agent/agentTools.ts), because both were learned the hard way:
+the agent used to hand-run `curl -sf`, which fails SILENTLY — and a silent failure is
+how it retried and posted duplicate Slack messages; and an ungated reply tool is what
+led it to raw-curl Slack into the root channel.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Awaitable, Callable, Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+from fastmcp.dependencies import Depends
 
 if TYPE_CHECKING:  # avoid a runtime import cycle (types imports nothing from here)
     import httpx
+    from fastmcp import FastMCP
 
     from .types import Credential, Identity, Provider
 
@@ -52,9 +69,12 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class ToolResult:
-    """An MCP tool result. One text block, plus the error flag — the shape every tool
-    the agent-host exposed used, kept so the migration is a move rather than a
-    redesign."""
+    """A tool's outcome: one text block plus the error flag.
+
+    A tool may also just `return` a string — fastmcp wraps it — but a tool that can
+    FAIL should return one of these, because `is_error` is what tells the model the
+    call did not do what it asked for.
+    """
 
     text: str
     is_error: bool = False
@@ -150,7 +170,13 @@ class LinkLookup(Protocol):
 
 @dataclass(frozen=True)
 class ToolContext:
-    """What a tool handler and its gate are handed."""
+    """What a tool is handed, beyond its own arguments.
+
+    Injected, never assembled by the contrib: `upstream` needs the provider's
+    credential source and `identity` is the output of the broker's two-token check, so
+    a contrib that built its own could get either wrong — and an `identity` a contrib
+    constructed would be an identity nobody verified.
+    """
 
     identity: "Identity"
     provider: "Provider"
@@ -165,71 +191,109 @@ class ToolContext:
         return await self.provider.credential.get(self.identity)
 
 
-ToolHandler = Callable[[ToolContext, dict[str, Any]], Awaitable[ToolResult]]
+# The per-call context. A ContextVar rather than a parameter threaded through fastmcp:
+# the broker's middleware knows the provider and the verified identity, the tool knows
+# neither, and fastmcp's DI resolves a dependency by CALLING it — so the value has to
+# be reachable from a plain function with no arguments.
+_CURRENT: ContextVar["ToolContext | None"] = ContextVar("scooter_tool_context", default=None)
+
+
+@contextmanager
+def tool_context(ctx: ToolContext) -> Iterator[None]:
+    """Make `ctx` the current tool context for the duration of one tool call.
+
+    Used by the broker's per-provider middleware. Resets on exit rather than leaving
+    the value set: these run in a worker that serves many conversations, and a context
+    left behind would be handed to the NEXT call — a cross-conversation leak.
+    """
+    token = _CURRENT.set(ctx)
+    try:
+        yield
+    finally:
+        _CURRENT.reset(token)
+
+
+def current_tool_context() -> ToolContext:
+    """The current call's context. Raises outside a tool call, which is a bug in the
+    wiring rather than something a tool should handle."""
+    ctx = _CURRENT.get()
+    if ctx is None:
+        raise RuntimeError(
+            "no ToolContext is set — a tool asked for one outside a broker tool call. "
+            "The broker's per-provider middleware establishes it; see "
+            "broker/mcp/routes.py."
+        )
+    return ctx
+
+
+# What a contrib writes as the parameter default. `Depends` marks the parameter as
+# DEPENDENCY-INJECTED, which is also what keeps it out of the tool's input schema — a
+# `ctx` argument the model could try to supply would be both confusing and forgeable.
+ToolContextDep = Depends(current_tool_context)
+
+
 ToolGate = Callable[[ToolContext], Awaitable[bool]]
 
+# Gates by tool NAME. A side registry rather than an attribute on the tool object:
+# fastmcp's FunctionTool is a pydantic model, so `setattr` on it is not something to
+# rely on across versions. Names are globally unique — the broker fails startup on a
+# duplicate — so the name is a sound key.
+_GATES: dict[str, ToolGate] = {}
 
-# ---------------------------------------------------------------------------
-# The tool declaration
-# ---------------------------------------------------------------------------
 
-@dataclass(frozen=True)
-class McpTool:
-    """One agent tool contributed by a provider.
+def gate(predicate: ToolGate):
+    """Mark a tool as ATTACHMENT-GATED: listed only when `predicate` says so.
 
-    `name` is FLAT and unprefixed (`github_comment`, not `github__comment`): the
-    skills name these tools, and `ui/src/toolCallView.ts` matches on the tool name to
-    render provider message cards. A duplicate name across two enabled providers is a
-    startup error, not a silent last-one-wins — see `collect_mcp_tools`.
+    Applied ABOVE `@mcp.tool`, so it decorates the registered tool:
+
+        @gate(_has_echo_link)
+        @mcp.tool
+        async def echo_attached(...): ...
+
+    The gate runs on `tools/list`, so a gated-out tool is one the agent never sees —
+    rather than one it sees and discovers it cannot use. That distinction is the whole
+    value: an ungated reply tool is what sent the agent raw-curling Slack into the root
+    channel.
     """
 
-    name: str
-    description: str
-    handler: ToolHandler
-    # JSON Schema for the arguments object. Defaults to "no arguments".
-    input_schema: dict[str, Any] = field(
-        default_factory=lambda: {"type": "object", "properties": {}}
-    )
-    # Shown by the agent/UI as the tool's human label. The UI additionally accepts
-    # these as a fallback match, so renaming one is a UI-visible change.
-    title: str = ""
-    # ATTACHMENT GATE. Return False to leave the tool unregistered for this
-    # conversation. Omitted = always offered.
-    gate: ToolGate | None = None
+    def decorate(tool):
+        name = getattr(tool, "name", None) or getattr(tool, "__name__", None)
+        if not name:
+            raise TypeError(
+                "@gate could not determine the tool's name — apply it ABOVE @mcp.tool"
+            )
+        _GATES[name] = predicate
+        return tool
+
+    return decorate
 
 
-class DuplicateToolError(RuntimeError):
-    """Two enabled providers declared the same tool name."""
+def gate_for(tool_name: str) -> "ToolGate | None":
+    """The gate registered for `tool_name`, if any. Read by the broker's middleware."""
+    return _GATES.get(tool_name)
 
 
-def collect_mcp_tools(providers: "Sequence[Provider]") -> list[tuple["Provider", McpTool]]:
-    """Every enabled provider's tools, paired with the provider that owns them.
+# ---------------------------------------------------------------------------
+# Collecting what the providers contribute
+# ---------------------------------------------------------------------------
+
+def collect_mcp_servers(providers: "Sequence[Provider]") -> list[tuple["Provider", "FastMCP"]]:
+    """Every enabled provider's tool server, paired with the provider that owns it.
 
     The core's assembly rule stays one sentence — for each enabled provider, mount
-    every transport's routes AND collect every transport's MCP tools — so adding a
+    every transport's routes AND mount every transport's MCP server — so adding a
     tool-bearing integration still never edits the core.
 
-    A duplicate name RAISES. Two providers claiming `web_search` is the deployment
-    asking an unanswerable question (which search does this cluster use?), and the
-    alternative is a silent last-one-wins decided by dict ordering. The search
-    contribs rely on this: they all declare `web_search`, so exactly one may be
-    enabled.
+    Duplicate TOOL names are caught at startup by the broker (see routes.py), not
+    here: the names live inside the FastMCP servers and reading them is async. The
+    search contribs depend on that check — they all declare `web_search`, so enabling
+    two must be a loud failure rather than a mount-order coin flip.
     """
-    collected: list[tuple["Provider", McpTool]] = []
-    seen: dict[str, str] = {}
+    collected: list[tuple["Provider", "FastMCP"]] = []
     for provider in providers:
         for transport in provider.transports:
-            getter = getattr(transport, "mcp_tools", None)
-            if getter is None:
+            server = getattr(transport, "mcp_server", None)
+            if server is None:
                 continue
-            for tool in getter(provider):
-                if tool.name in seen:
-                    raise DuplicateToolError(
-                        f"tool {tool.name!r} is declared by both {seen[tool.name]!r} and "
-                        f"{provider.name!r} — exactly one provider may own a tool name. "
-                        "If these are alternative implementations (e.g. two search "
-                        "providers), enable only one."
-                    )
-                seen[tool.name] = provider.name
-                collected.append((provider, tool))
+            collected.append((provider, server))
     return collected

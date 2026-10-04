@@ -28,6 +28,11 @@ python3Packages.buildPythonPackage {
     fastapi
     httpx
     sqlalchemy
+    # fastmcp owns the MCP protocol, schema generation and per-request middleware, so
+    # the tool surface is a declaration layer rather than a protocol implementation.
+    # It belongs HERE and not just in the app, unlike pyjwt: a contrib declaring tools
+    # imports it directly. Why: issue #700.
+    fastmcp
   ];
 
   nativeCheckInputs = with python3Packages; [
