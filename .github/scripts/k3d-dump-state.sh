@@ -90,6 +90,26 @@ nix shell nixpkgs#kubectl nixpkgs#jq nixpkgs#docker-client -c bash -c '
       done
     fi
   fi
+  # RESTART SUMMARY for every conv pod, healthy ones included. A pod that crashed and
+  # then came up clean reads as fine in `get pods`, and its restart count is the only
+  # trace left. Printed unconditionally so a run can be checked for crashes even when
+  # nothing is broken at dump time.
+  echo "===== SANDBOX RESTART SUMMARY (all conv pods) ====="
+  kubectl -n agent-sandbox get pods -o json 2>/dev/null \
+    | jq -r ".items[] | select(.metadata.name | startswith(\"conv-\")) | \"  \(.metadata.name) ready=\(.status.containerStatuses[0].ready | tostring) restarts=\(.status.containerStatuses[0].restartCount // 0)\"" || true
+  # Events OUTLIVE the pod (they carry their own TTL), so this is the one place a
+  # crash whose pod was already deleted still shows up. The namespace tail above is
+  # capped and time-ordered; this is filtered to the reasons that mean a crash.
+  echo "===== BACKOFF / FAILED EVENTS (these survive pod deletion) ====="
+  kubectl -n agent-sandbox get events --sort-by=.lastTimestamp -o json 2>/dev/null \
+    | jq -r ".items[] | select(.reason | test(\"BackOff|Failed|Unhealthy|Killing|OOM|Evicted\")) | \"  \(.lastTimestamp) \(.reason) \(.involvedObject.name) \(.message)\"" \
+    | tail -60 || true
+  # The host ring buffer. The k3d nodes are containers on this runner and share its
+  # kernel, so cgroup exhaustion or a kernel-side refusal lands HERE -- `dmesg` does
+  # not exist inside the node image at all.
+  echo "===== KERNEL RING BUFFER (host runner; k3d nodes share this kernel) ====="
+  (dmesg --ctime 2>/dev/null || sudo -n dmesg --ctime 2>/dev/null || echo "(dmesg unavailable)") \
+    | tail -120 || true
   # THE RUNTIME ERROR. A container that dies in the same second it started, with
   # nothing after "starting systemd...", failed below the kubelet: containerd/runc
   # report it and Kubernetes only ever surfaces the exit code. k3d runs each node as
@@ -104,11 +124,8 @@ nix shell nixpkgs#kubectl nixpkgs#jq nixpkgs#docker-client -c bash -c '
     for node in $(docker ps --format "{{.Names}}" 2>/dev/null | grep "^k3d-" || true); do
       echo "===== RUNTIME LOG: $node (kubelet/containerd/runc) ====="
       docker logs --tail=4000 "$node" 2>&1 \
-        | grep -iE "conv-|runc|exit status|oci runtime|cgroup|failed to (create|start|run)|StartContainer|sandbox|no space|device or resource busy|permission denied" \
+        | grep -iE "conv-|runc|exit status|exit code|oci runtime|cgroup|back-?off|StartContainer|CreateContainer|RunPodSandbox|killing container|failed to (create|start|run)|sandbox|no space|device or resource busy|permission denied" \
         | tail -200 || true
-      echo "===== KERNEL RING BUFFER: $node ====="
-      # cgroup exhaustion, a hung mount or a kernel-side refusal appear only here.
-      docker exec "$node" dmesg --ctime 2>/dev/null | tail -120 || true
       echo "===== CRI VIEW: $node ====="
       # crictl sees the dead container after kubectl has moved on, including the OCI
       # config actually handed to runc. k3s ships crictl; bare crictl may not exist.
