@@ -173,14 +173,17 @@ describe("marimo tools wiring (buildServer)", () => {
     expect(names.some((n) => n.startsWith("marimo_"))).toBe(false);
   });
 
-  it("registers web_search + web_fetch even with NO agentTools/broker wiring", async () => {
-    // The decoupling: web tools need no broker, so buildServer must register them
+  it("registers web_fetch even with NO agentTools/broker wiring, and never web_search", async () => {
+    // The decoupling: web_fetch needs no broker, so buildServer must register it
     // regardless of whether agentTools is wired. clientForServer passes agentTools
     // = undefined. See PR (decouple web tools from broker).
     const client = await clientForServer(undefined);
     const names = (await client.listTools()).tools.map((t) => t.name);
-    expect(names).toContain("web_search");
     expect(names).toContain("web_fetch");
+    // Search is a contrib's own in-pod MCP tool (brave_search / kagi_search), never
+    // an agent-host one — so a deployment with no search contrib has no search tool
+    // at all rather than one reporting itself unconfigured. Why: PR #698.
+    expect(names).not.toContain("web_search");
   });
 
   it("marimo_execute dispatches to the conversation's client", async () => {

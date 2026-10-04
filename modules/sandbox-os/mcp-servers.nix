@@ -341,11 +341,20 @@ in
         # CONVERSATION_ID/URL reach the pod as CONTAINER env — on PID 1's environ but
         # NOT in systemd's manager env, so a unit never sees them. Same recovery the
         # web services do; an MCP server often wants to know its conversation.
+        #
+        # BROKER_URL/BROKER_TOKEN_PATH are recovered for the same reason: an MCP
+        # server that talks to a third-party API goes through the broker so the
+        # credential stays out of this pod, and `agent-broker` exits "BROKER_URL is
+        # not set" without them. Recovering them here keeps that off every contrib —
+        # the alternative is each one re-scraping /proc/1/environ, which also forces
+        # it to run as root (the environ is 0400 root), where this ExecStartPre
+        # already does. Keep the unit DynamicUser-able: the projected token file is
+        # world-readable (0644), so only the URL needed rescuing.
         convEnvScript = pkgs.writeShellScript "mcp-${name}-conv-env" ''
           set -eu
           out="''${RUNTIME_DIRECTORY%%:*}/conv.env"
           : > "$out"
-          for k in CONVERSATION_ID CONVERSATION_URL; do
+          for k in CONVERSATION_ID CONVERSATION_URL BROKER_URL BROKER_TOKEN_PATH; do
             v=$(tr '\0' '\n' < /proc/1/environ | sed -n "s/^$k=//p" | head -1 || true)
             if [ -n "$v" ]; then printf '%s=%s\n' "$k" "$v" >> "$out"; fi
           done

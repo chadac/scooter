@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "scooter-contrib-brave"
+version = "0.0.0"
+license = "MIT"
+description = "Brave Search integration for Scooter's broker — proxies /brave/* with the subscription token injected"
+requires-python = ">=3.11"
+# Depends on the extension SURFACE, never on the broker app. Why: PR #567.
+dependencies = [
+  "fastapi",
+]
+
+# One EXTRA per service. Why: PR #567.
+[project.optional-dependencies]
+broker = ["scooter-broker-lib", "scooter-lib"]
+
+[project.entry-points."agent_broker.providers"]
+brave = "scooter_contrib_brave.broker_provider:brave"
+
+[dependency-groups]
+dev = ["pytest", "pytest-asyncio", "httpx"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

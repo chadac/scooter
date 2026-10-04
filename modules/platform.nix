@@ -563,42 +563,6 @@ in
         default = "us-east-1";
         description = "AWS_REGION for the agent process (Bedrock region).";
       };
-      # web_search's backend. DuckDuckGo's Instant Answer API used to serve this
-      # tool, but it is a definitions endpoint, not a web index — it answered real
-      # queries with "no instant answer" at HTTP 200, so search read as an empty
-      # web rather than as unconfigured. DDG publishes no results API, so a keyed
-      # provider is the only option; which one is a price/quality call, hence config.
-      #
-      # Unset ⇒ no key env, and web_search reports NOT CONFIGURED and points the
-      # agent at web_fetch. It never silently degrades.
-      webSearch = {
-        provider = mkOption {
-          type = types.enum [ "none" "brave" "kagi" ];
-          default = "none";
-          description = ''
-            Search provider for the agent's `web_search` tool.
-
-            `brave` — $5/1k requests with $5 of credit granted monthly, so typical
-            single-user volume is free. The default recommendation.
-            `kagi` — $12/1k, no free tier, and the key needs a paid Kagi account.
-            Better human-facing results, though an LLM reranks much of that away.
-            `none` — tool reports itself unconfigured (web_fetch still works).
-
-            Requires `apiKeySecret` unless `none`. The key is wired into the
-            agent-host only; the sandbox and the model never see it.
-          '';
-        };
-        apiKeySecret = mkOption {
-          type = types.nullOr types.str;
-          default = null;
-          description = ''
-            Name of the Secret holding the search API key under key `apiKey`. Wired
-            to BRAVE_SEARCH_API_KEY or KAGI_API_KEY per `provider`. Create it
-            out-of-band (it is a credential, not config):
-            kubectl -n <ns> create secret generic brave-search-key --from-literal=apiKey=BSA...
-          '';
-        };
-      };
       claudeCode = {
         tokenSecret = mkOption {
           type = types.str;
@@ -1302,32 +1266,7 @@ in
                   # per-conversation .goosehints. SKILLS_DIR is the ConfigMap mount.
                   { name = "AGENT_NAME"; value = cfg.agent.name; }
                   { name = "SKILLS_DIR"; value = "/etc/agent-sandbox/skills"; }
-                ] ++ lib.optionals (cfg.agent.webSearch.provider != "none") (
-                  # Assert rather than deploy a half-configured provider: with a
-                  # provider named but no Secret, the key env would be absent and
-                  # web_search would report NOT CONFIGURED at runtime — a deploy-time
-                  # typo surfacing as a mysteriously dead tool much later.
-                  assert lib.assertMsg (cfg.agent.webSearch.apiKeySecret != null)
-                    "agentSandbox.agent.webSearch.provider = \"${cfg.agent.webSearch.provider}\" requires agentSandbox.agent.webSearch.apiKeySecret (the Secret holding the API key under key `apiKey`).";
-                  [
-                    { name = "SEARCH_PROVIDER"; value = cfg.agent.webSearch.provider; }
-                    {
-                      name = if cfg.agent.webSearch.provider == "kagi"
-                             then "KAGI_API_KEY"
-                             else "BRAVE_SEARCH_API_KEY";
-                      # optional: a missing/not-yet-created Secret leaves the env
-                      # UNSET rather than wedging the pod in CreateContainerConfigError.
-                      # web_search then reports NOT CONFIGURED while the rest of the
-                      # platform runs — the right blast radius for one peripheral tool,
-                      # and it lets the Secret be created out-of-band after the deploy.
-                      valueFrom.secretKeyRef = {
-                        name = cfg.agent.webSearch.apiKeySecret;
-                        key = "apiKey";
-                        optional = true;
-                      };
-                    }
-                  ]
-                ) ++ lib.optional (cfg.ingress.host != "")
+                ] ++ lib.optional (cfg.ingress.host != "")
                   # Public chat UI base URL → each sandbox gets a CONVERSATION_URL
                   # to its own conversation (the agent can share the link, e.g. to
                   # have a human approve an AWS request). Set WHENEVER the host is

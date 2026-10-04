@@ -42,7 +42,11 @@ export const TOOL_REDIRECTS: Record<string, string> = {
     "There is no interactive question channel here — the user reads this conversation " +
     "asynchronously. State the question and the options in your REPLY, say which option " +
     "you are proceeding with and why, and continue. Do not block waiting for an answer.",
-  WebSearch: "The WebSearch tool is not available here. Use the scooter-env `web_search` tool instead.",
+  WebSearch:
+    "The WebSearch tool is not available here. Web search is provided by a contrib as its " +
+    "own MCP tool (e.g. `brave_search`, `kagi_search`) — use whichever one this deployment " +
+    "offers. If there is none, this deployment has no search provider: say so rather than " +
+    "retrying, and use `web_fetch` on a URL you already know.",
   WebFetch:
     "The WebFetch tool is not available here. Use the scooter-env `web_fetch` tool " +
     "instead — it fetches through the platform and refuses internal addresses.",

@@ -30,7 +30,7 @@ describe("decideTool", () => {
   });
 
   it("names the replacement, so the model can self-correct", () => {
-    expect(decideTool("WebSearch", ALIASES)).toMatchObject({ reason: /web_search/ });
+    expect(decideTool("WebSearch", ALIASES)).toMatchObject({ reason: /brave_search|kagi_search/ });
     expect(decideTool("WebFetch", ALIASES)).toMatchObject({ reason: /web_fetch/ });
     expect(decideTool("Task", ALIASES)).toMatchObject({ reason: /spawn_subagent/ });
   });

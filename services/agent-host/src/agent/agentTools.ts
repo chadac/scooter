@@ -27,7 +27,6 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ConversationLink } from "../session/manager.js";
 import { logger } from "../log.js";
 import { parseGithubUrl, parseGitlabUrl, parseJiraUrl } from "./resourceRef.js";
-import { providerFromEnv, formatHits, type SearchProvider } from "./searchProviders.js";
 
 const log = logger("agentTools");
 
@@ -86,16 +85,16 @@ export interface BrokerResponse {
   raw: string;
 }
 
-/** Deps for the broker-INDEPENDENT web tools (web_search / web_fetch). These hit
- *  the search provider / an arbitrary URL directly and never touch the broker, so
- *  they must not be gated on the broker being wired. See PR (decouple web tools
- *  from broker). */
+/** Deps for the broker-INDEPENDENT web tool (web_fetch). It hits an arbitrary URL
+ *  directly and never touches the broker, so it must not be gated on the broker
+ *  being wired. See PR (decouple web tools from broker).
+ *
+ *  Web SEARCH is deliberately not here: each provider is a contrib shipping its own
+ *  in-pod MCP tool (contrib/brave, contrib/kagi), so providers are independently
+ *  enableable and the API key stays in the broker. Why: PR #698. */
 export interface WebToolsDeps {
-  /** How to fetch a URL for web_fetch / web_search (injectable for tests). */
+  /** How to fetch a URL for web_fetch (injectable for tests). */
   fetchImpl?: typeof fetch;
-  /** Search backend. `undefined` = resolve from env; `null` = explicitly
-   *  unconfigured (web_search then reports that rather than guessing). */
-  searchProvider?: SearchProvider | null;
 }
 
 export interface AgentToolsDeps extends WebToolsDeps {
@@ -521,41 +520,6 @@ export async function handleJiraComment(
   return toToolResult(res, { successText: "Commented on the Jira issue." });
 }
 
-/**
- * Real web search via the configured provider (see searchProviders.ts). Runs
- * straight from the agent-host, so the API key never reaches the sandbox or the
- * model. Unconfigured and failed are reported DISTINCTLY from empty — the bug this
- * replaced returned a cheerful empty result for both. Why: PR #698.
- */
-export async function handleWebSearch(
-  deps: WebToolsDeps,
-  args: { query: string },
-): Promise<ToolResult> {
-  // undefined → resolve from env; null → caller declared it unconfigured. Must not
-  // collapse to `??`, which would send an explicit null back to the env.
-  const provider = deps.searchProvider === undefined ? providerFromEnv() : deps.searchProvider;
-  if (!provider) {
-    return err(
-      "web_search is NOT CONFIGURED: this deployment has no search provider key " +
-        "(set agentSandbox.agent.webSearch in the platform config, which wires " +
-        "BRAVE_SEARCH_API_KEY or KAGI_API_KEY). Until then, use web_fetch on a " +
-        "known URL instead.",
-    );
-  }
-
-  const doFetch = deps.fetchImpl ?? fetch;
-  let hits;
-  try {
-    hits = await provider.search(args.query, doFetch);
-  } catch (e) {
-    // Providers throw with the verbatim upstream status + body, so an auth/quota
-    // failure surfaces as itself rather than as an empty result set.
-    return err(`web_search failed: ${(e as Error).message}`);
-  }
-  if (hits.length === 0) return ok(`No results for "${args.query}" (via ${provider.name}).`);
-  return ok(formatHits(hits, args.query));
-}
-
 /** Fetch a URL's main text content. SSRF-guarded (refuses internal/metadata IPs). */
 export async function handleWebFetch(
   deps: WebToolsDeps,
@@ -647,30 +611,23 @@ function isBlockedIp(ip: string): boolean {
 
 // --- Registration --------------------------------------------------------------
 
-/** Register the broker-INDEPENDENT web tools (web_search / web_fetch). They need no
- *  broker, so buildServer registers them unconditionally — decoupled from the broker
- *  gate that governs the provider reply tools. Keep this separate from
- *  registerAgentTools so enabling AWS / broker-routed sandboxes is NOT a prerequisite
- *  for a web fetcher. See PR (decouple web tools from broker). */
+/** Register the broker-INDEPENDENT web tool (web_fetch). It needs no broker, so
+ *  buildServer registers it unconditionally — decoupled from the broker gate that
+ *  governs the provider reply tools. Keep this separate from registerAgentTools so
+ *  enabling AWS / broker-routed sandboxes is NOT a prerequisite for a web fetcher.
+ *  See PR (decouple web tools from broker).
+ *
+ *  There is no web_search here: a search provider is a contrib shipping its own
+ *  in-pod MCP tool, so a deployment with none has no search tool rather than one
+ *  that reports itself unconfigured. Why: PR #698. */
 export function registerWebTools(server: McpServer, deps: WebToolsDeps): void {
-  server.registerTool(
-    "web_search",
-    {
-      title: "Search the web",
-      description:
-        "Search the web and get ranked results (title, URL, snippet). Good for finding facts and " +
-        "for picking a canonical URL to pass to web_fetch.",
-      inputSchema: { query: z.string().describe("The search query.") },
-    },
-    async (args) => (await handleWebSearch(deps, args)) as never,
-  );
   server.registerTool(
     "web_fetch",
     {
       title: "Fetch a URL",
       description:
         "Fetch a public web page and return its readable text. Refuses internal/cluster/metadata " +
-        "addresses. Use after web_search, or on a URL from a PR/issue.",
+        "addresses. Use on a URL from a search result, a PR/issue, or docs.",
       inputSchema: { url: z.string().describe("The http(s) URL to fetch.") },
     },
     async (args) => (await handleWebFetch(deps, args)) as never,
@@ -679,8 +636,8 @@ export function registerWebTools(server: McpServer, deps: WebToolsDeps): void {
 
 /** Register the agent-tools on an McpServer bound to one conversation. The provider
  *  reply tools (slack/github/gitlab/jira + get_slack_context) are registered ONLY
- *  when that provider is attached to the conversation. web_search/web_fetch are NOT
- *  registered here — they're broker-independent and live in registerWebTools, which
+ *  when that provider is attached to the conversation. web_fetch is NOT
+ *  registered here — it is broker-independent and lives in registerWebTools, which
  *  buildServer calls unconditionally. Async because attachment resolution reads
  *  links + the DB. */
 // NOTE: the `title` strings below are load-bearing for the UI. goose surfaces the
