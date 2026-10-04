@@ -523,13 +523,9 @@ export async function handleJiraComment(
 
 /**
  * Real web search via the configured provider (see searchProviders.ts). Runs
- * straight from the agent-host — no per-conversation identity, and the API key
- * stays in this process, never reaching the sandbox or the model.
- *
- * Was DuckDuckGo's Instant Answer API, which is a definitions/disambiguation
- * endpoint and not a web index: it answered almost every real query with "no
- * instant answer" while returning HTTP 200, so search looked broken-but-fine.
- * DDG exposes no results API, hence a keyed provider.
+ * straight from the agent-host, so the API key never reaches the sandbox or the
+ * model. Unconfigured and failed are reported DISTINCTLY from empty — the bug this
+ * replaced returned a cheerful empty result for both. Why: PR #698.
  */
 export async function handleWebSearch(
   deps: WebToolsDeps,
