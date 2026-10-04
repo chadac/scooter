@@ -235,3 +235,68 @@ async def test_a_gated_tool_is_ABSENT_when_not_attached():
     assert "probe_gated" not in names
     # The ungated tool is unaffected — the gate filters, it does not empty the list.
     assert "probe_conversation" in names
+
+
+# --- flat names make a name a GLOBAL identity -------------------------------------
+#
+# The search contribs are the reason this is enforced rather than documented:
+# contrib/brave and contrib/kagi both own `web_search`, so without a check a
+# deployment that configures both gets whichever one mount order picked — deciding its
+# search ranking and its bill by import order. Why: issue #700.
+
+def _tool_provider(provider_name: str, tool_name: str) -> Provider:
+    mcp = FastMCP(name=provider_name)
+
+    async def _run() -> str:
+        return "ran"
+
+    _run.__name__ = tool_name
+    mcp.tool(_run)
+    return Provider(
+        name=provider_name, transports=[McpTools(server=mcp, upstream="https://example.test")]
+    )
+
+
+async def test_two_providers_owning_one_tool_name_REFUSE_to_start():
+    from broker.mcp.routes import assert_tool_names_unique
+
+    providers = [_tool_provider("brave", "web_search"), _tool_provider("kagi", "web_search")]
+    with pytest.raises(RuntimeError) as excinfo:
+        await assert_tool_names_unique(providers)
+    message = str(excinfo.value)
+    # Both owners named: the operator has to know WHICH two to choose between.
+    assert "web_search" in message and "brave" in message and "kagi" in message
+
+
+async def test_distinct_tool_names_across_providers_are_fine():
+    from broker.mcp.routes import assert_tool_names_unique
+
+    await assert_tool_names_unique(
+        [_tool_provider("brave", "web_search"), _tool_provider("slack", "slack_respond")]
+    )
+
+
+async def test_one_provider_whose_server_is_collected_twice_is_not_a_collision():
+    """A provider may carry its tool server on more than one transport. That is the
+    same owner, not two claimants."""
+    from broker.mcp.routes import assert_tool_names_unique
+
+    provider = _tool_provider("brave", "web_search")
+    provider.transports.append(McpTools(server=provider.transports[0].server, upstream="https://x.test"))
+    await assert_tool_names_unique([provider])
+
+
+async def test_a_GATED_tool_still_counts_toward_uniqueness():
+    """The check reads each server's own registry, not what a conversation would be
+    offered. A gated tool is invisible to `tools/list` for an unattached conversation —
+    if the check saw only that view, two providers could collide on a name that shows
+    up for some conversations and not others."""
+    from broker.mcp.routes import assert_tool_names_unique
+
+    async def _closed(_ctx: ToolContext) -> bool:
+        return False
+
+    gated = _tool_provider("one", "shared_name")
+    gate(_closed)(await gated.transports[0].server.get_tool("shared_name"))
+    with pytest.raises(RuntimeError):
+        await assert_tool_names_unique([gated, _tool_provider("two", "shared_name")])
