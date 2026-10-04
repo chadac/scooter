@@ -1605,9 +1605,15 @@ jobs:
   # of no REGRESSION; it is not evidence the flake is fixed. Three PRs shipped
   # green on that basis and only a nightly could confirm them.
   #
-  # The cost is real (a cluster per run, ~13-25m of setup before the first
-  # repetition), which is why it is opt-in per PR rather than always-on — and why
-  # the repeat counts below are far lower than the fast job's ×20.
+  # The cost is real, and measured end-to-end on #697 (run 37222327127): 3m37s
+  # to stand up k3d and roll out the platform, 3m18s for 5 targeted repetitions,
+  # 5m25s for the control, 13m08s total. Opt-in per PR rather than always-on,
+  # and the repeat counts stay far lower than the fast job's ×20.
+  #
+  # GitHub-hosted, like everything here except the `e2e-full` shards. So there is
+  # no persistent registry/containerd cache between RUNS (k3d-platform-up.sh only
+  # mounts those when the self-hosted volumes exist) — the reuse that makes the
+  # control cheap is within this one job, not across jobs.
   flake-focus-full:
     name: flake focus full (k3d, targeted ×5)
     # Label ONLY — deliberately NOT gated on `cluster-changes`. A flake fix is
@@ -1629,6 +1635,10 @@ jobs:
       FULL_REPEAT_CONTENTION: "3"
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Full history: the control step below builds a worktree at the PR's
+          # BASE commit, which a depth-1 checkout does not have.
+          fetch-depth: 0
       - uses: nixbuild/nix-quick-install-action@v30
       - uses: cachix/cachix-action@v15
         with:
@@ -1681,18 +1691,105 @@ jobs:
           . .github/scripts/e2e-full-serve.sh
           nix develop --command bash -c 'npm install && npx playwright test --project=full -g "$FLAKE_PATTERN" --repeat-each="$FULL_REPEAT_TARGETED" --trace on --reporter=list,json'
 
+      # BEFORE the control, which deletes this cluster and builds the base's in
+      # its place. Dumping after it would hand someone debugging a red PR run the
+      # state of a DIFFERENT platform — the one commit that is known not to carry
+      # the change under test.
+      - name: dump platform state on failure
+        if: failure()
+        run: .github/scripts/k3d-dump-state.sh
+
+      # Resolve the verdict BEFORE commenting: the control below runs only when
+      # the PR's own repetitions came back clean, and that decision needs the
+      # verdict. Writes outputs only — the comment is posted after the control.
+      - name: resolve the verdict (no comment yet)
+        id: summary
+        if: always()
+        env:
+          # Via env, never inline `${{ }}`: these come from the PR DESCRIPTION,
+          # so interpolating them into `run:` would let a PR body execute shell.
+          FLAKE_PATTERN: ${{ steps.pat.outputs.pattern }}
+          FLAKE_SPECS: ${{ steps.pat.outputs.specs_full }}
+        run: |
+          set -euo pipefail
+          mode=targeted; [ -n "$FLAKE_SPECS" ] && mode=contention
+          node scripts/flake-focus-report.mjs "$PLAYWRIGHT_JSON_OUTPUT_NAME" \
+            --pattern "$FLAKE_PATTERN" --target full --mode "$mode" > /dev/null
+
+      # THE CONTROL. "0 failures in 5 runs" is unfalsifiable on its own — a test
+      # that fires once in 50 runs produces exactly that on a branch that fixed
+      # nothing — so run the SAME test with the SAME budget at the PR's base and
+      # report both rates. Without it this job can only ever say "it did not
+      # happen here", which is no way to demonstrate a fix.
+      #
+      # The base's PLATFORM, not just its specs. A flake fix that touches a
+      # service measured against the PR's own deployment is not a control at all;
+      # that mismatch is only meaningful when the fix happens to be test-side,
+      # and whether it is test-side is precisely what nobody knows up front.
+      #
+      # ONE CLUSTER AT A TIME. k3d-platform-up.sh names its cluster `scooter-ci`,
+      # and a 4-vCPU runner cannot host two platforms anyway — so the PR's
+      # cluster is torn down first. The registry SURVIVES that (it is a separate
+      # k3d object) and its tags are content-addressed, so every image the base
+      # shares with the PR is already in the blob store and skips the push.
+      #
+      # Only when the PR's own run came back clean: a flake that still reproduces
+      # here already has its answer, and a control would just burn the time.
+      # continue-on-error + `|| true` because the control is EXPECTED to fail
+      # tests — a red baseline is the good outcome and must never fail this job.
+      - name: control — does it still reproduce on the base?
+        id: control
+        # !cancelled(), not always(): a superseded run (every push and label
+        # event cancels the previous one) must not spend ten minutes on a control
+        # whose verdict nobody will read.
+        if: "!cancelled() && steps.summary.outputs.verdict == 'fixed'"
+        continue-on-error: true
+        env:
+          E2E_TARGET: full
+          E2E_CLUSTER_URL: http://127.0.0.1:8899
+          E2E_ROLLOUT_HOOK: http://127.0.0.1:8898
+          CI: "1"
+          FLAKE_PATTERN: ${{ steps.pat.outputs.pattern }}
+          FLAKE_SPECS: ${{ steps.pat.outputs.specs_full }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # The report the comment step diffs against. Absolute, and under the
+          # PR's workspace rather than the baseline worktree, so it outlives the
+          # worktree and the comment step can find it by name.
+          PLAYWRIGHT_JSON_OUTPUT_NAME: ${{ github.workspace }}/flake-baseline.json
+          # No E2E_PG_PORT override, unlike the fast job's control: the `full`
+          # project sets `webServer: undefined` (playwright.config.ts), so this
+          # run starts no local Postgres for the first one's to collide with.
+        run: |
+          set -euo pipefail
+          nix shell nixpkgs#k3d -c k3d cluster delete scooter-ci || true
+          git fetch --no-tags --depth=1 origin "$BASE_SHA" 2>/dev/null || true
+          git worktree add --detach ../baseline "$BASE_SHA"
+          cd ../baseline
+          # The BASE's own bring-up script and manifests, not the PR's. That cuts
+          # both ways: a change to k3d-platform-up.sh does not reach this run
+          # until it is ON the base. Until the registry-reuse guard lands there,
+          # the base's older script still calls `k3d registry create` and logs
+          #   FATA Failed to create registry: A registry node with that name
+          #   already exists
+          # which is NOISE, not a failure — the inner `bash -c` block sets no
+          # `-e`, so it continues and `--registry-use` attaches to the registry
+          # that is already there (verified on #697: pushes skipped, rollout
+          # fine). Do not add `set -e` to that block without also landing the
+          # guard, or this step starts failing on a cosmetic error.
+          .github/scripts/k3d-platform-up.sh
+          . .github/scripts/e2e-full-serve.sh
+          # Same project, same repetition counts as the run above — an unmatched
+          # budget makes the two rates incomparable, which is the measurement.
+          if [ -n "$FLAKE_SPECS" ]; then
+            nix develop --command bash -c 'npm install && npx playwright test --project=full --repeat-each="$FULL_REPEAT_CONTENTION" --reporter=list,json $FLAKE_SPECS' || true
+          else
+            nix develop --command bash -c 'npm install && npx playwright test --project=full -g "$FLAKE_PATTERN" --repeat-each="$FULL_REPEAT_TARGETED" --reporter=list,json' || true
+          fi
+
       # The verdict on the PR — identical contract to the fast job, but this one is
       # the evidence that actually counts for a flake first seen on `e2e-full`, so
       # its comment says "real k3d cluster" and carries no full-target nudge.
-      #
-      # NO CONTROL RUN here, deliberately. The fast job re-runs the test on the
-      # base commit to show the flake fires there; doing that on this target means
-      # building and deploying the BASE's whole platform to a second cluster (~25m
-      # on top of an already ~25m job). Running the base's tests against the PR's
-      # deployed platform would be cheaper and worse: a mismatched control that is
-      # only meaningful when the fix happens to be test-side.
       - name: flake verdict comment
-        id: summary
         # !cancelled(): a CANCELLED run has no report, so its comment step would
         # overwrite a good verdict in the SHARED comment with "no report to
         # summarise" — about a run that was superseded and nobody is waiting on.
@@ -1707,12 +1804,18 @@ jobs:
           FLAKE_PATTERN: ${{ steps.pat.outputs.pattern }}
           FLAKE_SPECS: ${{ steps.pat.outputs.specs_full }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
           mode=targeted; [ -n "$FLAKE_SPECS" ] && mode=contention
+          # Absent when the control was skipped (the flake still reproduces, so
+          # the answer is already in) — the comment then has no control section.
+          base=()
+          [ -f flake-baseline.json ] && base=(--baseline flake-baseline.json --baseline-ref "$BASE_REF@${BASE_SHA:0:7}")
           node scripts/flake-focus-report.mjs "$PLAYWRIGHT_JSON_OUTPUT_NAME" \
             --pattern "$FLAKE_PATTERN" --target full --mode "$mode" \
-            --specs "$FLAKE_SPECS" --run-url "$RUN_URL" > flake-comment.md
+            --specs "$FLAKE_SPECS" --run-url "$RUN_URL" "${base[@]}" > flake-comment.md
           cat flake-comment.md >> "$GITHUB_STEP_SUMMARY"
           # ONE section of the shared CI comment (scripts/ci-report.mjs). The report
           # renders its own heading, so ci-report is given a summary line and folds the
@@ -1727,17 +1830,14 @@ jobs:
             --body flake-comment.md --labels "$LABELS"
 
       # Zero repetitions of the targeted test = a false green (see the fast job).
-      # Costlier here: a cluster run that proved nothing burned ~25 minutes.
+      # Costlier here: a cluster run that proved nothing burned ~11 minutes. (It
+      # does not also pay for the control — that runs only on a `fixed` verdict.)
       - name: gate — the targeted test must have run
         if: always() && steps.summary.outputs.verdict == 'not-run'
         run: |
           echo "::error::The PR's 'flake-test:' pattern matched no test that ran on the" \
                "full target — this check proved nothing about the flake. See the PR comment."
           exit 1
-
-      - name: dump platform state on failure
-        if: failure()
-        run: .github/scripts/k3d-dump-state.sh
 
       # always(), not failure(): capturing the trace/sampler is the whole point of
       # this job, and a cancelled run is the one that most needs them.
@@ -1749,6 +1849,7 @@ jobs:
           path: |
             test-results/
             flake-report.json
+            flake-baseline.json
             /tmp/pf.log
             /tmp/cluster-sampler.log
             /tmp/rollout-hook.log

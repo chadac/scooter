@@ -252,6 +252,21 @@ describe("renderMarkdown with a control run", () => {
     const body = md(Array(5).fill("passed"), null);
     expect(body).not.toContain("Control");
   });
+
+  // A powerless run on the FULL target must not be told to add the label it is
+  // already running under — the only remedy left there is the repeat budget.
+  it("points a powerless full run at the budget, not at its own label", () => {
+    const body = md(Array(5).fill("passed"), Array(5).fill("passed"), { target: "full" });
+    expect(body).toContain("no power");
+    expect(body).toContain("FULL_REPEAT_TARGETED");
+    expect(body).not.toContain("use the `e2e-full-flake-check` label");
+  });
+
+  it("still offers the full target to a powerless fast run", () => {
+    const body = md(Array(5).fill("passed"), Array(5).fill("passed"), { target: "fast" });
+    expect(body).toContain("use the `e2e-full-flake-check` label");
+    expect(body).not.toContain("FULL_REPEAT_TARGETED");
+  });
 });
 
 // A control is only evidence if the base failed often enough that a clean run
