@@ -122,6 +122,17 @@
         };
       };
 
+      # Web search: the agent's `web_search` tool, served by contrib/brave. EXACTLY
+      # ONE search provider may be enabled — `kagi` is the alternative and both own a
+      # tool of that name, so enabling both fails the build (see modules/broker.nix).
+      # Enabling NEITHER is also valid: the agent then has no `web_search` tool, which
+      # is better than the DuckDuckGo-backed one this replaced, which answered real
+      # queries with an empty result set (PR #698).
+      brave = {
+        enable = true;
+        apiKeySecret = { name = "brave-search-key"; key = "BRAVE_SEARCH_API_KEY"; };
+      };
+
       # Static shares: agents publish static bundles the broker serves at
       # /s/<uuid>/ and the UI embeds. Persists to the shared Postgres `broker` DB.
       # publicBaseUrl/frameAncestors default to https://<ingress.host>.

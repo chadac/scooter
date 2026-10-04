@@ -8,12 +8,14 @@
 
     ./airtable
     ./aws
+    ./brave
     ./datadog
     ./echo
     ./github
     ./gitlab
     ./grafana
     ./jira
+    ./kagi
     ./slack
   ];
 }

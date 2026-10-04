@@ -674,6 +674,7 @@
             contrib-echo = contribsWithExamples.packages.echo.broker;
             contrib-echo-webhooks = contribsWithExamples.packages.echo.webhooks;
             contrib-airtable = contribs.packages.airtable.broker;
+            contrib-brave = contribs.packages.brave.broker;
             contrib-datadog = contribs.packages.datadog.broker;
             contrib-github = contribs.packages.github.broker;
             contrib-github-webhooks = contribs.packages.github.webhooks;
@@ -682,6 +683,7 @@
             contrib-grafana = contribs.packages.grafana.broker;
             contrib-jira = contribs.packages.jira.broker;
             contrib-jira-webhooks = contribs.packages.jira.webhooks;
+            contrib-kagi = contribs.packages.kagi.broker;
             contrib-slack = contribs.packages.slack.broker;
             contrib-slack-webhooks = contribs.packages.slack.webhooks;
 
@@ -842,6 +844,7 @@
             contrib-echo = contribsWithExamples.packages.echo.broker;
             contrib-echo-webhooks = contribsWithExamples.packages.echo.webhooks;
             contrib-airtable = contribs.packages.airtable.broker;
+            contrib-brave = contribs.packages.brave.broker;
             contrib-datadog = contribs.packages.datadog.broker;
             contrib-github = contribs.packages.github.broker;
             contrib-github-webhooks = contribs.packages.github.webhooks;
@@ -850,6 +853,7 @@
             contrib-grafana = contribs.packages.grafana.broker;
             contrib-jira = contribs.packages.jira.broker;
             contrib-jira-webhooks = contribs.packages.jira.webhooks;
+            contrib-kagi = contribs.packages.kagi.broker;
             contrib-slack = contribs.packages.slack.broker;
             contrib-slack-webhooks = contribs.packages.slack.webhooks;
             # The shared Python libraries (the lib split).

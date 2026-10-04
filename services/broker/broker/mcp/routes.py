@@ -311,11 +311,8 @@ async def assert_tool_names_unique(providers: list[Provider]) -> None:
     """
     owner_of: dict[str, str] = {}
     for provider, server in collect_mcp_servers(providers):
-        # run_middleware=False reads the server's OWN registry. With middleware on,
-        # `list_tools` would run ProviderToolMiddleware — which applies the attachment
-        # gates and so needs a conversation, of which there is none at startup; and a
-        # gated-out tool would be INVISIBLE to this check, letting two providers
-        # collide on a name that only appears for some conversations.
+        # run_middleware=False: the gates need a conversation (none at startup), and a
+        # gated-out tool must still count here. Why: PR #707.
         for tool in await server.list_tools(run_middleware=False):
             owner = owner_of.get(tool.name)
             if owner is not None and owner != provider.name:

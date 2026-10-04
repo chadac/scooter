@@ -202,6 +202,52 @@ doesn't cover. Skills that document the *platform* (`scooter-github.md`,
 `sandbox-shell-safety.md`) stay in the top-level `skills/`: they document no
 contrib, and there is nothing to gate them on.
 
+### Contributing agent tools (`mcp_tools.py`)
+
+A contrib owns the agent's typed tools for its integration. Declare them on your
+own `FastMCP` server and hand it to the broker as a transport:
+
+```python
+mcp = FastMCP(name="brave")
+
+@mcp.tool
+async def web_search(query: str, ctx: ToolContext = ToolContextDep) -> ToolResult:
+    """Search the web and get ranked results."""
+    ...
+
+# broker_provider.py
+transports=[McpTools(server=mcp, upstream="https://api.search.brave.com")]
+```
+
+The input schema comes from the type hints and the description from the
+docstring; `ctx` is dependency-injected, which also keeps it out of the schema —
+an argument the model could supply would be forgeable. `ctx.upstream` issues the
+request with the provider's credential injected on the way out, so the agent
+never holds the secret. `contrib/echo/scooter_contrib_echo/mcp_tools.py` is the
+worked reference and `scooter_broker_lib/mcp.py` the surface.
+
+**A tool ships iff its provider is enabled**, the same gate `skills` uses and for
+the same reason: a tool for an integration that isn't wired teaches the agent to
+call something that fails, and then to read that failure as the feature being
+broken. For a keyed provider that gate is usually the key itself — no key, no
+provider, no tool — which is how a deployment with no search key ends up with no
+`web_search` at all rather than one that answers every query with nothing.
+
+**TOOL NAMES ARE FLAT AND THEREFORE GLOBAL.** The servers are mounted
+namespace-less (`web_search`, not `brave_web_search`) because the skills name
+these tools and `ui/src/toolCallView.ts` matches on the name. So a name is an
+identity, and two providers claiming one leaves nothing to arbitrate but mount
+order. `contrib/brave` and `contrib/kagi` are the live case — both own
+`web_search` — and they are kept apart twice over: `modules/broker.nix` asserts
+at DEPLOY time that only one is enabled, and the broker refuses to start on a
+duplicate (`broker/mcp/routes.py`) as the backstop. If your tool is a second
+implementation of something that exists, give it the same name and add the
+assertion; if it is a different capability, give it a different name.
+
+A reply tool for an attachable resource should also be **attachment-gated** with
+`@gate`, so it is unlisted in a conversation it could not act in. Search needs no
+gate: there is no resource to be attached to.
+
 ### Extending the preset
 
 A contrib can declare its **own** options by using the strict module form; they
