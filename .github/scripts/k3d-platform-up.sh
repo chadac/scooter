@@ -87,7 +87,12 @@ nix shell nixpkgs#k3d nixpkgs#kubectl -c bash -c '
   # Anchored, with the column separator OR end-of-line: `k3d registry list` pads
   # a table, and a bare substring match would also fire on a longer name that
   # merely starts with ours.
-  if k3d registry list 2>/dev/null | grep -qE '^k3d-scooter-reg\.localhost([[:space:]]|$)'; then
+  #
+  # DOUBLE quotes, and `\$` for the regex anchor: this whole block is already
+  # inside a single-quoted `bash -c '...'`, so a nested single quote would close
+  # it and hand the outer shell a bare `(` — which is exactly how the first
+  # version of this failed to parse.
+  if k3d registry list 2>/dev/null | grep -qE "^k3d-scooter-reg\.localhost([[:space:]]|\$)"; then
     echo "registry k3d-scooter-reg.localhost is already up — reusing its blob store"
   else
     # shellcheck disable=SC2086  # intentional word-split: empty means "no flag"
