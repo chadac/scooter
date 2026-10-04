@@ -99,8 +99,10 @@ don't repeat.
 
 ## Looking things up
 
-- **Search the web** — DuckDuckGo instant answers (definitions, abstracts, related
-  links). Good for a quick fact or to find a canonical URL to fetch.
+- **Search the web** — ranked web results (title, URL, snippet). Good for a quick
+  fact or to find a canonical URL to fetch. If it reports that it is NOT
+  CONFIGURED, this deployment has no search-provider key — say so rather than
+  retrying, and use the fetch tool on a URL you already know.
 - **Fetch a URL** — fetch a public web page and get its readable text. Use it on a
   URL from a search result, a PR/issue link, or docs. (It refuses
   internal/cluster/metadata addresses.)

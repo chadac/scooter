@@ -710,7 +710,41 @@ let
       (containersOf w))
     allWorkloads;
 
-  allProblems = oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ approvalProblems ++ stage2Problems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems;
+  # web_search's key must reach the agent-host as SEARCH_PROVIDER + the provider's
+  # key env, through a secretKeyRef marked `optional`: a not-yet-created Secret has
+  # to leave web_search unconfigured, NOT wedge the pod in CreateContainerConfigError
+  # (the whole platform down over one peripheral tool). The example leaves the
+  # provider at "none", so render one with it set and assert the wiring — then assert
+  # the unset default emits neither var.
+  searchPlatform = flake.inputs.kubenix.evalModules.${system} {
+    module = { lib, ... }: {
+      imports = [ ./kubenix-config.nix ];
+      agentSandbox.fakeAgent = lib.mkForce false;
+      agentSandbox.agent.webSearch.provider = lib.mkForce "brave";
+      agentSandbox.agent.webSearch.apiKeySecret = lib.mkForce "brave-search-key";
+    };
+  };
+  sHostEnv =
+    let ctrs = builtins.attrValues (searchPlatform.config.kubernetes.resources.deployments.agent-host.spec.template.spec.containers or { });
+    in builtins.concatMap (c: c.env or [ ]) ctrs;
+  sEntry = name: let m = builtins.filter (e: e.name == name) sHostEnv; in if m == [ ] then null else builtins.head m;
+  braveKeyEntry = sEntry "BRAVE_SEARCH_API_KEY";
+  braveRef = if braveKeyEntry == null then { } else (braveKeyEntry.valueFrom.secretKeyRef or { });
+  searchProblems =
+    (if (sEntry "SEARCH_PROVIDER") != null && (sEntry "SEARCH_PROVIDER").value == "brave" then [ ]
+     else [ "webSearch: SEARCH_PROVIDER not rendered as 'brave' on agent-host" ])
+    ++ (if braveKeyEntry != null then [ ]
+        else [ "webSearch: BRAVE_SEARCH_API_KEY not rendered on agent-host" ])
+    ++ (if (braveRef.name or "") == "brave-search-key" && (braveRef.key or "") == "apiKey" then [ ]
+        else [ "webSearch: BRAVE_SEARCH_API_KEY must come from secretKeyRef brave-search-key/apiKey" ])
+    ++ (if (braveRef.optional or false) then [ ]
+        else [ "webSearch: the key secretKeyRef must be `optional` (a missing Secret would otherwise wedge agent-host in CreateContainerConfigError)" ])
+    ++ (if (sEntry "KAGI_API_KEY") == null then [ ]
+        else [ "webSearch: provider=brave must not also render KAGI_API_KEY" ])
+    ++ (if (builtins.filter (e: e.name == "SEARCH_PROVIDER" || e.name == "BRAVE_SEARCH_API_KEY") mHostEnv) == [ ] then [ ]
+        else [ "webSearch: provider defaults to none, but search env rendered anyway" ]);
+
+  allProblems = searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ approvalProblems ++ stage2Problems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems;
 in
 if allProblems == [ ]
 then "ok: deployments = ${haveDeps}; datadog + airtable + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; deploy-time Jobs are spec-hash named\n"

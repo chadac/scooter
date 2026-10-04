@@ -308,7 +308,7 @@ export async function buildServer(
       async (args) => handleSearchSubagent(subagents, conversationId, args) as TR,
     );
   }
-  // Web tools (web_search / web_fetch) need NO broker — they hit DuckDuckGo / a URL
+  // Web tools (web_search / web_fetch) need NO broker — they hit the search provider / a URL
   // directly. Register them unconditionally so they don't depend on broker wiring
   // (which otherwise required AWS or broker-routed sandboxes). See PR (decouple web
   // tools from broker).

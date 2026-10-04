@@ -27,6 +27,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ConversationLink } from "../session/manager.js";
 import { logger } from "../log.js";
 import { parseGithubUrl, parseGitlabUrl, parseJiraUrl } from "./resourceRef.js";
+import { providerFromEnv, formatHits, type SearchProvider } from "./searchProviders.js";
 
 const log = logger("agentTools");
 
@@ -86,11 +87,15 @@ export interface BrokerResponse {
 }
 
 /** Deps for the broker-INDEPENDENT web tools (web_search / web_fetch). These hit
- *  DuckDuckGo / an arbitrary URL directly and never touch the broker, so they must
- *  not be gated on the broker being wired. See PR (decouple web tools from broker). */
+ *  the search provider / an arbitrary URL directly and never touch the broker, so
+ *  they must not be gated on the broker being wired. See PR (decouple web tools
+ *  from broker). */
 export interface WebToolsDeps {
   /** How to fetch a URL for web_fetch / web_search (injectable for tests). */
   fetchImpl?: typeof fetch;
+  /** Search backend. `undefined` = resolve from env; `null` = explicitly
+   *  unconfigured (web_search then reports that rather than guessing). */
+  searchProvider?: SearchProvider | null;
 }
 
 export interface AgentToolsDeps extends WebToolsDeps {
@@ -517,38 +522,42 @@ export async function handleJiraComment(
 }
 
 /**
- * DuckDuckGo Instant Answer search (free, no key). Runs straight from the
- * agent-host (no per-conversation identity needed). Returns the abstract +
- * related topics; errors echoed.
+ * Real web search via the configured provider (see searchProviders.ts). Runs
+ * straight from the agent-host — no per-conversation identity, and the API key
+ * stays in this process, never reaching the sandbox or the model.
+ *
+ * Was DuckDuckGo's Instant Answer API, which is a definitions/disambiguation
+ * endpoint and not a web index: it answered almost every real query with "no
+ * instant answer" while returning HTTP 200, so search looked broken-but-fine.
+ * DDG exposes no results API, hence a keyed provider.
  */
 export async function handleWebSearch(
   deps: WebToolsDeps,
   args: { query: string },
 ): Promise<ToolResult> {
+  // undefined → resolve from env; null → caller declared it unconfigured. Must not
+  // collapse to `??`, which would send an explicit null back to the env.
+  const provider = deps.searchProvider === undefined ? providerFromEnv() : deps.searchProvider;
+  if (!provider) {
+    return err(
+      "web_search is NOT CONFIGURED: this deployment has no search provider key " +
+        "(set agentSandbox.agent.webSearch in the platform config, which wires " +
+        "BRAVE_SEARCH_API_KEY or KAGI_API_KEY). Until then, use web_fetch on a " +
+        "known URL instead.",
+    );
+  }
+
   const doFetch = deps.fetchImpl ?? fetch;
-  const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(args.query)}&format=json&no_html=1&no_redirect=1`;
-  let res: Response;
+  let hits;
   try {
-    res = await doFetch(url, { signal: AbortSignal.timeout(15_000) });
+    hits = await provider.search(args.query, doFetch);
   } catch (e) {
-    return err(`web_search failed to reach DuckDuckGo: ${(e as Error).message}`);
+    // Providers throw with the verbatim upstream status + body, so an auth/quota
+    // failure surfaces as itself rather than as an empty result set.
+    return err(`web_search failed: ${(e as Error).message}`);
   }
-  if (!res.ok) return err(`web_search FAILED (HTTP ${res.status}) from DuckDuckGo.`);
-  const data = (await res.json().catch(() => ({}))) as {
-    Heading?: string;
-    AbstractText?: string;
-    AbstractURL?: string;
-    RelatedTopics?: Array<{ Text?: string; FirstURL?: string }>;
-  };
-  const lines: string[] = [];
-  if (data.AbstractText) lines.push(`${data.Heading ?? ""}: ${data.AbstractText} (${data.AbstractURL ?? ""})`.trim());
-  for (const t of (data.RelatedTopics ?? []).slice(0, 8)) {
-    if (t.Text && t.FirstURL) lines.push(`- ${t.Text} (${t.FirstURL})`);
-  }
-  if (lines.length === 0) {
-    return ok(`No instant answer for "${args.query}". (DuckDuckGo's IA API returns definitions/abstracts, not full web results.)`);
-  }
-  return ok(lines.join("\n"));
+  if (hits.length === 0) return ok(`No results for "${args.query}" (via ${provider.name}).`);
+  return ok(formatHits(hits, args.query));
 }
 
 /** Fetch a URL's main text content. SSRF-guarded (refuses internal/metadata IPs). */
@@ -651,10 +660,10 @@ export function registerWebTools(server: McpServer, deps: WebToolsDeps): void {
   server.registerTool(
     "web_search",
     {
-      title: "Search the web (DuckDuckGo)",
+      title: "Search the web",
       description:
-        "Search the web via DuckDuckGo's Instant Answer API (definitions, abstracts, related topics — " +
-        "not a full result index). Good for quick facts + finding a canonical URL to web_fetch.",
+        "Search the web and get ranked results (title, URL, snippet). Good for finding facts and " +
+        "for picking a canonical URL to pass to web_fetch.",
       inputSchema: { query: z.string().describe("The search query.") },
     },
     async (args) => (await handleWebSearch(deps, args)) as never,

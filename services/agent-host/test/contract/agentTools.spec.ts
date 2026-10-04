@@ -20,6 +20,7 @@ import {
   handleGithubComment,
   handleGitlabComment,
   handleWebFetch,
+  handleWebSearch,
   inferRef,
   toToolResult,
   registerAgentTools,
@@ -404,8 +405,54 @@ describe("agent-tools: web_fetch SSRF guard", () => {
   });
 });
 
+describe("agent-tools: web_search", () => {
+  const hitProvider = (hits: Array<{ title: string; url: string; snippet?: string }>) => ({
+    name: "fake",
+    search: async () => hits,
+  });
+
+  it("reports NOT CONFIGURED (as an error) when no provider is set up", async () => {
+    // The old DuckDuckGo path returned a cheerful 200 "no instant answer", so a
+    // broken search read as an empty web. Unconfigured must be an isError that
+    // names the cause and points at web_fetch.
+    const out = await handleWebSearch({ searchProvider: null }, { query: "anything" });
+    expect(out.isError).toBe(true);
+    expect(out.content[0].text).toMatch(/NOT CONFIGURED/);
+    expect(out.content[0].text).toMatch(/web_fetch/);
+  });
+
+  it("renders ranked hits with urls the agent can hand to web_fetch", async () => {
+    const out = await handleWebSearch(
+      { searchProvider: hitProvider([{ title: "T", url: "https://u.test", snippet: "S" }]) },
+      { query: "q" },
+    );
+    expect(out.isError).toBeFalsy();
+    expect(out.content[0].text).toContain("https://u.test");
+    expect(out.content[0].text).toContain("S");
+  });
+
+  it("echoes a provider failure VERBATIM instead of reporting no results", async () => {
+    const failing = {
+      name: "fake",
+      search: async () => {
+        throw new Error("fake search FAILED (HTTP 401): BAD_TOKEN");
+      },
+    };
+    const out = await handleWebSearch({ searchProvider: failing }, { query: "q" });
+    expect(out.isError).toBe(true);
+    expect(out.content[0].text).toContain("401");
+    expect(out.content[0].text).toContain("BAD_TOKEN");
+  });
+
+  it("distinguishes a genuinely empty result set from a failure", async () => {
+    const out = await handleWebSearch({ searchProvider: hitProvider([]) }, { query: "zzz" });
+    expect(out.isError).toBeFalsy();
+    expect(out.content[0].text).toMatch(/No results/);
+  });
+});
+
 describe("agent-tools: web tools are decoupled from the broker", () => {
-  // web_search/web_fetch hit DuckDuckGo / a URL directly and never touch the broker,
+  // web_search/web_fetch hit the search provider / a URL directly and never touch the broker,
   // so registerWebTools must register them with NO broker dep, and registerAgentTools
   // must no longer own them. See PR (decouple web tools from broker).
   it("registerWebTools registers web_search + web_fetch without a broker", () => {
