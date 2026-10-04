@@ -102,6 +102,19 @@ in
       example = literalExpression ''{ "eks.amazonaws.com/role-arn" = "arn:aws:iam::…"; }'';
       description = "Annotations on the agent-broker ServiceAccount (IRSA and the like).";
     };
+    mcpEnabled = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        Serve the agent-facing MCP endpoint (`POST /mcp`) — the contrib-contributed agent
+        tools, scoped to one conversation per request by a conversation token.
+
+        OFF by default until the provider tools (slack/github/gitlab/jira) and the search
+        tools move out of the agent-host in phase 2 of #700. With nothing contributing
+        tools yet, an enabled endpoint offers the agent an empty `tools/list`, which is
+        worse than no endpoint: the agent sees a server, trusts it, and finds nothing.
+      '';
+    };
     jiraSiteUrl = mkOption {
       type = types.str;
       default = "";
@@ -480,6 +493,25 @@ in
                   # request, with the agent-host looking like a stranger. It was
                   # AWS_APPROVER_SERVICE_ACCOUNTS for that reason. Why: #599.
                   { name = "APPROVER_SERVICE_ACCOUNTS"; value = "system:serviceaccount:${cfg.namespace}:agent-host"; }
+
+                  # --- The agent-facing MCP endpoint (#700) ---------------------------
+                  # Who may act FOR a conversation by presenting a conversation token.
+                  # SEPARATE from APPROVER_SERVICE_ACCOUNTS above even though both name
+                  # the agent-host: that one means "may relay a human's approve/deny",
+                  # this one means "may act as any conversation it holds a signed token
+                  # for". Collapsing them would make the second an accidental
+                  # consequence of the first.
+                  { name = "MCP_CALLER_SERVICE_ACCOUNTS"; value = "system:serviceaccount:${cfg.namespace}:agent-host"; }
+                  # The shared HS256 key. Same Secret the agent-host signs with — one
+                  # name, one key, no way for the bytes to diverge.
+                  {
+                    name = "CONV_TOKEN_SECRET";
+                    valueFrom.secretKeyRef = { name = cfg.convTokenSecret; key = "secret"; };
+                  }
+                  # The broker's own tool surface. OFF until the provider tools move out
+                  # of the agent-host (phase 2): an empty tools/list offered to the agent
+                  # is worse than no endpoint at all.
+                  { name = "MCP_ENABLED"; value = lib.boolToString bcfg.mcpEnabled; }
                 ] ++ lib.optional (cfg.postgres.sslmode != null)
                   { name = "BROKER_DB_SSLMODE"; value = cfg.postgres.sslmode; }
                 ++ lib.optional (bcfg.jiraSiteUrl != "")

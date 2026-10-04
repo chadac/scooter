@@ -18,6 +18,15 @@
   agentSandbox = {
     namespace = "agent-sandbox";
 
+    # The HS256 key for CONVERSATION TOKENS — the credential naming which conversation
+    # an MCP caller acts for. Signed by the agent-host, verified by both it and the
+    # broker. Create it out-of-band:
+    #   kubectl create secret generic agent-conv-token-secret \
+    #     --from-literal=secret=$(openssl rand -hex 32)
+    # Wired unconditionally with no `optional`, so a missing Secret stops the pod
+    # starting rather than leaving the MCP endpoint accepting any conversation. See #700.
+    convTokenSecret = "agent-conv-token-secret";
+
     # Images. registryPrefix expands to <prefix>agent-host:latest etc.; empty =
     # bare local names for kind/k3s. Per-image options override it.
     registryPrefix = "";
@@ -74,6 +83,12 @@
     broker = {
       enable = true;
       testProvider = true; # whoami + test git-credential transports
+
+      # The agent-facing MCP endpoint: contrib-contributed agent tools, scoped per
+      # conversation by a conversation token. OFF until the provider + search tools move
+      # out of the agent-host (phase 2 of #700) — with nothing contributing tools, an
+      # enabled endpoint would offer the agent an empty tools/list.
+      mcpEnabled = false;
 
       # Datadog provider: proxies /datadog/* -> https://api.<site> with the two
       # keys injected, so the agent can query metrics/logs/monitors without

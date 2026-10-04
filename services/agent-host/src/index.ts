@@ -1149,6 +1149,15 @@ export async function main(
           // The URL goose connects to. The agent-host serves it on its own port;
           // goose runs in THIS pod, so localhost reaches it.
           baseUrl: process.env.AGENT_SELF_MODIFY_MCP_URL ?? `http://127.0.0.1:${config.port}`,
+          // The conversation scope travels as a signed bearer token rather than in the
+          // URL. Unset = the endpoint stays on the old unauthenticated `?conv=`
+          // behaviour, with a loud startup warning, so an upgrade that has not yet
+          // provisioned the Secret keeps working instead of losing every tool at
+          // once. See issue #700.
+          convTokenSecret: process.env.CONV_TOKEN_SECRET ?? "",
+          convTokenTtlSeconds: process.env.CONV_TOKEN_TTL_SECONDS
+            ? Number(process.env.CONV_TOKEN_TTL_SECONDS)
+            : undefined,
           agentTools: agentToolsWiring,
           jobs: jobManager,
           models: modelToolsWiring,
@@ -1753,7 +1762,17 @@ export async function main(
     // Offer the agent the in-process MCP tools (background jobs / model selection /
     // agent-tools), scoped to THIS conversation via the URL's ?conv=<id>.
     const mcpServers = mcpEndpoint
-      ? [{ type: "http", name: "scooter-env", url: mcpEndpoint.urlFor(conversationId), headers: [] }]
+      ? [
+          {
+            type: "http",
+            name: "scooter-env",
+            url: mcpEndpoint.urlFor(conversationId),
+            // The conversation token. `headers` is `HttpHeader[]` ({name,value}) per the
+            // ACP schema — the local type said `string[]`, which was wrong but harmless
+            // while every entry was empty. Why: issue #700.
+            headers: mcpEndpoint.headersFor(conversationId, owner),
+          },
+        ]
       : undefined;
     const usingClaude = process.env.GOOSE_PROVIDER === "claude-code" && !config.fakeSandbox;
     // The FLOOR ACP client factory — the cloud brain (SDK-claude on Bedrock, or goose). This is
@@ -1776,9 +1795,17 @@ export async function main(
               recordRaw: (m) => bridge.recordRawInput(m),
               // Give the SDK agent the SAME platform MCP tools the goose path gets
               // (scheduler / slack / github / background jobs / model switch / resize),
-              // scoped to this conversation via ?conv=<id>. Without this the agent has
-              // only the sandbox tools and can't actually use those capabilities.
+              // scoped to this conversation by the conversation token below. Without
+              // this the agent has only the sandbox tools and can't actually use those
+              // capabilities.
               mcpEndpointUrl: mcpEndpoint?.urlFor(conversationId),
+              // The conversation token, as the SDK's per-server `headers`. The URL no
+              // longer carries the scope. Why: issue #700.
+              mcpEndpointHeaders: mcpEndpoint
+                ? Object.fromEntries(
+                    mcpEndpoint.headersFor(conversationId, owner).map((h) => [h.name, h.value]),
+                  )
+                : undefined,
               // BACK-PRESSURE: yield the next tool call when a priority item (e.g. a
               // finished subagent's result) is waiting, so it injects promptly
               // instead of the parent spinning in a check_subagent poll loop.
@@ -1829,6 +1856,9 @@ export async function main(
             // The BYO container reaches scooter-env over the TUNNEL, not this URL directly —
             // it is the loopback address the agent-host itself serves.
             mcpUrlFor: mcpEndpoint ? (conv: string) => mcpEndpoint.urlFor(conv) : undefined,
+            // Injected by the agent-host when it proxies a tunnel frame, so the user's
+            // machine never holds a conversation token. Why: issue #700.
+            mcpHeadersFor: mcpEndpoint ? (conv: string) => mcpEndpoint.headersFor(conv) : undefined,
           }),
           floorProvider,
         ]

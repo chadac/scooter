@@ -67,3 +67,36 @@ describe("tunnel target resolution", () => {
     expect(offered.map((s) => s.name)).toEqual(["scooter-env"]);
   });
 });
+
+// --- the conversation token on a tunnelled target (issue #700) ----------------------
+describe("tunnel target credentials", () => {
+  const withHeaders = {
+    mcpUrlFor: (_conv: string) => "http://127.0.0.1:8080/mcp",
+    mcpHeadersFor: (conv: string) => [{ name: "Authorization", value: `Bearer token-for-${conv}` }],
+  };
+
+  it("attaches THIS conversation's token, resolved server-side", () => {
+    const r = resolveTunnelTarget("scooter-env", "conv-a", withHeaders);
+    expect(r.ok && r.target.headers).toEqual([
+      { name: "Authorization", value: "Bearer token-for-conv-a" },
+    ]);
+  });
+
+  it("gives two conversations different credentials, as it does different scopes", () => {
+    const a = resolveTunnelTarget("scooter-env", "conv-a", withHeaders);
+    const b = resolveTunnelTarget("scooter-env", "conv-b", withHeaders);
+    expect(a.ok && a.target.headers).not.toEqual(b.ok && b.target.headers);
+  });
+
+  it("attaches none when no secret is configured, leaving the tunnel as it was", () => {
+    const r = resolveTunnelTarget("scooter-env", "conv-a", { mcpUrlFor: withHeaders.mcpUrlFor });
+    expect(r.ok && r.target.headers).toEqual([]);
+  });
+
+  // The container runs on the USER'S machine. Offering it a credential would be
+  // handing them one; the agent-host injects when it proxies instead.
+  it("never offers the credential to the container in the server list", () => {
+    const offered = offeredTunnelServers("conv-a", withHeaders);
+    expect(offered.every((o) => o.headers.length === 0)).toBe(true);
+  });
+});

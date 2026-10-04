@@ -46,7 +46,7 @@ export interface AcpProvider {
    *  in-cluster paths use the default (a loopback URL they can reach); a BYO container cannot
    *  reach loopback at all, so its provider offers TUNNEL NAMES instead and the container
    *  proxies them locally. Absent = use the bridge's config. */
-  mcpServersFor?: (conversationId: string) => Array<{ type: "http"; name: string; url: string; headers: string[] }>;
+  mcpServersFor?: (conversationId: string) => Array<{ type: "http"; name: string; url: string; headers: Array<{ name: string; value: string }> }>;
   /** The MODEL-NAMESPACE this provider serves — matched against each catalog model's
    *  `providers` tags ("goose" = Bedrock ids via goose, "claude-code" = the in-cluster
    *  subscription SDK, "byoc" = the user's own container). Absent = the pre-dimension

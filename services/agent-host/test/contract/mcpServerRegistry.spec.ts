@@ -220,3 +220,38 @@ describe("fingerprintOffered", () => {
     expect(a).toBe(b);
   });
 });
+
+// --- the credential-in-headers case (issue #700) ------------------------------------
+//
+// A conversation token is minted per session and its `iat` differs every time. If the
+// fingerprint covered header VALUES, every mint would look like a changed offered-server
+// set and rebuild the agent session — each rebuild minting a fresh token and triggering
+// the next, forever.
+describe("fingerprintOffered with credential headers", () => {
+  const withHeader = (value: string) => [
+    { type: "http" as const, name: "scooter-env", url: "http://h/mcp", headers: [{ name: "Authorization", value }] },
+  ];
+
+  it("is STABLE when a header's value changes, which a re-mint always does", () => {
+    expect(fingerprintOffered(withHeader("Bearer token-at-t1"))).toBe(
+      fingerprintOffered(withHeader("Bearer token-at-t2")),
+    );
+  });
+
+  it("still CHANGES when a header is added, which is a structural change", () => {
+    const none = [{ type: "http" as const, name: "scooter-env", url: "http://h/mcp", headers: [] }];
+    expect(fingerprintOffered(none)).not.toBe(fingerprintOffered(withHeader("Bearer t")));
+  });
+
+  it("still CHANGES when a header is RENAMED", () => {
+    const renamed = [
+      {
+        type: "http" as const,
+        name: "scooter-env",
+        url: "http://h/mcp",
+        headers: [{ name: "X-Scooter-Conversation", value: "Bearer t" }],
+      },
+    ];
+    expect(fingerprintOffered(withHeader("Bearer t"))).not.toBe(fingerprintOffered(renamed));
+  });
+});

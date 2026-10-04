@@ -168,3 +168,73 @@ describe("4xx responses are relayed, not swallowed", () => {
     expect(sent[0]).toBe(probe);
   });
 });
+
+// --- the injected conversation token (issue #700) -----------------------------------
+//
+// The container's own headers are forwarded, so the credential the agent-host injects
+// has to OVERWRITE rather than merge. A container that could set its own Authorization
+// would be choosing its own identity at an endpoint that now authenticates with one.
+describe("tunnel credential injection", () => {
+  const capture = () => {
+    const seen: Array<{ url: string; headers: Record<string, string> }> = [];
+    const impl = (async (url: string, init: { headers: Record<string, string> }) => {
+      seen.push({ url, headers: init.headers });
+      return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof fetch;
+    return { seen, impl };
+  };
+
+  const withToken = (fetchImpl: typeof fetch) => ({
+    mcpUrlFor: (_conv: string) => "http://mcp.local/mcp",
+    mcpHeadersFor: (conv: string) => [{ name: "Authorization", value: `Bearer real-${conv}` }],
+    fetchImpl,
+  });
+
+  const open = (payload: Record<string, unknown>) => ({
+    ch: "tunnel" as const,
+    type: "open" as const,
+    id: "s1",
+    payload: { target: "scooter-env", method: "POST", path: "/mcp", ...payload },
+  });
+
+  it("injects the conversation token on the proxied request", async () => {
+    const out = collector();
+    const cap = capture();
+    const svc = createTunnelService({ send: out.send, ...withToken(cap.impl) });
+    await svc.onFrame("conv-a", open({ headers: {} }));
+    await svc.onFrame("conv-a", { ch: "tunnel", type: "end", id: "s1", payload: {} });
+    expect(cap.seen[0].headers.Authorization).toBe("Bearer real-conv-a");
+  });
+
+  it("STRIPS a container-supplied Authorization rather than merging it", async () => {
+    const out = collector();
+    const cap = capture();
+    const svc = createTunnelService({ send: out.send, ...withToken(cap.impl) });
+    await svc.onFrame("conv-a", open({ headers: { Authorization: "Bearer forged-by-the-laptop" } }));
+    await svc.onFrame("conv-a", { ch: "tunnel", type: "end", id: "s1", payload: {} });
+    const sent = Object.entries(cap.seen[0].headers).filter(([k]) => k.toLowerCase() === "authorization");
+    expect(sent).toEqual([["Authorization", "Bearer real-conv-a"]]);
+  });
+
+  // HTTP header names are case-insensitive and the container picks the spelling, so a
+  // case-sensitive delete would leave `authorization:` alongside our `Authorization:`.
+  it("strips a container header that differs only in CASE", async () => {
+    const out = collector();
+    const cap = capture();
+    const svc = createTunnelService({ send: out.send, ...withToken(cap.impl) });
+    await svc.onFrame("conv-a", open({ headers: { authorization: "Bearer forged-lowercase" } }));
+    await svc.onFrame("conv-a", { ch: "tunnel", type: "end", id: "s1", payload: {} });
+    const sent = Object.entries(cap.seen[0].headers).filter(([k]) => k.toLowerCase() === "authorization");
+    expect(sent).toEqual([["Authorization", "Bearer real-conv-a"]]);
+  });
+
+  it("leaves the container's OTHER headers alone", async () => {
+    const out = collector();
+    const cap = capture();
+    const svc = createTunnelService({ send: out.send, ...withToken(cap.impl) });
+    await svc.onFrame("conv-a", open({ headers: { accept: "application/json", "x-thing": "keep" } }));
+    await svc.onFrame("conv-a", { ch: "tunnel", type: "end", id: "s1", payload: {} });
+    expect(cap.seen[0].headers["x-thing"]).toBe("keep");
+    expect(cap.seen[0].headers.accept).toBe("application/json");
+  });
+});

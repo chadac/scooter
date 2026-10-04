@@ -42,12 +42,22 @@ export interface McpServerDescriptor {
   listenAddress: string;
 }
 
-/** An entry as `new_session`'s mcpServers takes it. */
+/** An HTTP header on an offered MCP server, per the ACP schema's `HttpHeader`. */
+export interface McpHeader {
+  name: string;
+  value: string;
+}
+
+/** An entry as `new_session`'s mcpServers takes it.
+ *
+ *  `headers` was typed `string[]` here, which the ACP schema contradicts — it is
+ *  `HttpHeader[]`, i.e. `{name, value}` objects. Harmless while every entry passed
+ *  `[]`, and actively wrong the moment one carries a credential. Why: issue #700. */
 export interface OfferedMcpServer {
   type: "http";
   name: string;
   url: string;
-  headers: string[];
+  headers: McpHeader[];
 }
 
 /** Minimal exec surface we need (a subset of SandboxApiClient). */
@@ -125,9 +135,16 @@ export function offeredMcpServers(
  *  decide whether the agent session must be rebuilt, so it must cover everything
  *  the session was created with (notably the URL, which moves when a port is
  *  auto-renumbered) and nothing cosmetic (a displayName change must not restart a
- *  conversation's agent). */
+ *  conversation's agent).
+ *
+ *  HEADER NAMES ONLY, NEVER VALUES. A conversation token is minted per session and its
+ *  `iat` differs on every mint, so fingerprinting values would make each mint look
+ *  like a changed offered-server set and rebuild the agent session — with the rebuild
+ *  minting a fresh token and triggering the next one, forever. Names still change when
+ *  a server gains or loses a credential, which is the structural change actually worth
+ *  a rebuild. Why: issue #700. */
 export function fingerprintOffered(offered: OfferedMcpServer[]): string {
-  return JSON.stringify(offered.map((o) => [o.name, o.url, o.headers]));
+  return JSON.stringify(offered.map((o) => [o.name, o.url, o.headers.map((h) => h.name)]));
 }
 
 export function createMcpServerRegistry(
