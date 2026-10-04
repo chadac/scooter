@@ -33,8 +33,13 @@ function mac(data: string, secret: string): string {
 }
 
 /** Sign `claims` as a compact HS256 JWT. Claims are written verbatim — expiry,
- *  audience and issuer are the caller's to put in. */
-export function signHs256(claims: Record<string, unknown>, secret: string): string {
+ *  audience and issuer are the caller's to put in.
+ *
+ *  `object`, not `Record<string, unknown>`: a declared interface (ConvClaims,
+ *  JoinClaims) has no index signature and so is not assignable to the Record form,
+ *  which is a tsc error at every call site. Both callers want to pass a typed claim
+ *  set, and JSON.stringify accepts any object. */
+export function signHs256(claims: object, secret: string): string {
   const payload = b64url(Buffer.from(JSON.stringify(claims)));
   return `${HEADER}.${payload}.${mac(`${HEADER}.${payload}`, secret)}`;
 }
