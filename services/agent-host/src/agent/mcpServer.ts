@@ -26,7 +26,7 @@ import {
   type SubagentManager,
 } from "./subagentTools.js";
 import type { ConversationLink } from "../session/manager.js";
-import { registerWebTools } from "./agentTools.js";
+import { registerWebFetch } from "./agentTools.js";
 import { registerSchedulerTools, type SchedulerToolsWiring } from "./schedulerTools.js";
 import { handleListModels, handleSwitchModel, type ModelToolsWiring } from "./modelTools.js";
 import {
@@ -134,7 +134,7 @@ export async function handleKillBackground(
  *  in #700, and the broker resolves its own targets from the conversation's links —
  *  so what is left is an injectable fetch for tests. */
 export interface AgentToolsWiring {
-  /** Injectable fetch for web_search / web_fetch (defaults to global fetch). */
+  /** Injectable fetch for web_fetch (defaults to global fetch). */
   fetchImpl?: typeof fetch;
 }
 
@@ -309,10 +309,11 @@ export async function buildServer(
       async (args) => handleSearchSubagent(subagents, conversationId, args) as TR,
     );
   }
-  // Web tools (web_search / web_fetch) need NO broker — they hit DuckDuckGo / a URL
-  // directly. Registered unconditionally so they don't depend on broker wiring.
-  // They move to per-provider search contribs in phase 3 of #700.
-  registerWebTools(server, { fetchImpl: agentTools?.fetchImpl });
+  // web_fetch needs NO broker and NO credential — it hits a URL directly. Registered
+  // unconditionally so it doesn't depend on broker wiring. `web_search` is NOT here
+  // any more: it needs a search key, which makes it contrib/brave's or contrib/kagi's
+  // tool, arriving over the broker's /mcp iff one of them is configured (#700).
+  registerWebFetch(server, { fetchImpl: agentTools?.fetchImpl });
 
   // Model self-selection: list the offered models (+ deployment hints) and switch
   // this conversation's model mid-run. Registered only when more than one model is

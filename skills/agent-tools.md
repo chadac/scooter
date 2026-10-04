@@ -99,8 +99,12 @@ don't repeat.
 
 ## Looking things up
 
-- **Search the web** — DuckDuckGo instant answers (definitions, abstracts, related
-  links). Good for a quick fact or to find a canonical URL to fetch.
+- **Search the web** — ranked web results (title, URL, snippet). Good for a quick
+  fact or to find a canonical URL to fetch. **If there is no search tool in your tool
+  list, this deployment has no search provider configured** — say so rather than
+  retrying or reaching for `curl`, and use the fetch tool on a URL you already know.
+  A search that FAILS tells you the real status: a 401 or 429 means the deployment's
+  search key is bad or out of quota, which is worth reporting, not retrying.
 - **Fetch a URL** — fetch a public web page and get its readable text. Use it on a
   URL from a search result, a PR/issue link, or docs. (It refuses
   internal/cluster/metadata addresses.)

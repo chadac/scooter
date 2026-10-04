@@ -81,7 +81,7 @@ describe("matchToolCall", () => {
   });
 
   it("returns null for tools we don't specialize (web search, modify_environment, unknown)", () => {
-    expect(matchToolCall("Search the web (DuckDuckGo)", { query: "x" })).toBeNull();
+    expect(matchToolCall("Search the web", { query: "x" })).toBeNull();
     expect(matchToolCall("Modify the dev environment", { module_nix: "{}" })).toBeNull();
     expect(matchToolCall("Some Random Tool", { x: 1 })).toBeNull();
   });
