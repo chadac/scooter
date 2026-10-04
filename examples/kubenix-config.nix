@@ -85,10 +85,10 @@
       testProvider = true; # whoami + test git-credential transports
 
       # The agent-facing MCP endpoint: contrib-contributed agent tools, scoped per
-      # conversation by a conversation token. OFF until the provider + search tools move
-      # out of the agent-host (phase 2 of #700) — with nothing contributing tools, an
-      # enabled endpoint would offer the agent an empty tools/list.
-      mcpEnabled = false;
+      # conversation by a conversation token (see #700). On by default; stated here
+      # because the manifest coverage check requires the example to exercise every
+      # option namespace. With `echo` enabled this serves its sample tools.
+      mcp.enable = true;
 
       # Datadog provider: proxies /datadog/* -> https://api.<site> with the two
       # keys injected, so the agent can query metrics/logs/monitors without

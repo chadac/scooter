@@ -102,18 +102,26 @@ in
       example = literalExpression ''{ "eks.amazonaws.com/role-arn" = "arn:aws:iam::…"; }'';
       description = "Annotations on the agent-broker ServiceAccount (IRSA and the like).";
     };
-    mcpEnabled = mkOption {
-      type = types.bool;
-      default = false;
-      description = ''
-        Serve the agent-facing MCP endpoint (`POST /mcp`) — the contrib-contributed agent
-        tools, scoped to one conversation per request by a conversation token.
+    # The agent-facing MCP endpoint. A nested `mcp.enable` rather than a flat
+    # `mcpEnabled`, matching `datadog.enable` / `aws.enable` — the namespace is where
+    # the endpoint's other knobs (per-tool gating, a tool allowlist) will land.
+    mcp = {
+      enable = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Serve the agent-facing MCP endpoint (`POST /mcp`) — the contrib-contributed
+          agent tools, scoped to ONE conversation per request by a conversation token
+          (an allowlisted control-plane SA token plus a signed conversation token, or a
+          sandbox's own SA). See issue #700.
 
-        OFF by default until the provider tools (slack/github/gitlab/jira) and the search
-        tools move out of the agent-host in phase 2 of #700. With nothing contributing
-        tools yet, an enabled endpoint offers the agent an empty `tools/list`, which is
-        worse than no endpoint: the agent sees a server, trusts it, and finds nothing.
-      '';
+          ON by default. The tool set is whatever the ENABLED providers contribute, so a
+          deployment with no tool-bearing contrib serves an endpoint with an empty
+          `tools/list` — which costs nothing, because the endpoint being served is a
+          separate question from it being OFFERED to the agent. Nothing offers it yet;
+          that lands with the provider tools in phase 2.
+        '';
+      };
     };
     jiraSiteUrl = mkOption {
       type = types.str;
@@ -511,7 +519,7 @@ in
                   # The broker's own tool surface. OFF until the provider tools move out
                   # of the agent-host (phase 2): an empty tools/list offered to the agent
                   # is worse than no endpoint at all.
-                  { name = "MCP_ENABLED"; value = lib.boolToString bcfg.mcpEnabled; }
+                  { name = "MCP_ENABLED"; value = lib.boolToString bcfg.mcp.enable; }
                 ] ++ lib.optional (cfg.postgres.sslmode != null)
                   { name = "BROKER_DB_SSLMODE"; value = cfg.postgres.sslmode; }
                 ++ lib.optional (bcfg.jiraSiteUrl != "")

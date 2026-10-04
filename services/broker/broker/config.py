@@ -33,10 +33,11 @@ class BrokerSettings(ScooterBaseSettings):
 
     # --- The agent-facing MCP server (broker/mcp/) --------------------------
     # Contrib-contributed agent tools, served at POST /mcp to ONE conversation at a
-    # time. Off by default: until the provider tools move out of the agent-host
-    # (phase 2 of #700) the endpoint has no tools to serve, and an empty tools/list
-    # offered to the agent is worse than no endpoint.
-    mcp_enabled: bool = False
+    # time. ON by default: the tool set is whatever the enabled providers contribute,
+    # so a deployment with no tool-bearing contrib simply serves an empty tools/list.
+    # That costs nothing, because SERVING the endpoint is a separate question from
+    # OFFERING it to the agent — nothing offers it until phase 2 of #700.
+    mcp_enabled: bool = True
 
     # SA usernames allowed to act FOR a conversation by presenting a conversation
     # token, CSV of system:serviceaccount:{ns}:{name}. In practice the agent-host.
