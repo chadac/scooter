@@ -230,6 +230,22 @@ let
         echo "scooter-apply-module: building toplevel (base config + local/registry modules)..."
         module_expr=""
       fi
+      # Both fragments are interpolated into the double-quoted --expr below, so they
+      # must reach Nix through the shell UNCHANGED: a bare `"` is eaten by bash and
+      # Nix then reads a quoted path as a PATH, failing `listOf str`. Keep them as
+      # shell vars — inlining either one re-breaks it. dev-env-reconverge-quoting
+      # greps `reconverge_carry` to check this. Why: PR #696.
+      reconverge_layers=${
+        lib.escapeShellArg (lib.concatStringsSep "\n            " cfg.extraReconvergeModules)
+      }
+      # Re-declare the list in the REBUILT system, or it survives exactly ONE switch:
+      # the next generation's scooter-apply-module is generated from THIS eval, and
+      # nothing in-pod sets the option. Why: PR #607.
+      reconverge_carry=${
+        lib.escapeShellArg "{ programs.scooterModule.extraReconvergeModules = [ ${
+          lib.concatMapStringsSep " " lib.strings.escapeNixString cfg.extraReconvergeModules
+        } ]; }"
+      }
       # Build the base config (+ the optional extra module). --impure so we can read the
       # module path + the local-modules dir; the nixpkgs + modules source are fixed store
       # paths baked in. We re-inject programs.scooterModule.nixpkgs so the re-evaluated
@@ -247,13 +263,8 @@ let
             # a second mkForce would conflict.
             # Layer the currently-running system's extra config (so the switch
             # preserves what's already active — see extraReconvergeModules).
-            ${lib.concatStringsSep "\n            " cfg.extraReconvergeModules}
-            # Re-declare that same list in the REBUILT system, or it survives exactly
-            # ONE switch: the next generation's scooter-apply-module is generated from
-            # THIS eval, and nothing in-pod sets the option. Why: PR #607.
-            { programs.scooterModule.extraReconvergeModules = [ ${
-              lib.concatMapStringsSep " " lib.strings.escapeNixString cfg.extraReconvergeModules
-            } ]; }
+            $reconverge_layers
+            $reconverge_carry
             $module_expr
           ];
         }).toplevel
