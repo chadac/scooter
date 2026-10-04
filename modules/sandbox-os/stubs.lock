@@ -2,11 +2,11 @@
   "version": 1,
   "inputs": {
     "nixpkgs": {
-      "lastModified": 1790323409,
-      "narHash": "sha256-VVTPf+Hyd5ebpjBMHmrLMSBIeW6ls48Bqtosj7CNKLA=",
+      "lastModified": 1790822859,
+      "narHash": "sha256-69xHQhAeMAD2wDXO7T2pcOZIF9Sga2W+JkmY2a11Ops=",
       "owner": "NixOS",
       "repo": "nixpkgs",
-      "rev": "e94cb152ed51bd6e24eb4a41f1460252beb52cd2",
+      "rev": "c59305bab2065cfecc4944690d9eedbb56f3a9fa",
       "type": "github"
     }
   },
@@ -14,7 +14,7 @@
     "aarch64-linux": {
       "awscli2": {
         "attr": "awscli2",
-        "drv": "/nix/store/7bfgrnilpq8ji84s8i2rja65m6vmdr6q-awscli2-2.35.11.drv",
+        "drv": "/nix/store/23yjxrivlbf19a05iyrsvghjci0yx8vx-awscli2-2.35.11.drv",
         "output": "out",
         "bins": [
           "aws",
@@ -24,7 +24,7 @@
       },
       "code-server": {
         "attr": "code-server",
-        "drv": "/nix/store/spkmj6qabxhlqmgbgg8pbai5xl7yx6al-code-server-4.134.0.drv",
+        "drv": "/nix/store/d52d8pfgaa9kiqisid5rcgmfg22d7mxj-code-server-4.134.0.drv",
         "output": "out",
         "bins": [
           "code-server"
@@ -33,7 +33,7 @@
       },
       "marimo": {
         "attr": "marimo",
-        "drv": "/nix/store/vx22fmiwakqrn2rszh5dminqaqimy4za-python3.14-marimo-0.24.2.drv",
+        "drv": "/nix/store/2d4kd4v3xmbb17c324s5x6hjnc9hvcrd-python3.14-marimo-0.24.2.drv",
         "output": "out",
         "bins": [
           "marimo"
@@ -42,7 +42,7 @@
       },
       "tree": {
         "attr": "tree",
-        "drv": "/nix/store/pj0p4z5d89hfqhqbxxsshwza5pdb17wl-tree-2.3.2.drv",
+        "drv": "/nix/store/in5pip9xfch9rb11kidb7ky21jafrlz8-tree-2.3.2.drv",
         "output": "out",
         "bins": [
           "tree"
@@ -51,7 +51,7 @@
       },
       "ttyd": {
         "attr": "ttyd",
-        "drv": "/nix/store/r2xccq3s94n8grcdnnai0bdsc3yw4kh9-ttyd-1.7.7.drv",
+        "drv": "/nix/store/n9m19hjvakypimr0kcsivsjqx7pckjkc-ttyd-1.7.7.drv",
         "output": "out",
         "bins": [
           "ttyd"
@@ -60,7 +60,7 @@
       },
       "uv": {
         "attr": "uv",
-        "drv": "/nix/store/ffh99clx6zbs0ln0cvihkn0vm31y7ng1-uv-0.12.17.drv",
+        "drv": "/nix/store/r5afv5rqyfl4kli72pflqnwpg55r985l-uv-0.12.17.drv",
         "output": "out",
         "bins": [
           "uv"
@@ -71,7 +71,7 @@
     "x86_64-linux": {
       "awscli2": {
         "attr": "awscli2",
-        "drv": "/nix/store/y61x19c02s4736izkm7arwwk3qmldcq9-awscli2-2.35.11.drv",
+        "drv": "/nix/store/2zsmrka5gayk7nxsbxz43md3v5n9dq44-awscli2-2.35.11.drv",
         "output": "out",
         "bins": [
           "aws",
@@ -81,7 +81,7 @@
       },
       "code-server": {
         "attr": "code-server",
-        "drv": "/nix/store/6754ffqr9gxwipczkr7ws8li6csh3afa-code-server-4.134.0.drv",
+        "drv": "/nix/store/04f995wja8d1vwmmmmyzjdda53rw4xpy-code-server-4.134.0.drv",
         "output": "out",
         "bins": [
           "code-server"
@@ -90,7 +90,7 @@
       },
       "marimo": {
         "attr": "marimo",
-        "drv": "/nix/store/ckypp55l925sy7d8gjzawba89ss356yg-python3.14-marimo-0.24.2.drv",
+        "drv": "/nix/store/nxpjp1y61m0mlnh2d3zlwsg4brkxsppp-python3.14-marimo-0.24.2.drv",
         "output": "out",
         "bins": [
           "marimo"
@@ -99,7 +99,7 @@
       },
       "tree": {
         "attr": "tree",
-        "drv": "/nix/store/lh71j5x5g2fr88bjps8gsgi4pghh5f0a-tree-2.3.2.drv",
+        "drv": "/nix/store/nzpc4lbzb10qv59sngyjpgqm559mapbr-tree-2.3.2.drv",
         "output": "out",
         "bins": [
           "tree"
@@ -108,7 +108,7 @@
       },
       "ttyd": {
         "attr": "ttyd",
-        "drv": "/nix/store/a7x8wiw4gr94jhy52w531l1i32sa0vmk-ttyd-1.7.7.drv",
+        "drv": "/nix/store/af8ap7xj682rrrrdqs30bklng8yyp501-ttyd-1.7.7.drv",
         "output": "out",
         "bins": [
           "ttyd"
@@ -117,7 +117,7 @@
       },
       "uv": {
         "attr": "uv",
-        "drv": "/nix/store/p2rhahw3rvkc3pigjgkcqyx7bhx0qr4n-uv-0.12.17.drv",
+        "drv": "/nix/store/zz04z7czdy8b6zxvy31j40q55lgrgn45-uv-0.12.17.drv",
         "output": "out",
         "bins": [
           "uv"
