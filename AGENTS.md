@@ -196,14 +196,54 @@ calls it). Do not open-code `npx playwright test --project=full`: the recipe
 holds the `--workers` guard and the `E2E_TARGET`/`E2E_CLUSTER_URL` contract, and
 a run with workers measures nothing.
 
+### When is a flake fix DONE?
+
+**Read the heading of the job's comment section, not the check's colour.** The
+check is red whenever anything in a contention run failed, and green whenever
+the command exited 0 — neither of which is a verdict on your flake. The report
+renders exactly one of these, and only the first means done:
+
+| Comment heading | Means | Done? |
+|---|---|---|
+| `✅ … fixed: it fires on the base, not here` | Fires on the base often enough that a clean run here is unlikely by luck (≤5%) | **YES** |
+| `✅ … clean here, but the control is weak (n/m on the base)` | Base barely fired; luck explains it nearly as well as a fix | No — raise the budget |
+| `⚠️ … clean, but the control did not reproduce either` | Fired on neither. The experiment had **no power** | No — proves nothing |
+| `✅ … no reproduction in n repetitions` | No control ran at all | No — unfalsifiable alone |
+| `❌ … the flake STILL reproduces` | Fails here | No |
+| `⚠️ … the targeted test never ran` | `flake-test:` matched nothing that executed; the gate fails the job | No — fix the pattern |
+
+A green check with any heading other than the first is **not** evidence of a
+fix. "0 failures in n runs" cannot distinguish a fix from a flake that simply
+did not fire; that is the whole reason the control exists.
+
+Two more rules that catch most mistakes:
+
+- **Never claim a nightly-`e2e-full` flake is fixed off a green `flake-check`.**
+  The fast stack has no sandbox pods, so it cannot produce the cold boots, CPU
+  saturation or provisioning contention those flakes live in. Green there shows
+  no *regression*. Use `e2e-full-flake-check` for the evidence.
+- **A heading is not the last word — read the `On main recently` row under it.**
+  If the spec is still failing nightly on `main` while the control reproduced
+  nothing, the report says so in bold, and that overrides a clean-looking
+  heading: the control did not recreate the conditions. If the spec passed every
+  nightly in the window, there is no live reproduction to fix — check
+  `flake-test:` names the test you mean.
+- **For `e2e-full` itself, read the baseline diff, not the failure count.** Only
+  "failed here and passed in every baseline run" is attributable to the change.
+  A spec red in 1/5 baseline runs is a flake to take to
+  `e2e-full-flake-check`, not a regression.
+
 ### Reading the `e2e-full` verdict
 
-**`e2e-full` is ALSO path-gated.** The label alone is not enough: the job runs only
-when the change touches the `platform` path filter. Label a PR that only touches
-`ui/` and the job *skips* — the label looks applied and nothing runs, which is not
-the same as a pass.
+**The label is enough — `e2e-full` is NOT path-gated.** It once was, and a
+labelled UI-only PR was silently skipped as a result; #646 removed the filter
+because it covered the specs and the cluster plumbing but not the product code
+under test. All three label-gated jobs now trigger on the label alone. (This
+section said the opposite until #697. If you are reasoning about whether a label
+"took", read the `if:` in `.github/workflows/ci.yml` rather than trusting prose —
+including this prose.)
 
-When it does run, it posts a sticky comment diffing this run against a **window of
+When it runs, it posts a sticky comment diffing this run against a **window of
 the last few full runs on `main`** — new failures / still failing / newly passing.
 Read the diff, not the red check. The full suite is flaky night to night (three
 consecutive nightlies failed 13, 7 and 12 specs with only partial overlap), so the
@@ -224,8 +264,10 @@ and no contention for provisioning — which is where those flakes live. A green
 fixed. Use `e2e-full-flake-check` for those.
 
 It is the slowest of the three, but not as slow as this file used to claim.
-Measured end-to-end on #697 (GitHub-hosted `ubuntu-latest`, like every job here
-except the `e2e-full` shards):
+Measured end-to-end on #697 — on `ubuntu-latest`, which is no longer where this
+job runs: #703 moved it to the self-hosted fleet, so treat the shape as right
+and the absolute numbers as indicative. The one post-move data point agrees on
+the part that dominates (bring-up, 217s both times).
 
 | | |
 |---|--:|
@@ -237,6 +279,11 @@ except the `e2e-full` shards):
 So budget **~13 min**, not 25. The control is cheaper than the PR's own half
 because its bring-up reuses the already-populated registry — 117s against 217s,
 with all eight image pushes skipped on a content-tag HEAD.
+
+That budget is for a **targeted-only** run. Adding `flake-specs:` buys
+contention by running those specs alongside, and it is the dominant cost: job
+111985657548 spent 947s in the contention phase against 217s of bring-up, ~21
+min total. Add it when the flake needs contention to fire, not by default.
 
 ## Conventions
 
