@@ -163,6 +163,15 @@ comment distinguishes:
 The control costs roughly a second run of the job, so it is skipped when the PR's
 own run already reproduced the flake (the answer is in already).
 
+The full comment also carries an **`On main recently`** row — the spec's record
+across the last few nightly `e2e-full` runs, read from their uploaded reports.
+That is prior evidence, not a control: a nightly runs the whole suite, so its
+rate includes contention the targeted run does not have, and scoring a quiet
+clean run against it would overstate the result. Read it for one thing in
+particular — *the spec is failing on `main` but the control reproduced nothing*
+means the control did not recreate the conditions the flake needs, so the clean
+run says nothing about a fix.
+
 **Both** focused jobs run one. The full-target control redeploys the base's whole
 platform — it tears the PR's k3d cluster down and brings the base's up in its
 place, rather than running the base's specs against the PR's deployment. The
@@ -176,6 +185,16 @@ with the PR skips the push — for a test-only fix, all of them.
 | `flake-check` | flake focus (targeted ×20) | **fast** — fake stack |
 | `e2e-full-flake-check` | flake focus full (k3d, targeted ×5) | **full** — a real k3d cluster |
 | `e2e-full` | e2e full (k3d) | the whole full suite, once |
+
+Both full-target jobs run on the **self-hosted fleet**, the same runners as the
+nightly. A control on different hardware is being asked to reproduce a
+contention flake in conditions it was never seen in.
+
+To run one test against the full target — locally or in CI — use
+`just e2e-full-run` (the local `just e2e-full` brings up a port-forward and then
+calls it). Do not open-code `npx playwright test --project=full`: the recipe
+holds the `--workers` guard and the `E2E_TARGET`/`E2E_CLUSTER_URL` contract, and
+a run with workers measures nothing.
 
 ### Reading the `e2e-full` verdict
 

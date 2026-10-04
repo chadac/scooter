@@ -5,6 +5,7 @@ import {
   patternToRegExp,
   renderMarkdown,
   summarize,
+  summarizeHistory,
 } from "./flake-focus-report.mjs";
 
 /**
@@ -326,5 +327,56 @@ describe("why there is no control", () => {
   it("still blames the pattern when the control ran other tests", () => {
     const body = renderMarkdown(clean, { baseline: ranOtherTests, baselineRef: "main@abc" });
     expect(body).toContain("renamed in this PR?");
+  });
+});
+
+describe("the nightly window", () => {
+  const P = "THREE messages sent mid-run";
+  // One nightly = one run of the whole suite, so one status per report.
+  const night = (status) => targeted([status]);
+  // A lost shard omits its specs from the merge entirely — not a pass.
+  const lostShard = report([["test/e2e/other.spec.ts", [["unrelated", ["passed"]]]]]);
+
+  it("counts only the runs that executed the spec", () => {
+    const h = summarizeHistory(
+      [night("failed"), lostShard, night("passed"), night("failed")],
+      P,
+    );
+    expect(h.ran).toBe(3);
+    expect(h.failed).toBe(2);
+    expect(h.runs.map((r) => (!r.ran ? "-" : r.failed ? "F" : "."))).toEqual(["F", "-", ".", "F"]);
+  });
+
+  it("does not let a lost shard read as a green run", () => {
+    expect(summarizeHistory([lostShard, lostShard], P)).toMatchObject({ ran: 0, failed: 0 });
+  });
+
+  // The verdict that produced this job's false-fixed history: the control saw
+  // nothing, so the run reads clean, while main is still failing the spec.
+  it("refuses to read a clean run as a fix when main is still failing it", () => {
+    const body = renderMarkdown(summarize(targeted(Array(5).fill("passed")), P), {
+      pattern: P,
+      target: "full",
+      // inconclusive: the control ran but the flake fired on neither side.
+      baseline: summarize(targeted(Array(5).fill("passed")), P),
+      history: summarizeHistory([night("failed"), night("failed"), night("passed")], P),
+    });
+    expect(body).toContain("2/3 nightly runs");
+    expect(body).toContain("the control did not reproduce it");
+    expect(body).toContain("not evidence of a fix".slice(0, 10));
+  });
+
+  it("warns when the window shows nothing left to fix", () => {
+    const body = renderMarkdown(summarize(targeted(Array(5).fill("passed")), P), {
+      pattern: P,
+      target: "full",
+      history: summarizeHistory([night("passed"), night("passed")], P),
+    });
+    expect(body).toContain("no live reproduction");
+  });
+
+  it("stays silent when no window was downloaded", () => {
+    const body = renderMarkdown(summarize(targeted(Array(5).fill("passed")), P), { pattern: P });
+    expect(body).not.toContain("nightly run");
   });
 });

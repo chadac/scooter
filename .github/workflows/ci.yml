@@ -1674,7 +1674,7 @@ jobs:
         run: |
           set -euo pipefail
           . .github/scripts/e2e-full-serve.sh
-          nix develop --command bash -c 'npm install && npx playwright test --project=full --repeat-each="$FULL_REPEAT_CONTENTION" --reporter=list,json $FLAKE_SPECS'
+          nix develop --command bash -c 'npm install && just e2e-full-run --repeat-each="$FULL_REPEAT_CONTENTION" --reporter=list,json $FLAKE_SPECS'
 
       # TARGETED path: no usable `flake-specs:` — hammer just the matching test.
       # --trace on overrides playwright.config's `trace: on-first-retry`, which
@@ -1691,7 +1691,7 @@ jobs:
         run: |
           set -euo pipefail
           . .github/scripts/e2e-full-serve.sh
-          nix develop --command bash -c 'npm install && npx playwright test --project=full -g "$FLAKE_PATTERN" --repeat-each="$FULL_REPEAT_TARGETED" --trace on --reporter=list,json'
+          nix develop --command bash -c 'npm install && just e2e-full-run -g "$FLAKE_PATTERN" --repeat-each="$FULL_REPEAT_TARGETED" --trace on --reporter=list,json'
 
       # BEFORE the control, which deletes this cluster and builds the base's in
       # its place. Dumping after it would hand someone debugging a red PR run the
@@ -1782,11 +1782,53 @@ jobs:
           . .github/scripts/e2e-full-serve.sh
           # Same project, same repetition counts as the run above — an unmatched
           # budget makes the two rates incomparable, which is the measurement.
+          #
+          # Open-coded `npx playwright`, NOT `just e2e-full-run` like the two steps
+          # above: we are inside the BASE's worktree, so `just` resolves the BASE's
+          # justfile, which has no such recipe until this PR is on main. Both
+          # branches end in `|| true`, so that miss would be SILENT — no baseline
+          # report, and the comment quietly drops its control section. Convert once
+          # the recipe is on main. Why: PR #703.
           if [ -n "$FLAKE_SPECS" ]; then
             nix develop --command bash -c 'npm install && npx playwright test --project=full --repeat-each="$FULL_REPEAT_CONTENTION" --reporter=list,json $FLAKE_SPECS' || true
           else
             nix develop --command bash -c 'npm install && npx playwright test --project=full -g "$FLAKE_PATTERN" --repeat-each="$FULL_REPEAT_TARGETED" --reporter=list,json' || true
           fi
+
+      # PRIOR evidence, free: the same `e2e-full-report` artifacts `e2e-full-collect`
+      # diffs against, which already say whether this spec is failing on main right
+      # now. Reusing them costs a download instead of the control's cluster rebuild.
+      #
+      # It does NOT replace the control. A nightly runs the WHOLE suite, so its rate
+      # carries full-suite contention that the targeted run above does not — scoring
+      # a quiet clean run against a contended base rate overstates significance in
+      # the exact direction that manufactures a false "fixed". What it does catch is
+      # the inverse: a control that reproduced nothing while main is still failing
+      # the spec, which is an unrepresentative control, not a fix. Why: PR #703.
+      - name: fetch the nightly e2e-full window (main)
+        if: "!cancelled() && github.event_name == 'pull_request'"
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          mkdir -p history
+          # Walk back from newest: the artifact expires (90d) and a run that died
+          # before `merge reports` has none, so "most recent" is not "has one".
+          runs=$(gh run list --workflow "${{ github.workflow }}" --branch "$DEFAULT_BRANCH" \
+            --limit 20 --json databaseId,headSha,createdAt \
+            --jq '.[] | "\(.databaseId) \(.createdAt)"' 2>/dev/null || true)
+          found=0
+          while read -r id created; do
+            [ -n "${id:-}" ] || continue
+            [ "$found" -ge 5 ] && break
+            if gh run download "$id" --name e2e-full-report --dir "history/$id" 2>/dev/null; then
+              found=$((found + 1))
+              printf '%s' "${created%T*}" | cut -c6- > "history/$id/label"
+            fi
+          done <<< "$runs"
+          echo "nightly window: $found run(s)"
 
       # The verdict on the PR — identical contract to the fast job, but this one is
       # the evidence that actually counts for a flake first seen on `e2e-full`, so
@@ -1815,9 +1857,18 @@ jobs:
           # the answer is already in) — the comment then has no control section.
           base=()
           [ -f flake-baseline.json ] && base=(--baseline flake-baseline.json --baseline-ref "$BASE_REF@${BASE_SHA:0:7}")
+          # `sort` on the run-id directory names is chronological (ids increase),
+          # so the window reads oldest → newest, matching its label row.
+          hist=()
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            hist+=(--history "$f")
+            hist+=(--history-label "$(cat "$(dirname "$f")/label" 2>/dev/null || true)")
+          done < <(find history -name report.json 2>/dev/null | sort)
           node scripts/flake-focus-report.mjs "$PLAYWRIGHT_JSON_OUTPUT_NAME" \
             --pattern "$FLAKE_PATTERN" --target full --mode "$mode" \
-            --specs "$FLAKE_SPECS" --run-url "$RUN_URL" "${base[@]}" > flake-comment.md
+            --specs "$FLAKE_SPECS" --run-url "$RUN_URL" --history-ref "$BASE_REF" \
+            "${base[@]}" "${hist[@]}" > flake-comment.md
           cat flake-comment.md >> "$GITHUB_STEP_SUMMARY"
           # ONE section of the shared CI comment (scripts/ci-report.mjs). The report
           # renders its own heading, so ci-report is given a summary line and folds the
