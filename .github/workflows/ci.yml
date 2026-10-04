@@ -1610,17 +1610,19 @@ jobs:
   # 5m25s for the control, 13m08s total. Opt-in per PR rather than always-on,
   # and the repeat counts stay far lower than the fast job's ×20.
   #
-  # GitHub-hosted, like everything here except the `e2e-full` shards. So there is
-  # no persistent registry/containerd cache between RUNS (k3d-platform-up.sh only
-  # mounts those when the self-hosted volumes exist) — the reuse that makes the
-  # control cheap is within this one job, not across jobs.
+  # SELF-HOSTED, the same fleet as the `e2e-full` shards. A control has to run
+  # where the flake lives: the paragraph above rejects the fast stack for having
+  # no sandbox pods and no provisioning contention, and that argument applies
+  # again one level up — a nightly flake observed on the fleet, re-run on a
+  # GitHub-hosted runner, is being asked to reproduce on different hardware with
+  # a cold store. Why: PR #703.
   flake-focus-full:
     name: flake focus full (k3d, targeted ×5)
     # Label ONLY — deliberately NOT gated on `cluster-changes`. A flake fix is
     # usually test-only, so the platform path filter would skip this job in
     # exactly the case it was added for.
     if: contains(github.event.pull_request.labels.*.name, 'e2e-full-flake-check')
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, nix]
     permissions:
       contents: read
       pull-requests: write   # to post/update the sticky flake-verdict comment
