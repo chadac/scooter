@@ -1715,7 +1715,7 @@ jobs:
         run: |
           set -euo pipefail
           mode=targeted; [ -n "$FLAKE_SPECS" ] && mode=contention
-          node scripts/flake-focus-report.mjs "$PLAYWRIGHT_JSON_OUTPUT_NAME" \
+          nix develop --command node scripts/flake-focus-report.mjs "$PLAYWRIGHT_JSON_OUTPUT_NAME" \
             --pattern "$FLAKE_PATTERN" --target full --mode "$mode" > /dev/null
 
       # THE CONTROL. "0 failures in 5 runs" is unfalsifiable on its own — a test
@@ -1811,24 +1811,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: |
-          set -euo pipefail
-          mkdir -p history
-          # Walk back from newest: the artifact expires (90d) and a run that died
-          # before `merge reports` has none, so "most recent" is not "has one".
-          runs=$(gh run list --workflow "${{ github.workflow }}" --branch "$DEFAULT_BRANCH" \
-            --limit 20 --json databaseId,headSha,createdAt \
-            --jq '.[] | "\(.databaseId) \(.createdAt)"' 2>/dev/null || true)
-          found=0
-          while read -r id created; do
-            [ -n "${id:-}" ] || continue
-            [ "$found" -ge 5 ] && break
-            if gh run download "$id" --name e2e-full-report --dir "history/$id" 2>/dev/null; then
-              found=$((found + 1))
-              printf '%s' "${created%T*}" | cut -c6- > "history/$id/label"
-            fi
-          done <<< "$runs"
-          echo "nightly window: $found run(s)"
+        # `nix shell nixpkgs#gh`: gh is in NEITHER the devshell nor the fleet
+        # runner image. Unlike ubuntu-latest, where it is preinstalled.
+        run: nix shell nixpkgs#gh -c .github/scripts/fetch-e2e-full-window.sh history 5
 
       # The verdict on the PR — identical contract to the fast job, but this one is
       # the evidence that actually counts for a flake first seen on `e2e-full`, so
@@ -1865,7 +1850,7 @@ jobs:
             hist+=(--history "$f")
             hist+=(--history-label "$(cat "$(dirname "$f")/label" 2>/dev/null || true)")
           done < <(find history -name report.json 2>/dev/null | sort)
-          node scripts/flake-focus-report.mjs "$PLAYWRIGHT_JSON_OUTPUT_NAME" \
+          nix develop --command node scripts/flake-focus-report.mjs "$PLAYWRIGHT_JSON_OUTPUT_NAME" \
             --pattern "$FLAKE_PATTERN" --target full --mode "$mode" \
             --specs "$FLAKE_SPECS" --run-url "$RUN_URL" --history-ref "$BASE_REF" \
             "${base[@]}" "${hist[@]}" > flake-comment.md
@@ -1878,7 +1863,7 @@ jobs:
           status=pass
           grep -q "STILL reproduces" flake-comment.md && status=fail
           grep -q "no power" flake-comment.md && status=warn
-          node scripts/ci-report.mjs post --section flake-full --status "$status" \
+          nix develop --command node scripts/ci-report.mjs post --section flake-full --status "$status" \
             --summary "$(sed -n 's/^### [^ ]* //p' flake-comment.md | head -1 | grep . || echo 'flake focus (full)')" \
             --body flake-comment.md --labels "$LABELS"
 
