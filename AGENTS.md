@@ -204,10 +204,20 @@ and no contention for provisioning — which is where those flakes live. A green
 `flake-check` on such a PR shows no *regression*; it is not evidence the flake is
 fixed. Use `e2e-full-flake-check` for those.
 
-It is the slowest of the three, but not as slow as this file used to claim: a
-cluster plus the full platform rollout is **~4 min**, and the repetitions
-themselves dominate after that (~6 min for 3×3 tests, measured on #689). Budget
-**~11 min** without a control and roughly double with one.
+It is the slowest of the three, but not as slow as this file used to claim.
+Measured end-to-end on #697 (GitHub-hosted `ubuntu-latest`, like every job here
+except the `e2e-full` shards):
+
+| | |
+|---|--:|
+| k3d + the full platform rollout | 3m37s |
+| 5 targeted repetitions | 3m18s |
+| the control (its own rollout + 5 more) | 5m25s |
+| **total** | **13m08s** |
+
+So budget **~13 min**, not 25. The control is cheaper than the PR's own half
+because its bring-up reuses the already-populated registry — 117s against 217s,
+with all eight image pushes skipped on a content-tag HEAD.
 
 ## Conventions
 
