@@ -146,7 +146,7 @@ that actually executes (it is matched case-insensitively against
 selects nothing but still decides the verdict. A check that ran zero repetitions
 of the flake proves nothing and must not report green.
 
-**The control run.** When the fast job's own repetitions come back clean, it
+**The control run.** When a focused job's own repetitions come back clean, it
 re-runs the same test with the same budget on the PR's **base commit** and
 reports both rates. "0 failures in 20 runs" is unfalsifiable alone — a test that
 fires once in 200 runs gives exactly that on a branch that fixed nothing. So the
@@ -157,12 +157,19 @@ comment distinguishes:
 - it fires on the base only rarely (say 2/20, leaving ~12% odds of 20 clean runs
   by chance) — reported as a **weak control**, not as a fix;
 - it fires on **neither** — the run had no power at all; raise the repetitions,
-  add `flake-specs:`, or move to the full target.
+  add `flake-specs:`, or move to the full target. (On the full target there is
+  nowhere further to move: the repeat budget is the only knob left.)
 
 The control costs roughly a second run of the job, so it is skipped when the PR's
-own run already reproduced the flake (the answer is in already). The full-target
-job has no control: the equivalent means deploying the base's whole platform to a
-second cluster.
+own run already reproduced the flake (the answer is in already).
+
+**Both** focused jobs run one. The full-target control redeploys the base's whole
+platform — it tears the PR's k3d cluster down and brings the base's up in its
+place, rather than running the base's specs against the PR's deployment. The
+cheap version is only a control when the fix happens to be test-side, and whether
+it is test-side is exactly what nobody knows up front. The k3d registry survives
+the teardown and its tags are content-addressed, so every image the base shares
+with the PR skips the push — for a test-only fix, all of them.
 
 | Label | Job | Runs against |
 |---|---|---|
@@ -195,8 +202,12 @@ the nightly `e2e-full` usually cannot reproduce on the fast target at all: the
 fast stack has no sandbox pods, so it has no cold boots, no node CPU saturation,
 and no contention for provisioning — which is where those flakes live. A green
 `flake-check` on such a PR shows no *regression*; it is not evidence the flake is
-fixed. Use `e2e-full-flake-check` for those, and expect it to be slow (a cluster
-per run, ~13-25m before the first repetition).
+fixed. Use `e2e-full-flake-check` for those.
+
+It is the slowest of the three, but not as slow as this file used to claim: a
+cluster plus the full platform rollout is **~4 min**, and the repetitions
+themselves dominate after that (~6 min for 3×3 tests, measured on #689). Budget
+**~11 min** without a control and roughly double with one.
 
 ## Conventions
 
