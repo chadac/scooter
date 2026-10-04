@@ -450,6 +450,33 @@ describe("SessionManager", () => {
     expect(sessions.list()).toHaveLength(0);
   });
 
+  it("forgetDeleted() tears down a conversation deleted on ANOTHER pod", async () => {
+    // The CR watch says the conversation no longer exists. end() ran on some other replica
+    // and cleared only ITS state, so this pod is left holding a live entry — and a sandbox
+    // it may have re-provisioned, which nothing references any more (#495).
+    const provisioner = fakeProvisioner();
+    const sessions = createSessionManager({ provisioner, store: inMemoryStore() });
+    const conv = await sessions.start("thread-1");
+
+    await sessions.forgetDeleted(conv.id);
+
+    expect(provisioner.destroy).toHaveBeenCalledOnce();
+    expect(sessions.get(conv.id)).toBeUndefined();
+    expect(sessions.list()).toHaveLength(0);
+  });
+
+  it("forgetDeleted() is a no-op for a conversation this pod never held", async () => {
+    // Every replica sees every DELETED event; only the one holding the conversation acts.
+    const provisioner = fakeProvisioner();
+    const sessions = createSessionManager({ provisioner, store: inMemoryStore() });
+    const conv = await sessions.start("thread-1");
+
+    await expect(sessions.forgetDeleted("thread-somewhere-else" as SessionId)).resolves.toBeUndefined();
+
+    expect(provisioner.destroy).not.toHaveBeenCalled();
+    expect(sessions.get(conv.id)).toBeDefined();
+  });
+
   it("the file store dedups + persists external resource links", async () => {
     const root = mkdtempSync(join(tmpdir(), "convstore-"));
     try {
