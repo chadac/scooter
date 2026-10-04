@@ -13,9 +13,11 @@ from scooter_broker_lib.types import Provider
 from scooter_broker_lib.sources.static_token import StaticTokenSource
 from scooter_broker_lib.transports.git_credential import GitCredential
 from scooter_broker_lib.transports.http_proxy import HttpProxy
+from scooter_broker_lib.transports.mcp_tools import McpTools
 
 from .config import GitHubSettings
 from .github_app import GitHubAppSource
+from .mcp_tools import github_mcp_server
 
 
 # Auto-link the PRs / issues an agent creates via the proxy. GitHub's create
@@ -31,6 +33,9 @@ _GITHUB_LINK_RULES = [
         lambda r: Link(source="github", resource_type="issue", url=r.get("html_url", ""), title=r.get("title")),
     ),
 ]
+
+
+UPSTREAM = "https://api.github.com"
 
 
 @register_provider
@@ -61,10 +66,15 @@ def github() -> Provider:
         transports=[
             GitCredential(host="github.com", username="x-access-token"),
             HttpProxy(
-                upstream="https://api.github.com",
+                upstream=UPSTREAM,
                 link_rules=_GITHUB_LINK_RULES,
                 agent_host_url=settings.agent_host_url,
             ),
+            # The agent tool (github_comment), moved out of the agent-host by #700 so
+            # it ships with this contrib and is ABSENT when it is not enabled. Same
+            # upstream as the proxy, from one variable — the tool and the raw route
+            # must not drift in what they call or how they authenticate.
+            McpTools(server=github_mcp_server(), upstream=UPSTREAM),
         ],
         enabled=enabled,
     )

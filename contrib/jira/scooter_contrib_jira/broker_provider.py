@@ -7,7 +7,9 @@ from scooter_broker_lib.autolink import Link, rule
 from scooter_broker_lib.registry import register_provider
 from scooter_broker_lib.types import Provider
 from .atlassian_oauth import AtlassianOAuthSource
+from .mcp_tools import jira_mcp_server
 from scooter_broker_lib.transports.http_proxy import HttpProxy
+from scooter_broker_lib.transports.mcp_tools import McpTools
 
 
 def _jira_issue_link(r: dict) -> Link | None:
@@ -33,6 +35,7 @@ def jira() -> Provider:
     # Read at BUILD time, like every provider factory (#573).
     settings = JiraSettings()
     cloud_id = settings.atlassian_cloud_id
+    upstream = f"https://api.atlassian.com/ex/jira/{cloud_id}"
     return Provider(
         name="jira",
         credential=AtlassianOAuthSource(
@@ -42,10 +45,12 @@ def jira() -> Provider:
         ),
         transports=[
             HttpProxy(
-                upstream=f"https://api.atlassian.com/ex/jira/{cloud_id}",
+                upstream=upstream,
                 link_rules=_JIRA_LINK_RULES,
                 agent_host_url=settings.agent_host_url,
             ),
+            # The agent tool (jira_comment), moved out of the agent-host by #700.
+            McpTools(server=jira_mcp_server(), upstream=upstream),
         ],
         enabled=bool(settings.atlassian_client_id and cloud_id),
     )
