@@ -126,6 +126,12 @@ export default defineConfig({
             MIRROR_STATE_PATH: "/tmp/agent-host-e2e-mirror",
             GOOSE_MODEL: "model-default",
             AGENT_AVAILABLE_MODELS: "model-default,model-fast,model-smart",
+            // The MCP endpoint takes its conversation from a signed token, so the stack
+            // needs a signing key exactly as production does (the kubenix module provides
+            // it there). Without this the endpoint rejects every request and the fake
+            // agent's `~subagent` directive — which calls spawn_subagent over MCP, the
+            // only way an e2e test can produce a subagent — fails. Why: issue #700.
+            CONV_TOKEN_SECRET: "e2e-fake-stack-conv-token-secret",
           },
           // Wait on the router's readiness ROUTE (GET /healthz -> 200, proxied to agent-host), so
           // the WHOLE chain (PG + migrate + agent-host + router) is serving before tests start.
