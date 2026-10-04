@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import Depends, FastAPI, HTTPException
 
-from .auth import authenticate
+from .auth import authenticate, authenticate_mcp
 from .authz import authorizer_from_settings
 from ..config import refresh_settings, settings
 from scooter_broker_lib.autolink import Link, create_link, list_links
@@ -140,6 +140,22 @@ def create_app() -> FastAPI:
         except httpx.HTTPError as e:
             raise HTTPException(status_code=502, detail=f"agent-host list-links failed: {e}") from e
         return {"links": links}
+
+    # The agent-facing MCP server — contrib-contributed tools, served to ONE
+    # conversation per request. Mounted top-level (like /modules and /link) because
+    # it is not per-provider: it aggregates every enabled provider's tools behind one
+    # endpoint, and it authenticates DIFFERENTLY from the provider routes (an SA token
+    # AND a conversation token — see core/auth.authenticate_mcp). Why: issue #700.
+    if settings.mcp_enabled:
+        from ..mcp.routes import create_mcp_router
+
+        app.include_router(
+            create_mcp_router(
+                providers,
+                authed=authenticate_mcp,
+                agent_host_url=settings.agent_host_url,
+            )
+        )
 
     for provider in providers:
         for transport in provider.transports:

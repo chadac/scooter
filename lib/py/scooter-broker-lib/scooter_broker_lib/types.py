@@ -40,6 +40,12 @@ class Identity:
     # True if this caller is a configured APPROVER (e.g. the agent-host relaying a
     # user's approve/deny), not a sandbox. Approvers have no conversation_id.
     is_approver: bool = False
+    # The Scooter user who owns the conversation, when the caller's credential says
+    # so. Only the MCP two-token path populates it (from the conversation token's
+    # `owner` claim) — a sandbox SA name carries no owner, so this stays None there
+    # rather than being guessed. A tool that must scope by owner reads this instead
+    # of asking the agent-host. See issue #700.
+    owner: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +107,7 @@ AuthDependency = Callable[..., Awaitable[Identity]]
 @runtime_checkable
 class Transport(Protocol):
     """A delivery mechanism for a credential. Shipped: http-proxy,
-    git-credential, token-vend. A transport may mount MULTIPLE routes.
+    git-credential, token-vend, mcp-tools. A transport may mount MULTIPLE routes.
     """
 
     name: str
@@ -113,6 +119,16 @@ class Transport(Protocol):
         deliver per this transport's mechanism.
         """
         ...
+
+    # OPTIONAL second half: the agent tools this transport contributes, served by the
+    # broker's single /mcp endpoint rather than mounted under the provider's prefix.
+    # Declared here so a transport can be TYPED against it, and discovered by
+    # `hasattr` so the four shipped transports that have no tools needed no change —
+    # the same arity-not-a-flag trick `registry.wants_context` uses.
+    #
+    # Not part of the Protocol's runtime_checkable surface on purpose: adding it to
+    # the required set would make every existing transport fail isinstance().
+    # See scooter_broker_lib/mcp.py and transports/mcp_tools.py. Why: issue #700.
 
 
 # ---------------------------------------------------------------------------

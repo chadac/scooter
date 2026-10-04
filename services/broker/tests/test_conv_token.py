@@ -50,15 +50,24 @@ def _claims(**over) -> dict:
 # --- the cross-language vector ---------------------------------------------------
 
 def test_verifies_the_frozen_agent_host_token():
-    """The committed token was signed by the TypeScript implementation."""
-    res = verify_conv_token(VECTOR["token"], VECTOR["secret"])
+    """The committed token was signed by the TypeScript implementation.
+
+    The clock is pinned: a frozen vector has a fixed `exp`, so verifying it against
+    the real clock would start failing the moment that timestamp passed."""
+    res = verify_conv_token(VECTOR["token"], VECTOR["secret"], now=VECTOR["verifyAtEpochSeconds"])
     assert res.conversation_id == VECTOR["claims"]["sub"]
     assert res.owner == VECTOR["claims"]["owner"]
 
 
 def test_frozen_vector_is_rejected_under_the_wrong_secret():
     with pytest.raises(ConvTokenError):
-        verify_conv_token(VECTOR["token"], "not-the-secret")
+        verify_conv_token(VECTOR["token"], "not-the-secret", now=VECTOR["verifyAtEpochSeconds"])
+
+
+def test_frozen_vector_is_expired_past_its_exp():
+    """The other half of pinning the clock: the TS suite asserts this too."""
+    with pytest.raises(ConvTokenError, match="expired"):
+        verify_conv_token(VECTOR["token"], VECTOR["secret"], now=VECTOR["expiredAtEpochSeconds"])
 
 
 # --- the negative cases that make this a security boundary ------------------------
@@ -114,8 +123,13 @@ def test_rejects_a_foreign_issuer():
 
 
 def test_rejects_an_expired_token():
-    with pytest.raises(ConvTokenError):
-        verify_conv_token(_mint(_claims(exp=1_700_000_001)), SECRET)
+    with pytest.raises(ConvTokenError, match="expired"):
+        verify_conv_token(_mint(_claims(exp=1_000)), SECRET, now=1_000)
+
+
+def test_accepts_a_token_one_second_before_expiry():
+    """`<=` on the boundary second, matching verifyConvToken in the agent-host."""
+    assert verify_conv_token(_mint(_claims(exp=1_100)), SECRET, now=1_099).conversation_id == "conv-1"
 
 
 @pytest.mark.parametrize("missing", ["exp", "iat", "sub", "aud", "iss"])
@@ -134,6 +148,10 @@ def test_rejects_malformed_tokens_without_raising_something_else():
 
 def test_fails_closed_with_no_secret_configured():
     """A deployment that forgot to mount the Secret must reject EVERY token, not
-    accept every token signed with ""."""
+    accept every token signed with "".
+
+    Minted with a REAL secret: pyjwt refuses to sign with an empty HMAC key, so the
+    token an attacker would actually present here is an ordinary signed one that the
+    broker simply has no key to check."""
     with pytest.raises(ConvTokenError, match="no conversation-token secret"):
-        verify_conv_token(_mint(_claims(), secret=""), "")
+        verify_conv_token(_mint(_claims()), "")

@@ -55,8 +55,17 @@ class ConvTokenError(Exception):
     which half to work on."""
 
 
-def verify_conv_token(token: str, secret: str) -> ConvToken:
+def verify_conv_token(token: str, secret: str, now: int | None = None) -> ConvToken:
     """Verify a conversation token and return its claims.
+
+    `now` (seconds since epoch) overrides the clock, defaulting to the real one. The
+    expiry check is ours rather than pyjwt's for exactly that reason: pyjwt compares
+    against `datetime.now()` with no injection point, so a frozen test vector — which
+    must have a FIXED `exp` to be frozen at all — can only be verified by either
+    monkeypatching pyjwt's clock or giving the vector an exp far enough in the future
+    that it stops testing expiry. Both are worse than two lines of comparison, and
+    the TS verifier does its own check too, so the two implementations stay
+    symmetrical.
 
     Raises ConvTokenError for every failure mode — an absent secret included, which
     FAILS CLOSED. Verifying against an empty secret would accept anything an attacker
@@ -80,11 +89,27 @@ def verify_conv_token(token: str, secret: str) -> ConvToken:
             algorithms=["HS256"],          # fixed; see the module docstring
             audience=CONV_TOKEN_AUDIENCE,
             issuer=CONV_TOKEN_ISSUER,
-            options={"require": ["exp", "iat", "sub", "aud", "iss"]},
+            # `require` is a PRESENCE check and stays on for exp even though we
+            # verify it ourselves below — a token with no exp must be rejected, not
+            # treated as never expiring.
+            options={
+                "require": ["exp", "iat", "sub", "aud", "iss"],
+                "verify_exp": False,
+            },
         )
     except jwt.InvalidTokenError as exc:
         # One exception type out, with the reason only in the log.
         raise ConvTokenError(f"invalid conversation token: {exc}") from exc
+
+    # Expiry, against an injectable clock. `<=` so a token is dead ON its exp second,
+    # matching verifyConvToken in the agent-host.
+    import time
+
+    exp = claims.get("exp")
+    if not isinstance(exp, (int, float)):
+        raise ConvTokenError("conversation token has a non-numeric exp")
+    if exp <= (now if now is not None else int(time.time())):
+        raise ConvTokenError("conversation token has expired")
 
     conversation_id = claims.get("sub") or ""
     if not isinstance(conversation_id, str) or not conversation_id:
