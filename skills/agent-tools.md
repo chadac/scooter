@@ -23,6 +23,9 @@ triggers:
 - broker api
 - web search
 - web_search
+- brave_web_search
+- kagi_web_search
+- duckduckgo_web_search
 - search the web
 - fetch a url
 - web_fetch
@@ -99,8 +102,23 @@ don't repeat.
 
 ## Looking things up
 
-- **Search the web** — DuckDuckGo instant answers (definitions, abstracts, related
-  links). Good for a quick fact or to find a canonical URL to fetch.
+- **Search the web** — ranked web results (title, URL, snippet). Good for a quick
+  fact or to find a canonical URL to fetch. The tool is named for the provider that
+  serves it (`brave_web_search`, `kagi_web_search`, …), because a deployment may wire
+  more than one. **If there is no search tool in your tool list, this deployment has no
+  search provider configured** — say so rather than retrying or reaching for `curl`,
+  and use the fetch tool on a URL you already know.
+  A search that FAILS tells you the real status: a 401 or 429 means the deployment's
+  search key is bad or out of quota, which is worth reporting, not retrying.
+- **If SEVERAL search tools are listed, use ONE.** They are independent indexes over
+  the same web, not a committee: running the same query through all of them spends
+  tokens to mostly re-read the same links. Read their descriptions and pick the one
+  that suits the question, then try another only if the first fails or genuinely
+  returns nothing useful — and say which one you used, since "nothing found" is worth
+  weighing against which index you asked. `duckduckgo_web_search` needs no API key and
+  so is the one most likely to be present, but it reads a public HTML page and is
+  rate-limited: when it fails, that is about the tool and not about the web, so prefer
+  a keyed sibling if one is listed rather than retrying it.
 - **Fetch a URL** — fetch a public web page and get its readable text. Use it on a
   URL from a search result, a PR/issue link, or docs. (It refuses
   internal/cluster/metadata addresses.)

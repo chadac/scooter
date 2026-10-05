@@ -292,6 +292,35 @@ class _AuthMiddleware:
         await self.app(scope, receive, send)
 
 
+async def assert_tool_names_unique(providers: list[Provider]) -> None:
+    """Fail STARTUP if two providers contribute a tool of the same name.
+
+    Tool names are flat (mounted namespace-less, so the skills and
+    ui/src/toolCallView.ts can match on a name), so a name is a global identity and a
+    collision has nothing to arbitrate it but mount order — which differs between a
+    rebuild and a rollback. A contrib that duplicates a capability therefore names the
+    tool for its provider (`brave_web_search`), which is also what lets several search
+    providers be enabled at once; this catches the case where someone did not.
+
+    Awaited from the lifespan rather than run at mount time: reading a server's tools is
+    async and the app factory is sync. Why: PR #707.
+    """
+    owner_of: dict[str, str] = {}
+    for provider, server in collect_mcp_servers(providers):
+        # run_middleware=False: the gates need a conversation (none at startup), and a
+        # gated-out tool must still count. Why: PR #707.
+        for tool in await server.list_tools(run_middleware=False):
+            owner = owner_of.get(tool.name)
+            if owner is not None and owner != provider.name:
+                raise RuntimeError(
+                    f"two providers contribute a tool named {tool.name!r}: {owner!r} and "
+                    f"{provider.name!r}. Tool names are flat, so this cannot be resolved "
+                    "by mount order — rename one of them after its provider (the search "
+                    "contribs do: `brave_web_search`, `kagi_web_search`)."
+                )
+            owner_of[tool.name] = provider.name
+
+
 def create_mcp_app(providers: list[Provider], *, authenticate, agent_host_url: str = "") -> ASGIApp:
     """The ASGI app serving POST /mcp, with auth in front of it.
 

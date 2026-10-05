@@ -51,6 +51,30 @@ let
   atProblems = if builtins.any (e: e.name == "AIRTABLE_TOKEN") brokerEnv then [ ]
     else [ "broker.env.AIRTABLE_TOKEN (airtable provider not wired)" ];
 
+  # WEB SEARCH (brave.enable AND kagi.enable in the example). Two things to pin,
+  # because the tool this replaced failed SILENTLY — it answered real queries with HTTP
+  # 200 and "no instant answer", so a broken search looked like an empty web (PR #698):
+  #   1. each enabled provider's key reaches the broker from ITS OWN secret, or that
+  #      provider stays disabled and its search tool is absent from the agent's list;
+  #   2. enabling several providers renders ALL of their env. They used to be mutually
+  #      exclusive because they all owned a tool called `web_search`; the tools are now
+  #      named for their providers, so "three indexes" is a choice a deployment is
+  #      allowed to make and a regression back to one-of would show up here;
+  #   3. duckduckgo, the keyless one, renders its SWITCH — it has no secret, so if
+  #      DUCKDUCKGO_ENABLED went missing the provider would read as disabled and the
+  #      tool would silently not exist, with no absent key to explain why.
+  #      Why: review of PR #707.
+  searchKeyRef = env:
+    let m = builtins.filter (e: e.name == env) brokerEnv;
+    in if m == [ ] then { } else ((builtins.head m).valueFrom.secretKeyRef or { });
+  searchProblems =
+    (if (searchKeyRef "BRAVE_SEARCH_API_KEY").name or "" == "brave-search-key" then [ ]
+     else [ "broker.env.BRAVE_SEARCH_API_KEY (brave.enable = true not wired, so the agent has no brave_web_search)" ])
+    ++ (if (searchKeyRef "KAGI_API_KEY").name or "" == "kagi-search-key" then [ ]
+        else [ "broker.env.KAGI_API_KEY (kagi.enable = true not wired — two search providers must both render)" ])
+    ++ (if builtins.any (e: e.name == "DUCKDUCKGO_ENABLED" && (e.value or "") == "true") brokerEnv then [ ]
+        else [ "broker.env.DUCKDUCKGO_ENABLED (duckduckgo.enable = true not wired, so the keyless provider stays off)" ]);
+
   # Static shares (shares.enable = true in the example): the broker must carry
   # SHARES_ENABLED and a derived public base URL — otherwise the /shares +
   # /s/<uuid>/ routes never mount (or return relative URLs) and publishing 404s.
@@ -710,8 +734,8 @@ let
       (containersOf w))
     allWorkloads;
 
-  allProblems = oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ approvalProblems ++ stage2Problems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems;
+  allProblems = searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ approvalProblems ++ stage2Problems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems;
 in
 if allProblems == [ ]
-then "ok: deployments = ${haveDeps}; datadog + airtable + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; deploy-time Jobs are spec-hash named\n"
+then "ok: deployments = ${haveDeps}; datadog + airtable + brave + kagi + duckduckgo (three search providers, each with its own tool) + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; deploy-time Jobs are spec-hash named\n"
 else builtins.throw "example manifests missing: ${builtins.concatStringsSep ", " allProblems}"

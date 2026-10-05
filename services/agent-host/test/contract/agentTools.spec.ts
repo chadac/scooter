@@ -1,10 +1,10 @@
 /**
- * The WEB tools (web_search / web_fetch) and their SSRF guard.
+ * `web_fetch` and its SSRF guard — the last agent tool the agent-host serves itself.
  *
- * This file used to cover the provider reply tools too — the error-echo rule, target
- * inference from links, the conversation_map fallback, the attachment gate and the
- * UI-facing titles. #700 moved those tools into the contribs that own them, and the
- * tests moved with them:
+ * This file used to cover the provider reply tools (the error-echo rule, target
+ * inference from links, the conversation_map fallback, the attachment gate, the
+ * UI-facing titles) and `web_search`. #700 moved every one of them into the contrib
+ * that owns the credential, and the tests went with the code:
  *
  *   error-echo + idempotent errors  -> each contrib's test_mcp_tools.py, via
  *                                      ToolResult.from_upstream
@@ -12,17 +12,21 @@
  *   the attachment gate              -> each contrib's gate tests
  *   tool names the UI keys on        -> each contrib's test, since the UI matches the
  *                                      tool NAME and the contribs now own those rows
+ *   web_search's three outcomes      -> lib/py/scooter-broker-lib/tests/test_search.py
+ *                                      plus contrib/{brave,kagi,duckduckgo}/tests
  *
- * What stays here is what never touched a provider credential.
+ * What stays is the one tool that needs no credential — and whose guard is the real
+ * reason it is a tool rather than "just fetch a URL".
  */
 
 import { describe, it, expect } from "vitest";
 
-import { handleWebFetch, handleWebSearch, registerWebTools } from "../../src/agent/agentTools.js";
+import { handleWebFetch, registerWebFetch } from "../../src/agent/agentTools.js";
 
 describe("agent-tools: web_fetch SSRF guard", () => {
-  // The guard is the security-relevant half of web_fetch, and the reason it stays a
-  // first-party tool rather than "just fetch a URL".
+  // The security-relevant half, and why porting this tool to a Python contrib would be
+  // a risk rather than a move: it would mean rewriting the DNS resolution and the
+  // blocked-range arithmetic these cases cover.
   it.each([
     "http://169.254.169.254/latest/meta-data/",              // cloud metadata
     "http://127.0.0.1:8080/",                                // loopback
@@ -34,27 +38,40 @@ describe("agent-tools: web_fetch SSRF guard", () => {
   });
 });
 
-describe("agent-tools: the web tools need no provider credential", () => {
-  // They hit DuckDuckGo / a URL directly, so they are registered UNCONDITIONALLY —
-  // nothing about broker wiring or an attached provider gates them. That is also why
-  // they are the only tools #700 left in this process; they move to per-provider
-  // search contribs in phase 3.
-  it("registerWebTools registers web_search + web_fetch with no deps at all", () => {
+describe("agent-tools: web_fetch needs no credential and no broker", () => {
+  it("registers with no deps at all", () => {
     const names = new Set<string>();
     const server = { registerTool: (name: string) => names.add(name) } as unknown as Parameters<
-      typeof registerWebTools
+      typeof registerWebFetch
     >[0];
-    registerWebTools(server, {});
-    expect(names.has("web_search")).toBe(true);
+    registerWebFetch(server, {});
     expect(names.has("web_fetch")).toBe(true);
   });
 
-  it("web_search reports a reachability failure rather than throwing", async () => {
-    const out = await handleWebSearch({
+  it("registers web_fetch ALONE — web_search belongs to a search contrib now", () => {
+    // The assertion is the absence: while `web_search` rode along here, a keyless
+    // search backend looked like platform furniture instead of an integration, and
+    // every deployment got a tool that answered real queries with an empty web
+    // (PR #698). It now arrives over the broker's /mcp as one tool per enabled search
+    // contrib (`brave_web_search`, `kagi_web_search`, `duckduckgo_web_search`).
+    const names = new Set<string>();
+    const server = { registerTool: (name: string) => names.add(name) } as unknown as Parameters<
+      typeof registerWebFetch
+    >[0];
+    registerWebFetch(server, {});
+    expect([...names]).toEqual(["web_fetch"]);
+  });
+
+  it("reports a reachability failure rather than throwing", async () => {
+    // An IP LITERAL in TEST-NET-3 (RFC 5737, reserved for documentation): the guard
+    // skips DNS for a literal, so the test exercises the fetch path without depending
+    // on a resolver — a hostname here fails at "could not resolve" instead, which is
+    // a different branch.
+    const out = await handleWebFetch({
       fetchImpl: (async () => {
         throw new Error("offline");
       }) as unknown as typeof fetch,
-    }, { query: "anything" });
+    }, { url: "http://203.0.113.10/page" });
     expect(out.isError).toBe(true);
     expect(out.content[0].text).toContain("offline");
   });

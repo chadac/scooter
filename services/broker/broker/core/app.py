@@ -86,7 +86,7 @@ def create_app() -> FastAPI:
     # lifespan has to compose its own. Why: issue #700.
     mcp_app = None
     if settings.mcp_enabled:
-        from ..mcp.routes import create_mcp_app
+        from ..mcp.routes import assert_tool_names_unique, create_mcp_app
 
         mcp_app = create_mcp_app(
             providers,
@@ -104,6 +104,12 @@ def create_app() -> FastAPI:
             # mount-time check can catch. Entered first so it is torn down last.
             if mcp_app is not None and mcp_app.lifespan is not None:
                 await stack.enter_async_context(mcp_app.lifespan(app))
+            if mcp_app is not None:
+                # Refuse to serve a tool surface nobody chose: tool names are flat, so
+                # two providers owning one name leaves mount order to decide which the
+                # agent gets. Awaited here because reading a server's tools is async
+                # and create_mcp_app is not. Why: issue #700.
+                await assert_tool_names_unique(providers)
             # Run providers' async startup hooks (e.g. open a DB, start a sweep).
             for p in providers:
                 if p.on_startup is not None:

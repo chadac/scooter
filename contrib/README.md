@@ -26,13 +26,35 @@ services.
 ```
 contrib/<name>/
   pyproject.toml            # package + entry points (both groups if it spans services); hatchling backend
-  default.nix               # the contrib MODULE (see schema below)
+  default.nix               # the contrib MODULE: declares `contribs.<name>` (see schema below)
+  deployment.nix            # optional: a KUBENIX module -> declares agentSandbox.* options
+  sandbox.nix               # optional: a NIXOS module  -> goes into the sandbox-os image
   scooter_contrib_<name>/
     __init__.py             # neutral; imports NEITHER broker nor webhooks
     broker_provider.py      # imports broker.*  (only loaded in the broker image)
     webhooks_handler.py     # imports webhooks.* (only loaded in the webhooks image)
   tests/
 ```
+
+**Three module systems, three files, and they are not interchangeable** — this is the
+thing most easily got backwards:
+
+| file | module system | declares / contributes |
+|---|---|---|
+| `default.nix` | the `contribs` eval (`contrib/all-modules.nix`) | `contribs.<name>`: `src`, `services.*`, `ui`, `skills`, `approvals`, and pointers to the two halves below. Touches **no** `agentSandbox.*` option. |
+| `deployment.nix` | kubenix, via `modules/platform.nix` | its own `agentSandbox.broker.<name>.*` options, and the manifests/env they render |
+| `sandbox.nix` | NixOS, via `contrib/sandbox-modules.nix` | packages, systemd units, activation — anything in the agent's sandbox image |
+
+`default.nix` cannot declare an `agentSandbox.*` option itself: the `contribs` eval is a
+**separate** `evalModules` (#615) whose option set is `contribs.*` only, so there is no
+`agentSandbox` there to declare into. That separation is also why the halves are handed
+over as paths — a value stored and passed to the other system's `imports`, never
+evaluated in this one.
+
+`contrib/aws` is the only contrib with all three; `contrib/echo` has `default.nix` +
+`sandbox.nix`, which was the whole shape of a contrib before `deployment.module` existed
+(#607 added the sandbox half, #636 the deployment half three days later). A contrib with
+only a deployment half is the common case — every broker integration.
 
 **Rule: the top-level module stays import-light.** The service-coupled modules
 import their host service (`broker.*` / `webhooks.*`), which is present at
@@ -134,6 +156,12 @@ contribs.aws = {
 };
 ```
 
+**One half, one file, named for the half**: `deployment.nix` is the kubenix module,
+`sandbox.nix` the NixOS module baked into the agent's image. `contrib/aws` ships both,
+and they are not interchangeable — the names are what keep a reader from reaching for
+the wrong one. A contrib with only a deployment half still gets its own
+`deployment.nix`, even when that is two options and one env entry.
+
 `modules/platform.nix` imports it, so it can declare its own options
 (`agentSandbox.broker.aws.*`) and render its own `kubernetes.resources`. It
 reaches a service's existing Deployment through that service's seams rather than
@@ -160,6 +188,15 @@ Two consequences worth knowing:
   `platform.nix` throws.
 - **An option that does not exist is an eval error**, so a manifest configuring an
   integration this image never built in fails loudly instead of being ignored.
+- **The same cuts the other way for a contrib READING a sibling's option.** A
+  deployment module may touch any part of the tree — the module system has no notion
+  of ownership, and a contrib is free to declare an option another one also declares.
+  But `config.agentSandbox.broker.kagi.enable` resolves only where kagi was also
+  built, so a bare cross-contrib reference breaks every image that ships one without
+  the other. You *can* work around it (guard with `?`, or declare the option
+  yourself); prefer not needing to. A constraint that wants two contribs in scope at
+  once either belongs in the platform module, or — as the brave/kagi search
+  exclusivity turned out to be — should not exist. Why: PR #707.
 
 `contrib/aws/deployment.nix` is the worked example: the account registry, the
 `AWS_*` env, the rollout annotation and the IRSA annotation, which were ~40
@@ -201,6 +238,60 @@ asserts the file follows — and fails if a contrib ships a skill that table
 doesn't cover. Skills that document the *platform* (`scooter-github.md`,
 `sandbox-shell-safety.md`) stay in the top-level `skills/`: they document no
 contrib, and there is nothing to gate them on.
+
+### Contributing agent tools (`mcp_tools.py`)
+
+A contrib owns the agent's typed tools for its integration. Declare them on your
+own `FastMCP` server and hand it to the broker as a transport:
+
+```python
+mcp = FastMCP(name="brave")
+
+@mcp.tool
+async def brave_web_search(query: str, ctx: ToolContext = ToolContextDep) -> ToolResult:
+    """Search the web with Brave and get ranked results."""
+    ...
+
+# broker_provider.py
+transports=[McpTools(server=mcp, upstream="https://api.search.brave.com")]
+```
+
+The input schema comes from the type hints and the description from the
+docstring; `ctx` is dependency-injected, which also keeps it out of the schema —
+an argument the model could supply would be forgeable. `ctx.upstream` issues the
+request with the provider's credential injected on the way out, so the agent
+never holds the secret. `contrib/echo/scooter_contrib_echo/mcp_tools.py` is the
+worked reference and `scooter_broker_lib/mcp.py` the surface.
+
+**A tool ships iff its provider is enabled**, the same gate `skills` uses and for
+the same reason: a tool for an integration that isn't wired teaches the agent to
+call something that fails, and then to read that failure as the feature being
+broken. For a keyed provider that gate is usually the key itself — no key, no
+provider, no tool — which is how a deployment with no search key ends up with no search
+tool at all rather than one that answers every query with nothing.
+
+**TOOL NAMES ARE FLAT AND THEREFORE GLOBAL.** The servers are mounted
+namespace-less, because the skills name these tools and
+`ui/src/toolCallView.ts` matches on the name. So a name is an identity, and two
+providers claiming one leaves nothing to arbitrate but mount order — the broker
+refuses to start on a duplicate (`broker/mcp/routes.py`).
+
+**So name a tool for its provider whenever a sibling contrib could offer the same
+capability** — `brave_web_search` and `kagi_web_search`, not one shared
+`web_search`. This is the convention the reply tools already follow
+(`slack_respond`, `github_comment`), and the reason is sharper than consistency: a
+shared name would make the two providers MUTUALLY EXCLUSIVE, which is a
+restriction invented by the naming and not by anything about search. A deployment
+that wants both an independent crawl and a human-ranked index should get two
+tools and let the agent choose. Give a tool a bare, unprefixed name only when it
+is the only thing of its kind the platform will ever have.
+
+Then say in the DOCSTRING how it differs from its siblings and when to prefer it:
+with two search tools listed, that docstring is all the agent has to choose on.
+
+A reply tool for an attachable resource should also be **attachment-gated** with
+`@gate`, so it is unlisted in a conversation it could not act in. Search needs no
+gate: there is no resource to be attached to.
 
 ### Extending the preset
 

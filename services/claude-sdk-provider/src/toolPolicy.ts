@@ -42,7 +42,18 @@ export const TOOL_REDIRECTS: Record<string, string> = {
     "There is no interactive question channel here — the user reads this conversation " +
     "asynchronously. State the question and the options in your REPLY, say which option " +
     "you are proceeding with and why, and continue. Do not block waiting for an answer.",
-  WebSearch: "The WebSearch tool is not available here. Use the scooter-env `web_search` tool instead.",
+  // Search comes from a SEARCH CONTRIB over the broker's MCP server
+  // (`scooter-broker`), not from scooter-env, and a deployment with no search key has
+  // no such tool at all — so the message describes the tool by its SHAPE rather than
+  // sending the model after one exact name. Each provider names its own
+  // (`brave_web_search`, `kagi_web_search`), and a deployment may wire several.
+  // Why: issue #700, review of PR #707.
+  WebSearch:
+    "The WebSearch tool is not available here. Use the `*_web_search` tool in your " +
+    "tool list instead (e.g. `brave_web_search`) — and if several are listed, pick " +
+    "ONE rather than querying every index. If there isn't one, this deployment has no " +
+    "search provider configured — say so rather than retrying, and use `web_fetch` " +
+    "on a URL you know.",
   WebFetch:
     "The WebFetch tool is not available here. Use the scooter-env `web_fetch` tool " +
     "instead — it fetches through the platform and refuses internal addresses.",

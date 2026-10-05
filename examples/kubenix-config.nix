@@ -122,6 +122,27 @@
         };
       };
 
+      # Web search. BOTH providers are on here because this example exists to cover
+      # every option namespace — and because they are no longer exclusive: each
+      # contributes a tool named for itself (`brave_web_search`, `kagi_web_search`), so
+      # the agent gets one tool per index and picks. A real deployment usually enables
+      # the one it pays for; enabling NONE is also valid, and the agent then has no
+      # search tool at all — which is better than the DuckDuckGo-Instant-Answer tool
+      # this replaced, which answered real queries with an empty result set (PR #698).
+      brave = {
+        enable = true;
+        apiKeySecret = { name = "brave-search-key"; key = "BRAVE_SEARCH_API_KEY"; };
+      };
+      kagi = {
+        enable = true;
+        apiKeySecret = { name = "kagi-search-key"; key = "KAGI_API_KEY"; };
+      };
+      # The keyless one: no secret to configure, so the switch is the whole config. Also
+      # the least reliable — it reads DuckDuckGo's public results page, which is
+      # rate-limited per egress IP — which is why it is OFF by default and why a
+      # deployment that can pay for search should prefer brave.
+      duckduckgo.enable = true;
+
       # Static shares: agents publish static bundles the broker serves at
       # /s/<uuid>/ and the UI embeds. Persists to the shared Postgres `broker` DB.
       # publicBaseUrl/frameAncestors default to https://<ingress.host>.

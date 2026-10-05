@@ -9,7 +9,8 @@
  * lowercase, spaces/punct -> "_") and match that against the known tool names.
  * We also accept the raw registerTool titles as a fallback, so either shape works.
  *
- * Returns null for anything we don't specialize (web_search, web_fetch,
+ * Returns null for anything we do not specialize (a search contrib’s
+ * <provider>_web_search, web_fetch,
  * modify_environment, unknown) — the caller renders the generic ToolFallback.
  *
  * A CONTRIB registers its tools through the runtime manifest instead of this

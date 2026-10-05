@@ -297,6 +297,10 @@ in
       };
     };
 
+    # --- Web search ------------------------------------------------------------
+    # No options here: each search contrib declares its own in
+    # contrib/<name>/deployment.nix, and any number may be enabled. Why: PR #707.
+
     # --- Static shares (broker/shares/) — persistent static webpages --------
     # The broker's shares feature lets agents publish static bundles, served at
     # /s/<uuid>/ and embeddable in the conversation UI. Off by default; when on,
