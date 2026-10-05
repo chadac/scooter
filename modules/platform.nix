@@ -121,11 +121,16 @@ let
   # DERIVED from contrib/, not listed here: the .md lives next to the code it
   # documents and its contrib's NAME is the gate, so no table here can fall out of
   # date with the contrib set. Why: PR #618.
+  #
+  # Read straight off `config.contribs` — the contribs are modules in THIS eval
+  # (see `imports`), so there is no second module system to re-derive them from, and
+  # no filtering: every contrib present here is one this image ships. Why: #711.
   bcfg = config.scooter.broker;
-  contribSkills = import ../contrib/skills.nix { inherit lib; };
+  contribSkills = lib.mapAttrs (_: c: c.skills)
+    (lib.filterAttrs (_: c: c.skills != { }) config.contribs);
 
   # The contribs that raise human approvals -> how the agent-host reaches their verbs.
-  # Read straight off the evaluated config: each contrib's DEPLOYMENT module sets its
+  # Read straight off the evaluated config: each contrib's PLATFORM module sets its
   # own row inside its own `mkIf`, so the gating is the contrib's and there is nothing
   # to re-derive here.
   approvalContribsJson =
@@ -146,12 +151,13 @@ in
   # NOTE: ./testing.nix is deliberately NOT imported here. Test-only overrides (a dummy agent, an
   # unauthenticated test webhook) must be opted into by a TEST manifest, so a deploy that never
   # imports it cannot enable them by setting a stray boolean. See modules/testing.nix.
-  # The contribs' own deployment modules are DERIVED from contrib/, not listed:
-  # each declares its own scooter.broker.<name> options and renders its own
-  # manifests, so adding an integration edits no platform file. Same derivation as
-  # the skills above. Why: #599.
-  imports = [ kubenix.modules.k8s ./db-spec.nix ./postgres.nix ./db-migrate.nix ./broker.nix ./sandbox-pod.nix ./webhooks.nix ./byoc.nix ./scheduler.nix ./conversation-controller.nix ./warm-store-controller.nix ./legacy-state-migration.nix ./event-backfill.nix ]
-    ++ import ../contrib/deployment-modules.nix { inherit lib; };
+  # The shipped contribs are modules in THIS eval, derived from contrib/ and not
+  # listed: each declares its own scooter.broker.<name> options and renders its own
+  # manifests, so adding an integration edits no platform file. ../contrib/spec.nix
+  # is their schema — the `contribs.*` tree the skills above are read from. Why:
+  # #599, #711.
+  imports = [ kubenix.modules.k8s ./db-spec.nix ./postgres.nix ./db-migrate.nix ./broker.nix ./sandbox-pod.nix ./webhooks.nix ./byoc.nix ./scheduler.nix ./conversation-controller.nix ./warm-store-controller.nix ./legacy-state-migration.nix ./event-backfill.nix ../contrib/spec.nix ]
+    ++ import ../contrib/platform-modules.nix;
 
   # Declared ONLY so a definition on the old root matches something and reaches
   # `legacyRoot`'s message above. `internal` + `visible = false`, so it is absent from

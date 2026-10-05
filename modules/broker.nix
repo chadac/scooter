@@ -397,7 +397,7 @@ in
     };
   }
   (lib.mkIf bcfg.enable {
-    # mkMerge (not //): the fga block and every contrib's deployment module each
+    # mkMerge (not //): the fga block and every contrib's platform module each
     # add to `deployments`/`services`, and a shallow // would REPLACE those keys
     # (dropping agent-broker). mkMerge deep-merges so all of them coexist.
     kubernetes.resources = lib.mkMerge [

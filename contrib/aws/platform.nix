@@ -1,5 +1,6 @@
-# aws's DEPLOYMENT half: the option tree an operator configures, and the manifests
-# it renders. Layered into modules/platform.nix by contrib/deployment-modules.nix.
+# aws's PLATFORM half: the option tree an operator configures, and the manifests
+# it renders. A module in the same eval as modules/platform.nix, imported by
+# convention from contrib/platform-modules.nix (#711).
 #
 # This was ~40 references in modules/broker.nix — the option tree, the AWS_* env
 # block, the accounts ConfigMap, the rollout annotation and the IRSA annotation —
@@ -9,7 +10,7 @@
 # renders its own ConfigMap straight into kubernetes.resources. Why: #599.
 #
 # `{ config, lib, ... }` only, and nothing built: an external deployer imports
-# platform.nix with no `pkgs` (see contrib/deployment-modules.nix).
+# platform.nix with no `pkgs`, so a module forcing a package here is an eval error.
 { config, lib, ... }:
 
 let
@@ -115,7 +116,7 @@ in
   };
 
   # The table declaration is deliberately OUTSIDE the `mkIf` below: it is gated on
-  # the contrib being BUILT (deployment-modules.nix imports only enabled contribs),
+  # the contrib being SHIPPED (platform-modules.nix imports only shipped contribs),
   # never on this deployment running it — `just db-generate` renders from bare
   # defaults, so a deployment-gated table vanishes from the committed schema.
   # Why: PR #637.

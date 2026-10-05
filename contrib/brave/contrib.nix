@@ -1,11 +1,10 @@
+# brave DECLARED: what this contrib IS. Its deployment options are in
+# ./platform.nix — a different eval, which is why it is a different file
+# (contrib/README.md).
 {
   contribs.brave = {
     src = ./.;
     services.broker.enable = true;
-
-    # The option tree an operator configures (`scooter.broker.brave.*`) and the
-    # broker env it renders. Why it lives here and not in modules/broker.nix: #599.
-    deployment.module = ./deployment.nix;
 
     # No `ui`: `brave_web_search` renders as a plain tool call, not a provider card —
     # the UI deliberately returns null for it (ui/src/toolCallView.test.ts), and brave

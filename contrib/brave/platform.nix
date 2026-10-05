@@ -1,12 +1,16 @@
-# brave's DEPLOYMENT half: the options an operator sets, and the broker env they render.
-# Layered into modules/platform.nix by contrib/deployment-modules.nix (pattern: #599).
+# brave's PLATFORM half: the options an operator sets, and the broker env they render.
+#
+# A plain module in the SAME eval as modules/platform.nix, which imports every
+# shipped contrib's `platform.nix` by convention (contrib/platform-modules.nix). So
+# the options below are declared exactly where any other platform option is — there
+# is no registration step and nothing to list. Why: #599, #711.
 #
 # Don't reach for a SIBLING contrib's options bare: `bcfg.kagi.enable` resolves only in
 # an image that also builds kagi, so it breaks every image shipping one without the
 # other. Workarounds and when to prefer neither: contrib/README.md.
 #
 # `{ config, lib, ... }` only, and nothing built: an external deployer imports
-# platform.nix with no `pkgs` (see contrib/deployment-modules.nix).
+# platform.nix with no `pkgs`, so a module forcing a package here is an eval error.
 { config, lib, ... }:
 
 let

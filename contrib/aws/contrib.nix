@@ -1,3 +1,6 @@
+# aws DECLARED: what this contrib IS — the halves that are built, not deployed.
+# Its deployment options live in ./platform.nix and its sandbox half in
+# ./sandbox.nix, each landing in a different eval (contrib/README.md).
 {
   contribs.aws = {
     src = ./.;
@@ -13,17 +16,13 @@
       pythonDeps = ps: [ ps.boto3 ];
     };
 
-    # Its own deployment options + manifests, instead of ~40 aws references in
-    # modules/broker.nix (#599).
-    deployment.module = ./deployment.nix;
-
     sandbox.module = ./sandbox.nix;
     skills."scooter-aws.md" = ./skills/scooter-aws.md;
 
     # A grant needs a human to say yes. Only the UI half is here (build-time metadata
     # for the contrib manifest); the defaults — grey "approve", "an admin must" — are
     # what aws wants, so the empty set is the declaration. Where its verbs live on the
-    # broker is deployment config: see scooter.approvals in ./deployment.nix.
+    # broker is deployment config: see scooter.approvals in ./platform.nix.
     approvals = { };
   };
 }

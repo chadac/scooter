@@ -41,7 +41,7 @@
     let
       # The PLATFORM's agent skills — the ones that document no contrib, so nothing
       # gates them. A skill for a contrib lives in that contrib and is gated on it
-      # (contrib/skills.nix -> modules/platform.nix), never passed through here.
+      # (contrib/<name>/contrib.nix -> modules/platform.nix), never passed through here.
       #
       # Every ./skills/*.md read into the
       # `filename -> content` attrset the platform module's `agent.skills` option

@@ -1,5 +1,6 @@
-# duckduckgo's DEPLOYMENT half. Layered into modules/platform.nix by
-# contrib/deployment-modules.nix. See contrib/brave/deployment.nix for the pattern.
+# duckduckgo's PLATFORM half. A module in the same eval as modules/platform.nix,
+# imported by convention from contrib/platform-modules.nix. See
+# contrib/brave/platform.nix for the pattern and the one rule.
 { config, lib, ... }:
 
 let

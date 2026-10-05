@@ -305,7 +305,7 @@ let
   # lib/sql, which is in-tree. `dbSpec` is readOnly, rendered from it. Both are checked
   # far more strongly than a mention here: `just db-generate-check` regenerates
   # owners.toml and atlas.hcl from the option and fails CI on any drift.
-  # `sandboxPod` is a CONTRIB seam, like `db`: a contrib's deployment module sets it,
+  # `sandboxPod` is a CONTRIB seam, like `db`: a contrib's platform module sets it,
   # a deployment does not — an operator wanting extra pod config has
   # deployTools.sandboxManifestOverlay, which is consumer-owned and overlays on top of it.
   # sandboxSeamProblems below checks it end to end (rendered with aws on, absent with
@@ -358,11 +358,16 @@ let
       };
     };
   };
-  # Driven off contrib/skills.nix — the SAME source platform.nix ships from — so a
-  # contrib that starts shipping a skill fails here until its gate is proven.
+  # Driven off the RENDER's own `contribs` tree — the shipped contribs are modules in
+  # the platform eval (#711), so this is literally the set platform.nix ships from,
+  # not a second derivation of it. A contrib that starts shipping a skill fails here
+  # until its gate is proven.
   nixpkgsLib = flake.inputs.nixpkgs.lib;
-  contribSkills = import ../contrib/skills.nix { lib = nixpkgsLib; };
-  skillProblems = nixpkgsLib.concatLists (nixpkgsLib.mapAttrsToList
+  contribSkills = nixpkgsLib.mapAttrs (_: c: c.skills)
+    (nixpkgsLib.filterAttrs (_: c: c.skills != { }) platform.config.contribs);
+  skillProblems = (if contribSkills != { } then [ ] else
+  [ "no contrib ships a skill — this check reads platform.config.contribs, so an EMPTY set means the contribs stopped reaching the platform eval, not that nobody documents anything" ])
+  ++ nixpkgsLib.concatLists (nixpkgsLib.mapAttrsToList
     (name: skills:
       if !(skillGates ? ${name})
       then [ ("contrib ${name} ships ${toString (builtins.attrNames skills)} but examples/check.nix has no gate case — add one to skillGates") ]
@@ -449,6 +454,34 @@ let
       };
     in (builtins.tryEval (builtins.deepSeq e.config.kubernetes.resources true)).success;
 
+  # THE CONTRIBS ARE MODULES IN THE PLATFORM EVAL, AND ONLY THE SHIPPED ONES (#599,
+  # #711). Three claims, because each fails in a different direction and two of them
+  # fail SILENTLY:
+  #
+  #   positive — a shipped contrib's own options are declared, and its declaration
+  #              reached `config.contribs`. Without this the two negatives below are
+  #              vacuously true and the whole block proves nothing.
+  #   negative — a contrib that ships NOWHERE contributes neither. Its options must
+  #              not exist, so a manifest configuring an integration this image never
+  #              built is an eval error rather than a block k8s happily applies.
+  #
+  # Asserted against `platform.options` rather than a render: an option that exists
+  # but is never read renders identically to one that does not exist at all.
+  contribList = import ../contrib/contribs.nix;
+  unshipped = builtins.attrNames (nixpkgsLib.filterAttrs (_: c: !c.ship) contribList);
+  brokerOpts = platform.options.scooter.broker;
+  unshippedContribProblems =
+    (if unshipped != [ ] then [ ] else
+    [ "every contrib in contrib/contribs.nix now ships — the ships-nowhere negatives below test nothing; keep one unshipped fixture (echo) or delete them" ])
+    ++ (if brokerOpts ? brave then [ ] else
+    [ "scooter.broker.brave is not declared — a shipped contrib's platform.nix did not reach the platform eval (contrib/platform-modules.nix), so every ships-nowhere check below passes for the wrong reason" ])
+    ++ (if platform.config.contribs ? aws then [ ] else
+    [ "config.contribs.aws is missing — the contrib DECLARATIONS are not in the platform eval, so contrib skills are read from an empty set" ])
+    ++ map (n: "scooter.broker.${n}.* is declared but ${n} ships nowhere — a manifest can configure an integration this image never built (#599)")
+    (builtins.filter (n: brokerOpts ? ${n}) unshipped)
+    ++ map (n: "config.contribs.${n} reached the platform eval but ${n} ships nowhere — its skills would be shipped by an image that never built it")
+    (builtins.filter (n: platform.config.contribs ? ${n}) unshipped);
+
   legacyRootProblems =
     (if renders { } then [ ]
      else [ "the example stopped rendering through the legacy-root harness (the check is broken, not the example)" ])
@@ -528,9 +561,9 @@ let
     (n: "broker.env.${n} declared more than once (k8s keeps the LAST value silently — a contrib's broker.extraEnv must not reuse a core name)")
     (builtins.filter (n: countNamed brokerEnv n > 1) brokerEnvNames);
 
-  # A CONTRIB'S DEPLOYMENT MODULE REACHES THE BROKER DEPLOYMENT. aws's option tree
-  # and its manifests live in contrib/aws/deployment.nix, which modules/platform.nix
-  # imports without naming it (contrib/deployment-modules.nix) — so this asserts the
+  # A CONTRIB'S PLATFORM MODULE REACHES THE BROKER DEPLOYMENT. aws's option tree
+  # and its manifests live in contrib/aws/platform.nix, which modules/platform.nix
+  # imports without naming it (contrib/platform-modules.nix) — so this asserts the
   # seams carry, rather than that the file exists. All four kinds in one render, each
   # of which was an inline `lib.optionals bcfg.aws.enable` in modules/broker.nix:
   #   env         -> AWS_ENABLED           (broker.extraEnv)
@@ -545,19 +578,19 @@ let
   hasName = l: n: builtins.any (v: v.name == n) l;
   contribSeamProblems =
     (if countNamed brokerEnv "AWS_ENABLED" == 1 then [ ]
-     else [ "broker.env.AWS_ENABLED — contrib/aws/deployment.nix did not reach the broker container through broker.extraEnv" ])
+     else [ "broker.env.AWS_ENABLED — contrib/aws/platform.nix did not reach the broker container through broker.extraEnv" ])
     ++ (if hasName (brokerCtr.volumeMounts or [ ]) "aws-accounts" then [ ]
         else [ "broker.volumeMounts aws-accounts missing (broker.extraVolumeMounts) — the provider reads accounts.json off disk and finds nothing" ])
     ++ (if hasName (res.deployments.agent-broker.spec.template.spec.volumes or [ ]) "aws-accounts" then [ ]
         else [ "broker.volumes aws-accounts missing (broker.extraVolumes) — the mount above has no source" ])
     ++ (if (res.configMaps or { }) ? agent-broker-aws-accounts then [ ]
-        else [ "configMaps.agent-broker-aws-accounts missing — a contrib's deployment module cannot render its own resources" ])
+        else [ "configMaps.agent-broker-aws-accounts missing — a contrib's platform module cannot render its own resources" ])
     ++ (if builtins.all (c: !(hasName (c.volumeMounts or [ ]) "aws-accounts")) awsOffCtrs then [ ]
         else [ "aws-off: broker still mounts aws-accounts — the seam is wired unconditionally, so the pod mounts a ConfigMap that is not rendered" ])
     ++ (if builtins.all (c: countNamed (c.env or [ ]) "AWS_ENABLED" == 0) awsOffCtrs then [ ]
         else [ "aws-off: broker.env.AWS_ENABLED present — contrib env is not gated on the contrib's own enable" ]);
 
-  # A CONTRIB'S DEPLOYMENT MODULE REACHES THE SANDBOX POD. Same seam shape as the
+  # A CONTRIB'S PLATFORM MODULE REACHES THE SANDBOX POD. Same seam shape as the
   # broker one above, but the consumer is the agent-host: it writes the Sandbox CR, so
   # a contrib's mount can only take effect if the manifest-overlay ConfigMap carries
   # it. The negative half matters more here than on the broker — aws's registry mount
@@ -579,7 +612,7 @@ let
       if m == [ ] then null else builtins.head m;
   sandboxSeamProblems =
     (if contribPodSpec != null then [ ]
-     else [ ("configMaps.sandbox-manifest-overlay has no contrib.yaml — contrib/aws/deployment.nix"
+     else [ ("configMaps.sandbox-manifest-overlay has no contrib.yaml — contrib/aws/platform.nix"
              + " did not reach the sandbox pod through scooter.sandboxPod, so no sandbox"
              + " renders ~/.aws/config and `scooter-aws` has no profiles") ])
     ++ (if contribPodSpec == null || contribCtr != null then [ ]
@@ -625,7 +658,7 @@ let
     ++ (if builtins.all (e: e.name != "APPROVAL_CONTRIBS_JSON") awsOffApprovals then [ ]
         else [ "aws-off: host.env.APPROVAL_CONTRIBS_JSON present — approvals are not gated on the contrib's own enable" ]);
 
-  # `permission_requests` belongs to contrib/aws/deployment.nix now, and must still
+  # `permission_requests` belongs to contrib/aws/platform.nix now, and must still
   # be in the spec with the DEPLOYMENT's aws off — that is the invariant keeping the
   # generated schema a function of the source tree rather than of a deploy flag.
   # Why: PR #637.
@@ -757,8 +790,8 @@ let
       (containersOf w))
     allWorkloads;
 
-  allProblems = legacyRootProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ approvalProblems ++ stage2Problems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems;
+  allProblems = unshippedContribProblems ++ legacyRootProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ approvalProblems ++ stage2Problems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems;
 in
 if allProblems == [ ]
-then "ok: deployments = ${haveDeps}; datadog + airtable + brave + kagi + duckduckgo (three search providers, each with its own tool) + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; the renamed root (agentSandbox.*) fails the render; deploy-time Jobs are spec-hash named\n"
+then "ok: deployments = ${haveDeps}; datadog + airtable + brave + kagi + duckduckgo (three search providers, each with its own tool) + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; the renamed root (agentSandbox.*) fails the render; contribs reach the platform eval and the unshipped one does not; deploy-time Jobs are spec-hash named\n"
 else builtins.throw "example manifests missing: ${builtins.concatStringsSep ", " allProblems}"
