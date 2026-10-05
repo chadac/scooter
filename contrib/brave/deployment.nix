@@ -1,13 +1,9 @@
-# brave's DEPLOYMENT half: the options an operator sets, and the broker env they
-# render. Layered into modules/platform.nix by contrib/deployment-modules.nix.
+# brave's DEPLOYMENT half: the options an operator sets, and the broker env they render.
+# Layered into modules/platform.nix by contrib/deployment-modules.nix (pattern: #599).
 #
-# These lived in modules/broker.nix until the review of #707 asked for them here, and
-# the reason they could not move earlier is worth keeping: brave and kagi used to be
-# MUTUALLY EXCLUSIVE, enforced by an assertion that read both option trees at once. No
-# contrib can host that — a contrib's options exist only when that contrib is built, so
-# `contrib/brave` referring to `bcfg.kagi.enable` would be an eval error in any image
-# that ships brave without kagi. Naming each tool for its provider removed the
-# exclusivity, and with it the only thing keeping these options in the platform module.
+# Nothing here may reference a SIBLING contrib's options — they exist only in an image
+# that builds that contrib, so `bcfg.kagi.enable` would be an eval error wherever brave
+# ships without kagi. (That is what kept these options in modules/broker.nix: PR #707.)
 #
 # `{ config, lib, ... }` only, and nothing built: an external deployer imports
 # platform.nix with no `pkgs` (see contrib/deployment-modules.nix).

@@ -1,7 +1,6 @@
 # kagi's DEPLOYMENT half: the options an operator sets, and the broker env they render.
 # Layered into modules/platform.nix by contrib/deployment-modules.nix. See
-# contrib/brave/deployment.nix for why these options could not live here until the
-# brave/kagi exclusivity went away.
+# contrib/brave/deployment.nix for the one rule (no sibling-contrib options).
 { config, lib, ... }:
 
 let

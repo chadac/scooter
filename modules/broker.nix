@@ -298,11 +298,8 @@ in
     };
 
     # --- Web search ------------------------------------------------------------
-    # No options here: each search contrib owns its own
-    # (`agentSandbox.broker.{brave,kagi,duckduckgo}.*` in contrib/<name>/deployment.nix,
-    # layered in by contrib/deployment-modules.nix). ANY NUMBER may be enabled — each
-    # contributes a tool named for itself, so two providers are two tools rather than a
-    # collision. Why: issue #700, review of PR #707.
+    # No options here: each search contrib declares its own in
+    # contrib/<name>/deployment.nix, and any number may be enabled. Why: PR #707.
 
     # --- Static shares (broker/shares/) — persistent static webpages --------
     # The broker's shares feature lets agents publish static bundles, served at

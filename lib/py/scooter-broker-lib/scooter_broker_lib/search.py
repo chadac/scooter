@@ -1,38 +1,13 @@
 """Web search — the shared half of a search contrib's `<provider>_web_search` tool.
 
-Every search contrib (brave, kagi, a third-party one) declares a tool named for itself
-and differs only in the request it makes and the body it unpacks. What they must NOT
-differ in is what the agent sees: the result format, the result cap, and how the
-outcomes are told apart. Those live here, so a deployment that enables two providers
-gets two indexes and one behaviour — and swapping providers changes the bill and the
-ranking, never how a result or a failure reads.
+Providers differ in the request they make and the body they unpack; the result format,
+the cap and how the outcomes are told apart live here, so enabling two providers gives a
+deployment two indexes and one behaviour.
 
-The tool NAME is per-provider for a reason that is not cosmetic: names are flat and
-global (broker/mcp/routes.py refuses to start on a duplicate), so one shared
-`web_search` would have made the providers mutually exclusive — an artifact of the
-name rather than a real constraint. Why: review of PR #707.
-
-THE THREE OUTCOMES, which the implementation this replaces collapsed into one.
-The agent-host's `web_search` used to call DuckDuckGo's Instant Answer API — a definitions endpoint,
-not a web index — so a real query came back HTTP 200 with "no instant answer" and
-search presented as AN EMPTY WEB rather than as the wrong API. Hence:
-
-  * FAILED        — `upstream_failure`, carrying the verbatim status and body. A 401
-                    from a bad key or a 429 from an exhausted quota must read as
-                    itself; an agent told "no results" retries the query, while one
-                    told "HTTP 401" reports a misconfiguration.
-  * no results    — a successful search of a web that genuinely has nothing. NOT an
-                    error, and named with the provider so the agent can judge it.
-  * results       — rendered one `- title (url)` per line.
-
-UNCONFIGURED is the fourth outcome and it is not here, because in the contrib model it
-cannot reach a tool: a search provider with no key is `enabled=False`, so `web_search`
-is never listed at all. The agent's instruction for that case ("no search tool in your
-list ⇒ this deployment has no provider; use web_fetch on a known URL") is in
-skills/agent-tools.md, where the same rule already covers every provider tool.
-
-Why: issue #700 (tools belong to the contrib that owns the credential) and PR #698
-(which established that the old provider was the bug).
+THE OUTCOMES MUST STAY DISTINCT, which is the whole lesson of the tool this replaced: a
+failure carries the real status VERBATIM (an agent told "no results" retries the query,
+one told "HTTP 401" reports a bad key), and "no results" is a success that names the
+provider. Why: PR #698, issue #700, PR #707.
 """
 
 from __future__ import annotations
@@ -69,11 +44,9 @@ class SearchHit:
 def upstream_failure(response: "httpx.Response", *, provider: str) -> ToolResult | None:
     """`None` if the search call succeeded, else the failure to report VERBATIM.
 
-    The half of `search_response` that does not assume JSON, because not every search
-    provider answers with it: `contrib/duckduckgo` has no API and reads an HTML results
-    page. The status check is identical and the message is too — with the provider
-    NAMED, because "brave returned 429" tells the agent its key is out of quota while
-    "search failed" does not.
+    Split out of `search_response` for the provider that answers in HTML rather than
+    JSON (`contrib/duckduckgo`). The provider is NAMED in the message: "brave returned
+    429" tells the agent its key is out of quota; "search failed" does not.
     """
     if 200 <= response.status_code < 300:
         return None
@@ -88,18 +61,14 @@ def search_response(
 ) -> tuple[dict[str, Any], ToolResult | None]:
     """Decode a search response into `(body, failure)` — exactly one is meaningful.
 
-    Separate from `ToolResult.from_upstream` because a search tool has to KEEP GOING on
-    success: it parses the body. The failure branch is identical in spirit — the real
-    status and the upstream body, unmodified — with the provider NAMED, because "brave
-    returned 429" tells the agent its key is out of quota while "search failed" does
-    not.
+    Separate from `ToolResult.from_upstream` because a search tool keeps going on
+    success: it parses the body.
 
-    A 200 whose body is not JSON AT ALL is also a failure, not an empty result set: it
-    means something answered that was not the API — a proxy's error page, a captive
-    portal — and reporting that as "no results" is precisely the bug that made the
-    previous implementation look like an empty web. A body that IS json but not an
-    object is treated as no results instead: the call worked and we simply understood
-    nothing in it, which is what an API change looks like.
+    A 200 whose body is not JSON AT ALL is a FAILURE, not an empty result set — a proxy
+    error page or a captive portal answered, and calling that "no results" is the bug
+    this file exists to prevent. A body that IS json but not an object is no results
+    instead: the call worked and we understood nothing in it, which is what an API change
+    looks like. Why: PR #698.
     """
     failure = upstream_failure(response, provider=provider)
     if failure is not None:

@@ -1,18 +1,11 @@
 /**
- * `web_fetch` — the ONE agent tool still served by the agent-host, and the SSRF guard
- * that is the reason it is a tool at all. Registered alongside `modify_environment` on
- * the per-conversation MCP endpoint (see mcpServer.ts).
+ * `web_fetch` — the one agent tool the agent-host still serves, and the SSRF guard below
+ * is why it is a tool rather than a curl the agent runs itself. Registered alongside
+ * `modify_environment` on the per-conversation MCP endpoint (see mcpServer.ts).
  *
- * WHY IT STAYED HERE while every other tool moved to the contrib that owns its
- * credential (issue #700): `web_fetch` has no credential and no provider, so a contrib
- * would buy it nothing but an on/off switch — while the guard below, which is the
- * security-relevant half, would have to be rewritten in Python (its own DNS
- * resolution and blocked-range arithmetic) to get there. Rewriting tested SSRF
- * checks for no gain is not a move, it is a risk.
- *
- * ERRORS ARE NEVER HIDDEN, the rule it keeps along with the rest of the tool surface:
- * a non-2xx maps to an MCP isError result carrying the real status. The agent used to
- * hand-run `curl -sf`, which fails SILENTLY — and a silent failure is how it retried.
+ * Keep failures verbatim: a non-2xx maps to an isError result carrying the real status,
+ * because a silently-swallowed failure is one the agent retries. Why this did not move
+ * to a contrib with the other tools: PR #707.
  */
 
 import { z } from "zod";

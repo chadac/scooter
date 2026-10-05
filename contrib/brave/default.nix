@@ -4,9 +4,7 @@
     services.broker.enable = true;
 
     # The option tree an operator configures (`agentSandbox.broker.brave.*`) and the
-    # broker env it renders. In modules/broker.nix until the review of #707; see
-    # deployment.nix for why it could not move while the search providers were
-    # mutually exclusive.
+    # broker env it renders. Why it lives here and not in modules/broker.nix: #599.
     deployment.module = ./deployment.nix;
 
     # No `ui`: `brave_web_search` renders as a plain tool call, not a provider card —

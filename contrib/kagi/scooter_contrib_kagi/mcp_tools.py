@@ -1,16 +1,7 @@
 """Kagi's AGENT TOOL — `kagi_web_search`.
 
-An alternative to `contrib/brave` that can also run ALONGSIDE it: the tool carries its
-provider's name, so enabling both puts two search tools in the agent's list rather than
-two providers fighting over one name. The first cut of this contrib named the tool
-`web_search` and made the two mutually exclusive; limiting the agent to one index was
-an artifact of that naming, not a requirement. Why: review of PR #707.
-
-WHEN TO PICK THIS ONE: better human-facing ranking, at $12/1k requests with no free
-tier and a paid Kagi account required — against brave's $5/1k with $5 granted monthly.
-An LLM reranking the results erases much of the quality difference, so brave is the
-default recommendation and this exists for deployments that already pay for Kagi.
-Why: PR #698.
+Named for its provider so brave and duckduckgo can be enabled alongside it; the row
+filter below is the part that is easy to get wrong. Why: PR #698, PR #707.
 """
 
 from __future__ import annotations

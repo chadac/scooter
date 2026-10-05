@@ -295,26 +295,20 @@ class _AuthMiddleware:
 async def assert_tool_names_unique(providers: list[Provider]) -> None:
     """Fail STARTUP if two providers contribute a tool of the same name.
 
-    Tool names are FLAT (the servers are mounted namespace-less, so the skills and
-    ui/src/toolCallView.ts can match on a name), which makes a name a global identity
-    — and leaves nothing to arbitrate a collision but mount order, which differs
-    between a rebuild and a rollback.
+    Tool names are flat (mounted namespace-less, so the skills and
+    ui/src/toolCallView.ts can match on a name), so a name is a global identity and a
+    collision has nothing to arbitrate it but mount order — which differs between a
+    rebuild and a rollback. A contrib that duplicates a capability therefore names the
+    tool for its provider (`brave_web_search`), which is also what lets several search
+    providers be enabled at once; this catches the case where someone did not.
 
-    This is why a contrib whose tool DUPLICATES a capability names it for its provider:
-    the search contribs each own a `<provider>_web_search` rather than one `web_search`,
-    so several can be enabled at once and this check never fires for them. It fires for
-    the real mistake — two contribs that independently chose the same name — where the
-    alternative is an agent silently talking to whichever one mounted first.
-
-    Awaited from the broker's lifespan rather than run at mount time: reading a
-    server's tools is async, and the app factory is sync. A refusal to start is the
-    right failure — the pod crash-loops with this message instead of serving an agent
-    a tool surface nobody chose.
+    Awaited from the lifespan rather than run at mount time: reading a server's tools is
+    async and the app factory is sync. Why: PR #707.
     """
     owner_of: dict[str, str] = {}
     for provider, server in collect_mcp_servers(providers):
         # run_middleware=False: the gates need a conversation (none at startup), and a
-        # gated-out tool must still count here. Why: PR #707.
+        # gated-out tool must still count. Why: PR #707.
         for tool in await server.list_tools(run_middleware=False):
             owner = owner_of.get(tool.name)
             if owner is not None and owner != provider.name:

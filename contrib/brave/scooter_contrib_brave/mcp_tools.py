@@ -1,25 +1,11 @@
 """Brave's AGENT TOOL — `brave_web_search`.
 
-Ported from the agent-host's DuckDuckGo-backed `web_search`
-(services/agent-host/src/agent/agentTools.ts) via PR #698, which established that the
-old implementation was not broken but wrong: DuckDuckGo's Instant Answer API is a
-definitions endpoint, and real queries came back HTTP 200 with "no instant answer", so
-search presented as an empty web. A keyed provider belongs in a contrib, because the
-broker is where Scooter keeps credentials the agent must never hold (issue #700).
-(#698 concluded a keyed provider was the only option; `contrib/duckduckgo` is the
-keyless one, reading DDG's HTML results page rather than that definitions endpoint —
-free, and the least reliable of the three.)
+THE KEY IS A HEADER, NEVER A QUERY PARAM: a key in a URL is copied into every access log
+and proxy trace it passes. Declared as the credential's kind in `broker_provider.py`, so
+this file never holds it and cannot put it anywhere.
 
-WHY BRAVE IS THE ONE TO REACH FOR FIRST: $5/1k requests against $5 of credit granted
-monthly, so single-user volume is typically free. `contrib/kagi` and
-`contrib/duckduckgo` are the alternatives, and a deployment may enable ANY NUMBER of
-them: the tool is named for its provider, so several search tools coexist in one tool
-list and the agent picks. Why: review of PR #707.
-
-THE KEY IS A HEADER, NEVER A QUERY PARAM: a key in a URL is copied into every access
-log and proxy trace it passes. That is why `broker_provider.py` composes
-`StaticTokenSource(kind="header", header_name="X-Subscription-Token")` — the broker
-injects it on the way out and this file never sees it.
+Named for its provider so sibling search contribs (kagi, duckduckgo) can be enabled at
+the same time. Why: issue #700, PR #707.
 """
 
 from __future__ import annotations
