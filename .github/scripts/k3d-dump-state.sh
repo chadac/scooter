@@ -135,7 +135,11 @@ nix shell nixpkgs#kubectl nixpkgs#jq nixpkgs#docker-client nixpkgs#systemd -c ba
         d=$(docker exec "$node" sh -c "ls -d /var/lib/rancher/k3s/storage/*_agent-sandbox_workspace-$pod 2>/dev/null" 2>/dev/null | head -1)
         [ -n "$d" ] || continue
         echo "--- claim on $node: $d ---"
-        for jf in $(docker exec "$node" sh -c "ls $d/.scooter/journal/*/*.journal 2>/dev/null" 2>/dev/null | head -8); do
+        jfs=$(docker exec "$node" sh -c "ls $d/.scooter/journal/*/*.journal 2>/dev/null" 2>/dev/null | head -8)
+        # A claim header with nothing under it is indistinguishable from a section
+        # that never ran. Why: PR #712.
+        [ -n "$jfs" ] || echo "(no journal on the claim -- systemd exited before journald wrote; stdout above is the only record)"
+        for jf in $jfs; do
           local_jf=/tmp/dump-$pod-$(basename "$(dirname "$jf")").journal
           docker exec "$node" sh -c "cat $jf" > "$local_jf" 2>/dev/null || continue
           echo "--- $jf ($(stat -c %s "$local_jf" 2>/dev/null) bytes) ---"
@@ -148,7 +152,10 @@ nix shell nixpkgs#kubectl nixpkgs#jq nixpkgs#docker-client nixpkgs#systemd -c ba
   # kernel, so cgroup exhaustion or a kernel-side refusal lands HERE -- `dmesg` does
   # not exist inside the node image at all.
   echo "===== KERNEL RING BUFFER (host runner; k3d nodes share this kernel) ====="
+  # CNI bridge churn is dropped BEFORE the tail: a sandbox pod emits 4-5 veth lines
+  # per create and per delete, enough to fill the whole window. Why: PR #712.
   (dmesg --ctime 2>/dev/null || sudo -n dmesg --ctime 2>/dev/null || echo "(dmesg unavailable)") \
+    | grep -vE "cni0: port [0-9]+\(veth|device veth[0-9a-f]+ (entered|left) promiscuous mode|ADDRCONF\(NETDEV_CHANGE\)" \
     | tail -120 || true
   # THE RUNTIME ERROR. A container that dies in the same second it started, with
   # nothing after "starting systemd...", failed below the kubelet: containerd/runc
@@ -163,7 +170,11 @@ nix shell nixpkgs#kubectl nixpkgs#jq nixpkgs#docker-client nixpkgs#systemd -c ba
   else
     for node in $(docker ps --format "{{.Names}}" 2>/dev/null | grep "^k3d-" || true); do
       echo "===== RUNTIME LOG: $node (kubelet/containerd/runc) ====="
-      docker logs --tail=4000 "$node" 2>&1 \
+      # The kubelet backoff repeats are dropped BEFORE the tail. They match this
+      # filter on three terms and are a CONSEQUENCE of the first crash, so while any
+      # sandbox loops they are the only thing the window can hold. Why: PR #712.
+      docker logs --tail=20000 "$node" 2>&1 \
+        | grep -ivE "pod_workers.go|RemoveStaleState|pod_startup_latency_tracker|reconciler_common.go|replica_set.go|MountVolume.(MountDevice|SetUp) succeeded" \
         | grep -iE "conv-|runc|exit status|exit code|oci runtime|cgroup|back-?off|StartContainer|CreateContainer|RunPodSandbox|killing container|failed to (create|start|run)|sandbox|no space|device or resource busy|permission denied" \
         | tail -200 || true
       echo "===== CRI VIEW: $node ====="
