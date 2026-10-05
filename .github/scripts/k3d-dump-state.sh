@@ -6,7 +6,7 @@
 # with a thinner dump than the job that found the flake is a wasted run.
 # The crash census, shared with the always-on CI step so the two cannot drift.
 "$(dirname "$0")/k3d-sandbox-census.sh" || true
-nix shell nixpkgs#kubectl nixpkgs#jq nixpkgs#docker-client -c bash -c '
+nix shell nixpkgs#kubectl nixpkgs#jq nixpkgs#docker-client nixpkgs#systemd -c bash -c '
   kubectl -n agent-sandbox get pods,deploy,svc,pvc,conversations -o wide || true
   # describe the not-ready workloads so a Pending pod shows its scheduling reason
   # (Insufficient cpu/mem, an unbindable PVC, a taint, …) — a bare `get` hides it.
@@ -92,6 +92,58 @@ nix shell nixpkgs#kubectl nixpkgs#jq nixpkgs#docker-client -c bash -c '
       done
     fi
   fi
+  # THE SANDBOX JOURNAL -- the only account of what systemd actually did.
+  #
+  # systemd PID 1 reopens its own stdio on /dev/null and logs to the journal, so a
+  # sandbox container log ends at stage-2 "starting systemd..." on a HEALTHY boot and
+  # a crashed one alike. Everything above that reads container logs is therefore
+  # structurally incapable of explaining a sandbox that died after systemd took over.
+  # Why: PR #703.
+  #
+  # Two routes, because the interesting pod is often the one we cannot exec into:
+  #   live container  -> kubectl exec journalctl, merged across boots;
+  #   crash-looping   -> copy the journal files off the PVC via the node and read
+  #                      them on the runner with journalctl --file.
+  # -D (not --merge) in both: /etc/machine-id is regenerated per container start, so
+  # each boot writes under a different machine-id directory, and -D scans all of them.
+  # --merge would read them too but is REJECTED alongside --list-boots/-b
+  # ("Using --boot or --list-boots with --merge is not supported").
+  JDIR=/workspace/.scooter/journal
+  jpods=$(kubectl -n agent-sandbox get pods -o name 2>/dev/null | grep "pod/conv-" | cut -d/ -f2)
+  # Say so rather than emitting nothing: a section that is silent when it found
+  # nothing is indistinguishable from one that never ran.
+  [ -n "$jpods" ] || echo "===== SANDBOX JOURNAL: no conv-* pods found ====="
+  for pod in $jpods; do
+    restarts=$(kubectl -n agent-sandbox get "pod/$pod" \
+      -o jsonpath="{.status.containerStatuses[?(@.name==\"sandbox\")].restartCount}" 2>/dev/null)
+    echo "===== SANDBOX JOURNAL: $pod (restarts=${restarts:-?}) ====="
+    if kubectl -n agent-sandbox exec "$pod" -c sandbox -- test -d "$JDIR" 2>/dev/null; then
+      kubectl -n agent-sandbox exec "$pod" -c sandbox -- \
+        journalctl --directory "$JDIR" --no-pager --list-boots 2>&1 | tail -10 || true
+      # Priority first: a boot that died says so in err/warning before anything else.
+      echo "--- priority<=4 (merged, all retained boots) ---"
+      kubectl -n agent-sandbox exec "$pod" -c sandbox -- \
+        journalctl --directory "$JDIR" --no-pager -p 4 2>&1 | tail -80 || true
+      echo "--- tail of the PREVIOUS boot (the one that died, if it restarted) ---"
+      kubectl -n agent-sandbox exec "$pod" -c sandbox -- \
+        journalctl --directory "$JDIR" --no-pager -b -1 2>&1 | tail -120 \
+        || echo "(no prior boot retained)"
+    else
+      echo "(cannot exec -- container not running; reading the PVC off the node)"
+      # local-path puts the claim at <storage>/pvc-<uid>_agent-sandbox_workspace-<pod>.
+      for node in $(docker ps --format "{{.Names}}" 2>/dev/null | grep "^k3d-" || true); do
+        d=$(docker exec "$node" sh -c "ls -d /var/lib/rancher/k3s/storage/*_agent-sandbox_workspace-$pod 2>/dev/null" 2>/dev/null | head -1)
+        [ -n "$d" ] || continue
+        echo "--- claim on $node: $d ---"
+        for jf in $(docker exec "$node" sh -c "ls $d/.scooter/journal/*/*.journal 2>/dev/null" 2>/dev/null | head -8); do
+          local_jf=/tmp/dump-$pod-$(basename "$(dirname "$jf")").journal
+          docker exec "$node" sh -c "cat $jf" > "$local_jf" 2>/dev/null || continue
+          echo "--- $jf ($(stat -c %s "$local_jf" 2>/dev/null) bytes) ---"
+          journalctl --file "$local_jf" --no-pager -p 4 2>&1 | tail -60 || true
+        done
+      done
+    fi
+  done
   # The host ring buffer. The k3d nodes are containers on this runner and share its
   # kernel, so cgroup exhaustion or a kernel-side refusal lands HERE -- `dmesg` does
   # not exist inside the node image at all.
