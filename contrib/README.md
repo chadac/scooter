@@ -26,13 +26,35 @@ services.
 ```
 contrib/<name>/
   pyproject.toml            # package + entry points (both groups if it spans services); hatchling backend
-  default.nix               # the contrib MODULE (see schema below)
+  default.nix               # the contrib MODULE: declares `contribs.<name>` (see schema below)
+  deployment.nix            # optional: a KUBENIX module -> declares agentSandbox.* options
+  sandbox.nix               # optional: a NIXOS module  -> goes into the sandbox-os image
   scooter_contrib_<name>/
     __init__.py             # neutral; imports NEITHER broker nor webhooks
     broker_provider.py      # imports broker.*  (only loaded in the broker image)
     webhooks_handler.py     # imports webhooks.* (only loaded in the webhooks image)
   tests/
 ```
+
+**Three module systems, three files, and they are not interchangeable** — this is the
+thing most easily got backwards:
+
+| file | module system | declares / contributes |
+|---|---|---|
+| `default.nix` | the `contribs` eval (`contrib/all-modules.nix`) | `contribs.<name>`: `src`, `services.*`, `ui`, `skills`, `approvals`, and pointers to the two halves below. Touches **no** `agentSandbox.*` option. |
+| `deployment.nix` | kubenix, via `modules/platform.nix` | its own `agentSandbox.broker.<name>.*` options, and the manifests/env they render |
+| `sandbox.nix` | NixOS, via `contrib/sandbox-modules.nix` | packages, systemd units, activation — anything in the agent's sandbox image |
+
+`default.nix` cannot declare an `agentSandbox.*` option itself: the `contribs` eval is a
+**separate** `evalModules` (#615) whose option set is `contribs.*` only, so there is no
+`agentSandbox` there to declare into. That separation is also why the halves are handed
+over as paths — a value stored and passed to the other system's `imports`, never
+evaluated in this one.
+
+`contrib/aws` is the only contrib with all three; `contrib/echo` has `default.nix` +
+`sandbox.nix`, which was the whole shape of a contrib before `deployment.module` existed
+(#607 added the sandbox half, #636 the deployment half three days later). A contrib with
+only a deployment half is the common case — every broker integration.
 
 **Rule: the top-level module stays import-light.** The service-coupled modules
 import their host service (`broker.*` / `webhooks.*`), which is present at
