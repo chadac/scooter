@@ -268,7 +268,25 @@ let
 
   initWrapper = pkgs.writeScript "sandbox-init-wrapper" ''
     #!${pkgs.busybox}/bin/sh
-    ${pkgs.util-linux}/bin/mount -o remount,rw /sys/fs/cgroup 2>/dev/null || true
+    # REPORT the remount, do not just attempt it. When this mount fails, systemd
+    # exits 255 the instant it is exec'd and prints NOTHING -- the container log ends
+    # at "starting systemd..." and the exit code is the only evidence. That is the
+    # crash this wrapper exists to prevent, so a silent `2>/dev/null || true` makes
+    # the one failure mode it guards against undiagnosable. Why: PR #703.
+    #
+    # Diagnostics only: still never fails the boot. CapEff is included because the
+    # remount needs CAP_SYS_ADMIN, so its absence is the first thing to rule out.
+    cg_err=$(${pkgs.util-linux}/bin/mount -o remount,rw /sys/fs/cgroup 2>&1)
+    cg_rc=$?
+    if [ "$cg_rc" -eq 0 ]; then
+      echo "sandbox-init: remount rw /sys/fs/cgroup OK"
+    else
+      echo "sandbox-init: remount rw /sys/fs/cgroup FAILED rc=$cg_rc -- systemd will exit 255"
+      echo "sandbox-init: mount said: $cg_err"
+      echo "sandbox-init: CapEff=$(${pkgs.busybox}/bin/grep ^CapEff /proc/self/status 2>/dev/null)"
+      ${pkgs.busybox}/bin/grep cgroup /proc/mounts 2>/dev/null \
+        | ${pkgs.busybox}/bin/sed "s/^/sandbox-init: /" || true
+    fi
     exec ${toplevel}/init "$@"
   '';
 in

@@ -79,5 +79,8 @@ in
   # base + a writable upper for runtime builds). Composes on top of whatever
   # /nix/store is — baked OCI store, bare EC2/VM host store, or the framework's
   # own VM overlay — so this VM test exercises the real mechanism.
+  # The journal on the workspace PVC: systemd PID 1 logs ONLY to the journal, and by
+  # default that journal dies with the container it was explaining. Why: PR #703.
+  dev-env-journal-persist = runTest ./journal-persist.nix;
   dev-env-overlay-store = runTest ./overlay-store.nix;
 }

@@ -145,6 +145,40 @@ export function summarize(report, pattern) {
   };
 }
 
+/**
+ * The targeted test's record across a WINDOW of recent `e2e-full` runs on the
+ * default branch (the same artifacts `e2e-full-collect` diffs against).
+ *
+ * This is NOT a control and must never be used as one. A nightly runs the whole
+ * suite, so its rate carries full-suite contention; the focused run above runs
+ * the test alone (or with `flake-specs:`), which is quieter. Scoring a quiet
+ * clean run against a contended base rate overstates significance in exactly
+ * the direction that manufactures a false "fixed" — so the window is reported
+ * as prior evidence, and the matched control stays the thing that decides.
+ *
+ * `ran` counts only runs that EXECUTED the spec: a lost shard omits its specs
+ * from the merge, and counting that as a pass invents a green run.
+ */
+export function summarizeHistory(reports, pattern, labels = []) {
+  const re = patternToRegExp(pattern);
+  const runs = reports.map((report, i) => {
+    const matched = collectSpecs(report).filter(
+      (s) => (re.test(s.fullTitle) || re.test(s.title)) && s.runs > 0,
+    );
+    return {
+      label: labels[i] || `−${reports.length - i}`,
+      ran: matched.length > 0,
+      failed: matched.some((s) => s.failed > 0),
+    };
+  });
+  const executed = runs.filter((r) => r.ran);
+  return {
+    runs,
+    ran: executed.length,
+    failed: executed.filter((r) => r.failed).length,
+  };
+}
+
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 /**
@@ -214,6 +248,8 @@ export function renderMarkdown(summary, opts = {}) {
     suggestFull = false,
     baseline = null,
     baselineRef = "",
+    history = null,
+    historyRef = "main",
   } = opts;
   const targetLabel = target === "full" ? "full target — real k3d cluster" : "fast target — fake stack";
   const control = compareToBaseline(summary, baseline);
@@ -327,6 +363,36 @@ export function renderMarkdown(summary, opts = {}) {
     );
   }
 
+  // Prior evidence from the nightly window. Cheap (downloaded artifacts, no
+  // cluster) and it answers a question the control cannot: whether the flake is
+  // live on main at all right now.
+  if (history && history.ran > 0) {
+    const seq = history.runs
+      .map((r) => (!r.ran ? "`–`" : r.failed ? "**F**" : "`·`"))
+      .join(" ");
+    L.push(
+      "",
+      `#### On \`${historyRef}\` recently — ${history.failed}/${history.ran} nightly ${history.ran === 1 ? "run" : "runs"}`,
+      "",
+      `${seq}  <sub>oldest → newest; \`–\` = the spec did not run (lost shard)</sub>`,
+      "",
+    );
+    // The case that produced the verdicts this job exists to prevent: the
+    // control saw nothing, so the run reads clean, while the nightly is still
+    // failing the same spec. That is a control which did not recreate the
+    // conditions — not evidence of a fix.
+    if (history.failed > 0 && (control.kind === "inconclusive" || control.kind === "none"))
+      L.push(
+        `⚠️ **This flake is live on \`${historyRef}\` but the control did not reproduce it.** That makes the control unrepresentative of the conditions the flake needs, not the flake fixed. Treat the clean run above as *no reproduction under these conditions* and raise the budget or add \`flake-specs:\` until the control fires too.`,
+        "",
+      );
+    else if (history.failed === 0)
+      L.push(
+        `The spec passed every nightly in this window, so there is no live reproduction on \`${historyRef}\` to fix — check the flake is not already gone, or that \`flake-test:\` names the right test.`,
+        "",
+      );
+  }
+
   const failing = summary.matched.filter((s) => s.errors.length);
   if (failing.length) {
     L.push("", "<details><summary>Failure output</summary>", "");
@@ -373,7 +439,12 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--suggest-full") out.suggestFull = true;
-    else if (a.startsWith("--")) out[a.slice(2).replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = argv[++i];
+    // REPEATABLE: the nightly baseline is a window of runs, so these accumulate
+    // instead of overwriting. Every other flag keeps last-wins.
+    else if (a === "--history" || a === "--history-label") {
+      const k = a === "--history" ? "history" : "historyLabel";
+      (out[k] ??= []).push(argv[++i]);
+    } else if (a.startsWith("--")) out[a.slice(2).replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = argv[++i];
     else out._.push(a);
   }
   return out;
@@ -418,8 +489,25 @@ function main(argv) {
     }
   }
 
+  // The nightly window, same best-effort contract as the control: an expired or
+  // half-downloaded artifact must not take down the verdict for the PR's run.
+  let history = null;
+  if (args.history?.length) {
+    const reports = [];
+    const labels = [];
+    for (const [i, f] of args.history.entries()) {
+      try {
+        reports.push(JSON.parse(readFileSync(f, "utf8")));
+        labels.push(args.historyLabel?.[i] ?? "");
+      } catch {
+        // Skip this run rather than the window: four good nightlies still inform.
+      }
+    }
+    if (reports.length) history = summarizeHistory(reports, pattern, labels);
+  }
+
   const control = compareToBaseline(summary, baseline);
-  process.stdout.write(renderMarkdown(summary, { ...args, baseline }));
+  process.stdout.write(renderMarkdown(summary, { ...args, baseline, history }));
   writeOutputs({
     verdict: summary.verdict,
     runs: summary.runs,
@@ -428,6 +516,8 @@ function main(argv) {
     control: control.kind,
     base_failed: control.baseFailed ?? 0,
     base_runs: control.baseRuns ?? 0,
+    history_runs: history?.ran ?? 0,
+    history_failed: history?.failed ?? 0,
   });
 }
 

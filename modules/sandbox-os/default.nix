@@ -29,6 +29,7 @@
     ./local-modules.nix
     ./registry-modules.nix
     ./overlay-store.nix
+    ./journal-persist.nix
     ./warm-store-seed.nix
     ./dbus-container.nix
     # The enabled contribs' sandbox halves, derived from the source (contrib/).
@@ -118,6 +119,10 @@
   # --- broker/git carry-over from the legacy sandbox image -------------------
   # So the agent-host's exec'd commands (broker whoami, brokered git) work
   # unchanged in the new image.
+  # The journal is the ONLY record of what systemd did (PID 1 logs nowhere else), so
+  # it must outlive the container restart that destroys the evidence. Why: PR #703.
+  services.scooterJournalPersist.enable = true;
+
   programs.scooterCarryOver.enable = true;
 
   # STAGE 5 carry-over (from the old entrypoint.sh, must not regress):
