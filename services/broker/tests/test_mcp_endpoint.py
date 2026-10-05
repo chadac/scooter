@@ -239,10 +239,13 @@ async def test_a_gated_tool_is_ABSENT_when_not_attached():
 
 # --- flat names make a name a GLOBAL identity -------------------------------------
 #
-# The search contribs are the reason this is enforced rather than documented:
-# contrib/brave and contrib/kagi both own `web_search`, so without a check a
-# deployment that configures both gets whichever one mount order picked — deciding its
-# search ranking and its bill by import order. Why: issue #700.
+# Enforced rather than documented because the failure is silent: two contribs that
+# independently pick one name leave mount order to decide which tool the agent talks
+# to, and import order differs between a rebuild and a rollback. A contrib that
+# duplicates a capability avoids the collision by naming the tool for its provider
+# (`brave_web_search`, `kagi_web_search`) — which is also what lets a deployment enable
+# several search providers at once. The scenario below is the mistake that remains:
+# someone ships a second `web_search`. Why: issue #700, review of PR #707.
 
 def _tool_provider(provider_name: str, tool_name: str) -> Provider:
     mcp = FastMCP(name=provider_name)

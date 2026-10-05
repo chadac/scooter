@@ -285,9 +285,10 @@ def collect_mcp_servers(providers: "Sequence[Provider]") -> list[tuple["Provider
     tool-bearing integration still never edits the core.
 
     Duplicate TOOL names are caught at startup by the broker (see routes.py), not
-    here: the names live inside the FastMCP servers and reading them is async. The
-    search contribs depend on that check — they all declare `web_search`, so enabling
-    two must be a loud failure rather than a mount-order coin flip.
+    here: the names live inside the FastMCP servers and reading them is async. A
+    contrib avoids that collision by naming a duplicated capability after its provider
+    — the search contribs each own a `<provider>_web_search` — which is also what lets
+    a deployment enable several of them at once.
     """
     collected: list[tuple["Provider", "FastMCP"]] = []
     for provider in providers:

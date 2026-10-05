@@ -297,17 +297,19 @@ async def assert_tool_names_unique(providers: list[Provider]) -> None:
 
     Tool names are FLAT (the servers are mounted namespace-less, so the skills and
     ui/src/toolCallView.ts can match on a name), which makes a name a global identity
-    — and leaves nothing to arbitrate a collision but mount order. The search
-    contribs make that concrete: `contrib/brave` and `contrib/kagi` both own
-    `web_search`, and a silent winner would decide a deployment's search ranking AND
-    its bill by import order, differing between a rebuild and a rollback.
+    — and leaves nothing to arbitrate a collision but mount order, which differs
+    between a rebuild and a rollback.
+
+    This is why a contrib whose tool DUPLICATES a capability names it for its provider:
+    the search contribs each own a `<provider>_web_search` rather than one `web_search`,
+    so several can be enabled at once and this check never fires for them. It fires for
+    the real mistake — two contribs that independently chose the same name — where the
+    alternative is an agent silently talking to whichever one mounted first.
 
     Awaited from the broker's lifespan rather than run at mount time: reading a
     server's tools is async, and the app factory is sync. A refusal to start is the
     right failure — the pod crash-loops with this message instead of serving an agent
-    a tool surface nobody chose. The kubenix layer catches the common case earlier
-    (modules/broker.nix asserts on two search providers at DEPLOY time); this is the
-    backstop for every other way two can arrive.
+    a tool surface nobody chose.
     """
     owner_of: dict[str, str] = {}
     for provider, server in collect_mcp_servers(providers):
@@ -319,7 +321,8 @@ async def assert_tool_names_unique(providers: list[Provider]) -> None:
                 raise RuntimeError(
                     f"two providers contribute a tool named {tool.name!r}: {owner!r} and "
                     f"{provider.name!r}. Tool names are flat, so this cannot be resolved "
-                    "by mount order — enable only one of them."
+                    "by mount order — rename one of them after its provider (the search "
+                    "contribs do: `brave_web_search`, `kagi_web_search`)."
                 )
             owner_of[tool.name] = provider.name
 

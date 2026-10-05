@@ -211,8 +211,8 @@ own `FastMCP` server and hand it to the broker as a transport:
 mcp = FastMCP(name="brave")
 
 @mcp.tool
-async def web_search(query: str, ctx: ToolContext = ToolContextDep) -> ToolResult:
-    """Search the web and get ranked results."""
+async def brave_web_search(query: str, ctx: ToolContext = ToolContextDep) -> ToolResult:
+    """Search the web with Brave and get ranked results."""
     ...
 
 # broker_provider.py
@@ -230,19 +230,27 @@ worked reference and `scooter_broker_lib/mcp.py` the surface.
 the same reason: a tool for an integration that isn't wired teaches the agent to
 call something that fails, and then to read that failure as the feature being
 broken. For a keyed provider that gate is usually the key itself — no key, no
-provider, no tool — which is how a deployment with no search key ends up with no
-`web_search` at all rather than one that answers every query with nothing.
+provider, no tool — which is how a deployment with no search key ends up with no search
+tool at all rather than one that answers every query with nothing.
 
 **TOOL NAMES ARE FLAT AND THEREFORE GLOBAL.** The servers are mounted
-namespace-less (`web_search`, not `brave_web_search`) because the skills name
-these tools and `ui/src/toolCallView.ts` matches on the name. So a name is an
-identity, and two providers claiming one leaves nothing to arbitrate but mount
-order. `contrib/brave` and `contrib/kagi` are the live case — both own
-`web_search` — and they are kept apart twice over: `modules/broker.nix` asserts
-at DEPLOY time that only one is enabled, and the broker refuses to start on a
-duplicate (`broker/mcp/routes.py`) as the backstop. If your tool is a second
-implementation of something that exists, give it the same name and add the
-assertion; if it is a different capability, give it a different name.
+namespace-less, because the skills name these tools and
+`ui/src/toolCallView.ts` matches on the name. So a name is an identity, and two
+providers claiming one leaves nothing to arbitrate but mount order — the broker
+refuses to start on a duplicate (`broker/mcp/routes.py`).
+
+**So name a tool for its provider whenever a sibling contrib could offer the same
+capability** — `brave_web_search` and `kagi_web_search`, not one shared
+`web_search`. This is the convention the reply tools already follow
+(`slack_respond`, `github_comment`), and the reason is sharper than consistency: a
+shared name would make the two providers MUTUALLY EXCLUSIVE, which is a
+restriction invented by the naming and not by anything about search. A deployment
+that wants both an independent crawl and a human-ranked index should get two
+tools and let the agent choose. Give a tool a bare, unprefixed name only when it
+is the only thing of its kind the platform will ever have.
+
+Then say in the DOCSTRING how it differs from its siblings and when to prefer it:
+with two search tools listed, that docstring is all the agent has to choose on.
 
 A reply tool for an attachable resource should also be **attachment-gated** with
 `@gate`, so it is unlisted in a conversation it could not act in. Search needs no

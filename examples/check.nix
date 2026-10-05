@@ -51,36 +51,23 @@ let
   atProblems = if builtins.any (e: e.name == "AIRTABLE_TOKEN") brokerEnv then [ ]
     else [ "broker.env.AIRTABLE_TOKEN (airtable provider not wired)" ];
 
-  # WEB SEARCH (brave.enable = true in the example). Three things to pin, because the
-  # tool this replaced failed SILENTLY — it answered real queries with HTTP 200 and "no
-  # instant answer", so a broken search looked like an empty web (PR #698):
-  #   1. the key reaches the broker, or the provider stays disabled and the agent has
-  #      no `web_search` at all;
-  #   2. the OTHER provider's key is NOT also rendered — tool names are flat, so two
-  #      providers owning `web_search` would be settled by mount order;
-  #   3. enabling both FAILS THE BUILD rather than deploying a coin flip.
-  searchKeyRef =
-    let m = builtins.filter (e: e.name == "BRAVE_SEARCH_API_KEY") brokerEnv;
+  # WEB SEARCH (brave.enable AND kagi.enable in the example). Two things to pin,
+  # because the tool this replaced failed SILENTLY — it answered real queries with HTTP
+  # 200 and "no instant answer", so a broken search looked like an empty web (PR #698):
+  #   1. each enabled provider's key reaches the broker from ITS OWN secret, or that
+  #      provider stays disabled and its search tool is absent from the agent's list;
+  #   2. enabling two providers renders BOTH keys. They used to be mutually exclusive
+  #      because both owned a tool called `web_search`; the tools are now named for
+  #      their providers, so "two indexes" is a choice a deployment is allowed to make
+  #      and a regression back to one-of would show up here (review of PR #707).
+  searchKeyRef = env:
+    let m = builtins.filter (e: e.name == env) brokerEnv;
     in if m == [ ] then { } else ((builtins.head m).valueFrom.secretKeyRef or { });
-  bothSearchProvidersRenders =
-    let
-      e = flake.inputs.kubenix.evalModules.${system} {
-        module = { lib, ... }: {
-          imports = [ ./kubenix-config.nix ];
-          agentSandbox.broker.kagi = {
-            enable = lib.mkForce true;
-            apiKeySecret = { name = "kagi-key"; key = "KAGI_API_KEY"; };
-          };
-        };
-      };
-    in (builtins.tryEval (builtins.deepSeq e.config.kubernetes.resources true)).success;
   searchProblems =
-    (if (searchKeyRef.name or "") == "brave-search-key" then [ ]
-     else [ "broker.env.BRAVE_SEARCH_API_KEY (brave.enable = true not wired, so the agent has no web_search)" ])
-    ++ (if builtins.any (e: e.name == "KAGI_API_KEY") brokerEnv
-        then [ "broker.env.KAGI_API_KEY rendered alongside brave's — two providers own `web_search`" ] else [ ])
-    ++ (if bothSearchProvidersRenders
-        then [ "brave + kagi BOTH enabled still rendered — the mutual-exclusion assertion is a no-op" ] else [ ]);
+    (if (searchKeyRef "BRAVE_SEARCH_API_KEY").name or "" == "brave-search-key" then [ ]
+     else [ "broker.env.BRAVE_SEARCH_API_KEY (brave.enable = true not wired, so the agent has no brave_web_search)" ])
+    ++ (if (searchKeyRef "KAGI_API_KEY").name or "" == "kagi-search-key" then [ ]
+        else [ "broker.env.KAGI_API_KEY (kagi.enable = true not wired — two search providers must both render)" ]);
 
   # Static shares (shares.enable = true in the example): the broker must carry
   # SHARES_ENABLED and a derived public base URL — otherwise the /shares +
@@ -744,5 +731,5 @@ let
   allProblems = searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ approvalProblems ++ stage2Problems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems;
 in
 if allProblems == [ ]
-then "ok: deployments = ${haveDeps}; datadog + airtable + brave (exactly one search provider) + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; deploy-time Jobs are spec-hash named\n"
+then "ok: deployments = ${haveDeps}; datadog + airtable + brave + kagi (two search providers, each with its own tool) + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; deploy-time Jobs are spec-hash named\n"
 else builtins.throw "example manifests missing: ${builtins.concatStringsSep ", " allProblems}"

@@ -1,4 +1,4 @@
-"""Brave's AGENT TOOL — `web_search`.
+"""Brave's AGENT TOOL — `brave_web_search`.
 
 Ported from the agent-host's DuckDuckGo-backed `web_search`
 (services/agent-host/src/agent/agentTools.ts) via PR #698, which established that the
@@ -9,8 +9,10 @@ the only option — and a keyed provider belongs in a contrib, because the broke
 where Scooter keeps credentials the agent must never hold (issue #700).
 
 WHY BRAVE IS THE ONE TO REACH FOR FIRST: $5/1k requests against $5 of credit granted
-monthly, so single-user volume is typically free. `contrib/kagi` is the alternative —
-better human-facing ranking, $12/1k, no free tier.
+monthly, so single-user volume is typically free. `contrib/kagi` and
+`contrib/duckduckgo` are the alternatives, and a deployment may enable ANY NUMBER of
+them: the tool is named for its provider, so several search tools coexist in one tool
+list and the agent picks. Why: review of PR #707.
 
 THE KEY IS A HEADER, NEVER A QUERY PARAM: a key in a URL is copied into every access
 log and proxy trace it passes. That is why `broker_provider.py` composes
@@ -36,10 +38,14 @@ SEARCH_PATH = "res/v1/web/search"
 
 
 @mcp.tool
-async def web_search(query: str, ctx: ToolContext = ToolContextDep) -> ToolResult:
-    """Search the web and get ranked results (title, URL, snippet).
+async def brave_web_search(query: str, ctx: ToolContext = ToolContextDep) -> ToolResult:
+    """Search the web with Brave and get ranked results (title, URL, snippet).
 
-    Good for finding a fact and for picking a canonical URL to pass to `web_fetch`.
+    An independent index (Brave's own crawl), good for finding a fact and for picking a
+    canonical URL to pass to `web_fetch`. If your tool list has other `*_web_search`
+    tools they are other indexes over the same web: use ONE, and only try another if
+    this one fails or returns nothing useful.
+
     A failure is returned to you with the real HTTP status and the provider's body
     verbatim — a 401 or 429 means this deployment's search key is bad or out of quota,
     so report it rather than retrying the query.

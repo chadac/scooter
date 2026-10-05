@@ -122,15 +122,20 @@
         };
       };
 
-      # Web search: the agent's `web_search` tool, served by contrib/brave. EXACTLY
-      # ONE search provider may be enabled — `kagi` is the alternative and both own a
-      # tool of that name, so enabling both fails the build (see modules/broker.nix).
-      # Enabling NEITHER is also valid: the agent then has no `web_search` tool, which
-      # is better than the DuckDuckGo-backed one this replaced, which answered real
-      # queries with an empty result set (PR #698).
+      # Web search. BOTH providers are on here because this example exists to cover
+      # every option namespace — and because they are no longer exclusive: each
+      # contributes a tool named for itself (`brave_web_search`, `kagi_web_search`), so
+      # the agent gets one tool per index and picks. A real deployment usually enables
+      # the one it pays for; enabling NONE is also valid, and the agent then has no
+      # search tool at all — which is better than the DuckDuckGo-Instant-Answer tool
+      # this replaced, which answered real queries with an empty result set (PR #698).
       brave = {
         enable = true;
         apiKeySecret = { name = "brave-search-key"; key = "BRAVE_SEARCH_API_KEY"; };
+      };
+      kagi = {
+        enable = true;
+        apiKeySecret = { name = "kagi-search-key"; key = "KAGI_API_KEY"; };
       };
 
       # Static shares: agents publish static bundles the broker serves at

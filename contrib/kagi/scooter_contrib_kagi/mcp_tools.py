@@ -1,9 +1,10 @@
-"""Kagi's AGENT TOOL — `web_search`.
+"""Kagi's AGENT TOOL — `kagi_web_search`.
 
-The alternative to `contrib/brave`, and the two are MUTUALLY EXCLUSIVE: both declare a
-tool named `web_search`, and the broker refuses to start with a duplicate tool name
-(services/broker/broker/mcp/routes.py) rather than letting mount order decide which
-one the agent gets.
+An alternative to `contrib/brave` that can also run ALONGSIDE it: the tool carries its
+provider's name, so enabling both puts two search tools in the agent's list rather than
+two providers fighting over one name. The first cut of this contrib named the tool
+`web_search` and made the two mutually exclusive; limiting the agent to one index was
+an artifact of that naming, not a requirement. Why: review of PR #707.
 
 WHEN TO PICK THIS ONE: better human-facing ranking, at $12/1k requests with no free
 tier and a paid Kagi account required — against brave's $5/1k with $5 granted monthly.
@@ -32,10 +33,14 @@ RESULT_ROW = 0
 
 
 @mcp.tool
-async def web_search(query: str, ctx: ToolContext = ToolContextDep) -> ToolResult:
-    """Search the web and get ranked results (title, URL, snippet).
+async def kagi_web_search(query: str, ctx: ToolContext = ToolContextDep) -> ToolResult:
+    """Search the web with Kagi and get ranked results (title, URL, snippet).
 
-    Good for finding a fact and for picking a canonical URL to pass to `web_fetch`.
+    Kagi ranks for humans rather than for ad load, so it is often the better index for
+    a research question. If your tool list has other `*_web_search` tools they are
+    other indexes over the same web: use ONE, and only try another if this one fails or
+    returns nothing useful.
+
     A failure is returned to you with the real HTTP status and the provider's body
     verbatim — a 401 or a quota error means this deployment's search key is bad or
     exhausted, so report it rather than retrying the query.

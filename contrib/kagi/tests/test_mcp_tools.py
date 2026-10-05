@@ -1,4 +1,4 @@
-"""Kagi's `web_search` tool (issue #700, porting PR #698).
+"""Kagi's `kagi_web_search` tool (issue #700, porting PR #698).
 
 Kagi's own quirk is the one to protect: its result rows are TYPED, and the row that is
 not a result carries no url. Everything else about search behaviour is shared with
@@ -67,7 +67,7 @@ async def test_the_related_searches_row_is_FILTERED_OUT():
             {"t": 1, "list": ["related one", "related two"]},
         )
     )
-    out = await _fn("web_search")(query="a", ctx=ctx)
+    out = await _fn("kagi_web_search")(query="a", ctx=ctx)
     assert not out.is_error
     assert out.text == 'Results for "a":\n- A real hit (https://x.test/a)\n  about a'
     assert "related" not in out.text
@@ -80,20 +80,20 @@ async def test_only_result_rows_count_toward_the_cap():
     for i in range(MAX_RESULTS):
         rows.append({"t": 1, "list": ["noise"]})
         rows.append({"t": 0, "title": f"r{i}", "url": f"https://x.test/{i}"})
-    out = await _fn("web_search")(query="q", ctx=_ctx(_data(*rows)))
+    out = await _fn("kagi_web_search")(query="q", ctx=_ctx(_data(*rows)))
     assert len([line for line in out.text.splitlines() if line.startswith("- ")]) == MAX_RESULTS
 
 
 async def test_it_queries_the_documented_endpoint():
     ctx = _ctx(_data())
-    await _fn("web_search")(query="some query", ctx=ctx)
+    await _fn("kagi_web_search")(query="some query", ctx=ctx)
     call = ctx.upstream.calls[0]
     assert (call["method"], call["path"]) == ("GET", "api/v1/search")
     assert call["params"] == {"q": "some query", "limit": MAX_RESULTS}
 
 
 async def test_an_upstream_failure_is_reported_VERBATIM():
-    out = await _fn("web_search")(query="q", ctx=_ctx(httpx.Response(401, text="unauthorized")))
+    out = await _fn("kagi_web_search")(query="q", ctx=_ctx(httpx.Response(401, text="unauthorized")))
     assert out.is_error
     assert "401" in out.text and "unauthorized" in out.text and "kagi" in out.text
 
@@ -125,3 +125,16 @@ def test_it_ships_tools_and_NO_raw_proxy_route(monkeypatch):
     transports = kagi().transports
     assert [t.name for t in transports] == ["mcp-tools"]
     assert transports[0].upstream == kagi_tools.UPSTREAM
+
+
+async def test_the_tool_is_named_for_its_provider_so_a_sibling_can_coexist():
+    """The name is the whole reason several search providers can be enabled at once.
+
+    Tool names are flat and global — the broker refuses to start on a duplicate
+    (broker/mcp/routes.py) — so a bare `web_search` would make kagi and every
+    sibling search contrib mutually exclusive. That exclusivity was an artifact of the
+    name, not a real constraint; nothing stops a deployment from wanting two indexes.
+    Asserted against the SERVER's registry, because that is the name the agent is shown.
+    """
+    names = {t.name for t in await kagi_tools.mcp.list_tools(run_middleware=False)}
+    assert names == {"kagi_web_search"}

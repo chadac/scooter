@@ -108,7 +108,7 @@ agent-sandbox controller:  warm pools · suspend (drop Pod, keep PVCs) / resume
   and stopped at runtime with the `scooter-service` CLI (or from the UI).
 - **Broker + provider tools** — a credential vault and transparent proxy. Typed MCP
   tools (`slack_respond`, `slack_react`, `github_comment`, `gitlab_comment`,
-  `jira_comment`, `web_search`, `web_fetch`) wrap it; anything else uses the raw
+  `jira_comment`, `brave_web_search`, `web_fetch`) wrap it; anything else uses the raw
   `$BROKER_URL/<provider>/<api-path>` proxy with a Bearer token from
   `$BROKER_TOKEN_PATH`.
 - **Webhooks** — turn an inbound GitHub/GitLab/Jira/Slack event into a conversation.

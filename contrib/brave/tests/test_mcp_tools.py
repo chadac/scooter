@@ -1,4 +1,4 @@
-"""Brave's `web_search` tool (issue #700, porting PR #698).
+"""Brave's `brave_web_search` tool (issue #700, porting PR #698).
 
 The assertions that matter are the ones that keep the THREE OUTCOMES distinct. The
 implementation this replaces answered a real query with HTTP 200 and "no instant
@@ -66,7 +66,7 @@ async def test_renders_each_hit_with_its_snippet():
             {"title": "Pricing", "url": "https://kagi.com/pricing"},
         )
     )
-    out = await _fn("web_search")(query="kagi api", ctx=ctx)
+    out = await _fn("brave_web_search")(query="kagi api", ctx=ctx)
     assert not out.is_error
     assert out.text == (
         'Results for "kagi api":\n'
@@ -83,7 +83,7 @@ async def test_sends_the_query_and_no_credential_of_its_own():
     passes — the reason brave's credential is a header source (PR #698).
     """
     ctx = _ctx(_results())
-    await _fn("web_search")(query="some query", ctx=ctx)
+    await _fn("brave_web_search")(query="some query", ctx=ctx)
     call = ctx.upstream.calls[0]
     assert call["method"] == "GET"
     assert call["path"] == "res/v1/web/search"
@@ -93,7 +93,7 @@ async def test_sends_the_query_and_no_credential_of_its_own():
 
 async def test_an_upstream_failure_is_reported_VERBATIM_not_as_no_results():
     ctx = _ctx(httpx.Response(429, text="Request rate limit exceeded"))
-    out = await _fn("web_search")(query="anything", ctx=ctx)
+    out = await _fn("brave_web_search")(query="anything", ctx=ctx)
     assert out.is_error
     assert "429" in out.text
     assert "Request rate limit exceeded" in out.text
@@ -102,7 +102,7 @@ async def test_an_upstream_failure_is_reported_VERBATIM_not_as_no_results():
 
 async def test_an_empty_web_is_SUCCESS_and_names_the_provider():
     ctx = _ctx(_results())
-    out = await _fn("web_search")(query="a query nothing matches", ctx=ctx)
+    out = await _fn("brave_web_search")(query="a query nothing matches", ctx=ctx)
     assert not out.is_error
     assert out.text == 'No results for "a query nothing matches" (via brave).'
 
@@ -110,7 +110,7 @@ async def test_an_empty_web_is_SUCCESS_and_names_the_provider():
 async def test_a_row_with_no_url_is_dropped():
     """A hit the agent cannot follow is not a result."""
     ctx = _ctx(_results({"title": "no link here"}, {"title": "ok", "url": "https://x.test"}))
-    out = await _fn("web_search")(query="q", ctx=ctx)
+    out = await _fn("brave_web_search")(query="q", ctx=ctx)
     assert [line for line in out.text.splitlines() if line.startswith("- ")] == [
         "- ok (https://x.test)"
     ]
@@ -118,13 +118,13 @@ async def test_a_row_with_no_url_is_dropped():
 
 async def test_the_result_list_is_capped():
     rows = [{"title": f"r{i}", "url": f"https://x.test/{i}"} for i in range(MAX_RESULTS + 5)]
-    out = await _fn("web_search")(query="q", ctx=_ctx(_results(*rows)))
+    out = await _fn("brave_web_search")(query="q", ctx=_ctx(_results(*rows)))
     assert len([line for line in out.text.splitlines() if line.startswith("- ")]) == MAX_RESULTS
 
 
 async def test_a_blank_query_fails_without_calling_upstream():
     ctx = _ctx(_results())
-    out = await _fn("web_search")(query="   ", ctx=ctx)
+    out = await _fn("brave_web_search")(query="   ", ctx=ctx)
     assert out.is_error
     assert ctx.upstream.calls == []
 
@@ -132,7 +132,7 @@ async def test_a_blank_query_fails_without_calling_upstream():
 async def test_a_malformed_body_is_no_results_rather_than_a_crash():
     """A 200 whose body is not the documented shape must not raise through the tool
     layer — the agent gets an answer either way."""
-    out = await _fn("web_search")(query="q", ctx=_ctx(httpx.Response(200, json=[1, 2, 3])))
+    out = await _fn("brave_web_search")(query="q", ctx=_ctx(httpx.Response(200, json=[1, 2, 3])))
     assert not out.is_error
     assert "No results" in out.text
 
@@ -162,7 +162,20 @@ def test_it_ships_tools_and_NO_raw_proxy_route(monkeypatch):
     assert transports[0].upstream == brave_tools.UPSTREAM
 
 
-def test_web_search_is_not_attachment_gated():
+def test_brave_web_search_is_not_attachment_gated():
     """Search has no resource to be attached to; its gate is the provider's `enabled`.
     A gate here would hide it from every conversation."""
-    assert gate_for("web_search") is None
+    assert gate_for("brave_web_search") is None
+
+
+async def test_the_tool_is_named_for_its_provider_so_a_sibling_can_coexist():
+    """The name is the whole reason several search providers can be enabled at once.
+
+    Tool names are flat and global — the broker refuses to start on a duplicate
+    (broker/mcp/routes.py) — so a bare `web_search` would make brave and every
+    sibling search contrib mutually exclusive. That exclusivity was an artifact of the
+    name, not a real constraint; nothing stops a deployment from wanting two indexes.
+    Asserted against the SERVER's registry, because that is the name the agent is shown.
+    """
+    names = {t.name for t in await brave_tools.mcp.list_tools(run_middleware=False)}
+    assert names == {"brave_web_search"}

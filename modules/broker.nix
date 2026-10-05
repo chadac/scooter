@@ -297,29 +297,29 @@ in
       };
     };
 
-    # --- Web search (the agent's `web_search` tool) -------------------------
-    # EXACTLY ONE of these, or neither. Both contribs own a tool named `web_search`
-    # and tool names are flat, so two would leave mount order to decide which index
-    # the agent searches and which account is billed — the assertion below refuses the
-    # deploy, and the broker refuses to start as a backstop (broker/mcp/routes.py).
+    # --- Web search -----------------------------------------------------------
+    # ANY NUMBER of these, including none. Each contrib names its tool for itself
+    # (`brave_web_search`, `kagi_web_search`), so enabling two gives the agent two
+    # indexes to choose between rather than two providers fighting over one name.
     #
-    # Neither is also a valid answer: with no search provider the agent simply has no
-    # `web_search` tool, which is what the skills tell it to report. The tool this
-    # replaced called DuckDuckGo's Instant Answer API — a definitions endpoint, not a
-    # web index — so it answered real queries with HTTP 200 and "no instant answer",
-    # and search presented as AN EMPTY WEB rather than as unconfigured. DDG publishes
-    # no results API, so a keyed provider is the only option and which one is a
-    # price/quality call. Why: PR #698, issue #700.
+    # None is also a valid answer: the agent then has no search tool at all, which is
+    # what the skills tell it to report. The tool this replaced called DuckDuckGo's
+    # Instant Answer API — a definitions endpoint, not a web index — so it answered
+    # real queries with HTTP 200 and "no instant answer", and search presented as AN
+    # EMPTY WEB rather than as unconfigured. Why: PR #698, issue #700, and the review
+    # of #707 for why one-at-a-time was the wrong constraint.
     brave = {
       enable = mkOption {
         type = types.bool;
         default = false;
         description = ''
-          Enable the Brave Search provider, which serves the agent's `web_search` tool.
+          Enable the Brave Search provider, which serves the agent's
+          `brave_web_search` tool.
 
           The one to reach for first: $5/1k requests against $5 of credit granted
-          monthly, so typical single-user volume is free. Mutually exclusive with
-          `kagi`. Ships no raw /brave/* proxy route — a passthrough would let the agent
+          monthly, so typical single-user volume is free. Combinable with `kagi` — each
+          provider's tool is named for it, so the agent gets one tool per enabled
+          index. Ships no raw /brave/* proxy route — a passthrough would let the agent
           spend the search quota on arbitrary paths.
         '';
       };
@@ -343,12 +343,13 @@ in
         type = types.bool;
         default = false;
         description = ''
-          Enable the Kagi Search provider, which serves the agent's `web_search` tool.
+          Enable the Kagi Search provider, which serves the agent's `kagi_web_search`
+          tool.
 
           Better human-facing ranking than brave, at $12/1k requests with no free tier
           and a paid Kagi account required — and an LLM reranking the results erases
           much of that difference, so prefer `brave` unless you already pay for Kagi.
-          Mutually exclusive with `brave`.
+          Combinable with `brave`.
         '';
       };
       apiKeySecret = mkOption {
@@ -673,32 +674,27 @@ in
                       key = bcfg.airtable.tokenSecret.key;
                     };
                   }
-                ] ++ lib.optionals (bcfg.brave.enable || bcfg.kagi.enable) (
-                  # The search key -> whichever provider is enabled serves `web_search`.
-                  # Asserted rather than rendered-both: tool names are flat, so two
-                  # providers owning `web_search` would be decided by mount order. The
-                  # broker also refuses to start on a duplicate, but a crash-loop is a
-                  # worse way to learn this than a failed `nix build`.
-                  assert lib.assertMsg (!(bcfg.brave.enable && bcfg.kagi.enable))
-                    "agentSandbox.broker.brave.enable and .kagi.enable are mutually exclusive: both serve the agent's `web_search` tool, and the broker refuses to start with two providers owning one tool name. Enable one.";
-                  lib.optionals bcfg.brave.enable [
-                    {
-                      name = "BRAVE_SEARCH_API_KEY";
-                      valueFrom.secretKeyRef = {
-                        name = bcfg.brave.apiKeySecret.name;
-                        key = bcfg.brave.apiKeySecret.key;
-                      };
-                    }
-                  ] ++ lib.optionals bcfg.kagi.enable [
-                    {
-                      name = "KAGI_API_KEY";
-                      valueFrom.secretKeyRef = {
-                        name = bcfg.kagi.apiKeySecret.name;
-                        key = bcfg.kagi.apiKeySecret.key;
-                      };
-                    }
-                  ]
-                ) ++ lib.optionals bcfg.shares.enable ([
+                ] ++ lib.optionals bcfg.brave.enable [
+                  # A search key -> that provider mounts and contributes its own
+                  # `<provider>_web_search`. Rendered independently, not asserted
+                  # one-of: the tools no longer share a name, so two enabled providers
+                  # are two tools, which is a deployment's choice to make.
+                  {
+                    name = "BRAVE_SEARCH_API_KEY";
+                    valueFrom.secretKeyRef = {
+                      name = bcfg.brave.apiKeySecret.name;
+                      key = bcfg.brave.apiKeySecret.key;
+                    };
+                  }
+                ] ++ lib.optionals bcfg.kagi.enable [
+                  {
+                    name = "KAGI_API_KEY";
+                    valueFrom.secretKeyRef = {
+                      name = bcfg.kagi.apiKeySecret.name;
+                      key = bcfg.kagi.apiKeySecret.key;
+                    };
+                  }
+                ] ++ lib.optionals bcfg.shares.enable ([
                   # Static shares -> the broker mounts /shares + /s/<uuid>/ and
                   # persists bundles in the shared Postgres `broker` DB. The store
                   # reuses the BROKER_DB_* components (StoreConfig builds a

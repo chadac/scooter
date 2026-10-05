@@ -1,13 +1,19 @@
-"""Web search — the shared half of a `web_search` contrib tool.
+"""Web search — the shared half of a search contrib's `<provider>_web_search` tool.
 
-Every search contrib (brave, kagi, a third-party one) declares a tool called
-`web_search` and differs only in the request it makes and the JSON it unpacks. What
-they must NOT differ in is what the agent sees: the result format, the result cap, and
-how the three outcomes are told apart. Those live here, so swapping a deployment's
-search provider changes the bill and the ranking, never the agent's behaviour.
+Every search contrib (brave, kagi, a third-party one) declares a tool named for itself
+and differs only in the request it makes and the body it unpacks. What they must NOT
+differ in is what the agent sees: the result format, the result cap, and how the
+outcomes are told apart. Those live here, so a deployment that enables two providers
+gets two indexes and one behaviour — and swapping providers changes the bill and the
+ranking, never how a result or a failure reads.
+
+The tool NAME is per-provider for a reason that is not cosmetic: names are flat and
+global (broker/mcp/routes.py refuses to start on a duplicate), so one shared
+`web_search` would have made the providers mutually exclusive — an artifact of the
+name rather than a real constraint. Why: review of PR #707.
 
 THE THREE OUTCOMES, which the implementation this replaces collapsed into one.
-`web_search` used to call DuckDuckGo's Instant Answer API — a definitions endpoint,
+The agent-host's `web_search` used to call DuckDuckGo's Instant Answer API — a definitions endpoint,
 not a web index — so a real query came back HTTP 200 with "no instant answer" and
 search presented as AN EMPTY WEB rather than as the wrong API. Hence:
 
