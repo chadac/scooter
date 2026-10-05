@@ -26,7 +26,7 @@ import {
   type SubagentManager,
 } from "./subagentTools.js";
 import type { ConversationLink } from "../session/manager.js";
-import { registerAgentTools, registerWebTools, type BrokerClient, type ResourceMapping } from "./agentTools.js";
+import { registerWebTools } from "./agentTools.js";
 import { registerSchedulerTools, type SchedulerToolsWiring } from "./schedulerTools.js";
 import { handleListModels, handleSwitchModel, type ModelToolsWiring } from "./modelTools.js";
 import {
@@ -127,16 +127,13 @@ export async function handleKillBackground(
   return { content: [{ type: "text", text }], isError: res.outcome === "unknown" };
 }
 
-/** The extra deps buildServer needs to register the agent-tools (slack/gitlab/
- *  github/web). Optional — when absent, the agent-tools simply aren't registered. */
+/** What buildServer still needs from the agent-host for the web tools.
+ *
+ *  This used to carry the broker client, the conversation's links and the webhooks
+ *  resource-map lookup, all for the provider reply tools. Those moved to the contribs
+ *  in #700, and the broker resolves its own targets from the conversation's links —
+ *  so what is left is an injectable fetch for tests. */
 export interface AgentToolsWiring {
-  /** The broker client the agent-tools call under the agent-host's identity. */
-  broker: BrokerClient;
-  /** The conversation's links (for inferred defaults), from store.listLinks. */
-  links(conversationId: string): Promise<ConversationLink[]>;
-  /** FALLBACK target lookup: the webhooks conversation_map (Postgres), used when a
-   *  link has no structured `ref`. Optional — omitted when no DB is wired. */
-  resourceLookup?(conversationId: string, source: string): Promise<ResourceMapping | undefined>;
   /** Injectable fetch for web_search / web_fetch (defaults to global fetch). */
   fetchImpl?: typeof fetch;
 }
@@ -313,26 +310,10 @@ export async function buildServer(
     );
   }
   // Web tools (web_search / web_fetch) need NO broker — they hit DuckDuckGo / a URL
-  // directly. Register them unconditionally so they don't depend on broker wiring
-  // (which otherwise required AWS or broker-routed sandboxes). See PR (decouple web
-  // tools from broker).
+  // directly. Registered unconditionally so they don't depend on broker wiring.
+  // They move to per-provider search contribs in phase 3 of #700.
   registerWebTools(server, { fetchImpl: agentTools?.fetchImpl });
 
-  // The provider reply tools (slack/github/gitlab/jira) DO need the broker and are
-  // additionally attachment-gated inside registerAgentTools.
-  if (agentTools) {
-    await registerAgentTools(
-      server,
-      { broker: agentTools.broker, fetchImpl: agentTools.fetchImpl },
-      {
-        conversationId,
-        links: () => agentTools.links(conversationId),
-        resourceLookup: agentTools.resourceLookup
-          ? (source) => agentTools.resourceLookup!(conversationId, source)
-          : undefined,
-      },
-    );
-  }
   // Model self-selection: list the offered models (+ deployment hints) and switch
   // this conversation's model mid-run. Registered only when more than one model is
   // offered (a single-model deployment has nothing to switch to).
@@ -444,7 +425,7 @@ export interface McpEndpoint {
  * direction. The kubenix module generates the Secret, so "no secret" is a
  * misconfiguration rather than a supported mode.
  */
-function resolveConversation(req: IncomingMessage, secret: string): string | undefined {
+export function resolveConversation(req: IncomingMessage, secret: string): string | undefined {
   if (!secret) return undefined;
   const token = bearerFrom(req.headers.authorization);
   if (!token) return undefined;

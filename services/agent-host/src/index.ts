@@ -61,7 +61,9 @@ import { ensureGooseConfig } from "./agent/gooseConfig.js";
 import { catalogFromEnv, availableIds, type ModelCatalog } from "./agent/models.js";
 import { createJobManager, type JobStatus, type JobRegistry } from "./session/jobManager.js";
 import { createPgJobStore } from "./session/jobStore.js";
-import { createMcpEndpoint, type MarimoToolsWiring } from "./agent/mcpServer.js";
+import { mintConvToken } from "./auth/convToken.js";
+import { createMcpEndpoint, resolveConversation, type MarimoToolsWiring } from "./agent/mcpServer.js";
+import { createBrokerMcpProxy } from "./agent/brokerMcpProxy.js";
 import { createMarimoClient } from "@scooter/marimo-mcp";
 import {
   lastAssistantText,
@@ -74,7 +76,6 @@ import { lastRunCompleted } from "./session/danglingRun.js";
 import { randomUUID } from "node:crypto";
 import { createHttpSchedulerClient } from "./agent/schedulerClient.js";
 import type { SchedulerToolsWiring } from "./agent/schedulerTools.js";
-import { createBrokerClient } from "./agent/brokerClient.js";
 import { createResourceLookup } from "./agent/resourceMapping.js";
 import { parseScooterEnv } from "./config/scooterEnv.js";
 import { resolverFromEnv, type AsyncIdentityResolver } from "./auth/identity.js";
@@ -1032,18 +1033,12 @@ export async function main(
   // the same resolver /whoami + POST /conversations use — otherwise a browser-made
   // conversation had no owner and never showed under the Mine filter.
   server.useIdentityResolver(resolveUser);
-  const agentToolsWiring = brokerUrl
-    ? {
-        broker: createBrokerClient({
-          baseUrl: brokerUrl,
-          tokenPath: process.env.BROKER_TOKEN_PATH ?? "/var/run/secrets/broker/token",
-        }),
-        links: (id: string) => store.listLinks?.(id as SessionId) ?? Promise.resolve([]),
-        resourceLookup: resourceLookup
-          ? (id: string, source: string) => resourceLookup.lookup(id, source)
-          : undefined,
-      }
-    : undefined;
+  // The provider reply tools used to need a broker client, the conversation's links
+  // and the webhooks resource-map lookup here. #700 moved them into the contribs, and
+  // the broker resolves its own targets, so only the web tools' injectable fetch is
+  // left — which nothing overrides in production.
+  const agentToolsWiring: { fetchImpl?: typeof fetch } | undefined = undefined;
+
   // Serve the MCP endpoint if ANY capability is available: the agent-tools (broker
   // wired), the background-job tools, or the model self-selection tools. buildServer
   // registers whichever deps are present.
@@ -1137,6 +1132,8 @@ export async function main(
         },
       };
 
+  const convTokenSecret = process.env.CONV_TOKEN_SECRET ?? "";
+  const brokerTokenPath = process.env.BROKER_TOKEN_PATH ?? "/var/run/secrets/broker/token";
   const mcpEndpoint =
     agentToolsWiring !== undefined ||
     jobManager !== undefined ||
@@ -1154,7 +1151,7 @@ export async function main(
           // behaviour, with a loud startup warning, so an upgrade that has not yet
           // provisioned the Secret keeps working instead of losing every tool at
           // once. See issue #700.
-          convTokenSecret: process.env.CONV_TOKEN_SECRET ?? "",
+          convTokenSecret,
           convTokenTtlSeconds: process.env.CONV_TOKEN_TTL_SECONDS
             ? Number(process.env.CONV_TOKEN_TTL_SECONDS)
             : undefined,
@@ -1167,6 +1164,49 @@ export async function main(
           marimo: marimoToolsWiring,
         })
       : undefined;
+
+  // The broker-MCP proxy: how the agent reaches the contrib-contributed tools
+  // (github_comment, slack_respond, …) that #700 moved out of this process.
+  //
+  // A PROXY rather than handing the agent the broker's URL, because the broker's /mcp
+  // needs BOTH an allowlisted control-plane SA token and a conversation token — and an
+  // MCP server's headers are fixed at session creation while a projected SA token
+  // rotates roughly hourly. Embedding one would work for an hour and then 401 every
+  // provider tool mid-conversation. Here the SA token is attached FRESH per request and
+  // the agent never holds it, which also keeps it off a BYOC user's machine.
+  const brokerMcpUrl = (process.env.BROKER_MCP_URL ?? (brokerUrl ? `${brokerUrl.replace(/\/$/, "")}/mcp` : "")).trim();
+  const brokerMcpProxy =
+    brokerMcpUrl && convTokenSecret
+      ? createBrokerMcpProxy({
+          baseUrl: process.env.AGENT_SELF_MODIFY_MCP_URL ?? `http://127.0.0.1:${config.port}`,
+          brokerMcpUrl,
+          resolveConversation: (req) => resolveConversation(req, convTokenSecret),
+          mintConvToken: (conversationId) => mintConvToken(conversationId, convTokenSecret),
+          saToken: async () => {
+            // Re-read per request: kubelet rotates the projected token on disk, so a
+            // value cached at startup goes stale inside the hour.
+            try {
+              const { readFile } = await import("node:fs/promises");
+              return (await readFile(brokerTokenPath, "utf8")).trim();
+            } catch (err) {
+              // ENOENT is the genuine local/dev case. Anything else is a real problem
+              // and must not silently downgrade to an unauthenticated broker call.
+              if ((err as { code?: string })?.code !== "ENOENT") {
+                hostLog.warn("could not read the broker SA token; the broker will reject MCP calls", {
+                  path: brokerTokenPath,
+                  error: formatError(err),
+                });
+              }
+              return undefined;
+            }
+          },
+        })
+      : undefined;
+  if (!brokerMcpProxy) {
+    hostLog.info("broker MCP tools are NOT offered", {
+      reason: !brokerMcpUrl ? "no BROKER_URL/BROKER_MCP_URL" : "no CONV_TOKEN_SECRET",
+    });
+  }
 
   // Restore conversations so the session list survives a restart. Multi-replica hydrates from
   // the Conversation CRs (the source of truth); single-replica from the local store.
@@ -1449,6 +1489,8 @@ export async function main(
       },
       resolveUser,
       mcpHandler: mcpEndpoint ? (req, res, body) => mcpEndpoint.handle(req, res, body) : undefined,
+      resourceLookup,
+      brokerMcpHandler: brokerMcpProxy ? (req, res, body) => brokerMcpProxy.handle(req, res, body) : undefined,
       answerPermission: async (sessionId, toolCallId, optionId, approver) => {
         // Route the user's choice to the conversation's bridge, which resolves
         // the blocked agent run (ACP request_permission).
@@ -1761,19 +1803,33 @@ export async function main(
     const metricModel = resolved ?? cfg.model ?? "unknown";
     // Offer the agent the in-process MCP tools (background jobs / model selection /
     // agent-tools), scoped to THIS conversation via the URL's ?conv=<id>.
-    const mcpServers = mcpEndpoint
-      ? [
-          {
+    // The agent is offered TWO servers, split by who owns the tools: scooter-env for
+    // the control-plane tools that need this process's state and sandbox exec, and
+    // scooter-broker for the contrib-contributed provider tools. Both carry the same
+    // conversation token; `headers` is `HttpHeader[]` ({name,value}) per the ACP schema
+    // — the local type said `string[]`, wrong but harmless while every entry was empty.
+    // Why: issue #700.
+    const offeredServers = [
+      ...(mcpEndpoint
+        ? [{
             type: "http",
             name: "scooter-env",
             url: mcpEndpoint.urlFor(conversationId),
-            // The conversation token. `headers` is `HttpHeader[]` ({name,value}) per the
-            // ACP schema — the local type said `string[]`, which was wrong but harmless
-            // while every entry was empty. Why: issue #700.
             headers: mcpEndpoint.headersFor(conversationId, owner),
-          },
-        ]
-      : undefined;
+          }]
+        : []),
+      ...(brokerMcpProxy && mcpEndpoint
+        ? [{
+            type: "http",
+            name: "scooter-broker",
+            url: brokerMcpProxy.url(),
+            // The SAME conversation token: the proxy verifies it and attaches the
+            // rotating SA token itself.
+            headers: mcpEndpoint.headersFor(conversationId, owner),
+          }]
+        : []),
+    ];
+    const mcpServers = offeredServers.length ? offeredServers : undefined;
     const usingClaude = process.env.GOOSE_PROVIDER === "claude-code" && !config.fakeSandbox;
     // The FLOOR ACP client factory — the cloud brain (SDK-claude on Bedrock, or goose). This is
     // what a run uses when no personalized remote agent applies (a scheduled trigger, an offline

@@ -53,6 +53,8 @@ python3Packages.buildPythonPackage {
     "scooter_broker_lib.transports.token_vend"
     "scooter_broker_lib.transports.mcp_tools"
     "scooter_broker_lib.mcp"
+    "scooter_broker_lib.links"
+    "scooter_broker_lib.refs"
     "scooter_broker_lib.store"
     "scooter_broker_lib.authz"
     "scooter_broker_lib.context"
