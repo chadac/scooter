@@ -109,11 +109,14 @@ pkgs.testers.runNixOSTest {
 
     # --- 4. re-activation is idempotent: exactly one mount, never stacked. -----
     # Every `scooter-rebuild switch` re-runs activation with the bind already live.
-    machine.succeed("/run/current-system/activate")
+    # Read the no-op report from the COMMAND's output, not the console. Only the
+    # boot-time activation reaches the console (there it is a systemd unit whose
+    # stdout IS the console); a manual activate returns its output to the driver.
+    reactivation = machine.succeed("/run/current-system/activate 2>&1")
     mounts = int(machine.succeed("grep -c ' /var/log/journal ' /proc/self/mountinfo").strip())
     assert mounts == 1, f"bind stacked {mounts} deep across re-activation"
-    assert "already bound" in machine.get_console_log(), \
-        "re-activation did not report taking the no-op path"
+    assert "already bound" in reactivation, \
+        f"re-activation did not report taking the no-op path: {reactivation}"
     machine.succeed("journalctl -b --no-pager | grep -q .")
 
     # --- 5. prior boots pruned to keepBoots (default 3). -----------------------
