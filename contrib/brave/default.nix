@@ -3,6 +3,12 @@
     src = ./.;
     services.broker.enable = true;
 
+    # The option tree an operator configures (`agentSandbox.broker.brave.*`) and the
+    # broker env it renders. In modules/broker.nix until the review of #707; see
+    # deployment.nix for why it could not move while the search providers were
+    # mutually exclusive.
+    deployment.module = ./deployment.nix;
+
     # No `ui`: `brave_web_search` renders as a plain tool call, not a provider card —
     # the UI deliberately returns null for it (ui/src/toolCallView.test.ts), and brave
     # is not a linked-resource source, so it contributes no chip or icon either.

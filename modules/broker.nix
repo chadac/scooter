@@ -297,74 +297,12 @@ in
       };
     };
 
-    # --- Web search -----------------------------------------------------------
-    # ANY NUMBER of these, including none. Each contrib names its tool for itself
-    # (`brave_web_search`, `kagi_web_search`), so enabling two gives the agent two
-    # indexes to choose between rather than two providers fighting over one name.
-    #
-    # None is also a valid answer: the agent then has no search tool at all, which is
-    # what the skills tell it to report. The tool this replaced called DuckDuckGo's
-    # Instant Answer API — a definitions endpoint, not a web index — so it answered
-    # real queries with HTTP 200 and "no instant answer", and search presented as AN
-    # EMPTY WEB rather than as unconfigured. Why: PR #698, issue #700, and the review
-    # of #707 for why one-at-a-time was the wrong constraint.
-    brave = {
-      enable = mkOption {
-        type = types.bool;
-        default = false;
-        description = ''
-          Enable the Brave Search provider, which serves the agent's
-          `brave_web_search` tool.
-
-          The one to reach for first: $5/1k requests against $5 of credit granted
-          monthly, so typical single-user volume is free. Combinable with `kagi` — each
-          provider's tool is named for it, so the agent gets one tool per enabled
-          index. Ships no raw /brave/* proxy route — a passthrough would let the agent
-          spend the search quota on arbitrary paths.
-        '';
-      };
-      apiKeySecret = mkOption {
-        type = types.submodule {
-          options = {
-            name = mkOption { type = types.str; description = "Secret name (in the broker namespace)."; };
-            key = mkOption { type = types.str; default = "BRAVE_SEARCH_API_KEY"; description = "Secret key holding the Brave subscription token."; };
-          };
-        };
-        description = ''
-          Secret holding a Brave Search subscription token (api-dashboard.search.brave.com).
-          Injected as BRAVE_SEARCH_API_KEY; the broker delivers it upstream as an
-          X-Subscription-Token HEADER, never a query param — a key in a URL is copied
-          into every access log it passes. The secret must exist in the broker namespace.
-        '';
-      };
-    };
-    kagi = {
-      enable = mkOption {
-        type = types.bool;
-        default = false;
-        description = ''
-          Enable the Kagi Search provider, which serves the agent's `kagi_web_search`
-          tool.
-
-          Better human-facing ranking than brave, at $12/1k requests with no free tier
-          and a paid Kagi account required — and an LLM reranking the results erases
-          much of that difference, so prefer `brave` unless you already pay for Kagi.
-          Combinable with `brave`.
-        '';
-      };
-      apiKeySecret = mkOption {
-        type = types.submodule {
-          options = {
-            name = mkOption { type = types.str; description = "Secret name (in the broker namespace)."; };
-            key = mkOption { type = types.str; default = "KAGI_API_KEY"; description = "Secret key holding the Kagi API token."; };
-          };
-        };
-        description = ''
-          Secret holding a Kagi API token (kagi.com/settings?p=api). Injected as
-          KAGI_API_KEY. The secret must exist in the broker namespace.
-        '';
-      };
-    };
+    # --- Web search ------------------------------------------------------------
+    # No options here: each search contrib owns its own
+    # (`agentSandbox.broker.{brave,kagi,duckduckgo}.*` in contrib/<name>/deployment.nix,
+    # layered in by contrib/deployment-modules.nix). ANY NUMBER may be enabled — each
+    # contributes a tool named for itself, so two providers are two tools rather than a
+    # collision. Why: issue #700, review of PR #707.
 
     # --- Static shares (broker/shares/) — persistent static webpages --------
     # The broker's shares feature lets agents publish static bundles, served at
@@ -672,26 +610,6 @@ in
                     valueFrom.secretKeyRef = {
                       name = bcfg.airtable.tokenSecret.name;
                       key = bcfg.airtable.tokenSecret.key;
-                    };
-                  }
-                ] ++ lib.optionals bcfg.brave.enable [
-                  # A search key -> that provider mounts and contributes its own
-                  # `<provider>_web_search`. Rendered independently, not asserted
-                  # one-of: the tools no longer share a name, so two enabled providers
-                  # are two tools, which is a deployment's choice to make.
-                  {
-                    name = "BRAVE_SEARCH_API_KEY";
-                    valueFrom.secretKeyRef = {
-                      name = bcfg.brave.apiKeySecret.name;
-                      key = bcfg.brave.apiKeySecret.key;
-                    };
-                  }
-                ] ++ lib.optionals bcfg.kagi.enable [
-                  {
-                    name = "KAGI_API_KEY";
-                    valueFrom.secretKeyRef = {
-                      name = bcfg.kagi.apiKeySecret.name;
-                      key = bcfg.kagi.apiKeySecret.key;
                     };
                   }
                 ] ++ lib.optionals bcfg.shares.enable ([
