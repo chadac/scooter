@@ -546,6 +546,13 @@
               # echo pins `enable = false` (it must never ship), so the fixture
               # overrides rather than merges.
               withEcho = derive [{ contribs.echo.enable = lib.mkForce true; }];
+              # Just the fixture: pkgs/sandbox-os already carries the contribs the
+              # repo enables, so passing the whole list would duplicate aws.
+              echoOnly = lib.subtractLists (derive [ ]).treeRelative withEcho.treeRelative;
+              # Through `extraModuleFiles`, the arg a deployment layering its own
+              # modules into the image should use: imported AND carried into the
+              # re-converge list. Passing the fixture the other way (`extraModules`)
+              # would leave it out of that list, which is the bug #717 closed.
               sandboxWithEcho = import ./pkgs/sandbox-os {
                 inherit lib n2c uvNix;
                 pkgs = sandboxPkgs;
@@ -553,7 +560,7 @@
                   src = nix-stubs;
                   package = nix-stubs.packages.${system}.nix-stubs;
                 };
-                extraModules = withEcho;
+                extraModuleFiles = echoOnly;
               };
               # Reached through the CONFIG, not re-derived here, so this fails if the
               # image stops baking the tree the in-pod rebuild reads.
@@ -571,17 +578,22 @@
                   package = nix-stubs.packages.${system}.nix-stubs;
                 };
               };
+              # The baked re-converge list, as the image renders it: resolved store
+              # paths under the vendored tree. Read through the CONFIG so this fails
+              # if the image stops rendering it at all.
+              listFile = sandboxWithEcho.nixos.config.environment.etc."scooter/reconverge-modules.json".source;
             in
             # 1. A derived module is real sandbox config, not just a valid file.
             assert sandboxWithEcho.nixos.config.environment.etc ? "scooter/contrib-echo";
-            # 2. modules/sandbox-os actually imports contribs.nix — only that file
-            # declares this marker, so its absence means the surface is wired to
-            # nothing while (1) and (3) still pass.
-            assert sandboxWithEcho.nixos.config.environment.etc ? "scooter/contrib-modules";
-            # 3. …and contribs.nix imports EXACTLY what the deriver returns for this
-            # source. (1) + (2) + (3) is the whole chain: source -> list -> image.
-            assert (import ./modules/sandbox-os/contribs.nix { inherit lib; }).imports
-              == derive [ ];
+            # 2. The fixture reached the image through `extraModuleFiles`, which is
+            # also what the re-converge replays — so it is exactly the disabled
+            # contrib and nothing else. (1) proves it landed; this proves HOW.
+            assert echoOnly == [ "contrib/echo/sandbox.nix" ];
+            # 3. …and with no fixture, the carried list is EXACTLY what the deriver
+            # returns for this source. (1) + (2) + (3) is the whole chain: source ->
+            # list -> image -> the list a self-modify replays.
+            assert shipped.nixos.config.programs.scooterModule.extraReconvergeModuleFiles
+              == (derive [ ]).treeRelative;
             # 4. The shipped image, with no fixture: aws's half must be in it, or the
             # sandbox silently lost `~/.aws/config` and every `aws --profile` with it.
             # Asserted on the UNIT rather than a marker file — that is the thing a
@@ -591,17 +603,32 @@
             assert lib.any (p: (p.pname or p.name or "") == "scooter-aws")
               shipped.nixos.config.environment.systemPackages;
             pkgs.runCommand "contrib-sandbox-check" { } ''
-              # 5. The in-pod half: the vendored tree carries contrib/ AND the deriver
-              # at the repo's layout, so a rebuild in the pod computes the same list
-              # from the same source. dev-env-reconverge-eval proves it evaluates.
-              test -f ${tree}/contrib/sandbox-modules.nix
-              test -f ${tree}/contrib/echo/sandbox.nix
-              test -f ${tree}/modules/sandbox-os/contribs.nix
+              # 5. The in-pod half. Every entry in the baked list must be a file that
+              # EXISTS, UNDER THE VENDORED TREE — the two ways this list fails in the
+              # pod and nowhere else:
+              #   a path that resolves nowhere is a module the first self-modify
+              #   silently drops (the sandbox loses a contrib's tools and nothing
+              #   says so);
+              #   a path outside the tree is a reference to the FLAKE SOURCE, which
+              #   drags the whole repo into the sandbox closure and re-tags every
+              #   image when any file in it moves (#614).
+              echo "baked re-converge list:"
+              ${pkgs.jq}/bin/jq -r '.[]' ${listFile}
+              for p in $(${pkgs.jq}/bin/jq -r '.[]' ${listFile}); do
+                case "$p" in
+                  ${tree}/*) ;;
+                  *) echo "FAIL: $p is not under the baked tree ${tree}" >&2; exit 1 ;;
+                esac
+                test -f "$p" || { echo "FAIL: $p is in the list but is not a file" >&2; exit 1; }
+              done
+              # Both halves are actually in there (jq over an empty list would pass
+              # the loop above vacuously).
+              ${pkgs.jq}/bin/jq -e 'map(endswith("/contrib/aws/sandbox.nix")) | any' ${listFile} >/dev/null
+              ${pkgs.jq}/bin/jq -e 'map(endswith("/contrib/echo/sandbox.nix")) | any' ${listFile} >/dev/null
               # aws's sandbox half embeds the CLI source from its OWN tree, so the
               # vendored copy needs both ends. This is the one the whole-repo vendoring
               # (#614) bought: a curated subset would have shipped the module without
               # its source.
-              test -f ${tree}/contrib/aws/sandbox.nix
               test -f ${tree}/contrib/aws/scooter_contrib_aws/cli.py
               touch $out
             '';

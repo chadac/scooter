@@ -43,7 +43,7 @@ and which eval reads which is the thing most easily got backwards:
 |---|---|---|
 | `contrib.nix` | every eval that reads the registry | `contribs.<name>`: `src`, `services.*`, `ui`, `skills`, `approvals`, `sandbox.module`. What the contrib **is**. |
 | `deployment.nix` | kubenix, with `modules/platform.nix` | its own `scooter.broker.<name>.*` options, and the manifests/env they render |
-| `sandbox.nix` | NixOS, via `contrib/sandbox-modules.nix` | packages, systemd units, activation — anything in the agent's sandbox image |
+| `sandbox.nix` | NixOS, via `pkgs/sandbox-os` (and the baked re-converge list) | packages, systemd units, activation — anything in the agent's sandbox image |
 
 `deployment.nix` is a module in the **same eval** as `modules/platform.nix`, so it
 declares `scooter.*` options exactly where any other platform option is declared —
@@ -135,19 +135,20 @@ There is no separate schema for packages or services: a package is
 before its module is ever imported, so `enable = false` means absent from the
 image, exactly as it already means absent from the services.
 
-**The list is derived from this source tree, and that is the whole design.**
+**The list is derived from this source tree, at image build, and baked.**
 `contrib/sandbox-modules.nix` evaluates the contrib set and returns the enabled
-contribs' modules; `modules/sandbox-os/contribs.nix` imports that. The in-pod
-re-converge (`scooter-rebuild`) rebuilds from a *vendored copy of the repo*, so
-it runs the same deriver over the same source and reaches the same answer —
-nothing is threaded in, and nothing has to be carried across a switch. That is
-also why the module must live in the repo, and why anything it refers to
-relatively (`../../pkgs/…`) resolves identically on both sides.
+contribs' sandbox modules two ways: the paths `pkgs/sandbox-os` imports, and the
+same files repo-relative. The second list is baked into the sandbox as the
+re-converge's module list (`programs.scooterModule.extraReconvergeModuleFiles`),
+so a self-modify replays those files from the *vendored copy of the repo* instead
+of re-evaluating the registry in a pod that has neither a flake nor a network.
+That is why the module must live in the repo, and why anything it refers to
+relatively (`../../pkgs/…`) resolves identically on both sides. Why: #717.
 
 That eval gets **`lib` and nothing else** — free now that the schema itself is
-lib-only (#711) — and the pod has neither a flake nor a network to build anything,
-so a sandbox half that forces a derivation fails at eval. Keep the sandbox module
-to `pkgs` and plain NixOS config.
+lib-only (#711). A sandbox half is still built in the pod on every self-modify,
+where there is no network, so keep it to `pkgs` and plain NixOS config: anything
+that fetches at eval time fails there and nowhere else.
 
 See `contrib/aws/sandbox.nix` for the shipped one and `contrib/echo/sandbox.nix`
 for the fixture (echo is `enable = false`, so it covers the disabled-contrib path
