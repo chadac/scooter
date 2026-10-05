@@ -147,9 +147,11 @@ in
       default = true;
       description = ''
         Build this contrib and inject it into the images it targets. `false` means
-        absent — no derivation at all, and no options either: the platform drops a
-        disabled contrib before importing it, so configuring one is an eval error
-        rather than a block that is silently ignored (#599).
+        absent: no derivation, nothing in any image, and no skills. Its deployment
+        options are still DECLARED — the platform imports every contrib (#719) — but
+        setting one fails the render rather than being silently ignored, because
+        `shipGate` in modules/platform.nix throws on a contrib configured but not
+        shipped (#599).
 
         Build a disabled one with `withModules` (contrib/default.nix) rather than
         weakening this.

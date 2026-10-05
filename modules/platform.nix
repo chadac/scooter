@@ -15,6 +15,39 @@
 let
   cfg = config.scooter;
 
+  # EVERY contrib's declaration (<name>/contrib.nix, via all-modules.nix) and its
+  # deployment half (<name>/deployment.nix) where one exists — imported whether or
+  # not it is enabled. `enable` gates what SHIPS, never what is imported; a disabled
+  # contrib is inert because its halves render behind their own `mkIf`, and
+  # `shipGate` below is what still rejects configuring one. Derived from
+  # all-modules.nix, so adding an integration edits no file here. Why: PR #719.
+  contribDecls = lib.filter (p: lib.hasSuffix "/contrib.nix" (toString p))
+    (import ../contrib/all-modules.nix).imports;
+  contribModules = [ ../contrib/all-modules.nix ]
+    ++ lib.filter builtins.pathExists
+      (map (p: builtins.dirOf p + "/deployment.nix") contribDecls);
+
+  # An unshipped contrib's options are DECLARED now, so this — not their absence — is
+  # what keeps configuring one an error instead of a block k8s silently applies.
+  # A `throw` forced from the same leaf as `legacyRoot`, for the same reasons.
+  # Why: #599, PR #719.
+  unshippedConfigured = lib.filter
+    (n: lib.any (o: o.isDefined or false)
+      (lib.attrValues (options.scooter.broker.${n} or { })))
+    (lib.attrNames (lib.filterAttrs (_: c: !c.enable) config.contribs));
+  shipGate = v:
+    if unshippedConfigured == [ ] then v
+    else throw ''
+      This config sets `scooter.broker.<name>.*` for ${lib.concatStringsSep ", " unshippedConfigured},
+      which this build does not ship: their `contribs.<name>.enable` is false, so no
+      image contains them and the options you set would render into a deployment that
+      cannot serve them.
+
+      Either drop the config, or ship the contrib by layering a module that enables it
+      (`contribs.<name>.enable = lib.mkForce true`) onto the same eval — the shape
+      `contrib/default.nix`'s `withModules` and the sandbox checks already use.
+    '';
+
   # THE OLD ROOT. `agentSandbox.*` was renamed to `scooter.*` (#710), and the sink
   # option below is declared for one reason: so a manifest still on the old prefix
   # gets THIS message instead of the module system's bare "option does not exist",
@@ -123,11 +156,12 @@ let
   # date with the contrib set. Why: PR #618.
   #
   # Read straight off `config.contribs` — the contribs are modules in THIS eval
-  # (see `imports`), so there is no second module system to re-derive them from, and
-  # no filtering: every contrib present here is one this image ships. Why: #711.
+  # (see `imports`), so there is no second module system to re-derive them from.
+  # `enable` is filtered HERE rather than at the import: an unshipped contrib's skill
+  # would document a route no image serves. Why: #711, #719.
   bcfg = config.scooter.broker;
   contribSkills = lib.mapAttrs (_: c: c.skills)
-    (lib.filterAttrs (_: c: c.skills != { }) config.contribs);
+    (lib.filterAttrs (_: c: c.enable && c.skills != { }) config.contribs);
 
   # The contribs that raise human approvals -> how the agent-host reaches their verbs.
   # Read straight off the evaluated config: each contrib's deployment.nix sets its
@@ -151,13 +185,13 @@ in
   # NOTE: ./testing.nix is deliberately NOT imported here. Test-only overrides (a dummy agent, an
   # unauthenticated test webhook) must be opted into by a TEST manifest, so a deploy that never
   # imports it cannot enable them by setting a stray boolean. See modules/testing.nix.
-  # The shipped contribs are modules in THIS eval, derived from contrib/ and not
-  # listed: each declares its own scooter.broker.<name> options and renders its own
-  # manifests, so adding an integration edits no platform file. ../contrib/spec.nix
-  # is their schema — the `contribs.*` tree the skills above are read from. Why:
-  # #599, #711.
-  imports = [ kubenix.modules.k8s ./db-spec.nix ./postgres.nix ./db-migrate.nix ./broker.nix ./sandbox-pod.nix ./webhooks.nix ./byoc.nix ./scheduler.nix ./conversation-controller.nix ./warm-store-controller.nix ./legacy-state-migration.nix ./event-backfill.nix ../contrib/spec.nix ]
-    ++ import ../contrib/platform-modules.nix { inherit lib; };
+  # The contribs are modules in THIS eval (`contribModules` above), derived from
+  # contrib/ and not listed: each declares its own scooter.broker.<name> options and
+  # renders its own manifests, so adding an integration edits no platform file.
+  # contrib/spec.nix comes with them, via all-modules.nix — it is the schema for the
+  # `contribs.*` tree the skills above are read from. Why: #599, #711, #719.
+  imports = [ kubenix.modules.k8s ./db-spec.nix ./postgres.nix ./db-migrate.nix ./broker.nix ./sandbox-pod.nix ./webhooks.nix ./byoc.nix ./scheduler.nix ./conversation-controller.nix ./warm-store-controller.nix ./legacy-state-migration.nix ./event-backfill.nix ]
+    ++ contribModules;
 
   # Declared ONLY so a definition on the old root matches something and reaches
   # `legacyRoot`'s message above. `internal` + `visible = false`, so it is absent from
@@ -1088,9 +1122,10 @@ in
     # whole `deployments` attrset (dropping agent-host). mkMerge deep-merges.
     kubernetes.resources = lib.mkMerge [
     {
-      # legacyRoot: the #710 rename guard, forced here because every render produces
-      # this name. It returns the namespace unchanged unless `agentSandbox.*` is set.
-      namespaces.${legacyRoot cfg.namespace} = {
+      # legacyRoot: the #710 rename guard; shipGate: the #719 unshipped-contrib guard.
+      # Both forced here because every render produces this name, and both return the
+      # namespace unchanged unless their config mistake is actually present.
+      namespaces.${shipGate (legacyRoot cfg.namespace)} = {
         metadata.name = cfg.namespace;
       };
 

@@ -364,7 +364,7 @@ let
   # until its gate is proven.
   nixpkgsLib = flake.inputs.nixpkgs.lib;
   contribSkills = nixpkgsLib.mapAttrs (_: c: c.skills)
-    (nixpkgsLib.filterAttrs (_: c: c.skills != { }) platform.config.contribs);
+    (nixpkgsLib.filterAttrs (_: c: c.enable && c.skills != { }) platform.config.contribs);
   skillProblems = (if contribSkills != { } then [ ] else
   [ "no contrib ships a skill — this check reads platform.config.contribs, so an EMPTY set means the contribs stopped reaching the platform eval, not that nobody documents anything" ])
   ++ nixpkgsLib.concatLists (nixpkgsLib.mapAttrsToList
@@ -454,36 +454,76 @@ let
       };
     in (builtins.tryEval (builtins.deepSeq e.config.kubernetes.resources true)).success;
 
-  # THE CONTRIBS ARE MODULES IN THE PLATFORM EVAL, AND ONLY THE ENABLED ONES (#599,
-  # #711). Three claims, because each fails in a different direction and two of them
-  # fail SILENTLY:
+  # THE CONTRIBS ARE MODULES IN THE PLATFORM EVAL, AND `enable` GATES WHAT SHIPS
+  # (#599, #711, #719). The platform imports EVERY contrib now, enabled or not, so
+  # the old negative — "a disabled contrib's options must not exist" — no longer
+  # describes the mechanism. What replaces it is `shipGate`: configuring a contrib
+  # this build does not ship must FAIL TO RENDER, the same shape as the #710 guard
+  # above and forced from the same leaf.
   #
-  #   positive — an enabled contrib's own options are declared, and its declaration
-  #              reached `config.contribs`. Without this the two negatives below are
-  #              vacuously true and the whole block proves nothing.
-  #   negative — a DISABLED contrib contributes neither. Its options must not exist,
-  #              so a manifest configuring an integration this image never built is
-  #              an eval error rather than a block k8s happily applies.
+  # Read off the platform eval itself rather than a private evalModules of the
+  # registry: the set under test is literally the one platform.nix ships from. Four
+  # claims, because each fails in a different direction:
   #
-  # Asserted against `platform.options` rather than a render: an option that exists
-  # but is never read renders identically to one that does not exist at all.
-  contribEval = nixpkgsLib.evalModules {
-    specialArgs = { lib = nixpkgsLib; };
-    modules = [ ../contrib/all-modules.nix ];
-  };
-  disabled = builtins.attrNames (nixpkgsLib.filterAttrs (_: c: !c.enable) contribEval.config.contribs);
+  #   positive — an enabled contrib's deployment half reached the eval (its options
+  #              are declared) and its declaration reached `config.contribs`.
+  #              Without these, everything below is vacuously true.
+  #   skills   — a DISABLED contrib contributes no skill, so no image documents a
+  #              route it never built.
+  #   shipGate — a render that configures an unshipped contrib THROWS. Rendered, not
+  #              asserted on an option, because the thing that silently breaks is the
+  #              FORCING: unforce the guard and the misconfiguration renders clean.
+  #   vacuity  — dropping a contrib the example does not configure still renders. Without
+  #              it, a `shipGate` that threw on ANY disabled contrib would pass above.
+  disabled = builtins.attrNames (nixpkgsLib.filterAttrs (_: c: !c.enable) platform.config.contribs);
   brokerOpts = platform.options.scooter.broker;
+
+  # The skill files an extra config renders, via the same ConfigMap `skillsWith` reads.
+  skillFilesWith = extra:
+    let
+      e = flake.inputs.kubenix.evalModules.${system} {
+        module = { ... }: {
+          imports = [ ./kubenix-config.nix ];
+          config = extra;
+        };
+      };
+      cms = e.config.kubernetes.resources.configMaps or { };
+    in if cms ? agent-skills then builtins.attrNames cms.agent-skills.data else [ ];
+
+  # A DISABLED contrib that ships a skill — the case the `enable` filter on
+  # `contribSkills` exists for, and the only one not already covered by `shipGate`.
+  # Every shipped contrib's skill is gated on `scooter.broker.<name>.enable`, and a
+  # contrib with no such option makes that lookup THROW. echo is disabled and has no
+  # broker options, so without the filter this render dies on a confusing gate error
+  # rather than quietly dropping a skill no image was ever built to serve.
+  #
+  # Injected here rather than committed to echo/contrib.nix: the fixture must be a
+  # contrib the repo does not ship, and giving it a real skill file would ship one.
+  echoSkillFile = "example-check-disabled-fixture.md";
+  echoSkills = skillFilesWith {
+    contribs.echo.skills.${echoSkillFile} = ../skills/scooter-intro.md;
+  };
+  echoSkillsRender = (builtins.tryEval (builtins.deepSeq echoSkills true)).success;
   disabledContribProblems =
     (if disabled != [ ] then [ ] else
-    [ "every contrib is enabled — the disabled-contrib negatives below test nothing; keep one disabled fixture (echo) or delete them" ])
+    [ "every contrib is enabled — the disabled-contrib checks below test nothing; keep one disabled fixture (echo) or delete them" ])
     ++ (if brokerOpts ? brave then [ ] else
-    [ "scooter.broker.brave is not declared — an enabled contrib's deployment.nix did not reach the platform eval (contrib/platform-modules.nix), so every disabled-contrib check below passes for the wrong reason" ])
+    [ "scooter.broker.brave is not declared — an enabled contrib's deployment.nix did not reach the platform eval (modules/platform.nix derives the halves from contrib/all-modules.nix), so every check below passes for the wrong reason" ])
     ++ (if platform.config.contribs ? aws then [ ] else
     [ "config.contribs.aws is missing — the contrib DECLARATIONS are not in the platform eval, so contrib skills are read from an empty set" ])
-    ++ map (n: "scooter.broker.${n}.* is declared but ${n} is disabled — a manifest can configure an integration this image never built (#599)")
-    (builtins.filter (n: brokerOpts ? ${n}) disabled)
-    ++ map (n: "config.contribs.${n} reached the platform eval but ${n} is disabled — its skills would be shipped by an image that never built it")
-    (builtins.filter (n: platform.config.contribs ? ${n}) disabled);
+    ++ (if echoSkillsRender then [ ] else
+    [ "a DISABLED contrib declaring a skill broke the render — platform.nix reads skills off every contrib in the eval instead of only the ones `enable` ships, so it looked for a gate option an unshipped contrib has no reason to declare" ])
+    ++ (if echoSkillsRender && builtins.elem echoSkillFile echoSkills then
+    [ "a DISABLED contrib's skill SHIPPED — an image that never built the contrib carries instructions for routes it does not serve" ] else [ ])
+    # The example configures brave, so unshipping it is exactly the mistake: options
+    # set for an integration no image contains.
+    ++ (if renders { contribs.brave.enable = nixpkgsLib.mkForce false; }
+        then [ "a render configuring brave succeeded with brave UNSHIPPED (contribs.brave.enable = false) — shipGate is a no-op, so an operator gets a broker with no brave provider, an agent with no brave_web_search, and no error (#599)" ]
+        else [ ])
+    # The example configures nothing under scooter.broker.github, so dropping it is a
+    # legal build choice and must stay one.
+    ++ (if renders { contribs.github.enable = nixpkgsLib.mkForce false; } then [ ]
+        else [ "dropping a contrib the example never configures stopped the render — shipGate fires on `enable = false` alone instead of on the unshipped-AND-configured pair, so no deployment can trim the contrib set" ]);
 
   legacyRootProblems =
     (if renders { } then [ ]
@@ -566,7 +606,7 @@ let
 
   # A CONTRIB'S PLATFORM MODULE REACHES THE BROKER DEPLOYMENT. aws's option tree
   # and its manifests live in contrib/aws/deployment.nix, which modules/platform.nix
-  # imports without naming it (contrib/platform-modules.nix) — so this asserts the
+  # imports without naming it (derived from contrib/all-modules.nix) — so this asserts the
   # seams carry, rather than that the file exists. All four kinds in one render, each
   # of which was an inline `lib.optionals bcfg.aws.enable` in modules/broker.nix:
   #   env         -> AWS_ENABLED           (broker.extraEnv)
@@ -796,5 +836,5 @@ let
   allProblems = disabledContribProblems ++ legacyRootProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ approvalProblems ++ stage2Problems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems;
 in
 if allProblems == [ ]
-then "ok: deployments = ${haveDeps}; datadog + airtable + brave + kagi + duckduckgo (three search providers, each with its own tool) + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; the renamed root (agentSandbox.*) fails the render; contribs reach the platform eval and the disabled one does not; deploy-time Jobs are spec-hash named\n"
+then "ok: deployments = ${haveDeps}; datadog + airtable + brave + kagi + duckduckgo (three search providers, each with its own tool) + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; the renamed root (agentSandbox.*) fails the render; contribs reach the platform eval and configuring an unshipped one fails the render; deploy-time Jobs are spec-hash named\n"
 else builtins.throw "example manifests missing: ${builtins.concatStringsSep ", " allProblems}"
