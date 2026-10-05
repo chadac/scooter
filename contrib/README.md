@@ -132,7 +132,21 @@ contribs.aws = {
   src = ./.;
   deployment.module = ./deployment.nix;   # a kubenix module
 };
+
+contribs.brave = {
+  src = ./.;
+  # …or inline, which is what a handful of options wants to be:
+  deployment.module = { config, lib, ... }: {
+    options.agentSandbox.broker.brave = { /* … */ };
+    config = lib.mkIf config.agentSandbox.broker.brave.enable { /* … */ };
+  };
+};
 ```
+
+A path suits a long module (`contrib/aws`'s is ~200 lines); inline suits the common
+case, and keeps a two-option contrib from being two files. Either way the value is
+only stored and handed to `platform.nix`'s `imports`, so it is never evaluated in the
+contribs module system.
 
 `modules/platform.nix` imports it, so it can declare its own options
 (`agentSandbox.broker.aws.*`) and render its own `kubernetes.resources`. It
@@ -160,6 +174,15 @@ Two consequences worth knowing:
   `platform.nix` throws.
 - **An option that does not exist is an eval error**, so a manifest configuring an
   integration this image never built in fails loudly instead of being ignored.
+- **The same cuts the other way for a contrib READING a sibling's option.** A
+  deployment module may touch any part of the tree — the module system has no notion
+  of ownership, and a contrib is free to declare an option another one also declares.
+  But `config.agentSandbox.broker.kagi.enable` resolves only where kagi was also
+  built, so a bare cross-contrib reference breaks every image that ships one without
+  the other. You *can* work around it (guard with `?`, or declare the option
+  yourself); prefer not needing to. A constraint that wants two contribs in scope at
+  once either belongs in the platform module, or — as the brave/kagi search
+  exclusivity turned out to be — should not exist. Why: PR #707.
 
 `contrib/aws/deployment.nix` is the worked example: the account registry, the
 `AWS_*` env, the rollout annotation and the IRSA annotation, which were ~40
