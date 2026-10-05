@@ -32,6 +32,21 @@ case "$host_inst" in
   *) [ "$host_inst" -lt 1024 ] && echo "::warning title=inotify budget::fs.inotify.max_user_instances=$host_inst on this runner; sandbox systemd failed to start below this. Why: PR #712" || true ;;
 esac
 
+# Eviction is decided on the NODE's nodefs/imagefs, which on this fleet is neither
+# / nor /nix: shard 4 of run 37355617233 was evicted at 1.3G available while the
+# host's / had 57G free. Read from inside the node, and BEFORE teardown deletes it,
+# so a DiskPressure run names the volume that filled. Why: PR #712.
+echo "===== NODE DISK (what the kubelet evicts on) ====="
+if [ -n "${node:-}" ]; then
+  docker exec "$node" df -h / /var/lib/rancher/k3s/agent/containerd 2>/dev/null \
+    | sed 's/^/  /' || echo "  (node df unreadable)"
+else
+  echo "  (no k3d node container; nothing to read)"
+fi
+echo "  host docker data-root: $(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo '?')"
+df -h "$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo /var/lib/docker)" /var/lib/k3d-containerd 2>/dev/null \
+  | sed 's/^/  /' || true
+
 nix shell nixpkgs#kubectl nixpkgs#jq -c bash -c '
   echo "===== SANDBOX RESTART CENSUS (all conv pods) ====="
   pods=$(kubectl -n agent-sandbox get pods -o json 2>/dev/null) || pods=""
