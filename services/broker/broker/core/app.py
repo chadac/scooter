@@ -7,12 +7,12 @@ transport's routes under the provider's prefix. No per-provider code here.
 from __future__ import annotations
 
 import logging
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException
 
-from .auth import authenticate
+from .auth import authenticate, authenticate_mcp
 from .authz import authorizer_from_settings
 from ..config import refresh_settings, settings
 from scooter_broker_lib.autolink import Link, create_link, list_links
@@ -78,16 +78,40 @@ def create_app() -> FastAPI:
             frame_ancestors=settings.shares_frame_ancestors,
         )
 
+    # The agent-facing MCP server — contrib-contributed tools, served to ONE
+    # conversation per request. Not per-provider: it aggregates every enabled
+    # provider's tools behind one endpoint, and it authenticates DIFFERENTLY from the
+    # provider routes (an SA token AND a conversation token — see
+    # core/auth.authenticate_mcp). Built HERE, before the lifespan, because the
+    # lifespan has to compose its own. Why: issue #700.
+    mcp_app = None
+    if settings.mcp_enabled:
+        from ..mcp.routes import create_mcp_app
+
+        mcp_app = create_mcp_app(
+            providers,
+            authenticate=authenticate_mcp,
+            agent_host_url=settings.agent_host_url,
+        )
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        # Run providers' async startup hooks (e.g. open a DB, start a sweep).
-        for p in providers:
-            if p.on_startup is not None:
-                await p.on_startup()
-        yield
-        for p in providers:
-            if p.on_shutdown is not None:
-                await p.on_shutdown()
+        async with AsyncExitStack() as stack:
+            # fastmcp's streamable-HTTP app starts a session-manager task group in its
+            # own lifespan, and MOUNTING an ASGI app does not run that app's lifespan —
+            # the parent owns the only one ASGI knows about. Skip this and every tool
+            # call fails at RUNTIME with "task group was not initialized", which no
+            # mount-time check can catch. Entered first so it is torn down last.
+            if mcp_app is not None and mcp_app.lifespan is not None:
+                await stack.enter_async_context(mcp_app.lifespan(app))
+            # Run providers' async startup hooks (e.g. open a DB, start a sweep).
+            for p in providers:
+                if p.on_startup is not None:
+                    await p.on_startup()
+            yield
+            for p in providers:
+                if p.on_shutdown is not None:
+                    await p.on_shutdown()
 
     app = FastAPI(title="kubenix-agent-manager broker", lifespan=lifespan)
 
@@ -103,6 +127,13 @@ def create_app() -> FastAPI:
     from .default_modules import create_default_modules_router
 
     app.include_router(create_default_modules_router())
+
+    if mcp_app is not None:
+        # MOUNTED, not include_router: fastmcp serves MCP as its own ASGI app and
+        # mounting keeps its streaming intact (an APIRouter wrapper would have to
+        # buffer the body). Auth is an ASGI middleware in front of it, for the same
+        # reason — BaseHTTPMiddleware would break SSE.
+        app.mount("/mcp", mcp_app)
 
     @app.get("/health")
     async def health() -> dict[str, str]:

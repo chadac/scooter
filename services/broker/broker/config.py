@@ -31,6 +31,30 @@ class BrokerSettings(ScooterBaseSettings):
     # setting and was misnamed `aws_approver_service_accounts`. Why: #599.
     approver_service_accounts: str = ""
 
+    # --- The agent-facing MCP server (broker/mcp/) --------------------------
+    # Contrib-contributed agent tools, served at POST /mcp to ONE conversation at a
+    # time. ON by default: the tool set is whatever the enabled providers contribute,
+    # so a deployment with no tool-bearing contrib simply serves an empty tools/list.
+    # That costs nothing, because SERVING the endpoint is a separate question from
+    # OFFERING it to the agent — nothing offers it until phase 2 of #700.
+    mcp_enabled: bool = True
+
+    # SA usernames allowed to act FOR a conversation by presenting a conversation
+    # token, CSV of system:serviceaccount:{ns}:{name}. In practice the agent-host.
+    #
+    # SEPARATE from approver_service_accounts on purpose. That list answers "may this
+    # SA relay a human's approve/deny"; this one answers "may this SA act as any
+    # conversation it holds a signed token for". They name the same SA today and are
+    # not the same authorization — and #700 hit the damage that conflation does in
+    # the other direction, where the provider reply tools silently depended on an
+    # approver entry nobody knew they needed.
+    mcp_caller_service_accounts: str = ""
+
+    # The HS256 secret the agent-host signs conversation tokens with. Shared via a
+    # k8s Secret mounted into both. EMPTY FAILS CLOSED: verification rejects every
+    # token rather than accepting anything signed with "" (see core/conv_token.py).
+    conv_token_secret: str = ""
+
     # Test/diagnostic provider (the `test` whoami provider). OFF in prod.
     test_provider_enabled: bool = False
 

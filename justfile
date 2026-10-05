@@ -517,6 +517,13 @@ check-shell-syntax:
 check-contrib-coverage:
     @scripts/check-contrib-coverage.sh
 
+# The conversation-token test vector is committed once per service (separate nix
+# source trees), and both suites verify the same token to catch wire-format drift
+# between the TS signer and the Python verifier. Drifted copies would let both
+# suites pass while testing different formats. Why: issue #700.
+check-conv-token-vector:
+    @scripts/check-conv-token-vector.sh
+
 # --- Database schema (Atlas) ------------------------------------------------
 # The shared Postgres schema is declared in lib/sql/<db>/schema.sql (one env per
 # per-service database). Atlas owns the migrations under lib/sql/<db>/migrations,
@@ -584,7 +591,7 @@ db-validate:
       scripts/atlas-dev.sh migrate validate --env "$env"
     done
 
-ci: check-flake check-manifests check-image-coverage check-contrib-coverage check-lockfiles check-npm-hashes check-shell-syntax lint db-generate-check db-migrate-check test-unit
+ci: check-flake check-manifests check-image-coverage check-contrib-coverage check-conv-token-vector check-lockfiles check-npm-hashes check-shell-syntax lint db-generate-check db-migrate-check test-unit
     @echo "✅ ci (fast) passed — run `just test` for cluster + e2e tiers"
 
 # Build + serve the docs site locally (mkdocs + the GENERATED kubenix option pages).

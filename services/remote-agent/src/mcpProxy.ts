@@ -147,10 +147,19 @@ export async function startMcpProxy(target: string, deps: McpProxyDeps): Promise
 export async function startMcpProxies(
   offered: Array<{ name: string; url?: string }>,
   deps: McpProxyDeps,
-): Promise<{ servers: Array<{ type: "http"; name: string; url: string; headers: string[] }>; close: () => Promise<void> }> {
+): Promise<{
+  servers: Array<{ type: "http"; name: string; url: string; headers: Array<{ name: string; value: string }> }>;
+  close: () => Promise<void>;
+}> {
   const proxies = await Promise.all(offered.map((o) => startMcpProxy(o.name, deps)));
   return {
     // The SDK gets ordinary local URLs; the NAME is what travels over the wire.
+    //
+    // `headers: []` is correct and must STAY empty: the credential for a tunnelled
+    // server is injected by the agent-host when it proxies, so this machine never
+    // holds a conversation token. Putting one here would ship it to the user's
+    // laptop. (The type was `string[]`, which the ACP schema contradicts — it is
+    // `HttpHeader[]`. Why: issue #700.)
     servers: proxies.map((p) => ({ type: "http" as const, name: p.target, url: p.url, headers: [] })),
     close: async () => {
       await Promise.all(proxies.map((p) => p.close().catch(() => undefined)));

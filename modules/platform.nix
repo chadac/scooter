@@ -137,6 +137,28 @@ in
       description = "Namespace for the platform + sandboxes.";
     };
 
+    convTokenSecret = mkOption {
+      type = types.str;
+      default = "agent-conv-token-secret";
+      description = ''
+        Name of the Secret holding the HS256 signing key (key `secret`) for CONVERSATION
+        TOKENS — the credential that says which conversation an MCP caller is acting for.
+        The agent-host signs them and verifies them on its own endpoint; the broker
+        verifies them on `/mcp`. ONE key shared by both services, so it is declared here
+        rather than under either one.
+
+        Create out-of-band, like `agent.remoteAgent.joinSecret`:
+        kubectl create secret generic <name> --from-literal=secret=$(openssl rand -hex 32).
+
+        WIRED UNCONDITIONALLY, and that is deliberate. The reference is a plain
+        secretKeyRef with no `optional`, so a missing Secret fails container creation and
+        the pod never starts. The alternative — treating an absent key as "no
+        authentication" — is a configuration where any in-cluster caller can name any
+        conversation and reach its sandbox exec, and whose only symptom is that
+        everything works. A pod that refuses to start is the better failure. Why: #700.
+      '';
+    };
+
     approvals = mkOption {
       default = { };
       example = literalExpression ''{ aws = { brokerPrefix = "/aws/aws"; pendingPath = "/aws/aws/pending"; }; }'';
@@ -1367,6 +1389,19 @@ in
                         // lib.optionalAttrs (preset.gpu != null) { "nvidia.com/gpu" = toString preset.gpu; };
                     in builtins.toJSON { requests = side; limits = side; };
                   }
+                ++ [
+                  # CONVERSATION TOKENS (#700). The agent-host mints one per conversation and
+                  # hands it to the agent as the MCP endpoint's bearer credential; it verifies
+                  # the same token on that endpoint, and the broker verifies it on /mcp. The
+                  # conversation used to travel as `?conv=` on an unauthenticated route.
+                  #
+                  # No `optional`: a missing Secret must fail container creation rather than
+                  # degrade to an endpoint that accepts any conversation from any caller.
+                  {
+                    name = "CONV_TOKEN_SECRET";
+                    valueFrom.secretKeyRef = { name = cfg.convTokenSecret; key = "secret"; };
+                  }
+                ]
                 ++ lib.optionals cfg.agent.remoteAgent.enable [
                   # Bring-your-own-Claude: enable /remote-agent/connect + the Settings section.
                   # The HS256 signing key for owner-bound join tokens (one server-side secret).

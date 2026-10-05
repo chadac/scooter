@@ -104,6 +104,9 @@ export function createRemotePersonalizedProvider(deps: {
    *  old per-pod `registry` could only answer for sockets THIS pod happened to hold, so on a
    *  multi-replica fleet a run scheduled elsewhere fell silently to the cloud floor. */
   controllerUrl: string;
+  /** The conversation-token headers for that endpoint (mcpEndpoint.headersFor). The agent-host
+   *  injects these when it proxies, so the container never holds one. Why: issue #700. */
+  mcpHeadersFor?: (conversationId: string) => Array<{ name: string; value: string }>;
   /** The in-process MCP endpoint's URL for a conversation (mcpEndpoint.urlFor). Drives the
    *  tunnel OFFER: absent = no scooter-env is offered and the container starts no proxy,
    *  rather than one that dead-ends on every call. */
@@ -129,7 +132,8 @@ export function createRemotePersonalizedProvider(deps: {
     // MCP over the tunnel: offer NAMES the container proxies locally. The bridge's default is
     // the agent-host's own loopback URL, which a laptop cannot reach — that is why a BYO agent
     // had no scooter-env at all.
-    mcpServersFor: (conversationId: string) => offeredTunnelServers(conversationId, { mcpUrlFor: deps.mcpUrlFor }),
+    mcpServersFor: (conversationId: string) =>
+      offeredTunnelServers(conversationId, { mcpUrlFor: deps.mcpUrlFor, mcpHeadersFor: deps.mcpHeadersFor }),
     kind: "claude",
     priority: deps.priority ?? 10,
     async eligible(ctx: RunContext): Promise<boolean> {

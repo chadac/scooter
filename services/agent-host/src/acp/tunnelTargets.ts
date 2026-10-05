@@ -26,12 +26,25 @@ export interface ResolvedTarget {
   url: string;
   /** For logs: which rule matched. */
   rule: "scooter-env" | "sandbox";
+  /**
+   * Headers the AGENT-HOST injects on the proxied request — the conversation token.
+   *
+   * Server-side for the same reason the conversation id is: the container runs on the
+   * user's machine, and a credential handed to it is a credential they hold. The
+   * container's own headers are forwarded too, so these must OVERWRITE rather than
+   * merge — see the open handler in tunnelService.ts. Why: issue #700.
+   */
+  headers: Array<{ name: string; value: string }>;
 }
 
 export interface TunnelTargetDeps {
   /** The in-process MCP endpoint's URL for a conversation (mcpEndpoint.urlFor). Absent when
    *  the endpoint is not configured — then scooter-env simply is not offered. */
   mcpUrlFor?: (conversationId: string) => string;
+  /** The conversation token headers for that endpoint (mcpEndpoint.headersFor). Absent, or
+   *  empty, when no signing secret is configured — then the endpoint is unauthenticated and
+   *  the tunnel behaves exactly as it did before. */
+  mcpHeadersFor?: (conversationId: string) => Array<{ name: string; value: string }>;
 }
 
 export type TunnelResolution =
@@ -49,9 +62,18 @@ export function resolveTunnelTarget(
 ): TunnelResolution {
   if (target === SCOOTER_ENV) {
     if (!deps.mcpUrlFor) return { ok: false, reason: "scooter-env is not configured on this deployment" };
-    // The conversation comes from the caller (the stream's session), so the ?conv= scope is
-    // never something the container chose.
-    return { ok: true, target: { url: deps.mcpUrlFor(conversationId), rule: "scooter-env" } };
+    // The conversation comes from the caller (the stream's session), so the scope is never
+    // something the container chose — and since #700 it is carried by a token the agent-host
+    // mints HERE rather than by a query param, which is what makes that true of the endpoint
+    // too and not only of this resolver.
+    return {
+      ok: true,
+      target: {
+        url: deps.mcpUrlFor(conversationId),
+        rule: "scooter-env",
+        headers: deps.mcpHeadersFor?.(conversationId) ?? [],
+      },
+    };
   }
   if (target.startsWith(SANDBOX_PREFIX)) {
     return {
@@ -73,7 +95,7 @@ export function resolveTunnelTarget(
 export function offeredTunnelServers(
   conversationId: string,
   deps: TunnelTargetDeps,
-): Array<{ type: "http"; name: string; url: string; headers: string[] }> {
+): Array<{ type: "http"; name: string; url: string; headers: Array<{ name: string; value: string }> }> {
   if (!deps.mcpUrlFor) return []; // nothing to offer -> the container starts no proxy
   // The URL here is a PLACEHOLDER: the container replaces it with its own local proxy address.
   // What travels over the wire — and what the agent-host resolves — is the NAME.

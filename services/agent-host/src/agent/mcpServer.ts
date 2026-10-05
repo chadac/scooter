@@ -35,6 +35,10 @@ import {
   type SandboxResourceToolsWiring,
 } from "./resourceTools.js";
 import { registerMarimoTools, type MarimoClient } from "@scooter/marimo-mcp";
+import { bearerFrom, mintConvToken, verifyConvToken } from "../auth/convToken.js";
+import { logger } from "../log.js";
+
+const log = logger("mcp-endpoint");
 
 /** How buildServer gets a marimo client for a conversation: the agent-host resolves
  *  the conversation's pod IP fresh (it changes across suspend/resume) and returns a
@@ -404,11 +408,20 @@ export async function buildServer(
 }
 
 export interface McpEndpoint {
-  /** Handle an HTTP request to the MCP endpoint. The conversationId is read from
-   *  the `conv` query param (each conversation's newSession URL encodes it). */
+  /** Handle an HTTP request to the MCP endpoint. The conversation is taken from the
+   *  signed conversation token in `Authorization: Bearer …` — never from the URL. */
   handle(req: IncomingMessage, res: ServerResponse, body: unknown): Promise<void>;
-  /** The MCP URL a conversation's newSession should advertise to goose. */
+  /** The MCP URL a conversation's newSession should advertise.
+   *
+   *  The SAME url for every conversation now: the scope travels in the credential, so
+   *  `?conv=` is gone. It used to be the only thing telling the endpoint which
+   *  conversation a caller wanted, on a route with no caller authentication — see
+   *  headersFor and issue #700. */
   urlFor(conversationId: string): string;
+  /** The headers a client must send to reach THIS conversation's tools: a bearer
+   *  conversation token. Returns [] when no signing secret is configured, which
+   *  leaves the endpoint open exactly as it was before — see createMcpEndpoint. */
+  headersFor(conversationId: string, owner?: string): Array<{ name: string; value: string }>;
 }
 
 /**
@@ -417,9 +430,40 @@ export interface McpEndpoint {
  * conversationId comes from the URL), so it composes with the agent-host's
  * existing node:http server.
  */
+/**
+ * The conversation this request may act for, or undefined.
+ *
+ * THE ONLY SOURCE IS THE SIGNED TOKEN. It used to be `?conv=`, which anything able to
+ * reach this port could choose — and the BYOC tunnel went to real lengths to keep the
+ * id server-side (`tunnelTargets.ts`) while the endpoint it protected had no opinion.
+ *
+ * `?conv=` IS DELETED, NOT DEPRECATED, and no fallback reads it. A conversation id that
+ * can arrive in a query param will eventually be trusted by something; and an
+ * unconfigured secret meaning "accept anything" would leave the agent-host failing OPEN
+ * while the broker's verifier fails CLOSED, which is the inconsistency in the dangerous
+ * direction. The kubenix module generates the Secret, so "no secret" is a
+ * misconfiguration rather than a supported mode.
+ */
+function resolveConversation(req: IncomingMessage, secret: string): string | undefined {
+  if (!secret) return undefined;
+  const token = bearerFrom(req.headers.authorization);
+  if (!token) return undefined;
+  const res = verifyConvToken(token, secret);
+  if (!res.ok) {
+    log.warn("rejected an MCP request", { reason: res.reason });
+    return undefined;
+  }
+  return res.conversationId;
+}
+
 export function createMcpEndpoint(deps: {
   baseUrl: string;
   path?: string;
+  /** HS256 secret for minting + verifying conversation tokens. EMPTY = the endpoint
+   *  stays unauthenticated on the pre-#700 `?conv=` behaviour, with a startup warning. */
+  convTokenSecret?: string;
+  /** Override the token lifetime. Defaults to DEFAULT_CONV_TOKEN_TTL_SECONDS. */
+  convTokenTtlSeconds?: number;
   /** When provided, the per-conversation server exposes the five typed agent-tools
    *  (slack/gitlab/github/web). Omit to leave them off (e.g. no broker configured). */
   agentTools?: AgentToolsWiring;
@@ -446,16 +490,37 @@ export function createMcpEndpoint(deps: {
   marimo?: MarimoToolsWiring;
 }): McpEndpoint {
   const path = deps.path ?? "/mcp";
+  const secret = deps.convTokenSecret ?? "";
+  const ttlSeconds = deps.convTokenTtlSeconds;
+  if (!secret) {
+    // Every request will 401 and the agent will have no platform tools at all. Said at
+    // ERROR once on the way up, naming the consequence and the fix, because the
+    // alternative symptom is an agent that silently cannot do anything.
+    log.error(
+      "no CONV_TOKEN_SECRET: the MCP endpoint will reject EVERY request and the agent " +
+        "will have no platform tools. The kubenix module provisions this secret; set it.",
+    );
+  }
   return {
-    urlFor(conversationId) {
-      return `${deps.baseUrl.replace(/\/$/, "")}${path}?conv=${encodeURIComponent(conversationId)}`;
+    urlFor() {
+      return `${deps.baseUrl.replace(/\/$/, "")}${path}`;
+    },
+    headersFor(conversationId, owner) {
+      if (!secret) return [];
+      return [
+        {
+          name: "Authorization",
+          value: `Bearer ${mintConvToken(conversationId, secret, { owner, ttlSeconds })}`,
+        },
+      ];
     },
     async handle(req, res, body) {
-      const url = new URL(req.url ?? "", "http://localhost");
-      const conv = url.searchParams.get("conv");
+      const conv = resolveConversation(req, secret);
       if (!conv) {
-        res.statusCode = 400;
-        res.end("missing conv");
+        // 401, not 400: this is "I don't know who you are", and a 400 reads as a
+        // malformed request the client should reshape rather than authenticate.
+        res.statusCode = 401;
+        res.end("missing or invalid conversation token");
         return;
       }
       // Stateless transport: no session id (sessionIdGenerator undefined).

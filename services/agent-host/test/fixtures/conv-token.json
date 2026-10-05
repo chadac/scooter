@@ -1,0 +1,28 @@
+{
+  "_comment": [
+    "FROZEN CROSS-LANGUAGE TEST VECTOR for the conversation token (issue #700).",
+    "The token format is signed by the agent-host (TypeScript, src/auth/hs256.ts) and",
+    "verified by the broker (Python, broker/core/conv_token.py). Two implementations of",
+    "one format is the real risk, so both test suites verify THIS token against THIS",
+    "secret and assert the same claims. A change to either implementation that alters the",
+    "wire format fails in the other language's suite.",
+    "",
+    "This file is duplicated at services/broker/tests/fixtures/conv-token.json because the",
+    "two nix derivations each build from their own service directory and cannot share a",
+    "path. scripts/check-conv-token-vector.sh fails CI if the copies drift.",
+    "",
+    "The secret is a test value and is not used anywhere else."
+  ],
+  "secret": "conv-token-test-secret-do-not-use-in-production",
+  "claims": {
+    "aud": "scooter-mcp",
+    "iss": "scooter-agent-host",
+    "sub": "conv-abc123",
+    "owner": "alice@example.com",
+    "iat": 1700000000,
+    "exp": 1700604800
+  },
+  "verifyAtEpochSeconds": 1700000100,
+  "expiredAtEpochSeconds": 1700604801,
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOiJzY29vdGVyLW1jcCIsImlzcyI6InNjb290ZXItYWdlbnQtaG9zdCIsInN1YiI6ImNvbnYtYWJjMTIzIiwiaWF0IjoxNzAwMDAwMDAwLCJleHAiOjE3MDA2MDQ4MDAsIm93bmVyIjoiYWxpY2VAZXhhbXBsZS5jb20ifQ.I-30YD-7IXExOONiJ6ZvS1yLqHdyxOHwO68Pr0b1Iyg"
+}

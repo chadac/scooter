@@ -51,6 +51,9 @@ export interface SdkAcpClientDeps {
    *  claude-code agent can DESCRIBE those capabilities (from its skills) but has no
    *  tools to actually use them. */
   mcpEndpointUrl?: string;
+  /** Headers for `mcpEndpointUrl` — the conversation token. The endpoint takes its
+   *  conversation from this, not from the URL. Why: issue #700. */
+  mcpEndpointHeaders?: Record<string, string>;
   /** ADDITIONAL named MCP servers, each already reachable at its own URL. The in-cluster paths
    *  pass mcpEndpointUrl (one server on loopback); a BYO container passes this instead — one
    *  local proxy per server, tunnelled to the cloud — because a conversation can offer MANY
@@ -209,7 +212,15 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
     // etc. from its skills but can't actually invoke them.
     mcpServers: {
       sandbox: server,
-      ...(deps.mcpEndpointUrl ? { "scooter-env": { type: "http", url: deps.mcpEndpointUrl } } : {}),
+      ...(deps.mcpEndpointUrl
+        ? {
+            "scooter-env": {
+              type: "http",
+              url: deps.mcpEndpointUrl,
+              ...(deps.mcpEndpointHeaders ? { headers: deps.mcpEndpointHeaders } : {}),
+            },
+          }
+        : {}),
       // Named servers (the BYOC tunnel supplies these; N per conversation).
       ...Object.fromEntries((deps.mcpServers ?? []).map((m) => [m.name, { type: "http", url: m.url }])),
     },
