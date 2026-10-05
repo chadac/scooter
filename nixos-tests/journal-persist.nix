@@ -107,7 +107,21 @@ pkgs.testers.runNixOSTest {
     machine.succeed(f"journalctl --no-pager --directory {JDIR} --list-boots | grep -q .")
     machine.fail(f"journalctl --no-pager --merge --directory {JDIR} --list-boots")
 
-    # --- 4. prior boots pruned to keepBoots (default 3). ----------------------
+    # --- 4. re-activation is idempotent: exactly one mount, never stacked. -----
+    # Every `scooter-rebuild switch` re-runs activation with the bind already live.
+    machine.succeed("/run/current-system/activate")
+    mounts = int(machine.succeed("grep -c ' /var/log/journal ' /proc/self/mountinfo").strip())
+    assert mounts == 1, f"bind stacked {mounts} deep across re-activation"
+    assert "already bound" in machine.get_console_log(), \
+        "re-activation did not report taking the no-op path"
+    machine.succeed("journalctl -b --no-pager | grep -q .")
+
+    # --- 5. prior boots pruned to keepBoots (default 3). -----------------------
+    # Unmount FIRST. Prune sits behind the same guard as the bind, so it is reached
+    # only when nothing is bound yet -- a container start, which is exactly when a
+    # stale boot dir needs collecting. Asserting it with the bind still up tests
+    # nothing: activation takes the "already bound" branch and returns first.
+    machine.succeed("umount /var/log/journal || umount -l /var/log/journal")
     for i in range(5):
         machine.succeed(f"mkdir -p {JDIR}/fakeboot{i} && touch -d '2020-01-0{i+1}' {JDIR}/fakeboot{i}")
     before = int(machine.succeed(f"ls -1 {JDIR} | wc -l").strip())
@@ -116,13 +130,13 @@ pkgs.testers.runNixOSTest {
     machine.succeed("/run/current-system/activate")
     after = int(machine.succeed(f"ls -1 {JDIR} | wc -l").strip())
     assert after == 3, f"prune should keep 3, kept {after}"
-    # the CURRENT boot is the newest, so it must be one of the survivors.
+    # The current boot is the newest, so it must survive: pruning the live journal's
+    # own directory would delete the records being written as it ran.
     machine.succeed(f"test -d {JDIR}/{mid}")
-
-    # --- 5. activation is idempotent: exactly one mount, never stacked. --------
-    mounts = int(machine.succeed("grep -c ' /var/log/journal ' /proc/self/mountinfo").strip())
-    assert mounts == 1, f"bind stacked {mounts} deep across re-activation"
-    machine.succeed("journalctl -b --no-pager | grep -q .")
+    # The same activation re-bound it: a prune must not leave the journal container-local.
+    machine.succeed("mountpoint -q /var/log/journal")
+    remounts = int(machine.succeed("grep -c ' /var/log/journal ' /proc/self/mountinfo").strip())
+    assert remounts == 1, f"re-bind after prune left {remounts} mounts"
 
     # --- 6. no PVC: degraded, but booted, and it SAYS which. -------------------
     nopvc.wait_for_unit("default.target")

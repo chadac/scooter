@@ -92,6 +92,7 @@ in
               | ${pkgs.coreutils}/bin/tail -n +$((keep + 1)) \
               | while read -r old; do ${pkgs.coreutils}/bin/rm -rf "$old"; done
             echo "sandbox-journal: pruned $((n - keep)) boot(s), keeping $keep"
+            n=$(${pkgs.coreutils}/bin/ls -1 "$jdir" 2>/dev/null | ${pkgs.coreutils}/bin/wc -l)
           fi
 
           ${pkgs.coreutils}/bin/mkdir -p /var/log/journal
