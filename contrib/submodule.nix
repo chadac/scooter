@@ -191,6 +191,12 @@ in
       '';
     };
 
+    deployment = mkOption {
+      type = types.nullOr types.raw;
+      default = null;
+      description = "EXPERIMENT: the deployment half as an inline module value.";
+    };
+
     sandbox = mkOption {
       default = { };
       description = "What this contrib adds to the agent's sandbox image.";

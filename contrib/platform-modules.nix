@@ -40,7 +40,8 @@ let
   modulesOf = name: c:
     let dir = dirOf name c; in
     [ (dir + "/contrib.nix") ]
-    ++ lib.optional (builtins.pathExists (dir + "/deployment.nix")) (dir + "/deployment.nix");
+    ++ lib.optional (builtins.pathExists (dir + "/deployment.nix")) (dir + "/deployment.nix")
+    ++ lib.optional (c.deployment != null) c.deployment;
 in
 lib.concatLists (lib.mapAttrsToList modulesOf
   (lib.filterAttrs (_: c: c.enable) eval.config.contribs))
