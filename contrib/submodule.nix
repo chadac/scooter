@@ -257,19 +257,13 @@ in
       description = "What this contrib adds to the platform's kubenix manifests.";
       type = types.submodule {
         options.module = mkOption {
-          # A path OR an inline module, because a contrib with a handful of options has
-          # no reason to be two files: `{ config, lib, ... }: { options = …; config = …; }`
-          # written right here reads as one thing. A path still suits a long one
-          # (contrib/aws). Either way it is only ever stored and handed to platform.nix's
-          # `imports`, so it is never evaluated in THIS module system. Why: PR #707.
-          type = types.nullOr (types.either types.path types.unspecified);
+          type = types.nullOr types.path;
           default = null;
           example = literalExpression "./deployment.nix";
           description = ''
             A kubenix module layered into the platform eval (modules/platform.nix
             imports it) — where this contrib declares its OWN deployment options
-            and renders its own manifests. Either a path (`./deployment.nix`) or the
-            module itself, written inline. `null` means it adds nothing.
+            and renders its own manifests. `null` means it adds nothing.
 
             Not per-service, unlike `services.<svc>`: one module, free to touch any
             option the platform declares, because a contrib with both a broker and a

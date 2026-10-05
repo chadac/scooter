@@ -132,21 +132,13 @@ contribs.aws = {
   src = ./.;
   deployment.module = ./deployment.nix;   # a kubenix module
 };
-
-contribs.brave = {
-  src = ./.;
-  # …or inline, which is what a handful of options wants to be:
-  deployment.module = { config, lib, ... }: {
-    options.agentSandbox.broker.brave = { /* … */ };
-    config = lib.mkIf config.agentSandbox.broker.brave.enable { /* … */ };
-  };
-};
 ```
 
-A path suits a long module (`contrib/aws`'s is ~200 lines); inline suits the common
-case, and keeps a two-option contrib from being two files. Either way the value is
-only stored and handed to `platform.nix`'s `imports`, so it is never evaluated in the
-contribs module system.
+**One half, one file, named for the half**: `deployment.nix` is the kubenix module,
+`sandbox.nix` the NixOS module baked into the agent's image. `contrib/aws` ships both,
+and they are not interchangeable — the names are what keep a reader from reaching for
+the wrong one. A contrib with only a deployment half still gets its own
+`deployment.nix`, even when that is two options and one env entry.
 
 `modules/platform.nix` imports it, so it can declare its own options
 (`agentSandbox.broker.aws.*`) and render its own `kubernetes.resources`. It
