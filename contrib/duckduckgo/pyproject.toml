@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "scooter-contrib-duckduckgo"
+version = "0.0.0"
+license = "MIT"
+description = "Keyless DuckDuckGo search for Scooter's broker — serves the agent's duckduckgo_web_search tool by reading DDG's public HTML results page"
+requires-python = ">=3.11"
+# Depends on the extension SURFACE, never on the broker app. Why: PR #567.
+dependencies = [
+  "fastapi",
+]
+
+# One EXTRA per service. Why: PR #567.
+[project.optional-dependencies]
+broker = ["scooter-broker-lib", "scooter-lib"]
+
+[project.entry-points."agent_broker.providers"]
+duckduckgo = "scooter_contrib_duckduckgo.broker_provider:duckduckgo"
+
+[dependency-groups]
+dev = ["pytest", "pytest-asyncio", "httpx"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

@@ -137,6 +137,11 @@
         enable = true;
         apiKeySecret = { name = "kagi-search-key"; key = "KAGI_API_KEY"; };
       };
+      # The keyless one: no secret to configure, so the switch is the whole config. Also
+      # the least reliable — it reads DuckDuckGo's public results page, which is
+      # rate-limited per egress IP — which is why it is OFF by default and why a
+      # deployment that can pay for search should prefer brave.
+      duckduckgo.enable = true;
 
       # Static shares: agents publish static bundles the broker serves at
       # /s/<uuid>/ and the UI embeds. Persists to the shared Postgres `broker` DB.

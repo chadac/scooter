@@ -10,6 +10,7 @@
     ./aws
     ./brave
     ./datadog
+    ./duckduckgo
     ./echo
     ./github
     ./gitlab

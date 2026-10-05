@@ -1,1 +1,1 @@
-"""Brave Search contrib — the agent's `web_search` tool, backed by Brave."""
+"""Brave Search contrib — the agent’s `brave_web_search` tool, backed by Brave."""

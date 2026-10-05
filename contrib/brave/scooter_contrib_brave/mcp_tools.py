@@ -4,9 +4,11 @@ Ported from the agent-host's DuckDuckGo-backed `web_search`
 (services/agent-host/src/agent/agentTools.ts) via PR #698, which established that the
 old implementation was not broken but wrong: DuckDuckGo's Instant Answer API is a
 definitions endpoint, and real queries came back HTTP 200 with "no instant answer", so
-search presented as an empty web. DDG publishes no results API, so a keyed provider is
-the only option — and a keyed provider belongs in a contrib, because the broker is
-where Scooter keeps credentials the agent must never hold (issue #700).
+search presented as an empty web. A keyed provider belongs in a contrib, because the
+broker is where Scooter keeps credentials the agent must never hold (issue #700).
+(#698 concluded a keyed provider was the only option; `contrib/duckduckgo` is the
+keyless one, reading DDG's HTML results page rather than that definitions endpoint —
+free, and the least reliable of the three.)
 
 WHY BRAVE IS THE ONE TO REACH FOR FIRST: $5/1k requests against $5 of credit granted
 monthly, so single-user volume is typically free. `contrib/kagi` and

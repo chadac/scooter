@@ -13,7 +13,7 @@
  *   tool names the UI keys on        -> each contrib's test, since the UI matches the
  *                                      tool NAME and the contribs now own those rows
  *   web_search's three outcomes      -> lib/py/scooter-broker-lib/tests/test_search.py
- *                                      plus contrib/{brave,kagi}/tests
+ *                                      plus contrib/{brave,kagi,duckduckgo}/tests
  *
  * What stays is the one tool that needs no credential — and whose guard is the real
  * reason it is a tool rather than "just fetch a URL".
@@ -52,8 +52,8 @@ describe("agent-tools: web_fetch needs no credential and no broker", () => {
     // The assertion is the absence: while `web_search` rode along here, a keyless
     // search backend looked like platform furniture instead of an integration, and
     // every deployment got a tool that answered real queries with an empty web
-    // (PR #698). It now arrives over the broker's /mcp iff contrib/brave or
-    // contrib/kagi is configured.
+    // (PR #698). It now arrives over the broker's /mcp as one tool per enabled search
+    // contrib (`brave_web_search`, `kagi_web_search`, `duckduckgo_web_search`).
     const names = new Set<string>();
     const server = { registerTool: (name: string) => names.add(name) } as unknown as Parameters<
       typeof registerWebFetch

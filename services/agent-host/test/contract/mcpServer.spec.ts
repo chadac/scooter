@@ -183,7 +183,8 @@ describe("marimo tools wiring (buildServer)", () => {
   });
 
   it("does NOT register web_search — a search key makes it a CONTRIB's tool", async () => {
-    // It reaches the agent over the broker's /mcp from contrib/brave or contrib/kagi,
+    // It reaches the agent over the broker's /mcp from a search contrib, one tool per
+    // enabled provider (`brave_web_search`, `kagi_web_search`, `duckduckgo_web_search`),
     // so a deployment with no search key has no search tool at all — rather than one
     // that answers every real query with an empty result set (PR #698, issue #700).
     const client = await clientForServer(undefined);

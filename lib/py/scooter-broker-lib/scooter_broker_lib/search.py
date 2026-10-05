@@ -66,6 +66,23 @@ class SearchHit:
     snippet: str | None = None
 
 
+def upstream_failure(response: "httpx.Response", *, provider: str) -> ToolResult | None:
+    """`None` if the search call succeeded, else the failure to report VERBATIM.
+
+    The half of `search_response` that does not assume JSON, because not every search
+    provider answers with it: `contrib/duckduckgo` has no API and reads an HTML results
+    page. The status check is identical and the message is too — with the provider
+    NAMED, because "brave returned 429" tells the agent its key is out of quota while
+    "search failed" does not.
+    """
+    if 200 <= response.status_code < 300:
+        return None
+    return ToolResult.error(
+        f"web search FAILED via {provider} (HTTP {response.status_code}). "
+        f"The service returned:\n{response.text}"
+    )
+
+
 def search_response(
     response: "httpx.Response", *, provider: str
 ) -> tuple[dict[str, Any], ToolResult | None]:
@@ -84,18 +101,16 @@ def search_response(
     object is treated as no results instead: the call worked and we simply understood
     nothing in it, which is what an API change looks like.
     """
-    if not 200 <= response.status_code < 300:
-        return {}, ToolResult.error(
-            f"web_search FAILED via {provider} (HTTP {response.status_code}). "
-            f"The service returned:\n{response.text}"
-        )
+    failure = upstream_failure(response, provider=provider)
+    if failure is not None:
+        return {}, failure
     if not response.content:
         return {}, None
     try:
         body = response.json()
     except (ValueError, json.JSONDecodeError):
         return {}, ToolResult.error(
-            f"web_search FAILED via {provider}: HTTP {response.status_code} with a body "
+            f"web search FAILED via {provider}: HTTP {response.status_code} with a body "
             f"that is not JSON, so nothing answered as the search API. It returned:\n"
             f"{response.text[:500]}"
         )

@@ -676,6 +676,7 @@
             contrib-airtable = contribs.packages.airtable.broker;
             contrib-brave = contribs.packages.brave.broker;
             contrib-datadog = contribs.packages.datadog.broker;
+            contrib-duckduckgo = contribs.packages.duckduckgo.broker;
             contrib-github = contribs.packages.github.broker;
             contrib-github-webhooks = contribs.packages.github.webhooks;
             contrib-gitlab = contribs.packages.gitlab.broker;
@@ -846,6 +847,7 @@
             contrib-airtable = contribs.packages.airtable.broker;
             contrib-brave = contribs.packages.brave.broker;
             contrib-datadog = contribs.packages.datadog.broker;
+            contrib-duckduckgo = contribs.packages.duckduckgo.broker;
             contrib-github = contribs.packages.github.broker;
             contrib-github-webhooks = contribs.packages.github.webhooks;
             contrib-gitlab = contribs.packages.gitlab.broker;

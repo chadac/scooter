@@ -182,7 +182,7 @@ export function registerWebFetch(server: McpServer, deps: WebFetchDeps): void {
  * incident-driven rules intact — oldest link first, completeness per link.
  *
  * `web_search` followed them in phase 3: it needs a SEARCH KEY, which makes it an
- * integration's tool and not the platform's — contrib/brave and contrib/kagi own it
+ * integration's tool and not the platform's — contrib/{brave,kagi,duckduckgo} own it
  * now, and a deployment with neither has no search tool rather than one that answers
  * every query with an empty result set (PR #698).
  *

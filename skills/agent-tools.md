@@ -25,6 +25,7 @@ triggers:
 - web_search
 - brave_web_search
 - kagi_web_search
+- duckduckgo_web_search
 - search the web
 - fetch a url
 - web_fetch
@@ -114,7 +115,10 @@ don't repeat.
   tokens to mostly re-read the same links. Read their descriptions and pick the one
   that suits the question, then try another only if the first fails or genuinely
   returns nothing useful — and say which one you used, since "nothing found" is worth
-  weighing against which index you asked.
+  weighing against which index you asked. `duckduckgo_web_search` needs no API key and
+  so is the one most likely to be present, but it reads a public HTML page and is
+  rate-limited: when it fails, that is about the tool and not about the web, so prefer
+  a keyed sibling if one is listed rather than retrying it.
 - **Fetch a URL** — fetch a public web page and get its readable text. Use it on a
   URL from a search result, a PR/issue link, or docs. (It refuses
   internal/cluster/metadata addresses.)

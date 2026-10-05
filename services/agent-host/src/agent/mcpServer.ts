@@ -311,7 +311,8 @@ export async function buildServer(
   }
   // web_fetch needs NO broker and NO credential — it hits a URL directly. Registered
   // unconditionally so it doesn't depend on broker wiring. `web_search` is NOT here
-  // any more: it needs a search key, which makes it contrib/brave's or contrib/kagi's
+  // any more: it needs a search key (or, for duckduckgo, an explicit opt-in), which
+  // makes it a search contrib's
   // tool, arriving over the broker's /mcp iff one of them is configured (#700).
   registerWebFetch(server, { fetchImpl: agentTools?.fetchImpl });
 
