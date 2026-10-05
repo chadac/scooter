@@ -25,9 +25,9 @@ an entry-point group at startup (`agent_broker.providers` / `scooter_webhooks.ha
 mount whatever registered factories they find, alongside the in-tree built-ins. A new
 integration is a self-contained package under `contrib/<name>/` — a broker provider, a
 webhooks handler, or both — that plugs in without editing any service's core. See
-`contrib/README.md` for the layout — one file per eval: `contrib.nix` (what it is),
-`platform.nix` (its kubenix options), `sandbox.nix` (its half of the agent image). The
-direction of travel is
+`contrib/README.md` for the layout — one file per half: `contrib.nix` (what it is),
+`deployment.nix` (its kubenix options), `sandbox.nix` (its half of the agent image).
+The direction of travel is
 entry-point-first: every integration eventually ships as a contrib package, with the in-tree
 scan retained only for development.
 

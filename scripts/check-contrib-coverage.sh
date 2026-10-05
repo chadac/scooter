@@ -3,10 +3,9 @@
 # a contrib's files must be the ones the evals look for.
 #
 # Both failures are silent. A contrib missing from all-modules.nix is never built and
-# never tested (#585). A contrib half under the WRONG FILENAME is worse: the platform
-# half is found beside the declaration (contrib/platform-modules.nix looks for
-# <name>/platform.nix), so a leftover `deployment.nix` or a typo'd `platfrom.nix` is
-# simply never imported — the options vanish, and every manifest that sets them fails
+# never tested (#585). A contrib half under the WRONG FILENAME is worse: a half is
+# found beside the declaration by name (contrib/platform-modules.nix looks for
+# <name>/deployment.nix), so a typo like `deploymnet.nix` is simply never imported — the options vanish, and every manifest that sets them fails
 # with "option does not exist", pointing at the manifest rather than at the file.
 # Why: #585, #711.
 #
@@ -45,8 +44,8 @@ done
 # in a contrib directory is a half that nothing imports.
 for f in contrib/*/*.nix; do
   case "${f##*/}" in
-    contrib.nix | platform.nix | sandbox.nix) ;;
-    *) note "$f is not one of contrib.nix / platform.nix / sandbox.nix — no eval imports it (see contrib/README.md)" ;;
+    contrib.nix | deployment.nix | sandbox.nix) ;;
+    *) note "$f is not one of contrib.nix / deployment.nix / sandbox.nix — no eval imports it (see contrib/README.md)" ;;
   esac
 done
 

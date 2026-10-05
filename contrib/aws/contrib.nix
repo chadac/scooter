@@ -1,5 +1,5 @@
 # aws DECLARED: what this contrib IS — the halves that are built, not deployed.
-# Its deployment options live in ./platform.nix and its sandbox half in
+# Its deployment options live in ./deployment.nix and its sandbox half in
 # ./sandbox.nix, each landing in a different eval (contrib/README.md).
 {
   contribs.aws = {
@@ -22,7 +22,7 @@
     # A grant needs a human to say yes. Only the UI half is here (build-time metadata
     # for the contrib manifest); the defaults — grey "approve", "an admin must" — are
     # what aws wants, so the empty set is the declaration. Where its verbs live on the
-    # broker is deployment config: see scooter.approvals in ./platform.nix.
+    # broker is deployment config: see scooter.approvals in ./deployment.nix.
     approvals = { };
   };
 }

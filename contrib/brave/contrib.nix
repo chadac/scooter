@@ -1,5 +1,5 @@
 # brave DECLARED: what this contrib IS. Its deployment options are in
-# ./platform.nix — a different eval, which is why it is a different file
+# ./deployment.nix — a different eval, which is why it is a different file
 # (contrib/README.md).
 {
   contribs.brave = {

@@ -1,4 +1,4 @@
-# duckduckgo DECLARED: what this contrib IS. Deployment options: ./platform.nix.
+# duckduckgo DECLARED: what this contrib IS. Deployment options: ./deployment.nix.
 {
   contribs.duckduckgo = {
     src = ./.;

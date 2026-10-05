@@ -27,7 +27,7 @@ services.
 contrib/<name>/
   pyproject.toml            # package + entry points (both groups if it spans services); hatchling backend
   contrib.nix               # the DECLARATION: `contribs.<name>` (see schema below)
-  platform.nix              # optional: a KUBENIX module -> declares scooter.* options
+  deployment.nix            # optional: a KUBENIX module -> declares scooter.* options
   sandbox.nix               # optional: a NIXOS module  -> goes into the sandbox-os image
   scooter_contrib_<name>/
     __init__.py             # neutral; imports NEITHER broker nor webhooks
@@ -36,29 +36,29 @@ contrib/<name>/
   tests/
 ```
 
-**One file per eval, each named for the eval it lands in** — the three are not
-interchangeable, and this is the thing most easily got backwards:
+**One file per half, named for what is in it** — the three are not interchangeable,
+and which eval reads which is the thing most easily got backwards:
 
 | file | eval | declares / contributes |
 |---|---|---|
 | `contrib.nix` | every eval that reads the registry | `contribs.<name>`: `src`, `services.*`, `ui`, `skills`, `approvals`, `sandbox.module`. What the contrib **is**. |
-| `platform.nix` | kubenix, with `modules/platform.nix` | its own `scooter.broker.<name>.*` options, and the manifests/env they render |
+| `deployment.nix` | kubenix, with `modules/platform.nix` | its own `scooter.broker.<name>.*` options, and the manifests/env they render |
 | `sandbox.nix` | NixOS, via `contrib/sandbox-modules.nix` | packages, systemd units, activation — anything in the agent's sandbox image |
 
-`platform.nix` is a module in the **same eval** as `modules/platform.nix`, so it
+`deployment.nix` is a module in the **same eval** as `modules/platform.nix`, so it
 declares `scooter.*` options exactly where any other platform option is declared —
 there is no registration step and nothing to list (#711).
 
 `contrib.nix` is the one file that cannot do that, and that is why it is a separate
-file rather than the top of `platform.nix`: it is read by evals that have no
+file rather than the top of `deployment.nix`: it is read by evals that have no
 `scooter.*` tree at all — the package build, and the sandbox image *plus its in-pod
 re-converge*, which runs with `lib` and no flake. A `scooter.broker.<name>.extraEnv`
 definition there is "option does not exist" in two of the three (#615, #607).
 
 `contrib/aws` is the only contrib with all three. `contrib/echo` has `contrib.nix` +
-`sandbox.nix`, which was the whole shape of a contrib before the platform half existed
-(#607 added the sandbox half, #636 the platform half three days later). A contrib with
-only a platform half is the common case — every broker integration.
+`sandbox.nix`, which was the whole shape of a contrib before the deployment half
+existed (#607 added the sandbox half, #636 the deployment half three days later). A
+contrib with only a deployment half is the common case — every broker integration.
 
 **Rule: the top-level module stays import-light.** The service-coupled modules
 import their host service (`broker.*` / `webhooks.*`), which is present at
@@ -154,13 +154,13 @@ for the fixture (echo is `enable = false`, so it covers the disabled-contrib pat
 an enabled contrib cannot), and the `dev-env-contrib-sandbox` check for what is
 asserted.
 
-### Contributing platform config (`contrib/<name>/platform.nix`)
+### Contributing deployment config (`contrib/<name>/deployment.nix`)
 
 The options an operator sets to configure the integration, and the manifests it
 renders, belong to the contrib as well — as a file the platform finds by name:
 
 ```nix
-# contrib/aws/platform.nix — a kubenix module, nothing to register
+# contrib/aws/deployment.nix — a kubenix module, nothing to register
 { config, lib, ... }:
 {
   options.scooter.broker.aws = { /* … */ };
@@ -168,11 +168,11 @@ renders, belong to the contrib as well — as a file the platform finds by name:
 }
 ```
 
-**One half, one file, named for the half**: `platform.nix` is the kubenix module,
+**One half, one file, named for what is in it**: `deployment.nix` is the kubenix module,
 `sandbox.nix` the NixOS module baked into the agent's image, `contrib.nix` the
 declaration both of them hang off. `contrib/aws` ships all three, and they are not
 interchangeable — the names are what keep a reader from reaching for the wrong one.
-A contrib with only a platform half still gets its own `platform.nix`, even when
+A contrib with only a deployment half still gets its own `deployment.nix`, even when
 that is two options and one env entry.
 
 `modules/platform.nix` imports it, so it can declare its own options
@@ -189,7 +189,7 @@ redeclaring the container:
 | anything of its own | `kubernetes.resources.*` directly |
 
 Found beside the declaration, not declared: `contrib/platform-modules.nix` hands
-`modules/platform.nix` the enabled contribs' `contrib.nix` **and** `platform.nix`
+`modules/platform.nix` the enabled contribs’ `contrib.nix` **and** `deployment.nix`
 files as plain paths, so adding an integration still edits no platform file, and
 there is no `deployment.module` left to keep in sync with the filename.
 
@@ -203,15 +203,15 @@ which is what kept the contribs out of the kubenix eval in the first place.
 `just check-contrib-coverage` fails CI on a stray `.nix` in a contrib directory,
 which is the typo this convention would otherwise swallow.
 
-Nothing here may force a derivation: an external deployer imports `platform.nix`
+Nothing here may force a derivation: an external deployer imports `modules/platform.nix`
 with no `pkgs` to build a contrib's Python half with, and a manifest needs none.
 
 Three consequences worth knowing:
 
 - **This is where a contrib's skills gate comes from.** `skills` ships on
   `scooter.broker.<name>.enable` (below), and this module is what declares
-  that option. A contrib shipping skills and no platform half has no gate, and
-  `platform.nix` throws.
+  that option. A contrib shipping skills and no deployment half has no gate, and
+  `deployment.nix` throws.
 - **An option that does not exist is an eval error**, so a manifest configuring an
   integration this image never built in fails loudly instead of being ignored. That
   is `enable` doing its job through platform-modules.nix, and `examples/check.nix`
@@ -226,7 +226,7 @@ Three consequences worth knowing:
   once either belongs in the platform module, or — as the brave/kagi search
   exclusivity turned out to be — should not exist. Why: PR #707.
 
-`contrib/aws/platform.nix` is the worked example: the account registry, the
+`contrib/aws/deployment.nix` is the worked example: the account registry, the
 `AWS_*` env, the rollout annotation and the IRSA annotation, which were ~40
 references inside `modules/broker.nix` before #599.
 
@@ -250,7 +250,7 @@ contribs.aws = {
 `scooter.broker.<name>.enable` is true in the *deployment*, which is a
 different question from whether the contrib is enabled in this source tree. A
 contrib shipping skills therefore needs a broker option of the same name;
-`platform.nix` throws at eval if there isn't one, rather than shipping a skill
+`deployment.nix` throws at eval if there isn’t one, rather than shipping a skill
 nothing gates.
 
 That gating is the point, not bookkeeping. A skill for a provider that isn't

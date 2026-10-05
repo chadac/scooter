@@ -1,16 +1,15 @@
-# aws's PLATFORM half: the option tree an operator configures, and the manifests
-# it renders. A module in the same eval as modules/platform.nix, imported by
-# convention from contrib/platform-modules.nix (#711).
+# aws's DEPLOYMENT half: the option tree an operator configures, and the manifests
+# it renders. A kubenix module in the same eval as modules/platform.nix, which finds
+# it beside ./contrib.nix (contrib/platform-modules.nix).
 #
 # This was ~40 references in modules/broker.nix — the option tree, the AWS_* env
 # block, the accounts ConfigMap, the rollout annotation and the IRSA annotation —
-# which meant the platform module could not be read without reading one
-# integration's IAM model. Nothing about it needed to be there: it reaches the
-# broker Deployment through that module's seams (broker.extraEnv and friends) and
-# renders its own ConfigMap straight into kubernetes.resources. Why: #599.
+# so the platform module could not be read without reading one integration's IAM
+# model. It reaches the broker Deployment through that module's seams
+# (broker.extraEnv and friends) instead. Why: #599.
 #
 # `{ config, lib, ... }` only, and nothing built: an external deployer imports
-# platform.nix with no `pkgs`, so a module forcing a package here is an eval error.
+# modules/platform.nix with no `pkgs`, so forcing a package here is an eval error.
 { config, lib, ... }:
 
 let
@@ -21,7 +20,7 @@ let
 in
 {
   options.scooter.broker.aws = {
-    # Also THE GATE for this contrib's skills: platform.nix ships scooter-aws.md
+    # Also THE GATE for this contrib's skills: deployment.nix ships scooter-aws.md
     # only where this is true, because an agent taught to call /aws/* on a broker
     # that never mounted those routes reads the 404 as the feature being broken.
     enable = mkOption {

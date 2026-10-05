@@ -1,7 +1,7 @@
-# kagi's PLATFORM half: the options an operator sets, and the broker env they render.
-# A module in the same eval as modules/platform.nix, imported by convention from
-# contrib/platform-modules.nix. See contrib/brave/platform.nix for the pattern and
-# the one rule (no bare sibling-contrib reads).
+# kagi's DEPLOYMENT half: the options an operator sets, and the broker env they
+# render. A kubenix module in the same eval as modules/platform.nix, found beside
+# ./contrib.nix. See contrib/brave/deployment.nix for the pattern and the one rule
+# (no bare sibling-contrib reads).
 { config, lib, ... }:
 
 let

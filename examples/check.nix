@@ -477,7 +477,7 @@ let
     (if disabled != [ ] then [ ] else
     [ "every contrib is enabled — the disabled-contrib negatives below test nothing; keep one disabled fixture (echo) or delete them" ])
     ++ (if brokerOpts ? brave then [ ] else
-    [ "scooter.broker.brave is not declared — an enabled contrib's platform.nix did not reach the platform eval (contrib/platform-modules.nix), so every disabled-contrib check below passes for the wrong reason" ])
+    [ "scooter.broker.brave is not declared — an enabled contrib's deployment.nix did not reach the platform eval (contrib/platform-modules.nix), so every disabled-contrib check below passes for the wrong reason" ])
     ++ (if platform.config.contribs ? aws then [ ] else
     [ "config.contribs.aws is missing — the contrib DECLARATIONS are not in the platform eval, so contrib skills are read from an empty set" ])
     ++ map (n: "scooter.broker.${n}.* is declared but ${n} is disabled — a manifest can configure an integration this image never built (#599)")
@@ -565,7 +565,7 @@ let
     (builtins.filter (n: countNamed brokerEnv n > 1) brokerEnvNames);
 
   # A CONTRIB'S PLATFORM MODULE REACHES THE BROKER DEPLOYMENT. aws's option tree
-  # and its manifests live in contrib/aws/platform.nix, which modules/platform.nix
+  # and its manifests live in contrib/aws/deployment.nix, which modules/platform.nix
   # imports without naming it (contrib/platform-modules.nix) — so this asserts the
   # seams carry, rather than that the file exists. All four kinds in one render, each
   # of which was an inline `lib.optionals bcfg.aws.enable` in modules/broker.nix:
@@ -581,7 +581,7 @@ let
   hasName = l: n: builtins.any (v: v.name == n) l;
   contribSeamProblems =
     (if countNamed brokerEnv "AWS_ENABLED" == 1 then [ ]
-     else [ "broker.env.AWS_ENABLED — contrib/aws/platform.nix did not reach the broker container through broker.extraEnv" ])
+     else [ "broker.env.AWS_ENABLED — contrib/aws/deployment.nix did not reach the broker container through broker.extraEnv" ])
     ++ (if hasName (brokerCtr.volumeMounts or [ ]) "aws-accounts" then [ ]
         else [ "broker.volumeMounts aws-accounts missing (broker.extraVolumeMounts) — the provider reads accounts.json off disk and finds nothing" ])
     ++ (if hasName (res.deployments.agent-broker.spec.template.spec.volumes or [ ]) "aws-accounts" then [ ]
@@ -615,7 +615,7 @@ let
       if m == [ ] then null else builtins.head m;
   sandboxSeamProblems =
     (if contribPodSpec != null then [ ]
-     else [ ("configMaps.sandbox-manifest-overlay has no contrib.yaml — contrib/aws/platform.nix"
+     else [ ("configMaps.sandbox-manifest-overlay has no contrib.yaml — contrib/aws/deployment.nix"
              + " did not reach the sandbox pod through scooter.sandboxPod, so no sandbox"
              + " renders ~/.aws/config and `scooter-aws` has no profiles") ])
     ++ (if contribPodSpec == null || contribCtr != null then [ ]
@@ -661,7 +661,7 @@ let
     ++ (if builtins.all (e: e.name != "APPROVAL_CONTRIBS_JSON") awsOffApprovals then [ ]
         else [ "aws-off: host.env.APPROVAL_CONTRIBS_JSON present — approvals are not gated on the contrib's own enable" ]);
 
-  # `permission_requests` belongs to contrib/aws/platform.nix now, and must still
+  # `permission_requests` belongs to contrib/aws/deployment.nix now, and must still
   # be in the spec with the DEPLOYMENT's aws off — that is the invariant keeping the
   # generated schema a function of the source tree rather than of a deploy flag.
   # Why: PR #637.

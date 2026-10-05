@@ -3,11 +3,10 @@
 # Explicit list, not readDir: dynamic import paths defeat Nix's import caching.
 # check-contrib-coverage.sh fails CI if a contrib is missing here. Why: PR #585.
 #
-# `<name>/contrib.nix`, not `<name>`: a contrib's three halves land in three
-# different evals and are named for them, and this is the one every eval reads.
-# The platform half is reached from here too, but only through
-# contrib/platform-modules.nix — the eval that has a `scooter.*` tree to declare
-# into. Why: #711, and contrib/README.md.
+# `<name>/contrib.nix`, not `<name>`: a contrib is three files, and this is the one
+# every eval reads — what the contrib IS. Its deployment half (<name>/deployment.nix)
+# is reached only through contrib/platform-modules.nix, the one eval with a `scooter.*`
+# tree to declare into. Why: #711, and contrib/README.md.
 {
   imports = [
     ./spec.nix

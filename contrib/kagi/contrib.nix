@@ -1,4 +1,4 @@
-# kagi DECLARED: what this contrib IS. Deployment options: ./platform.nix.
+# kagi DECLARED: what this contrib IS. Deployment options: ./deployment.nix.
 {
   contribs.kagi = {
     src = ./.;

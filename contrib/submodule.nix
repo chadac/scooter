@@ -268,7 +268,7 @@ in
 
         Gated on THIS CONTRIB'S NAME: they ship only where
         `scooter.broker.<name>.enable` is true, so a contrib shipping skills
-        must have a broker option of the same name (platform.nix throws otherwise).
+        must have a broker option of the same name (deployment.nix throws otherwise).
         A skill for an integration that is off teaches the agent to call a route
         that 404s, and then to read that 404 as the feature being broken.
 

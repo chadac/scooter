@@ -130,7 +130,7 @@ let
     (lib.filterAttrs (_: c: c.skills != { }) config.contribs);
 
   # The contribs that raise human approvals -> how the agent-host reaches their verbs.
-  # Read straight off the evaluated config: each contrib's PLATFORM module sets its
+  # Read straight off the evaluated config: each contrib's deployment.nix sets its
   # own row inside its own `mkIf`, so the gating is the contrib's and there is nothing
   # to re-derive here.
   approvalContribsJson =

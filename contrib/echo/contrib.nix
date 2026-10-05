@@ -1,4 +1,4 @@
-# echo DECLARED: what this contrib IS. No ./platform.nix — it is disabled, so it
+# echo DECLARED: what this contrib IS. No ./deployment.nix — it is disabled, so it
 # has no deployment options at all, and nothing would import them.
 {
   contribs.echo = {
