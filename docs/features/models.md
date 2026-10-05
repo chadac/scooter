@@ -5,7 +5,7 @@ ids like `us.anthropic.claude-sonnet-4-6` mean nothing to a subscription-backed 
 vice versa), so each provider group lists what it offers and marks its own default.
 
 ```nix
-agentSandbox.agent.availableModels = {
+scooter.agent.availableModels = {
   goose = {
     "us.anthropic.claude-sonnet-4-6" = { default = true; hint = "Fast + cheap."; };
     "us.anthropic.claude-opus-4-8"  = { hint = "Slow + powerful."; };

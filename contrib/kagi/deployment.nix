@@ -5,11 +5,11 @@
 
 let
   inherit (lib) mkOption types;
-  bcfg = config.agentSandbox.broker;
+  bcfg = config.scooter.broker;
   scfg = bcfg.kagi;
 in
 {
-  options.agentSandbox.broker.kagi = {
+  options.scooter.broker.kagi = {
     enable = mkOption {
       type = types.bool;
       default = false;
@@ -39,7 +39,7 @@ in
   };
 
   config = lib.mkIf (bcfg.enable && scfg.enable) {
-    agentSandbox.broker.extraEnv = [
+    scooter.broker.extraEnv = [
       {
         name = "KAGI_API_KEY";
         valueFrom.secretKeyRef = {

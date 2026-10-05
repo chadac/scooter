@@ -17,7 +17,7 @@
 
 let
   inherit (lib) mkOption types;
-  cfg = config.agentSandbox;
+  cfg = config.scooter;
 
   # Shape of one conversation's resources. `id` = conversationId.
   mkConversation = { id, sandboxImage ? cfg.sandboxImage, brokerAudience ? "agent-broker", overlayStore ? false, overlayStorage ? "20Gi"

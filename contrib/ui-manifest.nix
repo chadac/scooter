@@ -69,7 +69,7 @@ let
   # or tool cards, and greying an option is a correctness concern rather than branding.
   #
   # Only the presentation half lives here. Where the contrib's verbs are on the broker
-  # is deployment config, declared by its deployment module (agentSandbox.approvals) —
+  # is deployment config, declared by its deployment module (scooter.approvals) —
   # a browser that knew a broker path would be a browser that could be pointed at one.
   approvals = lib.mapAttrs
     (_: c: { inherit (c.approvals) gatedOption blockedTitle blockedHint; })

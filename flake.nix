@@ -90,7 +90,7 @@
       # aarch64 image locally (unaffected); only the ghcr REF text is x86_64-pinned.
       pubImages = self.packages.x86_64-linux;
       # The content-tagged ghcr image refs (the kubenix DEFAULTS). A deploy that ships
-      # to another registry overrides these via agentSandbox.*Image / registryPrefix
+      # to another registry overrides these via scooter.*Image / registryPrefix
       # (e.g. the odin localhost:5000 deploy). The FREE images are a PURE set (no flags
       # needed). The claude variant bakes the UNFREE claude-code CLI, so its .outPath
       # forces an allowUnfree check — split out, resolved only under --impure +
@@ -380,18 +380,18 @@
           };
 
           # Render the platform manifests (namespace, agent-host Deployment + RBAC) with
-          # kubenix. `mkPlatform` takes the full `agentSandbox` config for a render, so
+          # kubenix. `mkPlatform` takes the full `scooter` config for a render, so
           # each flavor declares its own images AND agent config — the e2e flavor is a
           # dummy agent with test hooks; the ghcr flavor is a real production deploy.
           # `extraModules` is how a TEST render opts into test-only overrides (modules/testing.nix).
           # A deploy render passes none, so it cannot enable a dummy agent or an unauthenticated
           # test webhook even by setting a stray boolean — the options only exist with the module.
-          mkPlatformWith = extraModules: agentSandbox: kubenix.evalModules.${system} {
+          mkPlatformWith = extraModules: scooter: kubenix.evalModules.${system} {
             module = { kubenix, ... }: {
               imports = [ ./modules/platform.nix ] ++ extraModules;
               kubenix.project = "agent-sandbox";
               kubernetes.version = "1.31";
-              inherit agentSandbox;
+              inherit scooter;
             };
           };
           mkPlatform = mkPlatformWith [ ];
@@ -618,7 +618,7 @@
             # pkgs/sandbox-image was retired).
             default = sandboxOsImage.image;
 
-            # `nix build .#options-doc` -> the agentSandbox.* option reference as JSON,
+            # `nix build .#options-doc` -> the scooter.* option reference as JSON,
             # rendered FROM the module system (nixosOptionsDoc), so the published reference can
             # never drift from the code. JSON rather than CommonMark on purpose: the docs build
             # splits it into one page PER NAMESPACE (so mkdocs search scores each separately
@@ -626,7 +626,7 @@
             # See docs/gen_options.py.
             options-doc =
               (pkgs.nixosOptionsDoc {
-                options = { agentSandbox = (mkPlatform { }).options.agentSandbox; };
+                options = { scooter = (mkPlatform { }).options.scooter; };
                 warningsAreErrors = false;
                 # Repo-relative declaration links instead of /nix/store paths.
                 transformOptions = opt: opt // {
@@ -642,19 +642,19 @@
               }).optionsJSON;
 
             # `nix build .#db-spec` -> the lib/sql artifacts RENDERED from the
-            # `agentSandbox.db` module option (#606): the ownership manifest and atlas.hcl's
+            # `scooter.db` module option (#606): the ownership manifest and atlas.hcl's
             # per-database envs. `just db-generate` copies these into lib/sql and
             # `just db-generate-check` fails CI on drift — so "which databases exist" and
             # "who owns which table" have exactly one source. (The database LIST is not a
             # third artifact: owners.toml's top-level sections are it.)
             #
-            # Evaluated with an EMPTY agentSandbox config: the in-tree declarations are
+            # Evaluated with an EMPTY scooter config: the in-tree declarations are
             # unconditional, so the artifacts don't depend on a deployment's feature
             # flags. (A contrib declaring tables inside `mkIf cfg.enable` — stage 2 of
             # #606 — is what makes them deployment-shaped; that is the point at which
             # an out-of-tree deployment regenerates its own.)
             db-spec =
-              let spec = (mkPlatform { }).config.agentSandbox.dbSpec; in
+              let spec = (mkPlatform { }).config.scooter.dbSpec; in
               pkgs.runCommand "db-spec" {
                 ownersToml = spec.ownersToml;
                 atlasHcl = spec.atlasHcl;
@@ -874,14 +874,14 @@
           });
 
         # The built-in agent skills as a `filename -> content` attrset, for a host
-        # flake to thread into `agentSandbox.agent.skills` (so a custom deploy ships
+        # flake to thread into `scooter.agent.skills` (so a custom deploy ships
         # the same skills the default render does). e.g.
-        #   agentSandbox.agent.skills = scooter.lib.scooterSkills;
+        #   scooter.agent.skills = scooter.lib.scooterSkills;
         lib.scooterSkills = scooterSkills;
 
         # kubenix modules: SandboxTemplate / SandboxWarmPool / Sandbox generators
         # (+ gateway/broker/webhooks Deployments, post-PoC). See modules/.
-        kubenixModules.agentSandbox = ./modules;
+        kubenixModules.scooter = ./modules;
         # The bare platform module — image refs default to the floating
         # `${registryPrefix}<name>:latest`. Import this if you want to pin images
         # yourself. `platform` keeps the raw module; `default` (below) adds the
@@ -893,12 +893,12 @@
         # reproducible pin out of the box — same content → same tag → no needless pod
         # roll — instead of a floating :latest. The tags are x86_64-pinned pure text
         # (see ghcrImages), so this module stays system-independent. Override any
-        # agentSandbox.*Image / registryPrefix to ship elsewhere.
+        # scooter.*Image / registryPrefix to ship elsewhere.
         kubenixModules.default = { lib, ... }: {
           imports = [ ./modules/platform.nix ];
           # Per-leaf mkDefault so a consumer's explicit override of any single image
-          # still wins (a set-level mkDefault would clobber sibling agentSandbox config).
-          config.agentSandbox = {
+          # still wins (a set-level mkDefault would clobber sibling scooter config).
+          config.scooter = {
             agentHostImage = lib.mkDefault ghcrImages.agentHost;
             sandboxImage = lib.mkDefault ghcrImages.sandboxOs;
             uiImage = lib.mkDefault ghcrImages.ui;

@@ -8,7 +8,7 @@ from the modules and nothing generated is ever committed.
 WHY SPLIT. The first cut published one 4,400-line CommonMark page. mkdocs indexes that as a
 SINGLE search document, so searching "byoc" scored the whole page rather than the option: you
 got "Configuration options" and then had to ctrl-F. One page per top-level namespace
-(agentSandbox.byoc, .agent, .broker, …) gives each namespace its own search document, its own
+(scooter.byoc, .agent, .broker, …) gives each namespace its own search document, its own
 deep links, and a table of contents.
 """
 
@@ -27,12 +27,12 @@ OUT_DIR = os.environ.get("SCOOTER_OPTIONS_OUT", "docs/reference/options")
 # navigate than a short shared list).
 MIN_PAGE_OPTIONS = 3
 
-PREFIX = "agentSandbox."
+PREFIX = "scooter."
 
 
 def namespace_of(name: str) -> str:
-    """The top-level namespace: agentSandbox.byoc.ingress.host -> byoc. Options directly under
-    agentSandbox (e.g. agentSandbox.namespace) group as "core"."""
+    """The top-level namespace: scooter.byoc.ingress.host -> byoc. Options directly under
+    scooter (e.g. scooter.namespace) group as "core"."""
     rest = name[len(PREFIX):] if name.startswith(PREFIX) else name
     parts = rest.split(".")
     return parts[0] if len(parts) > 1 else "core"
@@ -104,7 +104,7 @@ def main() -> None:
         groups["misc"].update(misc)
 
     for ns, opts in sorted(groups.items()):
-        title = "Core" if ns == "core" else ("Other options" if ns == "misc" else f"`agentSandbox.{ns}`")
+        title = "Core" if ns == "core" else ("Other options" if ns == "misc" else f"`scooter.{ns}`")
         lines = [
             f"# {title}",
             "",
@@ -120,7 +120,7 @@ def main() -> None:
     index = [
         "# Configuration options",
         "",
-        f"Every `agentSandbox.*` option ({len(options)} total), generated from the kubenix "
+        f"Every `scooter.*` option ({len(options)} total), generated from the kubenix "
         "modules via `nixosOptionsDoc` — this reference cannot drift from the code.",
         "",
         "Type to filter; click an option to jump to its full entry.",

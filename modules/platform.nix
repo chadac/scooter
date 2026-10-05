@@ -10,10 +10,33 @@
 # Per-conversation Sandboxes are created at runtime by the agent-host via the
 # kube API (not here) — see modules/conversation.nix for that shape.
 
-{ kubenix, config, lib, ... }:
+{ kubenix, config, options, lib, ... }:
 
 let
-  cfg = config.agentSandbox;
+  cfg = config.scooter;
+
+  # THE OLD ROOT. `agentSandbox.*` was renamed to `scooter.*` (#710), and the sink
+  # option below is declared for one reason: so a manifest still on the old prefix
+  # gets THIS message instead of the module system's bare "option does not exist",
+  # which says nothing about where the option went.
+  #
+  # A `throw` rather than an `assertions` block because kubenix's module system has
+  # no NixOS `assertions` option — an assertions block there evaluates as a plain
+  # attribute and silently checks nothing (the repo's convention; see db-spec.nix).
+  # Forced from the namespace name below: the one leaf every render produces, so the
+  # guard cannot be bypassed by a deployment that renders something else.
+  legacyRoot = v:
+    if !options.agentSandbox.isDefined then v
+    else throw ''
+      This config defines `agentSandbox.*` (in ${lib.concatStringsSep ", " options.agentSandbox.files}),
+      which no longer exists: the platform's option root is now `scooter.*` (#710).
+
+      It is a prefix swap and nothing else moved — `agentSandbox.broker.enable`
+      is `scooter.broker.enable`, `agentSandbox.sandboxPod.extraEnv` is
+      `scooter.sandboxPod.extraEnv`. The old name read as if the platform were a
+      property of the agent's sandbox, when `sandboxPod` is one child among the
+      services.
+    '';
   # The ingress targets the UI when it's deployed (the UI proxies the API on the
   # same origin); otherwise it targets the agent-host API directly.
   ingressBackend = if cfg.ui.enable then "ui" else "agent-host";
@@ -98,7 +121,7 @@ let
   # DERIVED from contrib/, not listed here: the .md lives next to the code it
   # documents and its contrib's NAME is the gate, so no table here can fall out of
   # date with the contrib set. Why: PR #618.
-  bcfg = config.agentSandbox.broker;
+  bcfg = config.scooter.broker;
   contribSkills = import ../contrib/skills.nix { inherit lib; };
 
   # The contribs that raise human approvals -> how the agent-host reaches their verbs.
@@ -110,7 +133,7 @@ let
   gateOf = name:
     if (bcfg.${name} or null) ? enable then bcfg.${name}.enable
     else throw ("contrib ${name} ships skills, which are gated on "
-      + "agentSandbox.broker.${name}.enable — but no such option exists. "
+      + "scooter.broker.${name}.enable — but no such option exists. "
       + "See contrib/README.md.");
   gatedSkills = lib.concatMapAttrs
     (name: skills: lib.optionalAttrs (gateOf name) skills)
@@ -124,13 +147,28 @@ in
   # unauthenticated test webhook) must be opted into by a TEST manifest, so a deploy that never
   # imports it cannot enable them by setting a stray boolean. See modules/testing.nix.
   # The contribs' own deployment modules are DERIVED from contrib/, not listed:
-  # each declares its own agentSandbox.broker.<name> options and renders its own
+  # each declares its own scooter.broker.<name> options and renders its own
   # manifests, so adding an integration edits no platform file. Same derivation as
   # the skills above. Why: #599.
   imports = [ kubenix.modules.k8s ./db-spec.nix ./postgres.nix ./db-migrate.nix ./broker.nix ./sandbox-pod.nix ./webhooks.nix ./byoc.nix ./scheduler.nix ./conversation-controller.nix ./warm-store-controller.nix ./legacy-state-migration.nix ./event-backfill.nix ]
     ++ import ../contrib/deployment-modules.nix { inherit lib; };
 
-  options.agentSandbox = with lib; {
+  # Declared ONLY so a definition on the old root matches something and reaches
+  # `legacyRoot`'s message above. `internal` + `visible = false`, so it is absent from
+  # the option reference (docs render `options.scooter` alone anyway) and nothing but
+  # the guard ever reads it. Delete once no deployment can plausibly be on the old
+  # prefix. Why: #710.
+  # NO `default`: a default is injected as a definition (mkOptionDefault), which would
+  # make `isDefined` true for every render. Nothing reads the value, so there is
+  # nothing to default.
+  options.agentSandbox = lib.mkOption {
+    type = lib.types.raw;
+    internal = true;
+    visible = false;
+    description = "Removed — the platform's option root is `scooter.*` (#710).";
+  };
+
+  options.scooter = with lib; {
     namespace = mkOption {
       type = types.str;
       default = "agent-sandbox";
@@ -290,7 +328,7 @@ in
             default = false;
             description = ''
               Mark this preset as the size a new sandbox comes up with. EXACTLY ONE
-              preset must set it (see agentSandbox.defaultSandboxSizeName), so the
+              preset must set it (see scooter.defaultSandboxSizeName), so the
               default lives beside the numbers it selects rather than in a separate
               option naming a key that has to be kept in sync.
             '';
@@ -350,12 +388,12 @@ in
         else if lib.length flagged == 1 then lib.head flagged
         else if flagged == [ ] then
           throw ''
-            No preset in agentSandbox.sandboxSizes sets `default = true`, so a new
+            No preset in scooter.sandboxSizes sets `default = true`, so a new
             sandbox has no size to come up with. Mark exactly one (have: ${names}).
           ''
         else
           throw ''
-            ${toString (lib.length flagged)} presets in agentSandbox.sandboxSizes set
+            ${toString (lib.length flagged)} presets in scooter.sandboxSizes set
             `default = true` (${lib.concatStringsSep ", " flagged}); exactly one may.
           '';
       description = ''
@@ -604,13 +642,13 @@ in
         enable = mkOption {
           type = types.bool;
           default = cfg.byoc.enable;
-          defaultText = literalExpression "config.agentSandbox.byoc.enable";
+          defaultText = literalExpression "config.scooter.byoc.enable";
           description = ''
             Bring-your-own-Claude remote agents (the Settings UI + agent-host mint/status routes).
             Defaults to `byoc.enable`: the controller and the host-side routes are two halves of
             ONE feature — enabling the controller without these leaves a Settings page that 404s,
             and enabling these without the controller leaves a one-liner that dials nothing. One
-            knob (`agentSandbox.byoc.enable = true`) turns on a working whole.
+            knob (`scooter.byoc.enable = true`) turns on a working whole.
           '';
         };
         joinSecret = mkOption {
@@ -955,7 +993,7 @@ in
         '';
       };
       # The webhooks receiver has its own ingress options under
-      # `agentSandbox.webhooks.ingress` (separate host, NO auth) — see webhooks.nix.
+      # `scooter.webhooks.ingress` (separate host, NO auth) — see webhooks.nix.
     };
   };
 
@@ -963,12 +1001,12 @@ in
     # The agent_host database: the tables agent-host OWNS (conversation_jobs). The
     # provisioning Job creates the db + an `agent_host` role that owns it, and writes the
     # password to `agent-pg-agent-host`.
-    agentSandbox.postgres.consumers.agent-host = { db = "agent_host"; user = "agent_host"; };
+    scooter.postgres.consumers.agent-host = { db = "agent_host"; user = "agent_host"; };
 
-    # The tables the `agent_host` database holds (agentSandbox.db, #606). Declared
+    # The tables the `agent_host` database holds (scooter.db, #606). Declared
     # here because this is the module that registers the consumer; owners.toml, the
     # migrator's database list and the GRANTs below are generated from it.
-    agentSandbox.db.agent_host = {
+    scooter.db.agent_host = {
       owner = "agent-host";
       tables = {
         conversation_jobs = {
@@ -1003,18 +1041,18 @@ in
     # owns nothing — granted SELECT on EXACTLY the tables the list reads, nothing else (notably
     # NOT conversation_events, the transcripts), and pinned read-only at the server.
     #
-    # The table set is DERIVED from the `agentSandbox.db` spec: readers → SELECT grants,
+    # The table set is DERIVED from the `scooter.db` spec: readers → SELECT grants,
     # writers → read-write grants, so the grant can't drift from the declaration.
     #
     # This used to read lib/sql/owners.toml with `builtins.fromTOML` — the manifest was
     # the source and the grant the rendering. #606 inverted it: the option is the source
     # and owners.toml is now generated FROM it, so a contrib that declares a table also
     # gets its grants with no second edit.
-    # grantsFor derives one consumer's per-database grants from the `agentSandbox.db` spec: a table
+    # grantsFor derives one consumer's per-database grants from the `scooter.db` spec: a table
     # listing it under `readers` becomes SELECT, under `writers` becomes read-write. Shared by the
     # consumers below so a second consumer cannot drift from the first by copy-paste — the bug this
     # replaces was five hand-maintained lists that nothing checked against each other (#606).
-    agentSandbox.postgres.readers =
+    scooter.postgres.readers =
       let
         tablesWhere = consumer: field: db: lib.attrNames (lib.filterAttrs
           (_t: rule: builtins.elem consumer rule.${field})
@@ -1044,7 +1082,9 @@ in
     # whole `deployments` attrset (dropping agent-host). mkMerge deep-merges.
     kubernetes.resources = lib.mkMerge [
     {
-      namespaces.${cfg.namespace} = {
+      # legacyRoot: the #710 rename guard, forced here because every render produces
+      # this name. It returns the namespace unchanged unless `agentSandbox.*` is set.
+      namespaces.${legacyRoot cfg.namespace} = {
         metadata.name = cfg.namespace;
       };
 
@@ -1306,7 +1346,7 @@ in
                   # public-keys.auth.elb.<region>.amazonaws.com) — assert rather
                   # than silently guessing.
                   (assert lib.assertMsg (cfg.auth.albRegion != null)
-                    "agentSandbox.auth.albVerify = true requires agentSandbox.auth.albRegion to be set (the ALB public-key endpoint is region-specific).";
+                    "scooter.auth.albVerify = true requires scooter.auth.albRegion to be set (the ALB public-key endpoint is region-specific).";
                     { name = "AUTH_ALB_VERIFY"; value = "1"; })
                 ++ lib.optional cfg.auth.albVerify
                   { name = "AUTH_ALB_REGION"; value = cfg.auth.albRegion; }
@@ -1767,7 +1807,7 @@ in
                 # the deployment looks healthy while producing no telemetry at all. Fail
                 # at eval instead.
                 (assert lib.assertMsg (cfg.observability.browserTelemetry.collectorUrl != null)
-                  "agentSandbox.observability.browserTelemetry.enable = true requires observability.browserTelemetry.collectorUrl to be set (e.g. http://alloy-singleton.monitoring.svc.cluster.local:4318 for the Grafana k8s-monitoring chart). There is no safe default: a wrong collector URL discards telemetry silently.";
+                  "scooter.observability.browserTelemetry.enable = true requires observability.browserTelemetry.collectorUrl to be set (e.g. http://alloy-singleton.monitoring.svc.cluster.local:4318 for the Grafana k8s-monitoring chart). There is no safe default: a wrong collector URL discards telemetry silently.";
                   {
                     name = "OTEL_COLLECTOR_URL";
                     value = cfg.observability.browserTelemetry.collectorUrl;

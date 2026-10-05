@@ -20,11 +20,11 @@
 { config, lib, ... }:
 
 let
-  cfg = config.agentSandbox;
+  cfg = config.scooter;
   bcfg = cfg.byoc;
 in
 {
-  options.agentSandbox.byoc = with lib; {
+  options.scooter.byoc = with lib; {
     enable = mkOption {
       type = types.bool;
       default = false;
@@ -50,7 +50,7 @@ in
     joinSecretName = mkOption {
       type = types.str;
       default = cfg.agent.remoteAgent.joinSecret;
-      defaultText = literalExpression "config.agentSandbox.agent.remoteAgent.joinSecret";
+      defaultText = literalExpression "config.scooter.agent.remoteAgent.joinSecret";
       description = ''
         Secret holding key `secret` — the HMAC key for join tokens. The agent-host MINTS with the
         same key the controller VERIFIES with, so by default this is literally the same Secret as
@@ -72,7 +72,7 @@ in
       host = mkOption {
         type = types.str;
         default = cfg.ingress.host;
-        defaultText = literalExpression "config.agentSandbox.ingress.host";
+        defaultText = literalExpression "config.scooter.ingress.host";
         example = "scooter.example.com";
         description = ''
           Public hostname for the BYOC connect path (/byoc). Defaults to the UI's own ingress
@@ -115,9 +115,9 @@ in
   # while everything else stays gated on `enable`. The gated body keeps its own
   # indentation so this wrapper is the whole diff.
   config = lib.mkMerge [
-  # The tables the `byoc` database holds (agentSandbox.db, #606).
+  # The tables the `byoc` database holds (scooter.db, #606).
   {
-    agentSandbox.db.byoc = {
+    scooter.db.byoc = {
       owner = "byoc-controller";
       tables = {
         remote_agents = {
@@ -226,7 +226,7 @@ in
 
     # Register with the shared Postgres: the provisioning Job creates the `byoc` database + role
     # (secret agent-pg-byoc, referenced above).
-    agentSandbox.postgres.consumers.byoc = { db = "byoc"; user = "byoc"; };
+    scooter.postgres.consumers.byoc = { db = "byoc"; user = "byoc"; };
   })
   ];
 }

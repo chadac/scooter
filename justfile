@@ -536,7 +536,7 @@ check-conv-token-vector:
 db_envs := `sed -n 's/^\[\([a-z_][a-z_0-9]*\)\]$/\1/p' lib/sql/owners.toml | tr "\n" " "`
 
 # Regenerate everything derived from the schema spec: the lib/sql artifacts rendered
-# from the `agentSandbox.db` option (owners.toml, atlas.hcl) and the
+# from the `scooter.db` option (owners.toml, atlas.hcl) and the
 # per-language ORM bindings (@scooter/schema, scooter_schema) from schema.sql.
 # Commit the result.
 db-generate:
@@ -544,14 +544,14 @@ db-generate:
 
 # CI drift guard: regenerate and fail if the committed output differs — a spec or
 # schema change that forgets to regenerate fails the build (like check-lockfiles).
-# Covers BOTH sources: an `agentSandbox.db` edit that does not refresh owners.toml /
+# Covers BOTH sources: an `scooter.db` edit that does not refresh owners.toml /
 # atlas.hcl fails here, same as a schema.sql edit that does not
 # refresh the ORM bindings.
 db-generate-check:
     scripts/db-generate.sh
     @git diff --exit-code -- lib/ts/scooter-schema/src lib/py/scooter-schema/src \
       lib/sql/owners.toml lib/sql/atlas.hcl \
-      || (echo "❌ generated drift: the agentSandbox.db spec or lib/sql changed without regenerating. Run 'nix develop -c just db-generate' and commit the result." && exit 1)
+      || (echo "❌ generated drift: the scooter.db spec or lib/sql changed without regenerating. Run 'nix develop -c just db-generate' and commit the result." && exit 1)
     @echo "✅ generated spec artifacts + ORM bindings are in sync"
 
 # Author migrations from schema.sql for every database. Only databases whose

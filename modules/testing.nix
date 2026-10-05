@@ -19,16 +19,16 @@
 #   - every test-only affordance is in one file, so "what does a test change?" has one answer.
 #
 # Import it from a test manifest ONLY:
-#   platform = mkPlatform { imports = [ ./modules/testing.nix ]; agentSandbox.testing.enable = true; … }
+#   platform = mkPlatform { imports = [ ./modules/testing.nix ]; scooter.testing.enable = true; … }
 
 { config, lib, ... }:
 
 let
-  cfg = config.agentSandbox;
+  cfg = config.scooter;
   tcfg = cfg.testing;
 in
 {
-  options.agentSandbox.testing = with lib; {
+  options.scooter.testing = with lib; {
     enable = mkOption {
       type = types.bool;
       default = false;
@@ -62,7 +62,7 @@ in
   config = lib.mkIf tcfg.enable {
     # mkForce, because these deliberately override whatever the production modules computed.
     # Anything a test needs to CHANGE about a real deploy belongs here and only here.
-    agentSandbox = {
+    scooter = {
       fakeAgent = lib.mkForce tcfg.fakeAgent;
       webhooks.testWebhook = lib.mkForce tcfg.testWebhook;
       # SMALL sandboxes. The production default is Guaranteed QoS 2cpu/4Gi PER
@@ -87,7 +87,7 @@ in
         labels."app.kubernetes.io/component" = "testing";
       };
       data = {
-        warning = "This namespace was rendered with agentSandbox.testing.enable = true. NOT a production deploy.";
+        warning = "This namespace was rendered with scooter.testing.enable = true. NOT a production deploy.";
         fakeAgent = lib.boolToString tcfg.fakeAgent;
         testWebhook = lib.boolToString tcfg.testWebhook;
       };

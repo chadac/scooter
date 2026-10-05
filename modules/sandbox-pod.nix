@@ -23,7 +23,7 @@ let
   inherit (lib) mkOption types literalExpression;
 in
 {
-  options.agentSandbox.sandboxPod = {
+  options.scooter.sandboxPod = {
     extraEnv = mkOption {
       type = types.listOf (types.attrsOf types.anything);
       default = [ ];

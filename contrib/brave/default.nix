@@ -3,7 +3,7 @@
     src = ./.;
     services.broker.enable = true;
 
-    # The option tree an operator configures (`agentSandbox.broker.brave.*`) and the
+    # The option tree an operator configures (`scooter.broker.brave.*`) and the
     # broker env it renders. Why it lives here and not in modules/broker.nix: #599.
     deployment.module = ./deployment.nix;
 

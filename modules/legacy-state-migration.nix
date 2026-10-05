@@ -17,7 +17,7 @@
 { config, lib, ... }:
 
 let
-  cfg = config.agentSandbox;
+  cfg = config.scooter;
   mcfg = cfg.legacyStateMigration;
   ns = cfg.namespace;
 
@@ -52,7 +52,7 @@ let
   '';
 in
 {
-  options.agentSandbox.legacyStateMigration = with lib; {
+  options.scooter.legacyStateMigration = with lib; {
     enable = mkEnableOption ''
       the one-shot legacy-state migration Job (old per-pod RWO PVCs -> shared mirror). Turn ON for
       the cutover, run once (with agent-host scaled to 0), then turn OFF. See the module header'';

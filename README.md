@@ -18,7 +18,7 @@ API; nothing runs as an in-pod agent.
 > agent-hosts with controller-assigned conversations, suspend/resume with history
 > restore, bring-your-own-Claude (device-key auth, concurrent conversations), a
 > provider-aware model catalog, webhooks/scheduler/broker integrations, and a working
-> UI. Enable BYOC with one option: `agentSandbox.byoc.enable = true`.
+> UI. Enable BYOC with one option: `scooter.byoc.enable = true`.
 >
 > **Docs:** <https://chadac.github.io/scooter/> — including the full
 > [configuration reference](https://chadac.github.io/scooter/reference/options/),

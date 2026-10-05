@@ -269,7 +269,7 @@ in
             option the platform declares, because a contrib with both a broker and a
             webhooks half still has ONE set of deployment knobs. It reaches into a
             service's Deployment through that service's seams
-            (agentSandbox.broker.extraEnv and friends) and renders anything of its
+            (scooter.broker.extraEnv and friends) and renders anything of its
             own straight into kubernetes.resources.
 
             Gets `{ config, lib, ... }` and NOTHING built: contrib/deployment-modules.nix
@@ -278,7 +278,7 @@ in
             arg is an eval error. Same constraint as `sandbox.module` (#607) and
             `skills` (#618), for the same reason.
 
-            A contrib shipping `skills` must declare `agentSandbox.broker.<name>.enable`
+            A contrib shipping `skills` must declare `scooter.broker.<name>.enable`
             here — that option IS the gate platform.nix ships its skills on.
           '';
         };
@@ -301,7 +301,7 @@ in
         contrib manifest into the UI image. Where the contrib's verbs actually live
         on the broker is DEPLOYMENT config — an operator can run the same contrib
         against a differently-mounted broker — so it is declared by the contrib's
-        deployment module as `agentSandbox.approvals.<name>`, which is also already
+        deployment module as `scooter.approvals.<name>`, which is also already
         gated on that deployment enabling the contrib.
 
         Neither fact is stated twice; they simply belong to different lifecycles.
@@ -339,7 +339,7 @@ in
         Agent skills documenting this contrib, keyed by the filename the agent sees.
 
         Gated on THIS CONTRIB'S NAME: they ship only where
-        `agentSandbox.broker.<name>.enable` is true, so a contrib shipping skills
+        `scooter.broker.<name>.enable` is true, so a contrib shipping skills
         must have a broker option of the same name (platform.nix throws otherwise).
         A skill for an integration that is off teaches the agent to call a route
         that 404s, and then to read that 404 as the feature being broken.

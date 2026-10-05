@@ -3,7 +3,7 @@
     src = ./.;
     services.broker.enable = true;
 
-    # The option tree an operator configures (`agentSandbox.broker.duckduckgo.enable`).
+    # The option tree an operator configures (`scooter.broker.duckduckgo.enable`).
     deployment.module = ./deployment.nix;
 
     # No `ui` and no `skills`, for the reasons in contrib/brave/default.nix. What is

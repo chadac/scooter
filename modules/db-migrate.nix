@@ -21,7 +21,7 @@
 { config, lib, kubenix, ... }:
 
 let
-  cfg = config.agentSandbox;
+  cfg = config.scooter;
   mcfg = cfg.dbMigrate;
   pcfg = cfg.postgres;
   ns = cfg.namespace;
@@ -29,7 +29,7 @@ let
   # The databases that have an Atlas schema here AND are provisioned in this deploy
   # (postgres.nix only lists a consumer when its feature is enabled).
   #
-  # The database set comes from `agentSandbox.db` (#606) — it used to be a hardcoded
+  # The database set comes from `scooter.db` (#606) — it used to be a hardcoded
   # literal here, a second list that had to be kept in step with lib/sql by hand.
   #
   # The Job iterates the CONSUMER KEY, which is not always the database name: agent-host
@@ -157,7 +157,7 @@ let
   jobName = kubenix.lib.k8s.mkNameHash { name = "agent-db-migrate"; data = jobSpec; };
 in
 {
-  options.agentSandbox.dbMigrate = with lib; {
+  options.scooter.dbMigrate = with lib; {
     enable = mkOption {
       type = types.bool;
       default = true;

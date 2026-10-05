@@ -11,11 +11,11 @@
 
 let
   inherit (lib) mkOption types;
-  bcfg = config.agentSandbox.broker;
+  bcfg = config.scooter.broker;
   scfg = bcfg.brave;
 in
 {
-  options.agentSandbox.broker.brave = {
+  options.scooter.broker.brave = {
     enable = mkOption {
       type = types.bool;
       default = false;
@@ -51,7 +51,7 @@ in
   # on, so a deployment that sets `enable` and forgets the secret gets a broker with no
   # brave provider and an agent with no brave_web_search — never a tool that 401s.
   config = lib.mkIf (bcfg.enable && scfg.enable) {
-    agentSandbox.broker.extraEnv = [
+    scooter.broker.extraEnv = [
       {
         name = "BRAVE_SEARCH_API_KEY";
         valueFrom.secretKeyRef = {

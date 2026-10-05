@@ -14,12 +14,12 @@
 
 let
   inherit (lib) mkOption types literalExpression;
-  cfg = config.agentSandbox;
+  cfg = config.scooter;
   bcfg = cfg.broker;
   acfg = bcfg.aws;
 in
 {
-  options.agentSandbox.broker.aws = {
+  options.scooter.broker.aws = {
     # Also THE GATE for this contrib's skills: platform.nix ships scooter-aws.md
     # only where this is true, because an agent taught to call /aws/* on a broker
     # that never mounted those routes reads the 404 as the feature being broken.
@@ -89,7 +89,7 @@ in
         needs a human. Checked AFTER the ceiling, so auto ⊆ allowed by construction.
 
         Per-account `approvers` are seeded into OpenFGA at startup when
-        agentSandbox.broker.fga.enable is set — the authorization backend is
+        scooter.broker.fga.enable is set — the authorization backend is
         substrate and lives there, not here (#595).
 
         Example:
@@ -124,14 +124,14 @@ in
       # Writer is `broker`: the contrib runs inside the broker image and writes
       # through the broker's own database role. It declares no `owner` — that is
       # modules/broker.nix's, which owns the database.
-      agentSandbox.db.broker.tables.permission_requests = { writers = [ "broker" ]; };
+      scooter.db.broker.tables.permission_requests = { writers = [ "broker" ]; };
     }
 
     # Everything else IS a deployment property, and gated on the BROKER being
     # deployed as well as aws: without the broker there is no container to inject env
     # into, and the ConfigMap below would render for a deployment that runs no broker.
     (lib.mkIf (bcfg.enable && acfg.enable) {
-      agentSandbox.broker = {
+      scooter.broker = {
         extraEnv = [
           { name = "AWS_ENABLED"; value = "true"; }
           { name = "AWS_REGION"; value = acfg.region; }
@@ -172,7 +172,7 @@ in
       # has not mounted. pendingPath is set because these requests MUST survive a
       # rollout: the agent is blocked on the answer, and an approval window that
       # vanishes leaves a user who cannot act and an agent that never proceeds.
-      agentSandbox.approvals.aws = {
+      scooter.approvals.aws = {
         brokerPrefix = "/aws/aws";
         pendingPath = "/aws/aws/pending";
       };
@@ -181,7 +181,7 @@ in
       # ~/.aws/config from this file (one [profile <name>] per account). Reaches
       # every sandbox through modules/sandbox-pod.nix, so neither the Nix mirror
       # (modules/conversation.nix) nor the agent-host provisioner spells aws.
-      agentSandbox.sandboxPod = {
+      scooter.sandboxPod = {
         extraVolumeMounts = [
           { name = "aws-accounts"; mountPath = "/etc/agent-sandbox/aws"; readOnly = true; }
         ];

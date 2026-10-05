@@ -27,7 +27,7 @@ services.
 contrib/<name>/
   pyproject.toml            # package + entry points (both groups if it spans services); hatchling backend
   default.nix               # the contrib MODULE: declares `contribs.<name>` (see schema below)
-  deployment.nix            # optional: a KUBENIX module -> declares agentSandbox.* options
+  deployment.nix            # optional: a KUBENIX module -> declares scooter.* options
   sandbox.nix               # optional: a NIXOS module  -> goes into the sandbox-os image
   scooter_contrib_<name>/
     __init__.py             # neutral; imports NEITHER broker nor webhooks
@@ -41,13 +41,13 @@ thing most easily got backwards:
 
 | file | module system | declares / contributes |
 |---|---|---|
-| `default.nix` | the `contribs` eval (`contrib/all-modules.nix`) | `contribs.<name>`: `src`, `services.*`, `ui`, `skills`, `approvals`, and pointers to the two halves below. Touches **no** `agentSandbox.*` option. |
-| `deployment.nix` | kubenix, via `modules/platform.nix` | its own `agentSandbox.broker.<name>.*` options, and the manifests/env they render |
+| `default.nix` | the `contribs` eval (`contrib/all-modules.nix`) | `contribs.<name>`: `src`, `services.*`, `ui`, `skills`, `approvals`, and pointers to the two halves below. Touches **no** `scooter.*` option. |
+| `deployment.nix` | kubenix, via `modules/platform.nix` | its own `scooter.broker.<name>.*` options, and the manifests/env they render |
 | `sandbox.nix` | NixOS, via `contrib/sandbox-modules.nix` | packages, systemd units, activation — anything in the agent's sandbox image |
 
-`default.nix` cannot declare an `agentSandbox.*` option itself: the `contribs` eval is a
+`default.nix` cannot declare an `scooter.*` option itself: the `contribs` eval is a
 **separate** `evalModules` (#615) whose option set is `contribs.*` only, so there is no
-`agentSandbox` there to declare into. That separation is also why the halves are handed
+`scooter` there to declare into. That separation is also why the halves are handed
 over as paths — a value stored and passed to the other system's `imports`, never
 evaluated in this one.
 
@@ -163,13 +163,13 @@ the wrong one. A contrib with only a deployment half still gets its own
 `deployment.nix`, even when that is two options and one env entry.
 
 `modules/platform.nix` imports it, so it can declare its own options
-(`agentSandbox.broker.aws.*`) and render its own `kubernetes.resources`. It
+(`scooter.broker.aws.*`) and render its own `kubernetes.resources`. It
 reaches a service's existing Deployment through that service's seams rather than
 redeclaring the container:
 
 | what it needs to add | the seam |
 |---|---|
-| env on the broker container | `agentSandbox.broker.extraEnv` |
+| env on the broker container | `scooter.broker.extraEnv` |
 | a mounted ConfigMap | `broker.extraVolumes` + `broker.extraVolumeMounts` |
 | a rollout when its config changes | `broker.podAnnotations` (hash the ConfigMap) |
 | an IRSA / cloud identity annotation | `broker.serviceAccountAnnotations` |
@@ -183,7 +183,7 @@ returns the enabled contribs' modules — and, for the same reason, that eval ge
 Two consequences worth knowing:
 
 - **This is where a contrib's skills gate comes from.** `skills` ships on
-  `agentSandbox.broker.<name>.enable` (below), and this module is what declares
+  `scooter.broker.<name>.enable` (below), and this module is what declares
   that option. A contrib shipping skills and no deployment module has no gate, and
   `platform.nix` throws.
 - **An option that does not exist is an eval error**, so a manifest configuring an
@@ -191,7 +191,7 @@ Two consequences worth knowing:
 - **The same cuts the other way for a contrib READING a sibling's option.** A
   deployment module may touch any part of the tree — the module system has no notion
   of ownership, and a contrib is free to declare an option another one also declares.
-  But `config.agentSandbox.broker.kagi.enable` resolves only where kagi was also
+  But `config.scooter.broker.kagi.enable` resolves only where kagi was also
   built, so a bare cross-contrib reference breaks every image that ships one without
   the other. You *can* work around it (guard with `?`, or declare the option
   yourself); prefer not needing to. A constraint that wants two contribs in scope at
@@ -219,7 +219,7 @@ contribs.aws = {
 ```
 
 **The gate is the contrib's NAME** — a skill ships iff
-`agentSandbox.broker.<name>.enable` is true in the *deployment*, which is a
+`scooter.broker.<name>.enable` is true in the *deployment*, which is a
 different question from whether the contrib is enabled in this source tree. A
 contrib shipping skills therefore needs a broker option of the same name;
 `platform.nix` throws at eval if there isn't one, rather than shipping a skill

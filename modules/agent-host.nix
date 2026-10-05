@@ -15,7 +15,7 @@
 
 let
   inherit (lib) mkOption types;
-  cfg = config.agentSandbox;
+  cfg = config.scooter;
 in
 {
   config = {

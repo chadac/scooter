@@ -22,7 +22,7 @@ function tablesInSchema(db: string): string[] {
 }
 
 /**
- * The database list as GENERATED from the `agentSandbox.db` module option (#606) —
+ * The database list as GENERATED from the `scooter.db` module option (#606) —
  * owners.toml's top-level sections are that list, so there is no separate file.
  */
 const generatedDatabases = Object.keys(manifest);

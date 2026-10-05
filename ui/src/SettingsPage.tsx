@@ -613,7 +613,7 @@ function ClaudeAgentSection() {
           <pre
             data-testid="claude-agent-enable-sample"
             className="overflow-x-auto rounded bg-muted/50 p-3 text-xs leading-relaxed"
-          >{`agentSandbox.byoc.enable = true;`}</pre>
+          >{`scooter.byoc.enable = true;`}</pre>
           <p className="text-xs text-muted-foreground">
             This enables BYOC: the controller, the{" "}
             <span className="font-mono">/byoc</span> connect path on your existing ingress host,
