@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# check-contrib-coverage.sh — contrib/contribs.nix must list every contrib, and a
-# contrib's files must be the ones the evals look for.
+# check-contrib-coverage.sh — contrib/all-modules.nix must import every contrib, and
+# a contrib's files must be the ones the evals look for.
 #
-# Both failures are silent. A contrib missing from contribs.nix is never built and
-# never tested (#585). A contrib half under the WRONG FILENAME is worse: the
-# platform half is found by convention (contrib/platform-modules.nix looks for
-# <name>/platform.nix), so `deployment.nix` or a typo'd `platfrom.nix` is simply
-# never imported — the options vanish and every manifest that sets them fails with
-# "option does not exist", pointing at the manifest rather than at the file. Why:
-# #585, #711.
+# Both failures are silent. A contrib missing from all-modules.nix is never built and
+# never tested (#585). A contrib half under the WRONG FILENAME is worse: the platform
+# half is found beside the declaration (contrib/platform-modules.nix looks for
+# <name>/platform.nix), so a leftover `deployment.nix` or a typo'd `platfrom.nix` is
+# simply never imported — the options vanish, and every manifest that sets them fails
+# with "option does not exist", pointing at the manifest rather than at the file.
+# Why: #585, #711.
 #
 # Lives here, not in Nix, because an eval-time check would need the readDir the
-# explicit list exists to avoid.
+# explicit import list exists to avoid.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit
 
@@ -23,20 +23,22 @@ mapfile -t on_disk < <(
   find contrib -mindepth 2 -maxdepth 2 -name contrib.nix -printf '%h\n' \
     | sed 's|^contrib/||' | sort -u
 )
-# Contribs contribs.nix lists: the `<name> = { dir = ./<name>; ...`  rows.
-mapfile -t listed < <(
-  grep -oE '^  [a-z0-9-]+ = \{ dir = \./[a-z0-9-]+;' contrib/contribs.nix \
-    | awk '{print $1}' | sort -u
+# Contribs all-modules.nix imports: the relative paths in its `imports` list,
+# minus the schema module itself.
+mapfile -t imported < <(
+  sed -n '/imports = \[/,/\];/p' contrib/all-modules.nix \
+    | grep -oE '\./[a-z0-9-]+/contrib\.nix' \
+    | sed 's|^\./||; s|/contrib\.nix$||' | sort -u
 )
 
 for c in "${on_disk[@]}"; do
-  printf '%s\n' "${listed[@]}" | grep -qx "$c" \
-    || note "contrib/$c exists but contrib/contribs.nix does not list it — it will never be built or tested"
+  printf '%s\n' "${imported[@]}" | grep -qx "$c" \
+    || note "contrib/$c exists but all-modules.nix does not import ./$c/contrib.nix — it will never be built or tested"
 done
 
-for c in "${listed[@]}"; do
+for c in "${imported[@]}"; do
   [ -f "contrib/$c/contrib.nix" ] \
-    || note "contrib/contribs.nix lists $c but contrib/$c/contrib.nix does not exist"
+    || note "all-modules.nix imports ./$c/contrib.nix but that file does not exist"
 done
 
 # A contrib's halves, each named for the eval it lands in. Anything else directly
@@ -49,7 +51,7 @@ for f in contrib/*/*.nix; do
 done
 
 if [ "$fail" -ne 0 ]; then
-  echo "❌ contrib coverage: contrib/ is out of sync with contrib/contribs.nix"
+  echo "❌ contrib coverage: contrib/ is out of sync with contrib/all-modules.nix"
   exit 1
 fi
-echo "✅ contrib coverage: all ${#on_disk[@]} contribs are listed, with only known halves"
+echo "✅ contrib coverage: all ${#on_disk[@]} contribs are imported, with only known halves"

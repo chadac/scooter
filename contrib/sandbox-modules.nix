@@ -6,19 +6,16 @@
 # itself is lib-only (#711): the pod has no flake and no network, so anything that
 # forced a derivation here would be an eval error there.
 #
-# Still an `evalModules`, unlike contrib/platform-modules.nix: `sandbox.module` is
-# an option a contrib SETS, and `extraModules` below has to be able to override
-# `enable` — neither is readable from contrib/contribs.nix alone.
-#
-# `extraModules` is for a TEST that needs a contrib the repo ships nowhere
-# (see the dev-env-contrib-sandbox check). The image itself passes none: which
-# contribs ship is a property of the source, which is exactly what lets both
-# sides agree without anything being threaded through. Why: PR #607.
+# `extraModules` is for a TEST that needs a contrib the repo ships disabled (see the
+# dev-env-contrib-sandbox check). The image itself passes none: which contribs are
+# enabled is a property of the source, which is exactly what lets both sides agree
+# without anything being threaded through. Why: PR #607.
 { lib, extraModules ? [ ] }:
 
 let
   # A second module system, so the NixOS-side `imports` gets plain paths rather than
-  # config values it cannot read that early. Collapsing the two: #615.
+  # config values it cannot read that early — the same shape as
+  # contrib/platform-modules.nix, for the same reason (#615).
   eval = lib.evalModules {
     specialArgs = { inherit lib; };
     modules = [ ./all-modules.nix ] ++ extraModules;

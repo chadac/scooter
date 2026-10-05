@@ -1,21 +1,28 @@
 # Every contrib's DECLARATION plus the schema, as one importable module.
 #
-# This is the registry as the lib-only evals see it: contrib/default.nix (the
-# build), contrib/sandbox-modules.nix (the image, and its in-pod re-converge).
-# modules/platform.nix does NOT import this — it imports the shipped contribs
-# through contrib/platform-modules.nix, which also carries each one's platform
-# half. Why: #711.
-{ lib, ... }:
-
-let
-  contribs = import ./contribs.nix;
-in
+# Explicit list, not readDir: dynamic import paths defeat Nix's import caching.
+# check-contrib-coverage.sh fails CI if a contrib is missing here. Why: PR #585.
+#
+# `<name>/contrib.nix`, not `<name>`: a contrib's three halves land in three
+# different evals and are named for them, and this is the one every eval reads.
+# The platform half is reached from here too, but only through
+# contrib/platform-modules.nix — the eval that has a `scooter.*` tree to declare
+# into. Why: #711, and contrib/README.md.
 {
-  imports = [ ./spec.nix ]
-    ++ lib.mapAttrsToList (_: c: c.dir + "/contrib.nix") contribs;
+  imports = [
+    ./spec.nix
 
-  # Shippedness comes from the list, not from the contrib: the platform has to read
-  # the same fact at `imports` time, where no option can be read. One definition,
-  # two consumers. Why: #711 (and contrib/contribs.nix).
-  config.contribs = lib.mapAttrs (_: c: { enable = c.ship; }) contribs;
+    ./airtable/contrib.nix
+    ./aws/contrib.nix
+    ./brave/contrib.nix
+    ./datadog/contrib.nix
+    ./duckduckgo/contrib.nix
+    ./echo/contrib.nix
+    ./github/contrib.nix
+    ./gitlab/contrib.nix
+    ./grafana/contrib.nix
+    ./jira/contrib.nix
+    ./kagi/contrib.nix
+    ./slack/contrib.nix
+  ];
 }

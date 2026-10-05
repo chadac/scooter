@@ -116,7 +116,7 @@ in
   };
 
   # The table declaration is deliberately OUTSIDE the `mkIf` below: it is gated on
-  # the contrib being SHIPPED (platform-modules.nix imports only shipped contribs),
+  # the contrib being BUILT (platform-modules.nix imports only enabled contribs),
   # never on this deployment running it — `just db-generate` renders from bare
   # defaults, so a deployment-gated table vanishes from the committed schema.
   # Why: PR #637.

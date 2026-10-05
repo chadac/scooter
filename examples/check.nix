@@ -454,33 +454,36 @@ let
       };
     in (builtins.tryEval (builtins.deepSeq e.config.kubernetes.resources true)).success;
 
-  # THE CONTRIBS ARE MODULES IN THE PLATFORM EVAL, AND ONLY THE SHIPPED ONES (#599,
+  # THE CONTRIBS ARE MODULES IN THE PLATFORM EVAL, AND ONLY THE ENABLED ONES (#599,
   # #711). Three claims, because each fails in a different direction and two of them
   # fail SILENTLY:
   #
-  #   positive — a shipped contrib's own options are declared, and its declaration
+  #   positive — an enabled contrib's own options are declared, and its declaration
   #              reached `config.contribs`. Without this the two negatives below are
   #              vacuously true and the whole block proves nothing.
-  #   negative — a contrib that ships NOWHERE contributes neither. Its options must
-  #              not exist, so a manifest configuring an integration this image never
-  #              built is an eval error rather than a block k8s happily applies.
+  #   negative — a DISABLED contrib contributes neither. Its options must not exist,
+  #              so a manifest configuring an integration this image never built is
+  #              an eval error rather than a block k8s happily applies.
   #
   # Asserted against `platform.options` rather than a render: an option that exists
   # but is never read renders identically to one that does not exist at all.
-  contribList = import ../contrib/contribs.nix;
-  unshipped = builtins.attrNames (nixpkgsLib.filterAttrs (_: c: !c.ship) contribList);
+  contribEval = nixpkgsLib.evalModules {
+    specialArgs = { lib = nixpkgsLib; };
+    modules = [ ../contrib/all-modules.nix ];
+  };
+  disabled = builtins.attrNames (nixpkgsLib.filterAttrs (_: c: !c.enable) contribEval.config.contribs);
   brokerOpts = platform.options.scooter.broker;
-  unshippedContribProblems =
-    (if unshipped != [ ] then [ ] else
-    [ "every contrib in contrib/contribs.nix now ships — the ships-nowhere negatives below test nothing; keep one unshipped fixture (echo) or delete them" ])
+  disabledContribProblems =
+    (if disabled != [ ] then [ ] else
+    [ "every contrib is enabled — the disabled-contrib negatives below test nothing; keep one disabled fixture (echo) or delete them" ])
     ++ (if brokerOpts ? brave then [ ] else
-    [ "scooter.broker.brave is not declared — a shipped contrib's platform.nix did not reach the platform eval (contrib/platform-modules.nix), so every ships-nowhere check below passes for the wrong reason" ])
+    [ "scooter.broker.brave is not declared — an enabled contrib's platform.nix did not reach the platform eval (contrib/platform-modules.nix), so every disabled-contrib check below passes for the wrong reason" ])
     ++ (if platform.config.contribs ? aws then [ ] else
     [ "config.contribs.aws is missing — the contrib DECLARATIONS are not in the platform eval, so contrib skills are read from an empty set" ])
-    ++ map (n: "scooter.broker.${n}.* is declared but ${n} ships nowhere — a manifest can configure an integration this image never built (#599)")
-    (builtins.filter (n: brokerOpts ? ${n}) unshipped)
-    ++ map (n: "config.contribs.${n} reached the platform eval but ${n} ships nowhere — its skills would be shipped by an image that never built it")
-    (builtins.filter (n: platform.config.contribs ? ${n}) unshipped);
+    ++ map (n: "scooter.broker.${n}.* is declared but ${n} is disabled — a manifest can configure an integration this image never built (#599)")
+    (builtins.filter (n: brokerOpts ? ${n}) disabled)
+    ++ map (n: "config.contribs.${n} reached the platform eval but ${n} is disabled — its skills would be shipped by an image that never built it")
+    (builtins.filter (n: platform.config.contribs ? ${n}) disabled);
 
   legacyRootProblems =
     (if renders { } then [ ]
@@ -790,8 +793,8 @@ let
       (containersOf w))
     allWorkloads;
 
-  allProblems = unshippedContribProblems ++ legacyRootProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ approvalProblems ++ stage2Problems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems;
+  allProblems = disabledContribProblems ++ legacyRootProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ approvalProblems ++ stage2Problems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems;
 in
 if allProblems == [ ]
-then "ok: deployments = ${haveDeps}; datadog + airtable + brave + kagi + duckduckgo (three search providers, each with its own tool) + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; the renamed root (agentSandbox.*) fails the render; contribs reach the platform eval and the unshipped one does not; deploy-time Jobs are spec-hash named\n"
+then "ok: deployments = ${haveDeps}; datadog + airtable + brave + kagi + duckduckgo (three search providers, each with its own tool) + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; the renamed root (agentSandbox.*) fails the render; contribs reach the platform eval and the disabled one does not; deploy-time Jobs are spec-hash named\n"
 else builtins.throw "example manifests missing: ${builtins.concatStringsSep ", " allProblems}"

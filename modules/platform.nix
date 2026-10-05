@@ -157,7 +157,7 @@ in
   # is their schema — the `contribs.*` tree the skills above are read from. Why:
   # #599, #711.
   imports = [ kubenix.modules.k8s ./db-spec.nix ./postgres.nix ./db-migrate.nix ./broker.nix ./sandbox-pod.nix ./webhooks.nix ./byoc.nix ./scheduler.nix ./conversation-controller.nix ./warm-store-controller.nix ./legacy-state-migration.nix ./event-backfill.nix ../contrib/spec.nix ]
-    ++ import ../contrib/platform-modules.nix;
+    ++ import ../contrib/platform-modules.nix { inherit lib; };
 
   # Declared ONLY so a definition on the old root matches something and reaches
   # `legacyRoot`'s message above. `internal` + `visible = false`, so it is absent from

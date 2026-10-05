@@ -1,11 +1,11 @@
-# echo DECLARED: what this contrib IS. No ./platform.nix — it ships nowhere
-# (ship = false in contrib/contribs.nix), so it has no deployment options at all.
+# echo DECLARED: what this contrib IS. No ./platform.nix — it is disabled, so it
+# has no deployment options at all, and nothing would import them.
 {
   contribs.echo = {
     src = ./.;
     # The fixture for the sandbox surface. aws now ships a real one, so this covers
-    # what aws cannot: a contrib that SHIPS NOWHERE (ship = false in
-    # contrib/contribs.nix), reached by the check through `extraModules`.
+    # what aws cannot: a contrib that is DISABLED in the repo, reached by the check
+    # through `extraModules`.
     sandbox.module = ./sandbox.nix;
     services.broker.enable = true;
     services.webhooks.enable = true;
@@ -21,5 +21,9 @@
       blockedTitle = "Only a reviewer can approve an echo request.";
       blockedHint = "You can't approve this echo request — ask a reviewer.";
     };
+
+    # Never ship: echo's factory returns enabled=true unconditionally, so a
+    # production broker would serve /echo/ping. Why: PR #573.
+    enable = false;
   };
 }

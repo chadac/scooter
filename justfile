@@ -511,8 +511,8 @@ check-image-coverage:
 check-shell-syntax:
     @.github/scripts/check-shell-syntax.sh
 
-# Every contrib directory must be listed in contrib/contribs.nix, and its halves must
-# use the filenames the evals look for. The list is explicit for eval performance;
+# Every contrib directory must be imported by contrib/all-modules.nix, and its halves
+# must use the filenames the evals look for. The list is explicit for eval performance;
 # this is what stops a contrib being added and silently never built or tested, or a
 # half landing under a name nothing imports. Why: PR #585, #711.
 check-contrib-coverage:

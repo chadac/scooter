@@ -1,38 +1,55 @@
-# The shipped contribs, as kubenix modules for modules/platform.nix to import.
+# The enabled contribs, as kubenix modules for modules/platform.nix to import.
 #
 # Each one contributes two modules to the PLATFORM eval:
 #
 #   <name>/contrib.nix    its declaration — the same file the build and the sandbox
 #                         image read, so the platform sees one registry, not a copy.
 #                         This is what `config.contribs.<name>.skills` resolves
-#                         against (platform.nix reads it directly; there is no
-#                         second eval to re-derive it from).
+#                         against; platform.nix reads it directly, with no second
+#                         derivation that could disagree.
 #   <name>/platform.nix   its deployment half, if it has one: the `scooter.*`
 #                         options an operator sets and the manifests they render,
 #                         declared in the SAME eval as modules/platform.nix.
 #
-# No `evalModules` and no option read, which is the point: a contrib's deployment
-# options reach the platform as plain module paths. Reading them out of a config
-# value instead is `infinite recursion encountered` — `imports` is resolved before
-# any option exists — and that recursion is what the old `deployment.module` +
-# contrib/deployment-modules.nix pair existed to route around. Why: #711, #615.
+# A separate `evalModules`, exactly like contrib/sandbox-modules.nix (#607) and for
+# the same reason: the platform's `imports` needs plain paths, and `imports` is
+# resolved before any option in ITS OWN eval exists — reading `config.contribs` there
+# is `infinite recursion encountered`, and not catchable (#615). A second eval is how
+# you answer "which contribs are enabled" without reading an option you cannot reach.
 #
-# SHIPPED, not "enabled": a contrib with `ship = false` is absent here, so its
-# options DO NOT EXIST and a manifest configuring it is an eval error rather than a
-# silently ignored block. Why: #599.
+# `lib`-only, like every other consumer of the registry: an external deployer imports
+# platform.nix with no `pkgs`, and a manifest needs none. Free now that the schema
+# itself is lib-only. Why: #711.
 #
-# `platform.nix` is found by convention rather than declared, so adding an
-# integration still edits no platform file (#599). check-contrib-coverage.sh fails
-# CI on a stray .nix in a contrib directory — the typo this would otherwise swallow.
-let
-  contribs = import ./contribs.nix;
+# ENABLED, not merely present: a disabled contrib is dropped here, so its options DO
+# NOT EXIST and a manifest configuring it is an eval error rather than a silently
+# ignored block. Why: #599.
+#
+# `platform.nix` is found beside the declaration rather than declared, so adding an
+# integration still edits no platform file (#599) and there is no `deployment.module`
+# indirection left to resolve. check-contrib-coverage.sh fails CI on a stray .nix in
+# a contrib directory — the typo this would otherwise swallow.
+{ lib, extraModules ? [ ] }:
 
-  modulesOf = c:
-    [ (c.dir + "/contrib.nix") ]
-    ++ (if builtins.pathExists (c.dir + "/platform.nix")
-    then [ (c.dir + "/platform.nix") ]
-    else [ ]);
+let
+  eval = lib.evalModules {
+    specialArgs = { inherit lib; };
+    modules = [ ./all-modules.nix ] ++ extraModules;
+  };
+
+  # `src` IS the contrib's directory — it is what the build copies and what every
+  # half sits in. Checked rather than assumed: a contrib that pointed `src` somewhere
+  # else would otherwise lose its platform half silently, which is the one failure
+  # this file can produce.
+  dirOf = name: c:
+    if builtins.pathExists (c.src + "/contrib.nix") then c.src
+    else throw ("contrib ${name}: `src` must be the directory holding its "
+      + "contrib.nix — modules/platform.nix finds its platform.nix beside it.");
+
+  modulesOf = name: c:
+    let dir = dirOf name c; in
+    [ (dir + "/contrib.nix") ]
+    ++ lib.optional (builtins.pathExists (dir + "/platform.nix")) (dir + "/platform.nix");
 in
-builtins.concatLists
-  (map modulesOf
-    (builtins.filter (c: c.ship) (builtins.attrValues contribs)))
+lib.concatLists (lib.mapAttrsToList modulesOf
+  (lib.filterAttrs (_: c: c.enable) eval.config.contribs))

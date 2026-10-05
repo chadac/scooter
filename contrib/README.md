@@ -78,17 +78,18 @@ contrib. The schema lives in `contrib/spec.nix` + `contrib/submodule.nix`, is
 `contrib/all-modules.nix` is every contrib plus that schema, as one module you can
 import.
 
-The list of contribs is **explicit** — a `readDir` made every eval walk the
-directory and defeated Nix's import caching — and lives in `contrib/contribs.nix`:
-one row per contrib, giving its directory and whether it **ships**. Adding a
-contrib means adding a row; `just check-contrib-coverage` fails CI if you forget,
-because an unlisted contrib is never built and never tested.
+Its import list is **explicit** — a `readDir` made every eval walk the directory
+and defeated Nix's import caching — so an entry is `./<name>/contrib.nix`. Adding a
+contrib means adding it there; `just check-contrib-coverage` fails CI if you forget,
+because an unimported contrib is never built and never tested.
 
-`ship` is written there rather than inside the contrib because the platform turns
-the same fact into an `imports` list, and `imports` is resolved before any option
-can be read — reading one there is `infinite recursion encountered`, not a catchable
-error (#615). Stating it as a source fact is what lets an unshipped contrib have
-options that *do not exist* (#599) instead of options that are quietly ignored.
+`enable` stays the one switch, declared by the contrib like everything else about
+it. The platform cannot read it directly — `imports` resolves before any option in
+that eval exists, and reading one there is `infinite recursion encountered`, not a
+catchable error (#615) — so `contrib/platform-modules.nix` answers the question in a
+*separate* lib-only eval and hands back plain paths, exactly as
+`contrib/sandbox-modules.nix` does for the image. That indirection is why a disabled
+contrib's options *do not exist* (#599) rather than being quietly ignored.
 
 ```nix
 {
@@ -130,12 +131,12 @@ fixture `contrib/echo/` is sandbox-only.
 
 There is no separate schema for packages or services: a package is
 `environment.systemPackages` inside that module, a daemon is a
-`systemd.services.*`. There is no `mkIf` either — an unshipped contrib is dropped
-before its module is ever imported, so `ship = false` means absent from the
+`systemd.services.*`. There is no `mkIf` either — a disabled contrib is dropped
+before its module is ever imported, so `enable = false` means absent from the
 image, exactly as it already means absent from the services.
 
 **The list is derived from this source tree, and that is the whole design.**
-`contrib/sandbox-modules.nix` evaluates the contrib set and returns the shipped
+`contrib/sandbox-modules.nix` evaluates the contrib set and returns the enabled
 contribs' modules; `modules/sandbox-os/contribs.nix` imports that. The in-pod
 re-converge (`scooter-rebuild`) rebuilds from a *vendored copy of the repo*, so
 it runs the same deriver over the same source and reaches the same answer —
@@ -149,8 +150,8 @@ so a sandbox half that forces a derivation fails at eval. Keep the sandbox modul
 to `pkgs` and plain NixOS config.
 
 See `contrib/aws/sandbox.nix` for the shipped one and `contrib/echo/sandbox.nix`
-for the fixture (echo is `ship = false`, so it covers the ships-nowhere path a
-shipped contrib cannot), and the `dev-env-contrib-sandbox` check for what is
+for the fixture (echo is `enable = false`, so it covers the disabled-contrib path
+an enabled contrib cannot), and the `dev-env-contrib-sandbox` check for what is
 asserted.
 
 ### Contributing platform config (`contrib/<name>/platform.nix`)
@@ -187,15 +188,20 @@ redeclaring the container:
 | an IRSA / cloud identity annotation | `broker.serviceAccountAnnotations` |
 | anything of its own | `kubernetes.resources.*` directly |
 
-Discovered by convention, not declared: `contrib/platform-modules.nix` hands
-`modules/platform.nix` the shipped contribs' `contrib.nix` **and** `platform.nix`
-files as plain paths, so adding an integration still edits no platform file. There
-is no `evalModules` and no option read on that path — reading which contribs are on
-out of a config value is `infinite recursion encountered`, because `imports` is
-resolved before any option exists (#615), and routing around that recursion is what
-the old `deployment.module` + `contrib/deployment-modules.nix` pair existed for
-(#711). `just check-contrib-coverage` fails CI on a stray `.nix` in a contrib
-directory, which is the typo this convention would otherwise swallow.
+Found beside the declaration, not declared: `contrib/platform-modules.nix` hands
+`modules/platform.nix` the enabled contribs' `contrib.nix` **and** `platform.nix`
+files as plain paths, so adding an integration still edits no platform file, and
+there is no `deployment.module` left to keep in sync with the filename.
+
+That file is a separate lib-only `evalModules`, like `contrib/sandbox-modules.nix`
+and for the same reason: the platform's `imports` cannot read `config.contribs`
+to find out which contribs are enabled — `imports` resolves first, so that is
+`infinite recursion encountered`, and `tryEval` does not catch recursion (#615).
+What #711 removed is not the eval but the *schema's* dependency on built packages,
+which is what kept the contribs out of the kubenix eval in the first place.
+
+`just check-contrib-coverage` fails CI on a stray `.nix` in a contrib directory,
+which is the typo this convention would otherwise swallow.
 
 Nothing here may force a derivation: an external deployer imports `platform.nix`
 with no `pkgs` to build a contrib's Python half with, and a manifest needs none.
@@ -208,7 +214,8 @@ Three consequences worth knowing:
   `platform.nix` throws.
 - **An option that does not exist is an eval error**, so a manifest configuring an
   integration this image never built in fails loudly instead of being ignored. That
-  is the `ship` flag doing its job, and `examples/check.nix` asserts it both ways.
+  is `enable` doing its job through platform-modules.nix, and `examples/check.nix`
+  asserts it in both directions.
 - **The same cuts the other way for a contrib READING a sibling's option.** A
   platform module may touch any part of the tree — the module system has no notion
   of ownership, and a contrib is free to declare an option another one also declares.
@@ -241,7 +248,7 @@ contribs.aws = {
 
 **The gate is the contrib's NAME** — a skill ships iff
 `scooter.broker.<name>.enable` is true in the *deployment*, which is a
-different question from whether the contrib ships in this source tree. A
+different question from whether the contrib is enabled in this source tree. A
 contrib shipping skills therefore needs a broker option of the same name;
 `platform.nix` throws at eval if there isn't one, rather than shipping a skill
 nothing gates.
@@ -252,7 +259,7 @@ the feature being *broken*, which is how the grafana skill once sent an agent
 chasing a `loki/` path that never existed. `scooter-aws.md` shipped into every
 deployment, aws or not, until this moved.
 
-`modules/platform.nix` reads the set straight off `config.contribs` — the shipped
+`modules/platform.nix` reads the set straight off `config.contribs` — the enabled
 contribs are modules in its own eval (#711), so there is no second module system to
 re-derive it from and nothing that could disagree with the build.
 `examples/check.nix` renders the platform with each gate on and off and
@@ -445,13 +452,13 @@ surface libs as module args, which the kubenix eval and the in-pod re-converge h
 no way to supply. The schema stays lib-only; only this file resolves a derivation
 (#711).
 
-`ship = false` means ABSENT, the way `enable = false` does in NixOS: no derivation
-is produced and nothing in any build artifact comes from it. `echo` ships nowhere
+`enable = false` means ABSENT, the way it does in NixOS: no derivation
+is produced and nothing in any build artifact comes from it. `echo` is disabled
 because its provider is unconditionally enabled, so shipping it would serve
 `/echo/ping` from a production broker.
 
 Something that must be built anyway turns it back on with a config override
-instead of `ship` meaning something softer. CI does exactly that, because an
+instead of `enable` meaning something softer. CI does exactly that, because an
 untested reference implementation rots the moment a surface changes:
 
 ```nix

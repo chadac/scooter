@@ -1,9 +1,10 @@
 # brave's PLATFORM half: the options an operator sets, and the broker env they render.
 #
 # A plain module in the SAME eval as modules/platform.nix, which imports every
-# shipped contrib's `platform.nix` by convention (contrib/platform-modules.nix). So
-# the options below are declared exactly where any other platform option is — there
-# is no registration step and nothing to list. Why: #599, #711.
+# enabled contrib's `platform.nix` from beside its declaration
+# (contrib/platform-modules.nix). So the options below are declared exactly where
+# any other platform option is — there is no registration step and nothing to list.
+# Why: #599, #711.
 #
 # Don't reach for a SIBLING contrib's options bare: `bcfg.kagi.enable` resolves only in
 # an image that also builds kagi, so it breaks every image shipping one without the

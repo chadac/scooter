@@ -147,12 +147,12 @@ in
       default = true;
       description = ''
         Build this contrib and inject it into the images it targets. `false` means
-        absent — no derivation at all.
+        absent — no derivation at all, and no options either: the platform drops a
+        disabled contrib before importing it, so configuring one is an eval error
+        rather than a block that is silently ignored (#599).
 
-        Set from `ship` in contrib/contribs.nix, not here: the platform turns the
-        same fact into an `imports` list, which cannot read an option. Build a
-        shipped-nowhere contrib with `withModules` (contrib/default.nix) rather
-        than weakening this.
+        Build a disabled one with `withModules` (contrib/default.nix) rather than
+        weakening this.
       '';
     };
 
