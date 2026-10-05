@@ -265,6 +265,12 @@ manifests="$deps/platform-manifests-k3d.yaml"
 nix shell nixpkgs#kubectl -c bash -c "
   set -euo pipefail
   kubectl apply -f '${manifests}'
+  # The conv-token signing key. modules/platform.nix wires it with no \`optional\`, so a
+  # missing Secret stops agent-host/agent-broker starting (#700) -- CI must create it
+  # out-of-band exactly like a real deploy. Idempotent: a re-run must not fail.
+  kubectl -n agent-sandbox create secret generic agent-conv-token-secret \
+    --from-literal=secret=\"\$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')\" \
+    --dry-run=client -o yaml | kubectl apply -f -
   # Postgres accepts TCP before it is USABLE: agent-postgres-init creates the roles
   # (until then callers get 28P01) and agent-db-migrate creates the schema (until then
   # 42P01). Nothing below waits on the database, so every service raced it. Selected by
