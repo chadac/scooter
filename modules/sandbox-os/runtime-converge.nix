@@ -259,8 +259,13 @@ let
       # emitted [ "/nix/store/x.nix" ], bash ate the quotes, and `listOf str` rejected
       # a path (#696). A `builtins.fromJSON` keeps the shell out of it entirely —
       # nothing about the list is expanded by bash, so there is nothing to escape.
+      #
+      # The discardStringContext is LOAD-BEARING: the entries name the baked tree, so
+      # readFile attaches that reference as string context and fromJSON refuses a
+      # string carrying any. The tree stays in the closure regardless — this file's
+      # own derivation references it. Why: PR #718.
       toplevel=$(nix build --no-link --print-out-paths --impure --expr "
-        let layers = builtins.fromJSON (builtins.readFile ${reconvergeModulesFile}); in
+        let layers = builtins.fromJSON (builtins.unsafeDiscardStringContext (builtins.readFile ${reconvergeModulesFile})); in
         (import ${baseConfig} {
           nixpkgs = ${cfg.nixpkgs};
           modulesPath = ${effModulesSrc};
