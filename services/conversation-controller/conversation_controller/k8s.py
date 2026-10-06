@@ -40,10 +40,14 @@ AGENT_HOST_LABEL = "app=agent-host"
 DELETION_COST_ANNOTATION = "controller.kubernetes.io/pod-deletion-cost"
 AGENT_HOST_DEPLOYMENT = "agent-host"  # the Deployment the controller autoscales
 
-# The upstream agent-sandbox Sandbox CR (what the reaper GCs).
+# The upstream agent-sandbox Sandbox CR (what the reaper GCs). EVERY Sandbox call must address
+# itself through these — an open-coded group/version 404s silently. Why: PR #725.
 SANDBOX_GROUP = "agents.x-k8s.io"
 SANDBOX_VERSION = "v1beta1"
 SANDBOX_PLURAL = "sandboxes"
+# agent-sandbox's label on the pod it runs for a Sandbox. Mirrors SANDBOX_NAME_LABEL in
+# k8sProvisioner.ts.
+SANDBOX_NAME_LABEL = "agents.x-k8s.io/sandbox-name"
 
 # Per-conversation object names, derived from the Sandbox name `conv-<id>` — MUST match the
 # agent-host provisioner (saName/moduleCmName in k8sProvisioner.ts). The reaper deletes all
@@ -202,30 +206,34 @@ class ControllerK8s:
     # --- orphaned-Sandbox reaper -------------------------------------------
     def suspend_sandbox(self, name: str) -> None:
         """Set the Sandbox's spec.operatingMode=Suspended (the zombie repair). Merge-patch,
-        idempotent; a 404 (sandbox already gone) is fine."""
+        idempotent; a 404 (sandbox already gone) is fine — which is why the version MUST come
+        from SANDBOX_VERSION: an unserved version 404s too, and lands here as success. PR #725."""
         _, custom, _ = _apis()
         try:
             custom.patch_namespaced_custom_object(
-                group="agents.x-k8s.io", version="v1alpha1", plural="sandboxes",
+                group=SANDBOX_GROUP, version=SANDBOX_VERSION, plural=SANDBOX_PLURAL,
                 namespace=self.namespace, name=name,
                 body={"spec": {"operatingMode": "Suspended"}},
             )
         except client.ApiException as e:
             _ignore_404(e)
 
-    def force_delete_sandbox(self, name: str) -> None:
-        """Terminal zombie escalation: delete the Sandbox CR outright (cascades its pod + vct
-        PVCs) to reclaim a sandbox that refuses to suspend after N bounded attempts. Distinct
-        from the reaper's delete_sandbox_tree — the owning Conversation still exists (marked
-        Failed by the loop), so we drop ONLY the Sandbox, not its SA / module ConfigMap.
-        404-tolerant: already-gone is the goal; a non-404 propagates so the loop retries."""
-        _, custom, _ = _apis()
-        try:
-            custom.delete_namespaced_custom_object(
-                SANDBOX_GROUP, SANDBOX_VERSION, self.namespace, SANDBOX_PLURAL, name
-            )
-        except client.ApiException as e:
-            _ignore_404(e)
+    def reclaim_sandbox_pod(self, name: str) -> None:
+        """Terminal zombie escalation: reclaim the leaked RUNNING POD of a sandbox that will not
+        suspend. NEVER delete the Sandbox CR to do this — that cascades its volumeClaimTemplate
+        PVCs, i.e. the conversation's /workspace (issue #709).
+
+        Suspend first so the controller does not just recreate the pod. 404-tolerant per object;
+        a non-404 propagates so the loop retries."""
+        core, _, _ = _apis()
+        self.suspend_sandbox(name)
+        for p in core.list_namespaced_pod(
+            self.namespace, label_selector=f"{SANDBOX_NAME_LABEL}={name}"
+        ).items:
+            try:
+                core.delete_namespaced_pod(p.metadata.name, self.namespace)
+            except client.ApiException as e:
+                _ignore_404(e)
 
     def list_sandboxes(self) -> list["SandboxRef"]:
         """Every per-conversation Sandbox, as (name, age_seconds) for the reaper decision."""
