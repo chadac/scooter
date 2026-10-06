@@ -867,9 +867,13 @@ export async function main(
   // intent) or resume-nudged. Fire-and-forget; owner-fenced + deduped inside.
   if (ownership) {
     ownership.guard.onGained = (id, generation) => {
-      void sessions
-        .reconcileDanglingRun(id as SessionId, generation)
-        .catch((err) => hostLog.errorWith("ownership-gain settlement failed", err, { conversation_id: id }));
+      void (async () => {
+        // The fence FIRST, and awaited: the settlement below appends (a cancel intent, a
+        // resume nudge), and until the row names this pod those appends are refused. See
+        // PgEventStore.claimFence.
+        await eventStore?.claimFence(id as SessionId, generation);
+        await sessions.reconcileDanglingRun(id as SessionId, generation);
+      })().catch((err) => hostLog.errorWith("ownership-gain settlement failed", err, { conversation_id: id }));
     };
   }
 

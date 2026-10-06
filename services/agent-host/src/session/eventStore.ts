@@ -18,8 +18,8 @@ import type { ChecksummedEvent } from "./manager.js";
 import type { SessionId } from "../types.js";
 
 const log = logger("eventStore");
-// conversations is read ONLY by the append fence — never written here. The event log owns
-// no conversation metadata.
+// conversations is touched ONLY by the append fence, and only its two fencing columns
+// (host_pod / host_generation). The event log owns no other conversation metadata.
 const { conversationEvents, conversations } = agent_host;
 
 export interface PgEventStoreConfig {
@@ -47,7 +47,8 @@ export interface PgEventStoreConfig {
  * only on a handoff, and the pod it moves away from never writes again. The epoch is NOT
  * consulted — agent-host is a Deployment, so a pod name carries a ReplicaSet hash and a
  * random suffix and is never reused. The epoch clause only ever refused a rightful owner
- * holding a lagging cached generation.
+ * holding a lagging cached generation. (MOVING the claim is a different question, and that
+ * write does order by epoch: see claimFence.)
  *
  * It fences on CONTRADICTION only: an append is refused when the row names a different
  * host. A row that names nobody — or no row at all — does not refuse, because a brand-new
@@ -142,6 +143,28 @@ export interface PgEventStore {
    *  failed write to the conversation's ONLY persistence vanishes silently. */
   onAppendError(cb: (id: SessionId, error: unknown) => void): () => void;
 
+  /**
+   * TAKE the fence for an assignment this pod has just been GIVEN.
+   *
+   * The claim that rides every append only takes an UNHELD row, so a conversation moving
+   * A -> B leaves B refused until the row stops naming A. The controller patches the CR
+   * status BEFORE it writes the row, and the CR watch is what tells B it is the owner — so
+   * B learns it owns the conversation first and every event it appends until the row
+   * catches up is dropped (rowCount 0, no error, a lost turn). Measured at 57ms in CI,
+   * which is a run's worth of tokens. Why: PR #679.
+   *
+   * `generation` is the epoch the assignment was announced at, and `$gen >= host_generation`
+   * is what keeps the claim monotonic: a pod acting on a STALE assignment (a lagging watch,
+   * a replayed revive push) cannot take the row back from a newer owner. `>=` not `>`
+   * because this carries the CURRENT epoch rather than minting a new one — the holder at
+   * that epoch is us, and a re-attempt after a failed first one must still be able to land.
+   * Same write, same predicate, as rows.sync_assignments on the controller's side.
+   *
+   * RESOLVES, never throws: the caller is a fire-and-forget ownership hook, and a claim
+   * that could not be made must not cost the settlement that follows it.
+   */
+  claimFence(id: SessionId, generation: number): Promise<"claimed" | "refused" | "unfenced">;
+
   /** Drop a conversation's events (conversation deletion). */
   removeConversation(id: SessionId): Promise<void>;
 
@@ -194,6 +217,9 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
    *   3. no row — a first turn can append before anything has created one. Deliberately
    *      permissive: making a missing row refuse is what 8f2b13e tried, and it took e2e
    *      failures from 5 to 12.
+   *
+   * It never takes a HELD row, so it cannot move the claim on a handoff — the incoming
+   * owner does that from the ownership signal, under an epoch check. See claimFence.
    */
   const claimAndFence = (id: SessionId) => {
     const fence = config.fence;
@@ -376,6 +402,42 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
 
     async flush(id) {
       await (chains.get(id) ?? Promise.resolve()).catch(() => {});
+    },
+
+    async claimFence(id, generation) {
+      const fence = config.fence;
+      if (!fence) return "unfenced";
+      try {
+        const res = await db.execute(sql`
+          update ${conversations}
+             set host_pod = ${fence.pod}, host_generation = ${generation}::bigint
+           where ${conversations.id} = ${id}
+             and ${generation}::bigint >= ${conversations.hostGeneration}
+        `);
+        if ((res.rowCount ?? 0) === 0) {
+          // Two unrelated causes — superseded by a newer epoch, or no row to claim — and
+          // they need opposite fixes, so read the row back. Once per ownership gain, not
+          // per append, so the round trip is free here.
+          logRowState("warn", "fence claim refused on ownership gain", id, { pod: fence.pod, generation });
+          return "refused";
+        }
+        // A conversation regained after another pod advanced it leaves this pod's cached
+        // seq behind the table; appending from it is a PK collision.
+        heads.delete(id);
+        log.info("took the append fence on ownership gain", {
+          conversation_id: id,
+          pod: fence.pod,
+          generation,
+        });
+        return "claimed";
+      } catch (error) {
+        log.errorWith("fence claim FAILED on ownership gain", error, {
+          conversation_id: id,
+          pod: fence.pod,
+          generation,
+        });
+        return "refused";
+      }
     },
 
     async *readEvents(id) {

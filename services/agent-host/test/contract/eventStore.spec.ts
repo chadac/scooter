@@ -44,12 +44,15 @@ function fakeDb(): {
   db: NodePgDatabase;
   rows: Array<Record<string, unknown>>;
   failNext: (e: Error) => void;
-  assign: (conv: string, a: { hostPod: string | null }) => void;
+  assign: (conv: string, a: { hostPod: string | null; hostGeneration?: number }) => void;
+  row: (conv: string) => { hostPod: string | null; hostGeneration: number } | undefined;
 } {
   const rows: Array<Record<string, unknown>> = [];
   // The conversations row the append fence reads. Absent = no row at all, which is a real
-  // state (the append can beat the INSERT) and must not refuse.
-  const assigned = new Map<string, { hostPod: string | null }>();
+  // state (the append can beat the INSERT) and must not refuse. host_generation is NOT NULL
+  // DEFAULT 0 in the schema, so an unassigned row carries 0 — the epoch claimFence compares
+  // against, and the reason the first real assignment (generation >= 1) always wins it.
+  const assigned = new Map<string, { hostPod: string | null; hostGeneration: number }>();
   let fail: Error | undefined;
   const client = {
     async query(cfg: { text: string; values?: unknown[] } | string, params: unknown[] = []) {
@@ -81,7 +84,7 @@ function fakeDb(): {
           // nobody holds it. Under real concurrency the loser re-reads the locked row and
           // matches nothing — modelled here by the claim simply not firing twice.
           const claimTook = a !== undefined && a.hostPod == null;
-          if (claimTook) assigned.set(conversation_id, { hostPod: pod });
+          if (claimTook) assigned.set(conversation_id, { ...a!, hostPod: pod });
           // Allowed if we just took it, if it was already ours, or if there is no row at
           // all (a first turn may append before anything creates one).
           const allowed = claimTook || a?.hostPod === pod || a === undefined;
@@ -99,13 +102,16 @@ function fakeDb(): {
         rows.push({ conversation_id, seq, event: parsed, checksum, prev_checksum });
         return { rows: [], rowCount: 1 };
       }
-      // The CLAIM: `update conversations set host_pod = $1 where id = $2 and host_pod is null`.
-      // First-writer-wins is the whole point, so the null check is modelled, not assumed.
+      // THE HANDOFF CLAIM (claimFence): `update conversations set host_pod = $1,
+      // host_generation = $2 where id = $3 and $4 >= host_generation`. The append-time claim
+      // rides the WITH above, so this is the only standalone UPDATE the store issues. The
+      // epoch predicate is modelled, not assumed — it is the whole guard against a pod on a
+      // stale assignment taking the row back from a newer owner.
       if (head.startsWith("UPDATE")) {
-        const [pod, conversation_id] = values as [string, string];
+        const [pod, generation, conversation_id] = values as [string, number, string];
         const a = assigned.get(conversation_id);
-        if (!a || a.hostPod != null) return { rows: [], rowCount: 0 };
-        assigned.set(conversation_id, { hostPod: pod });
+        if (!a || Number(generation) < a.hostGeneration) return { rows: [], rowCount: 0 };
+        assigned.set(conversation_id, { hostPod: pod, hostGeneration: Number(generation) });
         return { rows: [], rowCount: 1 };
       }
       if (head.startsWith("DELETE")) {
@@ -123,7 +129,7 @@ function fakeDb(): {
         // Modelled by its projection: nothing else selects host_pod.
         if (/HOST_POD/i.test(text)) {
           const a = assigned.get(conversation_id);
-          return a ? { rows: [[a.hostPod, 0]], rowCount: 1 } : { rows: [], rowCount: 0 };
+          return a ? { rows: [[a.hostPod, a.hostGeneration]], rowCount: 1 } : { rows: [], rowCount: 0 };
         }
         let mine = rows
           .filter((r) => r.conversation_id === conversation_id)
@@ -169,7 +175,8 @@ function fakeDb(): {
     db: drizzle(client as never),
     rows,
     failNext: (e) => (fail = e),
-    assign: (conv, a) => assigned.set(conv, a),
+    assign: (conv, a) => assigned.set(conv, { hostGeneration: 0, ...a }),
+    row: (conv) => assigned.get(conv),
   };
 }
 
@@ -389,6 +396,112 @@ describe("eventStore — the append fence", () => {
 
     expect(errors, "the loser is refused by the fence, not left to the PK").toEqual([]);
     expect(rows.map((r) => r.seq), "exactly one writer got through after the release").toEqual([1, 2]);
+  });
+
+  it("THE HANDOFF: the incoming owner takes the fence, so its first turn is not dropped", async () => {
+    // The window CI caught on this branch (e2e full shard 1, run 37496402896):
+    //
+    //   16:51:02.094  n4grw  REFUSED  row=held by gj284
+    //   16:51:02.151  controller: assigned -> n4grw      <- 57ms later
+    //
+    // The controller patches the CR status BEFORE it writes the row, and the CR watch is
+    // what tells the new owner it owns the conversation — so it starts appending while the
+    // row still names its predecessor, and the append-time claim cannot help because that
+    // one only takes an UNHELD row. Every event in the gap is dropped with no error.
+    const { db, rows, assign, row } = fakeDb();
+    assign(CONV, { hostPod: "host-1", hostGeneration: 1 });
+    const a = fencedStore(db, "host-1");
+    const b = fencedStore(db, "host-2");
+
+    await b.appendEvent(CONV, run(1)[0]);
+    expect(rows, "the gap, reproduced: the new owner is refused by the old claim").toEqual([]);
+
+    expect(await b.claimFence(CONV, 2)).toBe("claimed");
+    expect(row(CONV)).toEqual({ hostPod: "host-2", hostGeneration: 2 });
+
+    await b.appendEvent(CONV, run(1)[0]);
+    expect(rows, "and now its turn lands").toHaveLength(1);
+
+    await a.appendEvent(CONV, run(2)[0]);
+    expect(rows, "the handoff is a MOVE — the old owner is fenced out, not alongside").toHaveLength(1);
+  });
+
+  it("a STALE assignment cannot take the row back from a newer owner", async () => {
+    // `$gen >= host_generation` is the only thing standing between a lagging watch (or a
+    // replayed revive push) and a claim that walks the conversation backwards to a pod the
+    // controller has already moved it off. Nothing above this layer enforces it: a k8s Lease
+    // is not mutual exclusion, so the database has to.
+    const { db, assign, row } = fakeDb();
+    assign(CONV, { hostPod: "host-2", hostGeneration: 3 });
+
+    expect(await fencedStore(db, "host-1").claimFence(CONV, 2)).toBe("refused");
+    expect(row(CONV), "the newer owner keeps it").toEqual({ hostPod: "host-2", hostGeneration: 3 });
+  });
+
+  it("a claim at the CURRENT epoch lands, so a failed first attempt can be retried", async () => {
+    // Why `>=` and not `>`: this claim carries the epoch it was ASSIGNED at rather than
+    // minting a new one, so under `>` a claim that failed (a Postgres blip, a dropped
+    // connection) could never be re-made — the conversation would stay fenced against its
+    // own owner until the next reassignment. The holder at that epoch is us; re-asserting
+    // it is idempotent. Matches rows.sync_assignments, the same write from the controller.
+    const { db, assign, row } = fakeDb();
+    assign(CONV, { hostPod: "host-1", hostGeneration: 4 }); // the controller's write got there first
+
+    expect(await fencedStore(db, "host-2").claimFence(CONV, 4)).toBe("claimed");
+    expect(row(CONV)).toEqual({ hostPod: "host-2", hostGeneration: 4 });
+  });
+
+  it("THE REGAIN: a conversation taken back re-seeds seq, instead of colliding on the PK", async () => {
+    // A pod that owned a conversation, lost it, and is given it back still holds a CACHED
+    // head from its first stint — while the other pod advanced seq past it. Appending from
+    // that head is a duplicate (conversation_id, seq): a lost turn reported as a collision,
+    // which is the shape this PR exists to remove. The claim is where the stale head dies.
+    const { db, rows, assign } = fakeDb();
+    assign(CONV, { hostPod: "host-1", hostGeneration: 1 });
+    const a = fencedStore(db, "host-1");
+    const b = fencedStore(db, "host-2");
+    const errors: unknown[] = [];
+    a.onAppendError((_id, e) => errors.push(e));
+
+    await a.appendEvent(CONV, run(1)[0]); // a's head is now seq 1
+
+    await b.claimFence(CONV, 2);
+    await b.appendEvent(CONV, run(2)[0]);
+    await b.appendEvent(CONV, run(2)[1]); // table is at seq 3
+
+    await a.claimFence(CONV, 3); // reassigned back
+    await a.appendEvent(CONV, run(3)[0]);
+
+    expect(errors, "no PK collision from the stale head").toEqual([]);
+    expect(rows.map((r) => r.seq), "it continues the log rather than rewriting seq 2").toEqual([1, 2, 3, 4]);
+  });
+
+  it("a claim on a conversation with NO row is refused, and says which of the two it was", async () => {
+    // Refused covers two states that need opposite fixes — superseded by a newer epoch, or
+    // no row at all — and the UPDATE reports both as rowCount 0. The read-back is what
+    // separates them, the same way a refused append's does.
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {}); // warn -> console.error
+    try {
+      const { db } = fakeDb();
+      expect(await fencedStore(db, "host-1").claimFence("conv-no-row" as SessionId, 2)).toBe("refused");
+
+      const line = await awaitLine(errSpy, "fence claim refused");
+      expect(line, "a refused claim must be logged at all").toBeDefined();
+      // By FIELD, not serialized form — log.ts emits JSON or key=value by environment.
+      expect(line).toMatch(/"row":"missing"|\brow=missing\b/);
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it("an UNFENCED store has nothing to claim — single-replica is untouched", async () => {
+    // No fence configured is the kube-less dev deployment: one writer by construction, so
+    // there is no row to take and the ownership hook must not start writing one.
+    const { db, assign, row } = fakeDb();
+    assign(CONV, { hostPod: null });
+
+    expect(await store(db).claimFence(CONV, 7)).toBe("unfenced");
+    expect(row(CONV), "no claim was written").toEqual({ hostPod: null, hostGeneration: 0 });
   });
 
   it("A COLLISION names the row too — the one failure where nobody was refused", async () => {
