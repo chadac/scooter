@@ -32,8 +32,6 @@
     ./journal-persist.nix
     ./warm-store-seed.nix
     ./dbus-container.nix
-    # The enabled contribs' sandbox halves, derived from the source (contrib/).
-    ./contribs.nix
   ];
 
   # The agent-editable modules dir lives on the workspace PVC (durable + writable:
@@ -132,6 +130,6 @@
   # These become packages / systemd units / activation scripts here.
   #
   # The aws items from that list (scooter-aws*, the awscli2 stub, the ~/.aws/config
-  # render) are contrib/aws/sandbox.nix, layered in through ./contribs.nix — still
-  # in this image, no longer in this file. Why: #599.
+  # render) are contrib/aws/sandbox.nix, layered into the image by pkgs/sandbox-os —
+  # still in this image, no longer in this file. Why: #599, #717.
 }

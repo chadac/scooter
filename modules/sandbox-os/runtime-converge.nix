@@ -55,6 +55,21 @@ let
   effTree = if cfg.modulesTree != null then storeRef cfg.modulesTree else modulesTree;
   effModulesSrc = if cfg.modulesTree != null then "${storeRef cfg.modulesTree}/modules/sandbox-os" else modulesSrc;
 
+  # EVERY module a re-converge layers on top of the base config, as ONE list of store
+  # paths: the exprs a caller threaded in verbatim, plus the repo-relative files
+  # rebased onto the baked tree (the copy the pod has — see
+  # extraReconvergeModuleFiles). This is the whole answer to "what else is in this
+  # system", so a self-modify replays it instead of re-deriving any of it.
+  reconvergeModules = cfg.extraReconvergeModules
+    ++ map (f: "${effTree}/${f}") cfg.extraReconvergeModuleFiles;
+
+  # The list as a JSON array, in the store so the apply script references it by path
+  # and reads it INSIDE its `nix build --expr` (never through the shell — see the
+  # build below). Also surfaced at /etc/scooter/reconverge-modules.json, which is the
+  # one place to look when a sandbox comes back from a switch missing something.
+  reconvergeModulesFile = pkgs.writeText "scooter-reconverge-modules.json"
+    (builtins.toJSON reconvergeModules);
+
   # The canonical system profile — registering each switch here gives us the
   # numbered-generation ladder NixOS uses for rollback. The symlinks
   # (system, system-N-link) are plain files on the writable rootfs, NOT in the
@@ -230,22 +245,6 @@ let
         echo "scooter-apply-module: building toplevel (base config + local/registry modules)..."
         module_expr=""
       fi
-      # Both fragments are interpolated into the double-quoted --expr below, so they
-      # must reach Nix through the shell UNCHANGED: a bare `"` is eaten by bash and
-      # Nix then reads a quoted path as a PATH, failing `listOf str`. Keep them as
-      # shell vars — inlining either one re-breaks it. dev-env-reconverge-quoting
-      # greps `reconverge_carry` to check this. Why: PR #696.
-      reconverge_layers=${
-        lib.escapeShellArg (lib.concatStringsSep "\n            " cfg.extraReconvergeModules)
-      }
-      # Re-declare the list in the REBUILT system, or it survives exactly ONE switch:
-      # the next generation's scooter-apply-module is generated from THIS eval, and
-      # nothing in-pod sets the option. Why: PR #607.
-      reconverge_carry=${
-        lib.escapeShellArg "{ programs.scooterModule.extraReconvergeModules = [ ${
-          lib.concatMapStringsSep " " lib.strings.escapeNixString cfg.extraReconvergeModules
-        } ]; }"
-      }
       # Build the base config (+ the optional extra module). --impure so we can read the
       # module path + the local-modules dir; the nixpkgs + modules source are fixed store
       # paths baked in. We re-inject programs.scooterModule.nixpkgs so the re-evaluated
@@ -253,20 +252,38 @@ let
       # (set -e), before any profile/switch change: the gate. With no extra module this
       # still re-converges local-modules (/etc/scooter/modules) — the agent's authored
       # modules — since the base config imports them.
+      #
+      # THE LAYER LIST IS READ AS JSON, INSIDE the expr, from a file baked beside this
+      # script. It used to be two shell fragments interpolated into this
+      # double-quoted string, and that is how the carry shipped broken: the script
+      # emitted [ "/nix/store/x.nix" ], bash ate the quotes, and `listOf str` rejected
+      # a path (#696). A `builtins.fromJSON` keeps the shell out of it entirely —
+      # nothing about the list is expanded by bash, so there is nothing to escape.
+      #
+      # The discardStringContext is LOAD-BEARING: the entries name the baked tree, so
+      # readFile attaches that reference as string context and fromJSON refuses a
+      # string carrying any. The tree stays in the closure regardless — this file's
+      # own derivation references it. Why: PR #718.
       toplevel=$(nix build --no-link --print-out-paths --impure --expr "
+        let layers = builtins.fromJSON (builtins.unsafeDiscardStringContext (builtins.readFile ${reconvergeModulesFile})); in
         (import ${baseConfig} {
           nixpkgs = ${cfg.nixpkgs};
           modulesPath = ${effModulesSrc};
-          extraModules = [
+          extraModules =
             # base-config.nix itself now force-sets programs.scooterModule.{enable,nixpkgs}
             # for the re-converge (it has the nixpkgs ref), so we do NOT set them here —
             # a second mkForce would conflict.
+            #
             # Layer the currently-running system's extra config (so the switch
-            # preserves what's already active — see extraReconvergeModules).
-            $reconverge_layers
-            $reconverge_carry
-            $module_expr
-          ];
+            # preserves what's already active), then RE-DECLARE the list in the system
+            # being built — or it survives exactly one switch, since the next
+            # generation's scooter-apply-module is generated from THIS eval and nothing
+            # in-pod sets the option (#607). The re-declared list is the resolved one,
+            # already rebased onto the baked tree, so the generation after that renders
+            # the identical file.
+            map (p: /. + p) layers
+            ++ [ { programs.scooterModule.extraReconvergeModules = layers; } ]
+            ++ [ $module_expr ];
         }).toplevel
       ")
 
@@ -643,6 +660,29 @@ in
       description = "Extra module exprs always layered into the runtime re-converge (keeps currently-running config).";
     };
 
+    extraReconvergeModuleFiles = lib.mkOption {
+      # The same list as `extraReconvergeModules`, addressed the ONE way the image
+      # builder can: paths RELATIVE TO THE REPO ROOT, resolved against the vendored
+      # tree (`modulesTree`) when the list is rendered.
+      #
+      # Why relative and not absolute: the builder's own paths point into the FLAKE
+      # SOURCE, and a flake path that lands in a file in the image is a store
+      # reference to the whole repo — which drags it into the sandbox closure and ties
+      # every image tag to every file in the repo (measured: a one-line change in
+      # ci.yml moved the tag). The vendored tree is the copy the pod actually has, and
+      # the image already references it, so rebasing onto it costs nothing.
+      #
+      # This is how the contribs' sandbox halves reach the pod (pkgs/sandbox-os), and
+      # how anything else layered into the image at build time should: a module the
+      # image imports but this list omits is dropped by the first self-modify, because
+      # the re-converge evaluates the vendored modules/sandbox-os, which never saw it.
+      # Why: PR #717.
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [ "contrib/aws/sandbox.nix" ];
+      description = "Repo-relative module files always layered into the runtime re-converge, resolved against the baked tree.";
+    };
+
     modulesTree = lib.mkOption {
       # The vendored sandbox-os source tree (system.extraDependencies) that MUST be in
       # the pod's offline store for the in-pod re-converge build. Null (image default) =
@@ -673,6 +713,11 @@ in
     # produces a NEW sandbox-os-src that was never built → "path '…-sandbox-os-src' is not
     # valid"). Using the baked path keeps the re-converged toplevel offline-buildable.
     system.extraDependencies = [ effTree ];
+
+    # What a re-converge will layer on, readable in the running sandbox. The apply
+    # script reads the store copy (so the list is part of the script's own identity);
+    # this is the debuggable view of the same file.
+    environment.etc."scooter/reconverge-modules.json".source = reconvergeModulesFile;
 
     # Apply the mounted module at boot (best-effort; a missing module is a no-op).
     # The agent-host can also exec scooter-apply-module on spawn/claim.

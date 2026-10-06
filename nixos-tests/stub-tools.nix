@@ -20,6 +20,12 @@ let
 
   realUv = pkgs.uv;
   realAwsOut = builtins.unsafeDiscardStringContext (toString pkgs.awscli2);
+
+  # The contribs' sandbox halves, composed exactly as pkgs/sandbox-os does. #717 moved
+  # this layer out of modules/sandbox-os into the image builder, and the `aws` stub
+  # asserted below is declared by contrib/aws/sandbox.nix — so `sandboxModule` alone
+  # leaves `aws` off PATH, and the closure assertion passes VACUOUSLY. Why: PR #718.
+  contribSandbox = import ../contrib/sandbox-modules.nix { inherit lib; };
 in
 pkgs.testers.runNixOSTest {
   name = "dev-env-stub-tools";
@@ -28,7 +34,7 @@ pkgs.testers.runNixOSTest {
   node.pkgs = lib.mkForce stubbedPkgs;
 
   nodes.machine = { ... }: {
-    imports = [ sandboxModule ];
+    imports = [ sandboxModule ] ++ contribSandbox.modules;
 
     # Seed the real uv OUTPUT directly (not through the stub) so the shim finds
     # it already realised — the VM has no network to fetch it.
@@ -44,10 +50,14 @@ pkgs.testers.runNixOSTest {
         # Assert on CONTENT, not the store path name: `readlink -f` follows through
         # symlinkJoin into the per-command shim, whose derivation is named for the
         # COMMAND (…-aws), so a name check reads as "not a stub" even when it is one.
-        uv = machine.succeed("cat $(command -v uv)")
-        assert "nix-stubs exec" in uv, f"uv on PATH is not a stub:\n{uv}"
-        aws = machine.succeed("cat $(command -v aws)")
-        assert "nix-stubs exec" in aws, f"aws on PATH is not a stub:\n{aws}"
+        # Resolve the path in its OWN succeed(), so a tool that is missing from PATH
+        # fails HERE. `cat $(command -v x)` with x absent runs `cat` with no argument,
+        # which reads stdin and blocks until the driver's global timeout — a missing
+        # stub then costs a 60-minute job that cannot say what was wrong. Why: PR #718.
+        for tool in ("uv", "aws"):
+            path = machine.succeed(f"command -v {tool}").strip()
+            shim = machine.succeed(f"cat {path}")
+            assert "nix-stubs exec" in shim, f"{tool} on PATH is not a stub:\n{shim}"
 
     # The whole point: the image ships build recipes, not the tools. awscli2 is
     # ~449 MB built and ~8 MB as a recipe.

@@ -1,11 +1,11 @@
 # The contrib schema. Why: PR #585.
 #
 # `lib`-ONLY, deliberately: this is imported by every eval that reads the registry —
-# the package build (contrib/default.nix), the sandbox image AND its in-pod
-# re-converge (contrib/sandbox-modules.nix, #614), and the kubenix platform
-# (modules/platform.nix). Only the first of those has a `pkgs`. The build half —
-# the one thing that needs one — is plain Nix over the evaluated spec in
-# contrib/build.nix, not an option in here. Why: #711.
+# the package build (contrib/default.nix), the sandbox image
+# (contrib/sandbox-modules.nix) and the kubenix platform (modules/platform.nix).
+# Only the first of those has a `pkgs`. The build half — the one thing that needs
+# one — is plain Nix over the evaluated spec in contrib/build.nix, not an option in
+# here. Why: #711.
 { lib, ... }:
 
 {
