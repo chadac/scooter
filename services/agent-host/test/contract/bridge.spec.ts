@@ -1360,6 +1360,31 @@ describe("bridge dead-on-arrival watchdog (firstActivityTimeoutMs)", () => {
     expect(fin.length).toBe(1); // a normal, single, clean finish
   });
 
+  it("RETRIES a wedged run whose prompt() never settles (a stalled agent must not hold the pump)", async () => {
+    // The nightly flake this came from: the watchdog fired, said retryable: true, and the
+    // retry NEVER RAN — `runPrompt` was still awaiting a prompt() that would not settle, and
+    // the pump performs the retry. So the turn was lost and every later message queued behind
+    // a run that could not end. `ignoreCancel` is the real shape: an agent stalled inside a
+    // model call has no terminal to kill and never answers session/cancel.
+    const agent = createFakeAcpAgent();
+    agent.setScript([]);
+    agent.gate({ ignoreCancel: true });
+    const bridge = mkBridge(agent, 30, undefined, { deathRetryMax: 1, deathRetryBaseMs: 10 });
+    const events = collect(bridge);
+    await bridge.start();
+
+    void bridge.prompt({ threadId: "t1", text: "hello?" });
+    await tick(120); // attempt 1's watchdog → backoff → attempt 2 STARTS
+
+    expect(events.filter((e) => e.type === "RUN_ERROR").length).toBeGreaterThanOrEqual(1);
+    // The point of the test: a second attempt was actually driven, with attempt 1's prompt()
+    // STILL pending (the gate was never released).
+    expect(events.some((e) => e.type === "RUN_RETRYING")).toBe(true);
+    expect(agent.startedCount()).toBeGreaterThanOrEqual(2);
+    agent.releaseGate();
+    await bridge.stop();
+  });
+
   it("is disabled when firstActivityTimeoutMs is 0 (opt-out)", async () => {
     const agent = createFakeAcpAgent();
     agent.setScript([]);
