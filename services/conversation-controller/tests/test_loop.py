@@ -1,5 +1,7 @@
 """Tier 1 — the reconcile LOOP against a fake k8s (in-memory CRs + pods). No cluster."""
 
+from dataclasses import replace as dc_replace
+
 import pytest
 
 import conversation_controller.loop as loop_mod
@@ -39,7 +41,7 @@ class FakeK8s:
         self.deleted_trees = []                 # [sandbox_name] reaped
         self.cost_calls = []                    # [(pod, cost)] set_pod_deletion_cost
         self.suspends = []                      # [sandbox_name] suspend_sandbox calls (zombie repair)
-        self.force_deleted = []                 # [sandbox_name] force_delete_sandbox calls (terminal)
+        self.reclaimed = []                     # [sandbox_name] reclaim_sandbox_pod calls (terminal)
 
     def set_pod_deletion_cost(self, name, cost):
         self.cost_calls.append((name, cost))
@@ -47,9 +49,13 @@ class FakeK8s:
     def suspend_sandbox(self, name):
         self.suspends.append(name)
 
-    def force_delete_sandbox(self, name):
-        self.force_deleted.append(name)
-        self._sandboxes.pop(name, None)
+    def reclaim_sandbox_pod(self, name):
+        # Pod-only: the Sandbox CR — and with it the workspace PVC — SURVIVES (#709). Mirror
+        # the real reclaim, which re-asserts Suspended before dropping the pod.
+        self.reclaimed.append(name)
+        sb = self._sandboxes.get(name)
+        if sb is not None:
+            self._sandboxes[name] = dc_replace(sb, operating_mode="Suspended")
 
     def get_agent_host_replicas(self):
         return self._replicas
@@ -526,15 +532,17 @@ def test_persistent_zombie_is_acted_on_a_bounded_number_of_times_then_terminal()
     for _ in range(50):
         reconcile_once(k, cap=10)
     assert 1 <= len(k.suspends) <= 5, f"expected a small bounded number of suspends, got {len(k.suspends)}"
-    # Terminal: force-delete the running Sandbox (reclaims the leaked pod) + mark conversation Failed.
-    assert k.force_deleted == ["conv-z1"]
+    # Terminal: reclaim the leaked pod + mark conversation Failed. The Sandbox CR stays —
+    # deleting it would cascade the workspace PVC (#709).
+    assert k.reclaimed == ["conv-z1"]
+    assert "conv-z1" in k._sandboxes, "the workspace PVC must survive the escalation (#709)"
     assert k.status("z1")["phase"] == "Failed"
     # Idempotent terminal — never suspended again once resolved.
     at_terminal = len(k.suspends)
     for _ in range(10):
         reconcile_once(k, cap=10)
     assert len(k.suspends) == at_terminal
-    assert k.force_deleted == ["conv-z1"]  # not force-deleted again either
+    assert k.reclaimed == ["conv-z1"]  # not reclaimed again either
 
 
 def test_failed_conversation_is_never_reassigned():
@@ -662,7 +670,7 @@ def test_oscillating_zombie_still_reaches_the_terminal_escalation():
     assert len(k.suspends) <= 5, (
         f"budget reset by the quiescent tick — {len(k.suspends)} suspends in 120 ticks"
     )
-    assert k.force_deleted == ["conv-z1"], "escalation never fired despite a persistent zombie"
+    assert k.reclaimed == ["conv-z1"], "escalation never fired despite a persistent zombie"
     assert k.status("z1")["phase"] == "Failed"
 
 
@@ -690,7 +698,7 @@ def test_a_settled_sandbox_is_eventually_forgotten():
         reconcile_once(k, cap=10)
 
     assert len(k.suspends) == 1, "a sandbox that stays suspended needs exactly one suspend"
-    assert k.force_deleted == [], "a suspend that held must NOT escalate"
+    assert k.reclaimed == [], "a suspend that held must NOT escalate"
     assert "z1" not in loop_mod._zombie_progress, "a settled sandbox must be forgotten"
 
 

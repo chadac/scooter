@@ -70,9 +70,9 @@ def _state(cr: dict, sandbox_modes: dict[str, str | None] | None = None) -> Conv
 #   2. BACKOFF — after issuing a suspend, wait a few ticks before the next one (never re-issue
 #      every tick).
 #   3. TERMINAL ESCALATION — after N suspends that don't take, stop fighting the upstream resume
-#      race: force-delete the Sandbox (reclaims the leaked running pod) and mark the conversation
-#      Failed (a terminal phase reconcile then leaves inert; an operator investigates). Logged
-#      ONCE, not per tick.
+#      race: delete the leaked POD (never the Sandbox CR — that cascades the workspace PVC, #709)
+#      and mark the conversation Failed (a terminal phase reconcile then leaves inert; an operator
+#      investigates). Logged ONCE, not per tick.
 #
 # (3) only works if the attempt COUNT survives the oscillation it is counting. A suspend that
 # lands makes the Sandbox Suspended, so the next tick is a NoOp — and dropping the record there
@@ -225,18 +225,19 @@ def reconcile_once(k8s, cap: int, rows=None) -> list[tuple[str, str]]:
                 continue
 
             # TERMINAL ESCALATION: N suspends have not taken. Stop fighting the resume race —
-            # force-delete the Sandbox (reclaims the leaked running pod) and mark the
-            # conversation Failed. Logged ONCE.
+            # reclaim the leaked pod and mark the conversation Failed. Logged ONCE.
+            # Pod-only, never the Sandbox CR: deleting the CR cascades its volumeClaimTemplate
+            # PVCs, i.e. the conversation's /workspace. Why: #709.
             if prog.suspends >= _ZOMBIE_MAX_SUSPENDS:
                 if c.sandbox_ref:
-                    k8s.force_delete_sandbox(c.sandbox_ref)
+                    k8s.reclaim_sandbox_pod(c.sandbox_ref)
                 k8s.patch_status(c.name, {"phase": "Failed"})
                 # Failed is the phase NOTHING else writes, and the one a row-sourced reader most
                 # needs: without it a dead conversation renders as "running".
                 _mirror_phase(rows, c.name, "Failed")
                 prog.resolved = True
                 logger.error(
-                    "zombie sandbox unresolved — escalating (force-delete Sandbox + mark conversation Failed)",
+                    "zombie sandbox unresolved — escalating (reclaim the leaked pod + mark conversation Failed)",
                     extra={
                         **_C,
                         "conversation_id": c.name,
