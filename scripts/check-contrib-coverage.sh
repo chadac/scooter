@@ -4,7 +4,7 @@
 #
 # Both failures are silent. A contrib missing from all-modules.nix is never built and
 # never tested (#585). A contrib half under the WRONG FILENAME is worse: a half is
-# found beside the declaration by name (contrib/platform-modules.nix looks for
+# found beside the declaration by name (modules/platform.nix looks for
 # <name>/deployment.nix), so a typo like `deploymnet.nix` is simply never imported — the options vanish, and every manifest that sets them fails
 # with "option does not exist", pointing at the manifest rather than at the file.
 # Why: #585, #711.

@@ -1,6 +1,6 @@
 # aws's DEPLOYMENT half: the option tree an operator configures, and the manifests
 # it renders. A kubenix module in the same eval as modules/platform.nix, which finds
-# it beside ./contrib.nix (contrib/platform-modules.nix).
+# it beside ./contrib.nix (derived from contrib/all-modules.nix).
 #
 # This was ~40 references in modules/broker.nix — the option tree, the AWS_* env
 # block, the accounts ConfigMap, the rollout annotation and the IRSA annotation —
@@ -114,18 +114,20 @@ in
     };
   };
 
-  # The table declaration is deliberately OUTSIDE the `mkIf` below: it is gated on
-  # the contrib being BUILT (platform-modules.nix imports only enabled contribs),
-  # never on this deployment running it — `just db-generate` renders from bare
-  # defaults, so a deployment-gated table vanishes from the committed schema.
-  # Why: PR #637.
+  # The table declaration is gated on the contrib being BUILT, never on this
+  # deployment running it — `just db-generate` renders from bare defaults, so a
+  # deployment-gated table vanishes from the committed schema. Why: PR #637.
+  #
+  # `contribs.aws.enable` is that "is it built" flag, spelled out since #719 made the
+  # platform's imports static: it used to be carried by the import filter dropping a
+  # disabled contrib, and nothing else here distinguishes built from deployed.
   config = lib.mkMerge [
-    {
+    (lib.mkIf config.contribs.aws.enable {
       # Writer is `broker`: the contrib runs inside the broker image and writes
       # through the broker's own database role. It declares no `owner` — that is
       # modules/broker.nix's, which owns the database.
       scooter.db.broker.tables.permission_requests = { writers = [ "broker" ]; };
-    }
+    })
 
     # Everything else IS a deployment property, and gated on the BROKER being
     # deployed as well as aws: without the broker there is no container to inject env

@@ -84,12 +84,16 @@ contrib means adding it there; `just check-contrib-coverage` fails CI if you for
 because an unimported contrib is never built and never tested.
 
 `enable` stays the one switch, declared by the contrib like everything else about
-it. The platform cannot read it directly — `imports` resolves before any option in
-that eval exists, and reading one there is `infinite recursion encountered`, not a
-catchable error (#615) — so `contrib/platform-modules.nix` answers the question in a
-*separate* lib-only eval and hands back plain paths, exactly as
-`contrib/sandbox-modules.nix` does for the image. That indirection is why a disabled
-contrib's options *do not exist* (#599) rather than being quietly ignored.
+it, and it decides what **ships** — not what is imported. `modules/platform.nix`
+imports every contrib's two halves unconditionally, straight off this list, and a
+disabled contrib is inert there because everything its halves render sits behind
+their own `mkIf`. Configuring one you did not ship is still a loud error, but it
+comes from `shipGate` in `modules/platform.nix` rather than from the option not
+existing (#599, #719).
+
+The image is the one reader that still needs the *filtered* set up front
+(`contrib/sandbox-modules.nix`): the pod has no registry to gate against, and the
+re-converge replays its module list by path.
 
 ```nix
 {
@@ -189,17 +193,17 @@ redeclaring the container:
 | an IRSA / cloud identity annotation | `broker.serviceAccountAnnotations` |
 | anything of its own | `kubernetes.resources.*` directly |
 
-Found beside the declaration, not declared: `contrib/platform-modules.nix` hands
-`modules/platform.nix` the enabled contribs’ `contrib.nix` **and** `deployment.nix`
-files as plain paths, so adding an integration still edits no platform file, and
-there is no `deployment.module` left to keep in sync with the filename.
+Found beside the declaration, not declared: `modules/platform.nix` derives the
+list from `contrib/all-modules.nix` — each entry's `contrib.nix` plus the
+`deployment.nix` next to it where one exists — so adding an integration still edits
+no platform file, and there is no `deployment.module` left to keep in sync with the
+filename.
 
-That file is a separate lib-only `evalModules`, like `contrib/sandbox-modules.nix`
-and for the same reason: the platform's `imports` cannot read `config.contribs`
-to find out which contribs are enabled — `imports` resolves first, so that is
-`infinite recursion encountered`, and `tryEval` does not catch recursion (#615).
-What #711 removed is not the eval but the *schema's* dependency on built packages,
-which is what kept the contribs out of the kubenix eval in the first place.
+It is a **static** list, with no pre-eval of the registry. The platform's `imports`
+still cannot read `config.contribs` (`imports` resolves first, so that is `infinite
+recursion encountered`, which `tryEval` does not catch — #615), but it no longer
+needs to: it imports everything, and `enable` gates rendering instead of importing.
+Until #719 a separate lib-only `evalModules` existed purely to apply that filter.
 
 `just check-contrib-coverage` fails CI on a stray `.nix` in a contrib directory,
 which is the typo this convention would otherwise swallow.
@@ -213,10 +217,12 @@ Three consequences worth knowing:
   `scooter.broker.<name>.enable` (below), and this module is what declares
   that option. A contrib shipping skills and no deployment half has no gate, and
   `deployment.nix` throws.
-- **An option that does not exist is an eval error**, so a manifest configuring an
-  integration this image never built in fails loudly instead of being ignored. That
-  is `enable` doing its job through platform-modules.nix, and `examples/check.nix`
-  asserts it in both directions.
+- **Configuring a contrib this build does not ship fails the render.** The options
+  exist — every contrib is imported — so the error comes from `shipGate` in
+  `modules/platform.nix`, which throws from a leaf every render produces. That is
+  `enable` doing its job, and `examples/check.nix` asserts it in both directions:
+  unshipping a contrib the example configures must fail, and unshipping one it does
+  not must still render.
 - **The same cuts the other way for a contrib READING a sibling's option.** A
   platform module may touch any part of the tree — the module system has no notion
   of ownership, and a contrib is free to declare an option another one also declares.
@@ -260,9 +266,9 @@ the feature being *broken*, which is how the grafana skill once sent an agent
 chasing a `loki/` path that never existed. `scooter-aws.md` shipped into every
 deployment, aws or not, until this moved.
 
-`modules/platform.nix` reads the set straight off `config.contribs` — the enabled
-contribs are modules in its own eval (#711), so there is no second module system to
-re-derive it from and nothing that could disagree with the build.
+`modules/platform.nix` reads the set straight off `config.contribs`, filtered on
+`enable` — the contribs are modules in its own eval (#711), so there is no second
+module system to re-derive it from and nothing that could disagree with the build.
 `examples/check.nix` renders the platform with each gate on and off and
 asserts the file follows — and fails if a contrib ships a skill that table
 doesn't cover. Skills that document the *platform* (`scooter-github.md`,

@@ -5,8 +5,9 @@
 #
 # `<name>/contrib.nix`, not `<name>`: a contrib is three files, and this is the one
 # every eval reads — what the contrib IS. Its deployment half (<name>/deployment.nix)
-# is reached only through contrib/platform-modules.nix, the one eval with a `scooter.*`
-# tree to declare into. Why: #711, and contrib/README.md.
+# stays out of this list because the evals that read it have no `scooter.*` tree to
+# declare into; modules/platform.nix, which does, derives the halves FROM this list
+# and imports them beside it. Why: #711, #719, and contrib/README.md.
 {
   imports = [
     ./spec.nix

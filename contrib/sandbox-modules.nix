@@ -26,8 +26,11 @@
 
 let
   # A module system of its own, so the NixOS-side `imports` gets plain paths rather
-  # than config values it cannot read that early — the same shape as
-  # contrib/platform-modules.nix, for the same reason (#615).
+  # than config values it cannot read that early (#615). The platform no longer needs
+  # this shape — its imports are static and `enable` gates rendering instead (#719) —
+  # but the image genuinely cannot import a disabled contrib's sandbox module: there
+  # is no `enable` in the POD's eval to gate it with, and the re-converge replays this
+  # list by path with no registry at all.
   eval = lib.evalModules {
     specialArgs = { inherit lib; };
     modules = [ ./all-modules.nix ] ++ extraModules;
