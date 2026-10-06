@@ -124,15 +124,10 @@ export function inventory({ project } = {}) {
  *  Adding a file here means the shards start running it, so it is a deliberate
  *  list rather than a glob.
  *
- *  event-log-durability qualifies on the same terms as the other two: deployed
- *  platform plus its Postgres, nothing else.
- *
- *  THIS IS THE ONLY COPY OF THE LIST. ci.yml's `cluster smoke` step reads it via
- *  `test-inventory.mjs cluster-specs`; it used to hardcode the same two names with a
- *  comment asking the two lists to be kept in step, and they drifted on the very
- *  next addition. Both halves are needed and they fail differently: off this list, a
- *  test is never SCHEDULED; absent from vitest's positional filters, its file is
- *  never LOADED so `-t` matches nothing. Either way the shard is green. Why: PR #723. */
+ *  THIS IS THE ONLY COPY. ci.yml's `cluster smoke` step reads it via
+ *  `test-inventory.mjs cluster-specs` rather than restating it. Off this list a test is
+ *  never SCHEDULED; missing from vitest's file filters its file is never LOADED, so `-t`
+ *  matches nothing. Both are silent -- the shard is green either way. Why: PR #723. */
 export const SHARDED_CLUSTER_SPECS = ["platform-smoke", "event-backfill", "event-log-durability"];
 
 export function clusterInventory() {

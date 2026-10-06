@@ -824,12 +824,8 @@ jobs:
           # before these filters were restored: 8 failed test FILES in a shard
           # that had been given 11 cluster tests.
           #
-          # DERIVED, NOT HARDCODED. This list was a literal `platform-smoke
-          # event-backfill` plus a comment asking it to be kept in step with
-          # SHARDED_CLUSTER_SPECS. It drifted on the next addition: the planner
-          # assigned a third spec's tests, vitest never loaded that file, `-t`
-          # matched nothing in it, and all four shards passed having run it zero
-          # times.
+          # Derived from SHARDED_CLUSTER_SPECS, never restated here: a second copy
+          # drifts, and the shard then passes having run the spec zero times. Why: PR #723.
           #
           # $CLUSTER_GREP stays UNEXPANDED here (single-quoted, read inside the
           # shell) -- every shard selector contains an apostrophe.
@@ -838,11 +834,8 @@ jobs:
             npm install
             FILES=$(node test/e2e/support/test-inventory.mjs cluster-specs)
 
-            # COUNT THE SELECTION BEFORE RUNNING IT. The planner says how many
-            # cluster tests this shard owns; if the file filters and -t pattern
-            # together do not find exactly that many, some assigned test would run
-            # ZERO times and the shard would still be green -- which is how a new
-            # spec went unexecuted across all four shards. Assert instead of trust.
+            # A selection short of what the planner assigned means an assigned test
+            # runs ZERO times and the shard still passes. Fail loudly. Why: PR #723.
             SELECTED=$(npx vitest list --project cluster $FILES -t "$CLUSTER_GREP" | grep -c . || true)
             echo "cluster: selected $SELECTED of $CLUSTER_EXPECT assigned test(s) from [$FILES]"
             if [ "$SELECTED" != "$CLUSTER_EXPECT" ]; then
