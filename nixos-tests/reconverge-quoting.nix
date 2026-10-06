@@ -14,10 +14,10 @@
 # the list must be in the file, the file must be what the script reads, the read must
 # survive fromJSON, and the shell must not be assembling the list again.
 #
-# THE FIXTURE MUST USE A REAL STORE PATH. It used fake hashes, and that is why this
-# check passed while the k3d boot failed: readFile's context comes from the file's
-# REGISTERED references, so a nonexistent path renders a context-FREE string, and
-# fromJSON only rejects a string with context. A real tree reproduces it. Why: #718.
+# EVERY ASSERTION HERE RUNS AT BUILD TIME, NEVER AT EVAL. `readFile`/`fromJSON` on
+# the rendered list is import-from-derivation, which `nix flake show` (just ci)
+# evaluates with disabled — so an eval-time read fails the whole flake, not just this
+# check. Why: #718.
 
 { pkgs, lib, sandboxModule }:
 
@@ -68,32 +68,17 @@ let
   # if the image stops rendering it rather than passing on a file nobody reads.
   listFile = node.environment.etc."scooter/reconverge-modules.json".source;
 
-  # The read the apply script performs, done HERE at eval time (the only place it can
-  # be observed: inside a sandboxed build, nix cannot query the store DB, so readFile
-  # finds no references and the context never appears).
-  raw = builtins.readFile listFile;
-
-  # The fixture reproduces production: the rendered list REFERS to the tree, so a plain
-  # `fromJSON (readFile …)` would abort the switch. If this ever goes false the fixture
-  # has drifted back to paths nothing references, and the guard below means nothing.
-  ctxAsserted =
-    if builtins.hasContext raw then true
-    else throw ''
-      reconverge-quoting: the rendered list carries NO string context, so this check
-      cannot see the #718 failure (fromJSON rejecting a store-path reference). Point
-      the fixture at a real store path again.
-    '';
-
-  # …and with the context discarded, as the script does, it parses to the configured
-  # list. Both halves: the verbatim exprs and the tree-rebased file.
-  parsed = assert ctxAsserted;
-    builtins.fromJSON (builtins.unsafeDiscardStringContext raw);
+  # Both halves of the list the config asked for: the verbatim exprs, and the
+  # repo-relative file rebased onto the baked tree.
   expected = mods ++ [ "${tree}/${treeRelative}" ];
-  parsedOk =
-    if parsed == expected then true
-    else throw "reconverge-quoting: rendered list is ${builtins.toJSON parsed}, expected ${builtins.toJSON expected}";
+  expectedFile = pkgs.writeText "expected-reconverge-modules.json" (builtins.toJSON expected);
+
+  # The fixture's whole point is that the rendered list REFERS to the tree — that
+  # reference is what attaches string context to the in-pod readFile, which is what
+  # plain fromJSON refuses (#718). The REGISTERED references are the build-time
+  # observable of it: readFile cannot see them from inside a sandbox, closureInfo can.
+  listClosure = pkgs.closureInfo { rootPaths = [ listFile ]; };
 in
-assert parsedOk;
 pkgs.runCommand "dev-env-reconverge-quoting" { } ''
   script=${applyModule}/bin/scooter-apply-module
 
@@ -105,12 +90,23 @@ pkgs.runCommand "dev-env-reconverge-quoting" { } ''
     || { echo "FAIL: ${listFile} is not a JSON array" >&2; exit 1; }
   ${pkgs.jq}/bin/jq -e 'map(type == "string") | all' ${listFile} >/dev/null \
     || { echo "FAIL: an entry is not a JSON string — the carry would hand Nix a path" >&2; exit 1; }
-  for m in ${lib.concatStringsSep " " mods}; do
-    ${pkgs.jq}/bin/jq -e --arg m "$m" 'index($m) != null' ${listFile} >/dev/null \
-      || { echo "FAIL: $m is missing from the rendered list" >&2; exit 1; }
-  done
+  ${pkgs.jq}/bin/jq -e --slurpfile want ${expectedFile} '. == $want[0]' ${listFile} >/dev/null \
+    || { echo "FAIL: rendered list is not the configured list." >&2
+         echo "  want: $(cat ${expectedFile})" >&2
+         echo "  got:  $(cat ${listFile})" >&2
+         exit 1; }
 
-  # 2. The script reads THAT file — not some other copy, and not a list it rebuilt —
+  # 2. The rendered list REFERENCES the tree, so the in-pod read carries context and
+  # the discard below is load-bearing. Without this the fixture can drift back to
+  # paths nothing references — which is exactly how this check passed while the k3d
+  # boot failed (#718): a nonexistent path renders a context-FREE string.
+  grep -qxF '${tree}' ${listClosure}/store-paths \
+    || { echo "FAIL: the rendered list does not reference ${tree}, so this check" >&2
+         echo "      cannot see the #718 failure (fromJSON rejecting a store-path" >&2
+         echo "      reference). Point the fixture at a real store path again." >&2
+         exit 1; }
+
+  # 3. The script reads THAT file — not some other copy, and not a list it rebuilt —
   # and it discards the string context, without which fromJSON refuses the read and
   # every switch dies at the build gate (#718).
   grep -qF 'builtins.fromJSON (builtins.unsafeDiscardStringContext (builtins.readFile ${listFile}))' "$script" \
@@ -119,8 +115,8 @@ pkgs.runCommand "dev-env-reconverge-quoting" { } ''
          echo "      If the mechanism moved, re-point this check; don't drop it." >&2
          exit 1; }
 
-  # 3. The shell is NOT assembling the list again. A reintroduced fragment is the
-  # #696 bug returning, and it would pass (1) and (2) while shipping broken.
+  # 4. The shell is NOT assembling the list again. A reintroduced fragment is the
+  # #696 bug returning, and it would pass (1)-(3) while shipping broken.
   if grep -qE '^ *reconverge_(layers|carry)=' "$script"; then
     echo "FAIL: $script assembles the module list in the shell again — that is #696." >&2
     exit 1
