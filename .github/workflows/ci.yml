@@ -806,6 +806,9 @@ jobs:
           # verified, bash reports `unexpected EOF while looking for matching '`.
           # ${{ }} here is a YAML value, so the quote is data rather than syntax.
           CLUSTER_GREP: ${{ matrix.cluster_grep }}
+          # How many cluster tests the planner ASSIGNED this shard. The step
+          # asserts the selector actually finds that many; see the run body.
+          CLUSTER_EXPECT: ${{ matrix.cluster_count }}
         # platform-smoke: the multi-replica topology comes up + a conversation routes.
         # event-backfill: the one-shot mirror→Postgres migration Job, end-to-end against
         # this deployed platform's Postgres + agent-host-history PVC (both in the k3d
@@ -821,11 +824,34 @@ jobs:
           # before these filters were restored: 8 failed test FILES in a shard
           # that had been given 11 cluster tests.
           #
-          # These are the same two the step passed before per-test sharding, and
-          # they must stay in step with SHARDED_CLUSTER_SPECS in
-          # test/e2e/support/test-inventory.mjs -- the planner only ever assigns
-          # tests from these files.
-          nix develop --command bash -c 'npm install && npx vitest run --project cluster --no-file-parallelism platform-smoke event-backfill -t "$CLUSTER_GREP"'
+          # DERIVED, NOT HARDCODED. This list was a literal `platform-smoke
+          # event-backfill` plus a comment asking it to be kept in step with
+          # SHARDED_CLUSTER_SPECS. It drifted on the next addition: the planner
+          # assigned a third spec's tests, vitest never loaded that file, `-t`
+          # matched nothing in it, and all four shards passed having run it zero
+          # times.
+          #
+          # $CLUSTER_GREP stays UNEXPANDED here (single-quoted, read inside the
+          # shell) -- every shard selector contains an apostrophe.
+          nix develop --command bash -c '
+            set -euo pipefail
+            npm install
+            FILES=$(node test/e2e/support/test-inventory.mjs cluster-specs)
+
+            # COUNT THE SELECTION BEFORE RUNNING IT. The planner says how many
+            # cluster tests this shard owns; if the file filters and -t pattern
+            # together do not find exactly that many, some assigned test would run
+            # ZERO times and the shard would still be green -- which is how a new
+            # spec went unexecuted across all four shards. Assert instead of trust.
+            SELECTED=$(npx vitest list --project cluster $FILES -t "$CLUSTER_GREP" | grep -c . || true)
+            echo "cluster: selected $SELECTED of $CLUSTER_EXPECT assigned test(s) from [$FILES]"
+            if [ "$SELECTED" != "$CLUSTER_EXPECT" ]; then
+              echo "::error::shard assigned $CLUSTER_EXPECT cluster test(s) but the selector matches $SELECTED. A test is unreachable -- check SHARDED_CLUSTER_SPECS in test/e2e/support/test-inventory.mjs covers every scheduled spec file."
+              exit 1
+            fi
+
+            npx vitest run --project cluster --no-file-parallelism $FILES -t "$CLUSTER_GREP"
+          '
 
       # e2e FULL browser stories: the same Playwright specs, against the REAL cluster.
       # This is the seam nothing else covers — test/cluster is curl-only (no UI) and the

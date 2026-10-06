@@ -124,10 +124,15 @@ export function inventory({ project } = {}) {
  *  Adding a file here means the shards start running it, so it is a deliberate
  *  list rather than a glob.
  *
- *  event-log-durability qualifies on the same terms as the other two: it needs the
- *  deployed platform and its Postgres and nothing else -- no sandbox image, no warm
- *  pool, no rebuild. A spec omitted from this list is not skipped, it is NEVER RUN,
- *  with a green shard either way. Why: PR #723. */
+ *  event-log-durability qualifies on the same terms as the other two: deployed
+ *  platform plus its Postgres, nothing else.
+ *
+ *  THIS IS THE ONLY COPY OF THE LIST. ci.yml's `cluster smoke` step reads it via
+ *  `test-inventory.mjs cluster-specs`; it used to hardcode the same two names with a
+ *  comment asking the two lists to be kept in step, and they drifted on the very
+ *  next addition. Both halves are needed and they fail differently: off this list, a
+ *  test is never SCHEDULED; absent from vitest's positional filters, its file is
+ *  never LOADED so `-t` matches nothing. Either way the shard is green. Why: PR #723. */
 export const SHARDED_CLUSTER_SPECS = ["platform-smoke", "event-backfill", "event-log-durability"];
 
 export function clusterInventory() {
@@ -235,6 +240,12 @@ function main() {
   const cmd = process.argv[2] ?? "list";
   if (cmd === "list") {
     process.stdout.write(JSON.stringify(combinedInventory(), null, 2));
+    return;
+  }
+  // The vitest positional filters for the shards' `cluster smoke` step. ci.yml used to
+  // hardcode this list a SECOND time; see SHARDED_CLUSTER_SPECS for what that cost.
+  if (cmd === "cluster-specs") {
+    process.stdout.write(SHARDED_CLUSTER_SPECS.join(" ") + "\n");
     return;
   }
   if (cmd === "verify") {
