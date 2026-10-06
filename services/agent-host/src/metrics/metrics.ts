@@ -62,6 +62,11 @@ export interface MetricsSink {
    *  only persistence lost a turn. Surfaced so an operator can alert on it. */
   persistenceError?(attrs: { conversationId: string }): void;
 
+  /** Two writers both passed the append fence and collided on (conversation_id, seq).
+   *  The turn SURVIVED — the append re-derives against the table and retries — so this is
+   *  not an error count; it is the only signal that the single-writer invariant broke. */
+  appendCollision?(attrs: { conversationId: string }): void;
+
   /** Flush + shut down the exporter (called on graceful shutdown). */
   shutdown(): Promise<void>;
 }
@@ -132,6 +137,9 @@ export function createMetrics(config: MetricsConfig): MetricsSink {
   });
   const persistenceErrors: Counter = meter.createCounter("agent_persistence_errors_total", {
     description: "Durable conversation-log append failures (a turn was lost).",
+  });
+  const appendCollisions: Counter = meter.createCounter("agent_append_seq_collisions_total", {
+    description: "Recovered (conversation_id, seq) collisions — two writers passed the fence.",
   });
 
   // Sandbox population is observed (set from outside); an ObservableGauge reads
@@ -230,6 +238,10 @@ export function createMetrics(config: MetricsConfig): MetricsSink {
       persistenceErrors.add(1, { conversationId: attrs.conversationId });
     },
 
+    appendCollision(attrs) {
+      appendCollisions.add(1, { conversationId: attrs.conversationId });
+    },
+
     async shutdown() {
       try {
         await provider.shutdown(); // flushes the exporter
@@ -249,6 +261,7 @@ export function noopMetrics(): MetricsSink {
     setSandboxCounts() {},
     brokerRequest() {},
     persistenceError() {},
+    appendCollision() {},
     async shutdown() {},
   };
 }

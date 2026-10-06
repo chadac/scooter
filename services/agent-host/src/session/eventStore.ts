@@ -60,6 +60,14 @@ export interface AppendFence {
   generation(id: SessionId): number | undefined;
 }
 
+/** A recovered seq collision: the seq that was taken, and which attempt lost it. */
+export interface AppendCollision {
+  /** The seq this writer derived and a rival had already committed. */
+  seq: number | undefined;
+  /** 1 for the first loss of this append, 2 for a loss on the first retry, … */
+  attempt: number;
+}
+
 /** The event-log half of ConversationStore, backed by conversation_events. */
 export interface PgEventStore {
   /**
@@ -72,7 +80,10 @@ export interface PgEventStore {
    * than assuming (see AppendFence). The PK (conversation_id, seq) stays as the
    * backstop for the unfenced case and for a fence that was wrong.
    *
-   * MUST NOT use ON CONFLICT DO NOTHING — a PK conflict here means two writers.
+   * MUST NOT use ON CONFLICT DO NOTHING — a PK conflict here means two writers, and
+   * skipping the row would drop a turn silently. It is instead RE-DERIVED against the
+   * table and retried (COLLISION_RETRIES), so the loser of the race chains onto the
+   * winner's row rather than losing the event. Observable via onAppendCollision.
    *
    * RESOLVES, does not throw, when the fence refuses: losing the claim is an
    * outcome, not a failure, and every caller `void`s this.
@@ -141,11 +152,39 @@ export interface PgEventStore {
    *  failed write to the conversation's ONLY persistence vanishes silently. */
   onAppendError(cb: (id: SessionId, error: unknown) => void): () => void;
 
+  /** A seq COLLISION that was recovered: two writers both passed the fence. Nothing was
+   *  lost (the append re-derived and retried), but the single-writer invariant was broken,
+   *  so it is worth a metric — an operator wants to know the fence is failing open. */
+  onAppendCollision(cb: (id: SessionId, at: AppendCollision) => void): () => void;
+
   /** Drop a conversation's events (conversation deletion). */
   removeConversation(id: SessionId): Promise<void>;
 
   close(): Promise<void>;
 }
+
+/**
+ * Attempts an append makes when a RIVAL writer already holds the seq it derived.
+ *
+ * Why retry at all: the fence fails OPEN by design — an unassigned conversation (host_pod
+ * null, or an epoch this pod has never observed) must still accept its first turn, so two
+ * pods can both be legitimate writers for a window. The PK catches them, and dropping the
+ * event there loses a turn the user already sent.
+ *
+ * Why BOUNDED: a writer that keeps losing is a double-writer the fence has to settle, and
+ * retrying forever would hide it behind a growing latency instead of surfacing it. Four is
+ * past any plausible interleaving (each attempt re-reads the real head, so a retry only
+ * collides again if a rival commits inside the SELECT→INSERT window a second time).
+ */
+const COLLISION_RETRIES = 4;
+
+/** A (conversation_id, seq) duplicate — the PK is the only unique constraint on the table,
+ *  so 23505 here is always a second writer, never a malformed row. drizzle wraps the driver
+ *  error, so the code can be one level down on `cause`. */
+const isSeqCollision = (error: unknown): boolean =>
+  [error, (error as { cause?: unknown } | undefined)?.cause].some(
+    (e) => (e as { code?: string } | undefined)?.code === "23505",
+  );
 
 export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
   const ownPool = config.db ? undefined : createPgPool("eventStore", { connectionString: config.dsn!, max: 4 });
@@ -161,6 +200,7 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
   const heads = new Map<SessionId, { seq: number; checksum: string }>();
   const appendListeners: Array<(id: SessionId, e: ChecksummedEvent) => void> = [];
   const errorListeners: Array<(id: SessionId, error: unknown) => void> = [];
+  const collisionListeners: Array<(id: SessionId, at: AppendCollision) => void> = [];
 
   // Refusals per conversation, for log sampling only. A fenced pod streaming a run refuses
   // once per token, and one line each would bury the reassignment that caused it.
@@ -179,6 +219,28 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
                    and ${conversations.hostPod} is not null
                    and (${conversations.hostPod} <> ${fence.pod}${wrongEpoch})
               )`;
+  };
+
+  // Collisions per conversation, for log sampling only — kept for the pod's lifetime (not
+  // cleared on a committed append) so a SUSTAINED double-writer samples instead of writing
+  // one line per token. Bounded by the conversations this pod has hosted, like `heads`.
+  const collisions = new Map<SessionId, number>();
+
+  const onCollision = (id: SessionId, seq: number | undefined, attempt: number) => {
+    const n = (collisions.get(id) ?? 0) + 1;
+    collisions.set(id, n);
+    if (n === 1 || n % 100 === 0) {
+      // WARN, not error: the turn is not lost (the retry re-chains it). The alertable fact
+      // is that two writers both passed the fence, which is what `collided` counts.
+      log.warn("append collided on (conversation_id, seq); re-deriving from the table", {
+        conversation_id: id,
+        pod: config.fence?.pod,
+        seq,
+        attempt,
+        collided: n,
+      });
+    }
+    for (const cb of collisionListeners) cb(id, { seq, attempt });
   };
 
   const onFenced = (id: SessionId, presented: number | undefined) => {
@@ -220,45 +282,60 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
       const next = prev
         .catch(() => {}) // a prior failure must not break the CHAIN (ordering)
         .then(async () => {
-          try {
-            const at = await head(id);
-            const prevChecksum = at.checksum;
-            const seq = at.seq + 1;
-            const checksum = chainNext(prevChecksum, event);
-            // Resolved ONCE, so the statement's predicate and the refusal log cannot
-            // disagree about which epoch was presented.
-            const presented = config.fence?.generation(id);
-            // INSERT ... SELECT, not VALUES, so the fence can ride the statement (see
-            // AppendFence). NO onConflictDoNothing: the PK is a correctness backstop, and
-            // a duplicate (conversation_id, seq) means a second writer.
-            const res = await db.execute(sql`
-              insert into ${conversationEvents} (conversation_id, seq, event, checksum, prev_checksum)
-              select ${id}::text, ${seq}::bigint, ${JSON.stringify(event)}::jsonb, ${checksum}::text, ${prevChecksum}::text${fenceClause(id, presented)}
-            `);
-            if ((res.rowCount ?? 0) === 0) {
-              // Zero rows is only reachable under a fence, and it is not an error: the row
-              // says this pod is no longer the writer. Do NOT advance the head or notify
-              // listeners — nothing was committed, and claiming otherwise would hand the
-              // integrity stream a checksum no reader can find.
-              onFenced(id, presented);
+          for (let attempt = 1; ; attempt++) {
+            let derived: number | undefined;
+            try {
+              const at = await head(id);
+              const prevChecksum = at.checksum;
+              const seq = at.seq + 1;
+              derived = seq;
+              const checksum = chainNext(prevChecksum, event);
+              // Re-resolved per attempt, not hoisted out of the loop: a retry must present
+              // the epoch as it is NOW, so a conversation reassigned while we were colliding
+              // is refused by the fence instead of chained onto.
+              const presented = config.fence?.generation(id);
+              // INSERT ... SELECT, not VALUES, so the fence can ride the statement (see
+              // AppendFence). NO onConflictDoNothing: the PK is a correctness backstop, and
+              // a duplicate (conversation_id, seq) means a second writer.
+              const res = await db.execute(sql`
+                insert into ${conversationEvents} (conversation_id, seq, event, checksum, prev_checksum)
+                select ${id}::text, ${seq}::bigint, ${JSON.stringify(event)}::jsonb, ${checksum}::text, ${prevChecksum}::text${fenceClause(id, presented)}
+              `);
+              if ((res.rowCount ?? 0) === 0) {
+                // Zero rows is only reachable under a fence, and it is not an error: the row
+                // says this pod is no longer the writer. Do NOT advance the head or notify
+                // listeners — nothing was committed, and claiming otherwise would hand the
+                // integrity stream a checksum no reader can find.
+                onFenced(id, presented);
+                return;
+              }
+              heads.set(id, { seq, checksum });
+              // Clear the refusal count on a committed append, so a LATER reassignment logs
+              // its first refusal immediately instead of landing mid-sample-window. Also what
+              // bounds the map.
+              refusals.delete(id);
+              for (const cb of appendListeners) cb(id, { event, prevChecksum, checksum });
               return;
+            } catch (error) {
+              if (isSeqCollision(error) && attempt <= COLLISION_RETRIES) {
+                // Another writer already holds the seq we derived, so our cached head is
+                // behind the table. Drop it and retry: the next attempt re-reads THEIR row
+                // and chains onto it, which keeps one unforked chain and keeps the turn.
+                // Why this is not ON CONFLICT DO NOTHING: PR #723.
+                heads.delete(id);
+                onCollision(id, derived, attempt);
+                continue;
+              }
+              // appendEvent is `void`-called, so nobody sees this rejection. With
+              // no file fallback it is a LOST TURN — surface it, then rethrow for
+              // any caller that did await.
+              log.errorWith("durable append FAILED (turn lost)", error, { conversation_id: id });
+              for (const cb of errorListeners) cb(id, error);
+              // Drop the cached head: after a failure this pod's idea of seq may
+              // be wrong (another writer), so re-seed from the table next time.
+              heads.delete(id);
+              throw error;
             }
-            heads.set(id, { seq, checksum });
-            // Clear the refusal count on a committed append, so a LATER reassignment logs
-            // its first refusal immediately instead of landing mid-sample-window. Also what
-            // bounds the map.
-            refusals.delete(id);
-            for (const cb of appendListeners) cb(id, { event, prevChecksum, checksum });
-          } catch (error) {
-            // appendEvent is `void`-called, so nobody sees this rejection. With
-            // no file fallback it is a LOST TURN — surface it, then rethrow for
-            // any caller that did await.
-            log.errorWith("durable append FAILED (turn lost)", error, { conversation_id: id });
-            for (const cb of errorListeners) cb(id, error);
-            // Drop the cached head: after a failure this pod's idea of seq may
-            // be wrong (another writer), so re-seed from the table next time.
-            heads.delete(id);
-            throw error;
           }
         });
       chains.set(id, next);
@@ -354,6 +431,14 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
       return () => {
         const i = errorListeners.indexOf(cb);
         if (i >= 0) errorListeners.splice(i, 1);
+      };
+    },
+
+    onAppendCollision(cb) {
+      collisionListeners.push(cb);
+      return () => {
+        const i = collisionListeners.indexOf(cb);
+        if (i >= 0) collisionListeners.splice(i, 1);
       };
     },
 
