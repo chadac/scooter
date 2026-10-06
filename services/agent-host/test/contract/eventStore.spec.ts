@@ -426,6 +426,52 @@ describe("eventStore — the append fence", () => {
     expect(rows, "the handoff is a MOVE — the old owner is fenced out, not alongside").toHaveLength(1);
   });
 
+  it("THE HOLE: the gap a refusal leaves is reported with its SIZE and contents", async () => {
+    // A refusal is rowCount 0 — no error, and the refusal log is SAMPLED (first, then every
+    // hundredth), so it has a beginning and no end. That is not enough to tell a quiet
+    // handoff from a dropped run opening: a gap that swallowed a RUN_STARTED or a user
+    // message costs the UI a turn, one that swallowed three content deltas costs nothing
+    // visible. The committed append that ends the gap is the only place its size is known.
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {}); // warn -> console.error
+    try {
+      const { db, assign } = fakeDb();
+      assign(CONV, { hostPod: "host-1", hostGeneration: 1 });
+      const b = fencedStore(db, "host-2");
+
+      for (const e of run(1).slice(0, 3)) await b.appendEvent(CONV, e); // all refused
+      await b.claimFence(CONV, 2);
+      await b.appendEvent(CONV, run(2)[0]); // the first committed append closes the gap
+
+      const line = await awaitLine(errSpy, "the fence refused appends");
+      expect(line, "a closed gap must be reported at all").toBeDefined();
+      expect(line, "how many events the hole swallowed").toMatch(/"dropped":3|\bdropped=3\b/);
+      expect(line, "and what they were — a lost RUN_STARTED is not a lost delta").toMatch(
+        /"first_dropped":"RUN_STARTED"|\bfirst_dropped=RUN_STARTED\b/,
+      );
+      expect(line).toMatch(/"last_dropped":"TEXT_MESSAGE_CONTENT"|\blast_dropped=TEXT_MESSAGE_CONTENT\b/);
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it("a handoff with NOTHING refused reports no hole", async () => {
+    // The line has to stay quiet in the normal case, or it is noise on every handoff and
+    // the one that matters gets skimmed past.
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { db, assign } = fakeDb();
+      assign(CONV, { hostPod: "host-1", hostGeneration: 1 });
+      const b = fencedStore(db, "host-2");
+
+      await b.claimFence(CONV, 2); // claimed BEFORE it ever appended
+      await b.appendEvent(CONV, run(1)[0]);
+
+      expect(await awaitLine(errSpy, "the fence refused appends")).toBeUndefined();
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
   it("a STALE assignment cannot take the row back from a newer owner", async () => {
     // `$gen >= host_generation` is the only thing standing between a lagging watch (or a
     // replayed revive push) and a claim that walks the conversation backwards to a pod the

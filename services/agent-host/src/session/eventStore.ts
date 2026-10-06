@@ -186,9 +186,13 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
   const appendListeners: Array<(id: SessionId, e: ChecksummedEvent) => void> = [];
   const errorListeners: Array<(id: SessionId, error: unknown) => void> = [];
 
-  // Refusals per conversation, for log sampling only. A fenced pod streaming a run refuses
-  // once per token, and one line each would bury the reassignment that caused it.
-  const refusals = new Map<SessionId, number>();
+  // Refusals per conversation: log sampling, and the SIZE OF THE HOLE. A fenced pod
+  // streaming a run refuses once per token, so one line each would bury the reassignment
+  // that caused it — but the count and the first/last event type are the only record that a
+  // run's opening events were dropped, and WHICH. A hole that swallowed a RUN_STARTED or a
+  // user message costs the UI a turn; one that swallowed three content deltas costs nothing
+  // visible. Reported when the refusals STOP (see "the fence refused"). Why: PR #679.
+  const refusals = new Map<SessionId, { n: number; first: string; last: string }>();
 
   /**
    * CLAIM-AND-FENCE, in one statement. Rides the insert as a data-modifying CTE.
@@ -297,19 +301,22 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
       .then((reason) => log[level](msg, { conversation_id: id, ...fields, ...reason }));
   };
 
-  const onFenced = (id: SessionId) => {
+  const onFenced = (id: SessionId, event: AguiEvent) => {
     // The head came from a log this pod no longer drives; the new owner is advancing seq
     // past it. Drop it so a conversation reassigned BACK re-seeds from the table instead of
     // colliding on the PK.
     heads.delete(id);
-    const n = (refusals.get(id) ?? 0) + 1;
-    refusals.set(id, n);
+    const type = String(event.type);
+    const prev = refusals.get(id);
+    const n = (prev?.n ?? 0) + 1;
+    refusals.set(id, { n, first: prev?.first ?? type, last: type });
     // Sampled: a fenced pod refuses once per streamed token, so logging each one would bury
     // the reassignment that caused it — and would queue a read per token.
     if (n !== 1 && n % 100 !== 0) return;
     logRowState("warn", "append fenced by the conversations row (this pod is not the host)", id, {
       pod: config.fence?.pod,
       refused: n,
+      event_type: type,
     });
   };
 
@@ -354,13 +361,27 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
               // says this pod is no longer the writer. Do NOT advance the head or notify
               // listeners — nothing was committed, and claiming otherwise would hand the
               // integrity stream a checksum no reader can find.
-              onFenced(id);
+              onFenced(id, event);
               return;
             }
             heads.set(id, { seq, checksum });
-            // Clear the refusal count on a committed append, so a LATER reassignment logs
-            // its first refusal immediately instead of landing mid-sample-window. Also what
-            // bounds the map.
+            // THE HOLE, measured. This append committed, so any refusals before it are a
+            // finished gap in the log — and this is the only place its size is known. A
+            // refusal is sampled and carries no end; without this line a dropped run
+            // opening is indistinguishable from a quiet handoff. Also clears the count so a
+            // LATER reassignment logs its first refusal immediately instead of landing
+            // mid-sample-window, and is what bounds the map. Why: PR #679.
+            const hole = refusals.get(id);
+            if (hole) {
+              log.warn("the fence refused appends before this pod took the row", {
+                conversation_id: id,
+                pod: config.fence?.pod,
+                dropped: hole.n,
+                first_dropped: hole.first,
+                last_dropped: hole.last,
+                resumed_at_seq: seq,
+              });
+            }
             refusals.delete(id);
             for (const cb of appendListeners) cb(id, { event, prevChecksum, checksum });
           } catch (error) {
