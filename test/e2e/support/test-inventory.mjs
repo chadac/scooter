@@ -122,8 +122,13 @@ export function inventory({ project } = {}) {
  *  test FILES in a shard that had been assigned 11 cluster tests.
  *
  *  Adding a file here means the shards start running it, so it is a deliberate
- *  list rather than a glob. */
-export const SHARDED_CLUSTER_SPECS = ["platform-smoke", "event-backfill"];
+ *  list rather than a glob.
+ *
+ *  event-log-durability qualifies on the same terms as the other two: it needs the
+ *  deployed platform and its Postgres and nothing else -- no sandbox image, no warm
+ *  pool, no rebuild. A spec omitted from this list is not skipped, it is NEVER RUN,
+ *  with a green shard either way. Why: PR #723. */
+export const SHARDED_CLUSTER_SPECS = ["platform-smoke", "event-backfill", "event-log-durability"];
 
 export function clusterInventory() {
   const raw = execFileSync(join(REPO_ROOT, "node_modules", ".bin", "vitest"), ["list", "--project", "cluster", "--json"], {
