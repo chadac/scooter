@@ -7,18 +7,18 @@
 # The agent-host provisioner does the CLAIM (claimName swap). See
 # todo/docs/WARM_STORE_PVC_MANAGER.md.
 #
-# OFF by default (`agentSandbox.warmStore.enable`): a fresh conversation always gets a
+# OFF by default (`scooter.warmStore.enable`): a fresh conversation always gets a
 # working (empty) overlay upper without it — the pool is a hit-rate optimization, not a
 # correctness dependency.
 
 { config, lib, ... }:
 
 let
-  cfg = config.agentSandbox;
+  cfg = config.scooter;
   wcfg = cfg.warmStore;
 in
 {
-  options.agentSandbox.warmStore = with lib; {
+  options.scooter.warmStore = with lib; {
     enable = mkEnableOption "the warm /nix/store PVC pool controller";
 
     image = mkOption {

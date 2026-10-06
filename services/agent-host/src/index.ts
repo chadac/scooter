@@ -61,7 +61,9 @@ import { ensureGooseConfig } from "./agent/gooseConfig.js";
 import { catalogFromEnv, availableIds, type ModelCatalog } from "./agent/models.js";
 import { createJobManager, type JobStatus, type JobRegistry } from "./session/jobManager.js";
 import { createPgJobStore } from "./session/jobStore.js";
-import { createMcpEndpoint, type MarimoToolsWiring } from "./agent/mcpServer.js";
+import { mintConvToken } from "./auth/convToken.js";
+import { createMcpEndpoint, resolveConversation, type MarimoToolsWiring } from "./agent/mcpServer.js";
+import { createBrokerMcpProxy } from "./agent/brokerMcpProxy.js";
 import { createMarimoClient } from "@scooter/marimo-mcp";
 import {
   lastAssistantText,
@@ -74,7 +76,6 @@ import { lastRunCompleted } from "./session/danglingRun.js";
 import { randomUUID } from "node:crypto";
 import { createHttpSchedulerClient } from "./agent/schedulerClient.js";
 import type { SchedulerToolsWiring } from "./agent/schedulerTools.js";
-import { createBrokerClient } from "./agent/brokerClient.js";
 import { createResourceLookup } from "./agent/resourceMapping.js";
 import { parseScooterEnv } from "./config/scooterEnv.js";
 import { resolverFromEnv, type AsyncIdentityResolver } from "./auth/identity.js";
@@ -86,7 +87,7 @@ import { createMetrics, type MetricsSink } from "./metrics/metrics.js";
 import { parsePriceTable } from "./metrics/pricing.js";
 import { createGooseUsageReader } from "./metrics/gooseUsage.js";
 import type { SandboxRef, SessionId } from "./types.js";
-import { formatError, logger } from "./log.js";
+import { formatError, logger, type Logger } from "./log.js";
 
 const hostLog = logger("agent-host");
 
@@ -421,6 +422,59 @@ function bedrockEnv(): Record<string, string> {
   // for some models — block/goose#7839). Deployer override, else 0.8.
   out.GOOSE_AUTO_COMPACT_THRESHOLD = process.env.GOOSE_AUTO_COMPACT_THRESHOLD ?? "0.8";
   return out;
+}
+
+/** Wall-clock budget for the startup hydrate (see hydrateWithRetry). */
+export const HYDRATE_BUDGET_MS = 60_000;
+
+/**
+ * Hydrate at startup, retrying until a WALL-CLOCK budget expires.
+ *
+ * A COLD dependency must not be read as a broken one. The budget is wall-clock rather than
+ * an attempt count because what it has to outlast is how long Postgres takes to accept
+ * connections, which is unrelated to the shape of the backoff curve. Why: PR #722.
+ */
+export async function hydrateWithRetry(
+  hydrate: () => Promise<void>,
+  log: Pick<Logger, "warn" | "errorWith">,
+  opts: {
+    budgetMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+    now?: () => number;
+  } = {},
+): Promise<void> {
+  const budgetMs = opts.budgetMs ?? HYDRATE_BUDGET_MS;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const now = opts.now ?? Date.now;
+  const started = now();
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await hydrate();
+      return;
+    } catch (err) {
+      const elapsed = now() - started;
+      // Cap the backoff: an uncapped curve spends the tail of the budget asleep, so the
+      // LAST attempt lands long before the deadline and the budget buys fewer tries than
+      // its wall-clock suggests.
+      const delay = Math.min(250 * 2 ** (attempt - 1), 5_000);
+      if (elapsed + delay >= budgetMs) {
+        log.errorWith(
+          "hydrate failed; cannot read the conversation source of truth, refusing to serve on a stale view",
+          err,
+          { attempts: attempt, waited_ms: elapsed, budget_ms: budgetMs },
+        );
+        throw err;
+      }
+      log.warn("hydrate attempt failed; retrying", {
+        attempt,
+        waited_ms: elapsed,
+        budget_ms: budgetMs,
+        retry_in_ms: delay,
+        error: formatError(err),
+      });
+      await sleep(delay);
+    }
+  }
 }
 
 export async function main(
@@ -1032,18 +1086,12 @@ export async function main(
   // the same resolver /whoami + POST /conversations use — otherwise a browser-made
   // conversation had no owner and never showed under the Mine filter.
   server.useIdentityResolver(resolveUser);
-  const agentToolsWiring = brokerUrl
-    ? {
-        broker: createBrokerClient({
-          baseUrl: brokerUrl,
-          tokenPath: process.env.BROKER_TOKEN_PATH ?? "/var/run/secrets/broker/token",
-        }),
-        links: (id: string) => store.listLinks?.(id as SessionId) ?? Promise.resolve([]),
-        resourceLookup: resourceLookup
-          ? (id: string, source: string) => resourceLookup.lookup(id, source)
-          : undefined,
-      }
-    : undefined;
+  // The provider reply tools used to need a broker client, the conversation's links
+  // and the webhooks resource-map lookup here. #700 moved them into the contribs, and
+  // the broker resolves its own targets, so only the web tools' injectable fetch is
+  // left — which nothing overrides in production.
+  const agentToolsWiring: { fetchImpl?: typeof fetch } | undefined = undefined;
+
   // Serve the MCP endpoint if ANY capability is available: the agent-tools (broker
   // wired), the background-job tools, or the model self-selection tools. buildServer
   // registers whichever deps are present.
@@ -1137,6 +1185,8 @@ export async function main(
         },
       };
 
+  const convTokenSecret = process.env.CONV_TOKEN_SECRET ?? "";
+  const brokerTokenPath = process.env.BROKER_TOKEN_PATH ?? "/var/run/secrets/broker/token";
   const mcpEndpoint =
     agentToolsWiring !== undefined ||
     jobManager !== undefined ||
@@ -1149,6 +1199,15 @@ export async function main(
           // The URL goose connects to. The agent-host serves it on its own port;
           // goose runs in THIS pod, so localhost reaches it.
           baseUrl: process.env.AGENT_SELF_MODIFY_MCP_URL ?? `http://127.0.0.1:${config.port}`,
+          // The conversation scope travels as a signed bearer token rather than in the
+          // URL. Unset = the endpoint stays on the old unauthenticated `?conv=`
+          // behaviour, with a loud startup warning, so an upgrade that has not yet
+          // provisioned the Secret keeps working instead of losing every tool at
+          // once. See issue #700.
+          convTokenSecret,
+          convTokenTtlSeconds: process.env.CONV_TOKEN_TTL_SECONDS
+            ? Number(process.env.CONV_TOKEN_TTL_SECONDS)
+            : undefined,
           agentTools: agentToolsWiring,
           jobs: jobManager,
           models: modelToolsWiring,
@@ -1158,6 +1217,49 @@ export async function main(
           marimo: marimoToolsWiring,
         })
       : undefined;
+
+  // The broker-MCP proxy: how the agent reaches the contrib-contributed tools
+  // (github_comment, slack_respond, …) that #700 moved out of this process.
+  //
+  // A PROXY rather than handing the agent the broker's URL, because the broker's /mcp
+  // needs BOTH an allowlisted control-plane SA token and a conversation token — and an
+  // MCP server's headers are fixed at session creation while a projected SA token
+  // rotates roughly hourly. Embedding one would work for an hour and then 401 every
+  // provider tool mid-conversation. Here the SA token is attached FRESH per request and
+  // the agent never holds it, which also keeps it off a BYOC user's machine.
+  const brokerMcpUrl = (process.env.BROKER_MCP_URL ?? (brokerUrl ? `${brokerUrl.replace(/\/$/, "")}/mcp` : "")).trim();
+  const brokerMcpProxy =
+    brokerMcpUrl && convTokenSecret
+      ? createBrokerMcpProxy({
+          baseUrl: process.env.AGENT_SELF_MODIFY_MCP_URL ?? `http://127.0.0.1:${config.port}`,
+          brokerMcpUrl,
+          resolveConversation: (req) => resolveConversation(req, convTokenSecret),
+          mintConvToken: (conversationId) => mintConvToken(conversationId, convTokenSecret),
+          saToken: async () => {
+            // Re-read per request: kubelet rotates the projected token on disk, so a
+            // value cached at startup goes stale inside the hour.
+            try {
+              const { readFile } = await import("node:fs/promises");
+              return (await readFile(brokerTokenPath, "utf8")).trim();
+            } catch (err) {
+              // ENOENT is the genuine local/dev case. Anything else is a real problem
+              // and must not silently downgrade to an unauthenticated broker call.
+              if ((err as { code?: string })?.code !== "ENOENT") {
+                hostLog.warn("could not read the broker SA token; the broker will reject MCP calls", {
+                  path: brokerTokenPath,
+                  error: formatError(err),
+                });
+              }
+              return undefined;
+            }
+          },
+        })
+      : undefined;
+  if (!brokerMcpProxy) {
+    hostLog.info("broker MCP tools are NOT offered", {
+      reason: !brokerMcpUrl ? "no BROKER_URL/BROKER_MCP_URL" : "no CONV_TOKEN_SECRET",
+    });
+  }
 
   // Restore conversations so the session list survives a restart. Multi-replica hydrates from
   // the Conversation CRs (the source of truth); single-replica from the local store.
@@ -1169,34 +1271,7 @@ export async function main(
   // never becomes ready, and k8s restarts it, which is the correct outcome for a pod that cannot
   // learn what it owns. NOTE this gates STARTUP only — once hydrated, a later list failure must
   // never yank an already-serving pod out of rotation.
-  {
-    const RETRIES = 5;
-    for (let attempt = 0; ; attempt++) {
-      try {
-        await sessions.hydrate();
-        break;
-      } catch (err) {
-        if (attempt === RETRIES - 1) {
-          // eslint-disable-next-line no-console
-          hostLog.errorWith(
-              "hydrate failed; cannot read the conversation source of truth, refusing to serve on a stale view",
-              err,
-              { attempts: RETRIES },
-            );
-          throw err;
-        }
-        const delay = 250 * 2 ** attempt;
-        // eslint-disable-next-line no-console
-        hostLog.warn("hydrate attempt failed; retrying", {
-            attempt: attempt + 1,
-            attempts: RETRIES,
-            retry_in_ms: delay,
-            error: formatError(err),
-          });
-        await new Promise((r) => setTimeout(r, delay));
-      }
-    }
-  }
+  await hydrateWithRetry(() => sessions.hydrate(), hostLog);
 
   // Forward every conversation's AG-UI events to subscribed UI connections.
   // (SessionManager already persists them to the store via its own wiring.)
@@ -1440,6 +1515,8 @@ export async function main(
       },
       resolveUser,
       mcpHandler: mcpEndpoint ? (req, res, body) => mcpEndpoint.handle(req, res, body) : undefined,
+      resourceLookup,
+      brokerMcpHandler: brokerMcpProxy ? (req, res, body) => brokerMcpProxy.handle(req, res, body) : undefined,
       answerPermission: async (sessionId, toolCallId, optionId, approver) => {
         // Route the user's choice to the conversation's bridge, which resolves
         // the blocked agent run (ACP request_permission).
@@ -1752,9 +1829,33 @@ export async function main(
     const metricModel = resolved ?? cfg.model ?? "unknown";
     // Offer the agent the in-process MCP tools (background jobs / model selection /
     // agent-tools), scoped to THIS conversation via the URL's ?conv=<id>.
-    const mcpServers = mcpEndpoint
-      ? [{ type: "http", name: "scooter-env", url: mcpEndpoint.urlFor(conversationId), headers: [] }]
-      : undefined;
+    // The agent is offered TWO servers, split by who owns the tools: scooter-env for
+    // the control-plane tools that need this process's state and sandbox exec, and
+    // scooter-broker for the contrib-contributed provider tools. Both carry the same
+    // conversation token; `headers` is `HttpHeader[]` ({name,value}) per the ACP schema
+    // — the local type said `string[]`, wrong but harmless while every entry was empty.
+    // Why: issue #700.
+    const offeredServers = [
+      ...(mcpEndpoint
+        ? [{
+            type: "http",
+            name: "scooter-env",
+            url: mcpEndpoint.urlFor(conversationId),
+            headers: mcpEndpoint.headersFor(conversationId, owner),
+          }]
+        : []),
+      ...(brokerMcpProxy && mcpEndpoint
+        ? [{
+            type: "http",
+            name: "scooter-broker",
+            url: brokerMcpProxy.url(),
+            // The SAME conversation token: the proxy verifies it and attaches the
+            // rotating SA token itself.
+            headers: mcpEndpoint.headersFor(conversationId, owner),
+          }]
+        : []),
+    ];
+    const mcpServers = offeredServers.length ? offeredServers : undefined;
     const usingClaude = process.env.GOOSE_PROVIDER === "claude-code" && !config.fakeSandbox;
     // The FLOOR ACP client factory — the cloud brain (SDK-claude on Bedrock, or goose). This is
     // what a run uses when no personalized remote agent applies (a scheduled trigger, an offline
@@ -1776,9 +1877,17 @@ export async function main(
               recordRaw: (m) => bridge.recordRawInput(m),
               // Give the SDK agent the SAME platform MCP tools the goose path gets
               // (scheduler / slack / github / background jobs / model switch / resize),
-              // scoped to this conversation via ?conv=<id>. Without this the agent has
-              // only the sandbox tools and can't actually use those capabilities.
+              // scoped to this conversation by the conversation token below. Without
+              // this the agent has only the sandbox tools and can't actually use those
+              // capabilities.
               mcpEndpointUrl: mcpEndpoint?.urlFor(conversationId),
+              // The conversation token, as the SDK's per-server `headers`. The URL no
+              // longer carries the scope. Why: issue #700.
+              mcpEndpointHeaders: mcpEndpoint
+                ? Object.fromEntries(
+                    mcpEndpoint.headersFor(conversationId, owner).map((h) => [h.name, h.value]),
+                  )
+                : undefined,
               // BACK-PRESSURE: yield the next tool call when a priority item (e.g. a
               // finished subagent's result) is waiting, so it injects promptly
               // instead of the parent spinning in a check_subagent poll loop.
@@ -1829,6 +1938,9 @@ export async function main(
             // The BYO container reaches scooter-env over the TUNNEL, not this URL directly —
             // it is the loopback address the agent-host itself serves.
             mcpUrlFor: mcpEndpoint ? (conv: string) => mcpEndpoint.urlFor(conv) : undefined,
+            // Injected by the agent-host when it proxies a tunnel frame, so the user's
+            // machine never holds a conversation token. Why: issue #700.
+            mcpHeadersFor: mcpEndpoint ? (conv: string) => mcpEndpoint.headersFor(conv) : undefined,
           }),
           floorProvider,
         ]

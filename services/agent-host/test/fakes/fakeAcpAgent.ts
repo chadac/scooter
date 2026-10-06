@@ -53,8 +53,10 @@ export interface FakeAcpAgent {
   setScript(steps: ScriptStep[]): void;
   readonly transport: FakeAcpTransport;
   /** Hold every prompt in flight until releaseGate() (so a test can inspect the
-   *  queue mid-run / drive a cancel). Off by default. */
-  gate(): void;
+   *  queue mid-run / drive a cancel). Off by default.
+   *  `ignoreCancel` models an agent STALLED inside a model call: it has no terminal to
+   *  kill and never services session/cancel, so only releaseGate() frees it. */
+  gate(opts?: { ignoreCancel?: boolean }): void;
   releaseGate(): void;
   /** Number of times killActiveTerminals was called (cancel assertions). */
   killCount(): number;
@@ -84,6 +86,7 @@ export function createFakeAcpAgent(): FakeAcpAgent {
   let script: ScriptStep[] = [];
   let sessionCounter = 0;
   let gated = false;
+  let gateIgnoresCancel = false;
   let releaseGateFn: (() => void) | undefined;
   let kills = 0;
   let starts = 0;
@@ -139,7 +142,9 @@ export function createFakeAcpAgent(): FakeAcpAgent {
     },
     async cancel(sessionId: string) {
       cancelledSessions.add(sessionId);
-      // Release a gated run so its prompt() resolves (as cancelled).
+      // Release a gated run so its prompt() resolves (as cancelled) — unless the gate models
+      // a stalled agent, which ignores the cancel and keeps prompt() pending.
+      if (gateIgnoresCancel) return;
       releaseGateFn?.();
       releaseGateFn = undefined;
     },
@@ -162,11 +167,13 @@ export function createFakeAcpAgent(): FakeAcpAgent {
       script = steps;
     },
     transport,
-    gate() {
+    gate(opts) {
       gated = true;
+      gateIgnoresCancel = opts?.ignoreCancel === true;
     },
     releaseGate() {
       gated = false;
+      gateIgnoresCancel = false;
       releaseGateFn?.();
       releaseGateFn = undefined;
     },

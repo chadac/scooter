@@ -5,12 +5,12 @@
  * patching Scooter's code.
  *
  * This is also how a CONTRIB reaches every sandbox pod: modules/platform.nix renders
- * `agentSandbox.sandboxPod.*` into a second key of the same ConfigMap, merged under the
+ * `scooter.sandboxPod.*` into a second key of the same ConfigMap, merged under the
  * consumer's patch. One splice mechanism, not two — the provisioner knows nothing about
  * contribs. Why: PR #640.
  *
  * Flow (mirrors deployTools.configFiles):
- *   kubenix `agentSandbox.deployTools.sandboxManifestOverlay` (an attrset)
+ *   kubenix `scooter.deployTools.sandboxManifestOverlay` (an attrset)
  *     -> ConfigMap `sandbox-manifest-overlay` (key `overlay.yaml`, holding the patch;
  *        `contrib.yaml` holds the contribs' parts in the same shape)
  *     -> agent-host env `SANDBOX_MANIFEST_OVERLAY_CONFIGMAP=sandbox-manifest-overlay`

@@ -23,7 +23,7 @@ laptop container  ──wss──▶  BYOC controller  ◀──http──  agen
 ## Enabling it
 
 ```nix
-agentSandbox.byoc.enable = true;
+scooter.byoc.enable = true;
 ```
 
 One option: the controller, its (deliberately unauthenticated) `/byoc` connect path on your

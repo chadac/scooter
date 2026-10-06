@@ -1074,6 +1074,15 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     // agent startup is slow or fails (e.g. goose needs a model provider).
     emit({ type: "RUN_STARTED", threadId: input.threadId, runId });
 
+    // Resolved by either watchdog below so the prompt() await can GIVE UP. An agent
+    // stalled inside a model call services neither session/cancel nor a terminal kill,
+    // so prompt() may never settle — and awaiting it unraced holds the pump, which is
+    // what performs the retry `st.retryable` promises. Why: PR #720.
+    let signalWedged: () => void = () => {};
+    const wedged = new Promise<void>((resolve) => {
+      signalWedged = resolve;
+    });
+
     // DEAD-ON-ARRIVAL watchdog: if the agent emits no ACP activity within
     // firstActivityTimeoutMs, treat the run as wedged and surface a RUN_ERROR so the
     // conversation unfreezes (observed: goose hung on a model-provider credential
@@ -1116,6 +1125,9 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         dropCachedSession("no ACP activity before the deadline");
         // Unblock the wedged goose so the next prompt gets a fresh run.
         void self.cancel(runId).catch(() => {});
+        // Then stop waiting on it regardless: the cancel above is best-effort (an agent
+        // stalled in a model call has no terminal to kill and never answers session/cancel).
+        signalWedged();
       }, firstActivityTimeoutMs);
     }
 
@@ -1158,6 +1170,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           dropCachedSession("the agent process died");
           // Best-effort cleanup so the next prompt gets a fresh run.
           void self.cancel(runId).catch(() => {});
+          // A dead process never resolves its pending prompt(); don't hold the pump on it.
+          signalWedged();
         }, livenessProbeMs);
         // Don't let this timer keep the process alive on its own.
         (st.livenessTimer as { unref?: () => void }).unref?.();
@@ -1286,10 +1300,25 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           blocks: promptBlocks.length,
           has_session: acpSessionId !== undefined,
         });
-      const { stopReason } = await acpClient!.prompt({
-        sessionId: acpSessionId!,
-        prompt: promptBlocks,
-      });
+      // RACED against the watchdogs (see `wedged`): a rejection still lands in the catch
+      // below, and Promise.race marks the loser handled, so an abandoned prompt() that
+      // rejects later cannot surface as an unhandled rejection.
+      const promptCall = acpClient!.prompt({ sessionId: acpSessionId!, prompt: promptBlocks });
+      const raced = await Promise.race([
+        promptCall.then((r) => ({ abandoned: false as const, stopReason: r.stopReason })),
+        wedged.then(() => ({ abandoned: true as const })),
+      ]);
+      if (raced.abandoned) {
+        // Still record the abandoned call's eventual rejection: it settles after we return,
+        // and it is often the ONLY account of why the run produced nothing. Why: PR #565.
+        promptCall.catch((err) => noteRunDiagnostic(err instanceof Error ? err.message : String(err)));
+        // A watchdog already emitted this run's terminal event and set `retryable`. Return
+        // (rather than keep awaiting) so the pump can re-drive the batch on the fresh session
+        // the watchdog forced; `finally` clears currentRun, unblocking the queue. A late
+        // resolution of the abandoned call is inert — st.ended/st.terminated guard every emit.
+        return { runId, retryable: st.retryable === true };
+      }
+      const { stopReason } = raced;
       debug("[bridge] prompt: stopReason=%s", stopReason);
         log.info("acp prompt: returned", { run_id: st.runId, stop_reason: stopReason });
       // The ACP prompt response can resolve before the final session/update
@@ -1461,6 +1490,11 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           // ("agent reported an error") or a user cancel is NOT retryable → we stop immediately.
           const inputs = batch.map((b) => b.input);
           let res = await runPrompt(batch[0].input, inputs);
+          // Count runs PERFORMED, and distinguish a closed bridge from a spent budget: the
+          // break below leaves `retryable` set, so both used to report "exhausting retries"
+          // at RETRY_MAX — reading as 5 failed attempts when only 1 ran. Why: PR #722.
+          let attempts = 1;
+          let abandoned = false;
           for (let attempt = 1; res.retryable && attempt <= RETRY_MAX; attempt++) {
             const delayMs = Math.min(RETRY_BASE_MS * 2 ** (attempt - 1), RETRY_CAP_MS);
             // A run that fails and silently succeeds on retry looks to the user like
@@ -1468,11 +1502,22 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
             log.warn("retrying a wedged run", { attempt, max: RETRY_MAX, delay_ms: delayMs });
             emit({ type: "RUN_RETRYING", threadId: batch[0].input.threadId, attempt, max: RETRY_MAX, delayMs });
             await new Promise((r) => setTimeout(r, delayMs));
-            if (closed) break; // bridge stopped while backing off — abandon the retry
+            if (closed) {
+              abandoned = true; // bridge stopped while backing off — abandon the retry
+              break;
+            }
             res = await runPrompt(batch[0].input, inputs, true);
+            attempts++;
           }
           if (res.retryable) {
-            log.error("run FAILED after exhausting retries", { attempts: RETRY_MAX });
+            if (abandoned) {
+              log.warn("abandoned a wedged run: the bridge closed during the retry backoff", {
+                attempts,
+                max: RETRY_MAX,
+              });
+            } else {
+              log.error("run FAILED after exhausting retries", { attempts, max: RETRY_MAX });
+            }
           }
           for (const b of batch) b.resolve(res.runId); // all coalesced items share the (last) run
         } catch (err) {
@@ -1726,6 +1771,11 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       // is running. Queued prompts stay queued — the next runs after.
       const run = currentRun;
       if (!run || !acpClient) return;
+      // Bind the client + session HERE, not at the awaits below: a watchdog's cancel can
+      // still be in flight when the pump's retry has already resolved a fresh session, and
+      // cancelling THAT one would kill the replacement run. Why: PR #720.
+      const client = acpClient;
+      const cancelSessionId = acpSessionId;
       run.cancelled = true;
       // USER stops persist their intent (see CANCEL_REQUESTED in the event union).
       // Internal cancels (model switch, priority preemption) do NOT: they cancel in
@@ -1738,13 +1788,13 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         // return. session/cancel alone does not (the fake agent ignores it).
         // Only a USER stop gets the pending-spawn grace window. Preemption must leave the
         // next terminal alone: it belongs to the run that did the preempting.
-        await acpClient.killActiveTerminals(userInitiated);
+        await client.killActiveTerminals(userInitiated);
       } catch (e) {
         // Was `catch {}` — a swallowed failure here presents as a dead Stop button.
         log.warn("killActiveTerminals failed", { error: formatError(e) });
         /* best-effort — session/cancel below still stops goose */
       }
-      if (acpSessionId) await acpClient.cancel(acpSessionId);
+      if (cancelSessionId) await client.cancel(cancelSessionId);
     },
 
     queueState() {

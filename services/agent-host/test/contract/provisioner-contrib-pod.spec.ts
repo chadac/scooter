@@ -31,7 +31,7 @@ interface Manifest {
 }
 
 /** aws's real parts in the overlay shape modules/platform.nix renders from
- *  `agentSandbox.sandboxPod.*` — the motivating case, copied from that render. */
+ *  `scooter.sandboxPod.*` — the motivating case, copied from that render. */
 const AWS_OVERLAY = {
   spec: {
     podTemplate: {

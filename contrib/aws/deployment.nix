@@ -1,26 +1,26 @@
 # aws's DEPLOYMENT half: the option tree an operator configures, and the manifests
-# it renders. Layered into modules/platform.nix by contrib/deployment-modules.nix.
+# it renders. A kubenix module in the same eval as modules/platform.nix, which finds
+# it beside ./contrib.nix (derived from contrib/all-modules.nix).
 #
 # This was ~40 references in modules/broker.nix — the option tree, the AWS_* env
 # block, the accounts ConfigMap, the rollout annotation and the IRSA annotation —
-# which meant the platform module could not be read without reading one
-# integration's IAM model. Nothing about it needed to be there: it reaches the
-# broker Deployment through that module's seams (broker.extraEnv and friends) and
-# renders its own ConfigMap straight into kubernetes.resources. Why: #599.
+# so the platform module could not be read without reading one integration's IAM
+# model. It reaches the broker Deployment through that module's seams
+# (broker.extraEnv and friends) instead. Why: #599.
 #
 # `{ config, lib, ... }` only, and nothing built: an external deployer imports
-# platform.nix with no `pkgs` (see contrib/deployment-modules.nix).
+# modules/platform.nix with no `pkgs`, so forcing a package here is an eval error.
 { config, lib, ... }:
 
 let
   inherit (lib) mkOption types literalExpression;
-  cfg = config.agentSandbox;
+  cfg = config.scooter;
   bcfg = cfg.broker;
   acfg = bcfg.aws;
 in
 {
-  options.agentSandbox.broker.aws = {
-    # Also THE GATE for this contrib's skills: platform.nix ships scooter-aws.md
+  options.scooter.broker.aws = {
+    # Also THE GATE for this contrib's skills: deployment.nix ships scooter-aws.md
     # only where this is true, because an agent taught to call /aws/* on a broker
     # that never mounted those routes reads the 404 as the feature being broken.
     enable = mkOption {
@@ -89,7 +89,7 @@ in
         needs a human. Checked AFTER the ceiling, so auto ⊆ allowed by construction.
 
         Per-account `approvers` are seeded into OpenFGA at startup when
-        agentSandbox.broker.fga.enable is set — the authorization backend is
+        scooter.broker.fga.enable is set — the authorization backend is
         substrate and lives there, not here (#595).
 
         Example:
@@ -114,24 +114,26 @@ in
     };
   };
 
-  # The table declaration is deliberately OUTSIDE the `mkIf` below: it is gated on
-  # the contrib being BUILT (deployment-modules.nix imports only enabled contribs),
-  # never on this deployment running it — `just db-generate` renders from bare
-  # defaults, so a deployment-gated table vanishes from the committed schema.
-  # Why: PR #637.
+  # The table declaration is gated on the contrib being BUILT, never on this
+  # deployment running it — `just db-generate` renders from bare defaults, so a
+  # deployment-gated table vanishes from the committed schema. Why: PR #637.
+  #
+  # `contribs.aws.enable` is that "is it built" flag, spelled out since #719 made the
+  # platform's imports static: it used to be carried by the import filter dropping a
+  # disabled contrib, and nothing else here distinguishes built from deployed.
   config = lib.mkMerge [
-    {
+    (lib.mkIf config.contribs.aws.enable {
       # Writer is `broker`: the contrib runs inside the broker image and writes
       # through the broker's own database role. It declares no `owner` — that is
       # modules/broker.nix's, which owns the database.
-      agentSandbox.db.broker.tables.permission_requests = { writers = [ "broker" ]; };
-    }
+      scooter.db.broker.tables.permission_requests = { writers = [ "broker" ]; };
+    })
 
     # Everything else IS a deployment property, and gated on the BROKER being
     # deployed as well as aws: without the broker there is no container to inject env
     # into, and the ConfigMap below would render for a deployment that runs no broker.
     (lib.mkIf (bcfg.enable && acfg.enable) {
-      agentSandbox.broker = {
+      scooter.broker = {
         extraEnv = [
           { name = "AWS_ENABLED"; value = "true"; }
           { name = "AWS_REGION"; value = acfg.region; }
@@ -172,7 +174,7 @@ in
       # has not mounted. pendingPath is set because these requests MUST survive a
       # rollout: the agent is blocked on the answer, and an approval window that
       # vanishes leaves a user who cannot act and an agent that never proceeds.
-      agentSandbox.approvals.aws = {
+      scooter.approvals.aws = {
         brokerPrefix = "/aws/aws";
         pendingPath = "/aws/aws/pending";
       };
@@ -181,7 +183,7 @@ in
       # ~/.aws/config from this file (one [profile <name>] per account). Reaches
       # every sandbox through modules/sandbox-pod.nix, so neither the Nix mirror
       # (modules/conversation.nix) nor the agent-host provisioner spells aws.
-      agentSandbox.sandboxPod = {
+      scooter.sandboxPod = {
         extraVolumeMounts = [
           { name = "aws-accounts"; mountPath = "/etc/agent-sandbox/aws"; readOnly = true; }
         ];

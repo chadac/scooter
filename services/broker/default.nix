@@ -29,6 +29,8 @@ python3Packages.buildPythonApplication {
     asyncpg
     aiosqlite
     openfga-sdk
+    pyjwt          # conversation-token verification (core/conv_token.py)
+    fastmcp        # serves the agent-facing /mcp endpoint (broker/mcp/routes.py)
     scooterSchema  # generated SQLAlchemy models for the broker DB (lib/py/scooter-schema)
     scooterLib     # shared structured-logging convention (lib/py/scooter-lib)
     scooterBrokerLib # the extension surface a provider composes (lib/py/scooter-broker-lib)

@@ -38,5 +38,5 @@ provides the execution **body** (pods, warm pools, suspend/resume); Scooter adds
 
 - [Getting started](getting-started.md) — deploy the platform to a cluster.
 - [Features](features/index.md) — what's in the box.
-- [Configuration options](reference/options/index.md) — every `agentSandbox.*` option, generated
+- [Configuration options](reference/options/index.md) — every `scooter.*` option, generated
   from the modules.

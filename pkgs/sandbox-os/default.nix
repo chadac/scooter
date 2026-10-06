@@ -23,7 +23,12 @@
 { pkgs, lib, n2c
 , name ? "agent-sandbox-os"
 , tag ? "latest"
-, extraModules ? [ ]   # let consumers layer extra NixOS config (extra tools/services)
+, extraModules ? [ ]   # extra NixOS config, BOOT ONLY: a self-modify drops it (see below)
+  # Extra NixOS modules as REPO-RELATIVE files ("contrib/aws/sandbox.nix"). Imported
+  # into the booted system AND baked into the re-converge list, so they survive a
+  # self-modify — which `extraModules` cannot, since the pod rebuilds from the
+  # vendored tree and never sees a value threaded in here. Prefer this. Why: PR #717.
+, extraModuleFiles ? [ ]
   # The uv-nix uv (patched for Nix): exposed to modules as the `uvNix` module arg so
   # web-services/marimo.nix can launch marimo under it (science deps import). Optional
   # so nixosTests importing modules/sandbox-os directly can pass null (marimo falls
@@ -59,8 +64,26 @@ let
   # `system.extraDependencies` below (where it keeps its context), so the path exists.
   nixpkgsSourceStr = builtins.unsafeDiscardStringContext (toString nixpkgsSource);
 
+  # The enabled contribs' sandbox halves, evaluated HERE — the image build — and
+  # nowhere else. modules/sandbox-os used to import a contrib-specific module that
+  # re-derived this list in the pod on every self-modify; now the halves ride the
+  # generic re-converge list below, like any other module layered into the image.
+  # Why: PR #717.
+  contribSandbox = import ../../contrib/sandbox-modules.nix { inherit lib; };
+
   nixos = pkgs.nixos ({ lib, ... }: {
-    imports = [ ../../modules/sandbox-os ] ++ extraModules;
+    imports = [ ../../modules/sandbox-os ]
+      ++ contribSandbox.modules
+      ++ map (f: ../../. + "/${f}") extraModuleFiles
+      ++ extraModules;
+
+    # …and the same files, repo-relative, so the re-converge replays them from the
+    # vendored tree instead of evaluating the contrib registry with no flake and no
+    # network. A module imported above but missing from this list is dropped by the
+    # first self-modify — that is what this option exists to prevent, and why
+    # `extraModuleFiles` is the arg to reach for over `extraModules`.
+    programs.scooterModule.extraReconvergeModuleFiles =
+      contribSandbox.treeRelative ++ extraModuleFiles;
 
     # The uv-nix uv, for web-services/marimo.nix. Null in nixosTests (marimo.nix
     # guards on it and falls back to a plain marimo).
@@ -268,7 +291,25 @@ let
 
   initWrapper = pkgs.writeScript "sandbox-init-wrapper" ''
     #!${pkgs.busybox}/bin/sh
-    ${pkgs.util-linux}/bin/mount -o remount,rw /sys/fs/cgroup 2>/dev/null || true
+    # REPORT the remount, do not just attempt it. When this mount fails, systemd
+    # exits 255 the instant it is exec'd and prints NOTHING -- the container log ends
+    # at "starting systemd..." and the exit code is the only evidence. That is the
+    # crash this wrapper exists to prevent, so a silent `2>/dev/null || true` makes
+    # the one failure mode it guards against undiagnosable. Why: PR #703.
+    #
+    # Diagnostics only: still never fails the boot. CapEff is included because the
+    # remount needs CAP_SYS_ADMIN, so its absence is the first thing to rule out.
+    cg_err=$(${pkgs.util-linux}/bin/mount -o remount,rw /sys/fs/cgroup 2>&1)
+    cg_rc=$?
+    if [ "$cg_rc" -eq 0 ]; then
+      echo "sandbox-init: remount rw /sys/fs/cgroup OK"
+    else
+      echo "sandbox-init: remount rw /sys/fs/cgroup FAILED rc=$cg_rc -- systemd will exit 255"
+      echo "sandbox-init: mount said: $cg_err"
+      echo "sandbox-init: CapEff=$(${pkgs.busybox}/bin/grep ^CapEff /proc/self/status 2>/dev/null)"
+      ${pkgs.busybox}/bin/grep cgroup /proc/mounts 2>/dev/null \
+        | ${pkgs.busybox}/bin/sed "s/^/sandbox-init: /" || true
+    fi
     exec ${toplevel}/init "$@"
   '';
 in

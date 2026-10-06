@@ -64,6 +64,7 @@ test-e2e:
     npm run test:e2e
 
 # e2e fast — a TARGETED subset for the inner loop (`just e2e <spec>`; never --workers).
+[positional-arguments]
 e2e *ARGS:
     #!/usr/bin/env bash
     # The full suite is ~25 min; one spec file is under a minute.
@@ -81,12 +82,16 @@ e2e *ARGS:
     #
     # A green subset is NOT evidence the branch is green — run `just test-e2e` or
     # let CI do it before saying so.
+    #
+    # [positional-arguments] + "$@", NOT {{ARGS}}: just interpolates {{ARGS}} as TEXT,
+    # so -g "queueing keeps thread" arrives as three argv entries and the extra two
+    # become file filters matching nothing — zero tests run and the recipe exits 0.
     set -euo pipefail
-    if [[ " {{ARGS}} " == *" --workers"* ]]; then
+    if [[ " $* " == *" --workers"* ]]; then
       echo "error: --workers breaks this suite (shared agent-host state). See the comment in justfile." >&2
       exit 1
     fi
-    npx playwright test --project=fast {{ARGS}}
+    npx playwright test --project=fast "$@"
 
 # e2e external — against a LIVE deployment (real sandbox, real exec, real Bedrock).
 # Usage: just test-e2e-external https://chat.example.com [user:pass]
@@ -117,15 +122,16 @@ test-unit-randomized seed="":
     TEST_RANDOMIZE=1 TEST_SEED="$SEED" npm test
 
 # e2e tests with randomized file order. Pass E2E_SEED=<number> to reproduce a run.
+[positional-arguments]
 test-e2e-randomized *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
-    # Same --workers guard as the normal e2e recipe.
-    if [[ " {{ARGS}} " == *" --workers"* ]]; then
+    # Same --workers guard and same "$@" (not {{ARGS}}) quoting as the `e2e` recipe.
+    if [[ " $* " == *" --workers"* ]]; then
       echo "error: --workers breaks this suite (shared agent-host state). See the comment in justfile." >&2
       exit 1
     fi
-    node scripts/run-e2e-randomized.mjs {{ARGS}}
+    node scripts/run-e2e-randomized.mjs "$@"
 
 # cluster tests with randomized order. Pass TEST_SEED=<number> to reproduce a run.
 test-cluster-randomized seed="": cluster-up
@@ -304,6 +310,7 @@ cluster-redeploy:
 # Run the cluster-project specs against the local platform (port-forwards the UI).
 alias e2e-cluster := e2e-full
 
+[positional-arguments]
 e2e-full *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -359,8 +366,10 @@ e2e-full *ARGS:
     mkdir -p "$out"
     started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     set +e
-    E2E_TARGET=full E2E_CLUSTER_URL=http://127.0.0.1:8899 \
-      npx playwright test --project=full {{ARGS}} 2>&1 | tee "$out/run.log"
+    # Through e2e-full-run, not a second open-coded playwright call: the --workers
+    # guard and the E2E_TARGET/E2E_CLUSTER_URL contract live in exactly one place.
+    E2E_CLUSTER_URL=http://127.0.0.1:8899 \
+      just e2e-full-run "$@" 2>&1 | tee "$out/run.log"
     rc=${PIPESTATUS[0]}
     set -e
     # EVERY pod in the namespace, whole log, both containers, plus the PREVIOUS
@@ -393,6 +402,39 @@ e2e-full *ARGS:
     echo "logs: $out/  (run.log, pods/*.log, state.txt, events.txt, conversations.yaml, describe-pods.txt, node.txt, sandboxes.yaml)"
     du -sh "$out" 2>/dev/null | awk '{print "      total: "$1}'
     exit "$rc"
+
+# e2e full — a TARGETED subset against an ALREADY-SERVED platform; shared with CI.
+[positional-arguments]
+e2e-full-run *ARGS:
+    #!/usr/bin/env bash
+    # The ONE guarded `--project=full` invocation: `just e2e-full` calls it after
+    # bringing up its port-forward, CI's flake-focus-full after e2e-full-serve.sh.
+    # It starts no cluster and no port-forward of its own.
+    #
+    #   just e2e-full-run                                 # every full-allowlisted spec
+    #   just e2e-full-run test/e2e/stop-run.spec.ts
+    #   just e2e-full-run -g "queueing keeps thread"
+    #   just e2e-full-run -g "..." --repeat-each=5 --trace on --reporter=list,json
+    #
+    # NEVER pass --workers — same reason as `just e2e` (one shared agent-host and its
+    # conversation state), and the cluster adds a shared controller and a 4-vCPU node.
+    # CI open-coded `npx playwright test --project=full` and so skipped this guard
+    # entirely; a flake check running parallel workers measures nothing.
+    set -euo pipefail
+    if [[ " $* " == *" --workers"* ]]; then
+      echo "error: --workers breaks this suite (shared agent-host state). See the comment in justfile." >&2
+      exit 1
+    fi
+    # playwright.config.ts only DEFINES the `full` project when E2E_TARGET=full, so
+    # without this the project does not exist and `--project=full` is rejected.
+    export E2E_TARGET=full
+    # The full target's baseURL (playwright.config.ts `clusterUrl`). Unset leaves it ""
+    # and every navigation resolves against nothing, so require it rather than guess.
+    : "${E2E_CLUSTER_URL:?required — the served UI, e.g. http://127.0.0.1:8899 (just e2e-full forwards svc/ui there)}"
+    # E2E_ROLLOUT_HOOK is OPTIONAL: unset makes the rollout/move stories skip, not fail
+    # (test/e2e/cluster-stories.spec.ts). CI starts the hook; a local run does not.
+    npx playwright test --project=full "$@"
+
 # --- Quality ---------------------------------------------------------------
 
 typecheck:
@@ -462,11 +504,26 @@ check-npm-hashes:
 check-image-coverage:
     @scripts/check-image-coverage.sh
 
-# Every contrib directory must be imported by contrib/all-modules.nix. The import
-# list is explicit for eval performance; this is what stops a contrib being added
-# and silently never built or tested. Why: PR #585.
+# `bash -n` the CI scripts. They are only executed by jobs that first spend
+# minutes on a cluster, so a syntax error otherwise surfaces four minutes into
+# the expensive job — and shellcheck cannot see inside their `bash -c '...'`
+# blocks, where a stray single quote breaks the outer parse.
+check-shell-syntax:
+    @.github/scripts/check-shell-syntax.sh
+
+# Every contrib directory must be imported by contrib/all-modules.nix, and its halves
+# must use the filenames the evals look for. The list is explicit for eval performance;
+# this is what stops a contrib being added and silently never built or tested, or a
+# half landing under a name nothing imports. Why: PR #585, #711.
 check-contrib-coverage:
     @scripts/check-contrib-coverage.sh
+
+# The conversation-token test vector is committed once per service (separate nix
+# source trees), and both suites verify the same token to catch wire-format drift
+# between the TS signer and the Python verifier. Drifted copies would let both
+# suites pass while testing different formats. Why: issue #700.
+check-conv-token-vector:
+    @scripts/check-conv-token-vector.sh
 
 # --- Database schema (Atlas) ------------------------------------------------
 # The shared Postgres schema is declared in lib/sql/<db>/schema.sql (one env per
@@ -480,7 +537,7 @@ check-contrib-coverage:
 db_envs := `sed -n 's/^\[\([a-z_][a-z_0-9]*\)\]$/\1/p' lib/sql/owners.toml | tr "\n" " "`
 
 # Regenerate everything derived from the schema spec: the lib/sql artifacts rendered
-# from the `agentSandbox.db` option (owners.toml, atlas.hcl) and the
+# from the `scooter.db` option (owners.toml, atlas.hcl) and the
 # per-language ORM bindings (@scooter/schema, scooter_schema) from schema.sql.
 # Commit the result.
 db-generate:
@@ -488,14 +545,14 @@ db-generate:
 
 # CI drift guard: regenerate and fail if the committed output differs — a spec or
 # schema change that forgets to regenerate fails the build (like check-lockfiles).
-# Covers BOTH sources: an `agentSandbox.db` edit that does not refresh owners.toml /
+# Covers BOTH sources: an `scooter.db` edit that does not refresh owners.toml /
 # atlas.hcl fails here, same as a schema.sql edit that does not
 # refresh the ORM bindings.
 db-generate-check:
     scripts/db-generate.sh
     @git diff --exit-code -- lib/ts/scooter-schema/src lib/py/scooter-schema/src \
       lib/sql/owners.toml lib/sql/atlas.hcl \
-      || (echo "❌ generated drift: the agentSandbox.db spec or lib/sql changed without regenerating. Run 'nix develop -c just db-generate' and commit the result." && exit 1)
+      || (echo "❌ generated drift: the scooter.db spec or lib/sql changed without regenerating. Run 'nix develop -c just db-generate' and commit the result." && exit 1)
     @echo "✅ generated spec artifacts + ORM bindings are in sync"
 
 # Author migrations from schema.sql for every database. Only databases whose
@@ -535,7 +592,7 @@ db-validate:
       scripts/atlas-dev.sh migrate validate --env "$env"
     done
 
-ci: check-flake check-manifests check-image-coverage check-contrib-coverage check-lockfiles check-npm-hashes lint db-generate-check db-migrate-check test-unit
+ci: check-flake check-manifests check-image-coverage check-contrib-coverage check-conv-token-vector check-lockfiles check-npm-hashes check-shell-syntax lint db-generate-check db-migrate-check test-unit
     @echo "✅ ci (fast) passed — run `just test` for cluster + e2e tiers"
 
 # Build + serve the docs site locally (mkdocs + the GENERATED kubenix option pages).

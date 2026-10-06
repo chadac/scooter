@@ -173,6 +173,17 @@ export function createTunnelService(deps: TunnelServiceDeps): TunnelService {
         const headers = { ...(payload.headers ?? {}) };
         delete headers.host; // the container's Host names its own loopback proxy
         delete headers["content-length"]; // recomputed by fetch
+        // The container's headers are forwarded, so a credential we inject must be
+        // set AFTER stripping any the container supplied under the same name — a
+        // merge would let the user's machine present its own Authorization to an
+        // endpoint that now authenticates with one. Case-insensitively, since HTTP
+        // header names are and the container chooses the spelling. Why: issue #700.
+        for (const { name } of resolution.target.headers) {
+          for (const existing of Object.keys(headers)) {
+            if (existing.toLowerCase() === name.toLowerCase()) delete headers[existing];
+          }
+        }
+        for (const { name, value } of resolution.target.headers) headers[name] = value;
         pending.set(id, {
           url: resolution.target.url,
           method: payload.method ?? "GET",

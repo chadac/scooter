@@ -146,7 +146,7 @@ that actually executes (it is matched case-insensitively against
 selects nothing but still decides the verdict. A check that ran zero repetitions
 of the flake proves nothing and must not report green.
 
-**The control run.** When the fast job's own repetitions come back clean, it
+**The control run.** When a focused job's own repetitions come back clean, it
 re-runs the same test with the same budget on the PR's **base commit** and
 reports both rates. "0 failures in 20 runs" is unfalsifiable alone — a test that
 fires once in 200 runs gives exactly that on a branch that fixed nothing. So the
@@ -157,12 +157,28 @@ comment distinguishes:
 - it fires on the base only rarely (say 2/20, leaving ~12% odds of 20 clean runs
   by chance) — reported as a **weak control**, not as a fix;
 - it fires on **neither** — the run had no power at all; raise the repetitions,
-  add `flake-specs:`, or move to the full target.
+  add `flake-specs:`, or move to the full target. (On the full target there is
+  nowhere further to move: the repeat budget is the only knob left.)
 
 The control costs roughly a second run of the job, so it is skipped when the PR's
-own run already reproduced the flake (the answer is in already). The full-target
-job has no control: the equivalent means deploying the base's whole platform to a
-second cluster.
+own run already reproduced the flake (the answer is in already).
+
+The full comment also carries an **`On main recently`** row — the spec's record
+across the last few nightly `e2e-full` runs, read from their uploaded reports.
+That is prior evidence, not a control: a nightly runs the whole suite, so its
+rate includes contention the targeted run does not have, and scoring a quiet
+clean run against it would overstate the result. Read it for one thing in
+particular — *the spec is failing on `main` but the control reproduced nothing*
+means the control did not recreate the conditions the flake needs, so the clean
+run says nothing about a fix.
+
+**Both** focused jobs run one. The full-target control redeploys the base's whole
+platform — it tears the PR's k3d cluster down and brings the base's up in its
+place, rather than running the base's specs against the PR's deployment. The
+cheap version is only a control when the fix happens to be test-side, and whether
+it is test-side is exactly what nobody knows up front. The k3d registry survives
+the teardown and its tags are content-addressed, so every image the base shares
+with the PR skips the push — for a test-only fix, all of them.
 
 | Label | Job | Runs against |
 |---|---|---|
@@ -170,14 +186,64 @@ second cluster.
 | `e2e-full-flake-check` | flake focus full (k3d, targeted ×5) | **full** — a real k3d cluster |
 | `e2e-full` | e2e full (k3d) | the whole full suite, once |
 
+Both full-target jobs run on the **self-hosted fleet**, the same runners as the
+nightly. A control on different hardware is being asked to reproduce a
+contention flake in conditions it was never seen in.
+
+To run one test against the full target — locally or in CI — use
+`just e2e-full-run` (the local `just e2e-full` brings up a port-forward and then
+calls it). Do not open-code `npx playwright test --project=full`: the recipe
+holds the `--workers` guard and the `E2E_TARGET`/`E2E_CLUSTER_URL` contract, and
+a run with workers measures nothing.
+
+### When is a flake fix DONE?
+
+**Read the heading of the job's comment section, not the check's colour.** The
+check is red whenever anything in a contention run failed, and green whenever
+the command exited 0 — neither of which is a verdict on your flake. The report
+renders exactly one of these, and only the first means done:
+
+| Comment heading | Means | Done? |
+|---|---|---|
+| `✅ … fixed: it fires on the base, not here` | Fires on the base often enough that a clean run here is unlikely by luck (≤5%) | **YES** |
+| `✅ … clean here, but the control is weak (n/m on the base)` | Base barely fired; luck explains it nearly as well as a fix | No — raise the budget |
+| `⚠️ … clean, but the control did not reproduce either` | Fired on neither. The experiment had **no power** | No — proves nothing |
+| `✅ … no reproduction in n repetitions` | No control ran at all | No — unfalsifiable alone |
+| `❌ … the flake STILL reproduces` | Fails here | No |
+| `⚠️ … the targeted test never ran` | `flake-test:` matched nothing that executed; the gate fails the job | No — fix the pattern |
+
+A green check with any heading other than the first is **not** evidence of a
+fix. "0 failures in n runs" cannot distinguish a fix from a flake that simply
+did not fire; that is the whole reason the control exists.
+
+Two more rules that catch most mistakes:
+
+- **Never claim a nightly-`e2e-full` flake is fixed off a green `flake-check`.**
+  The fast stack has no sandbox pods, so it cannot produce the cold boots, CPU
+  saturation or provisioning contention those flakes live in. Green there shows
+  no *regression*. Use `e2e-full-flake-check` for the evidence.
+- **A heading is not the last word — read the `On main recently` row under it.**
+  If the spec is still failing nightly on `main` while the control reproduced
+  nothing, the report says so in bold, and that overrides a clean-looking
+  heading: the control did not recreate the conditions. If the spec passed every
+  nightly in the window, there is no live reproduction to fix — check
+  `flake-test:` names the test you mean.
+- **For `e2e-full` itself, read the baseline diff, not the failure count.** Only
+  "failed here and passed in every baseline run" is attributable to the change.
+  A spec red in 1/5 baseline runs is a flake to take to
+  `e2e-full-flake-check`, not a regression.
+
 ### Reading the `e2e-full` verdict
 
-**`e2e-full` is ALSO path-gated.** The label alone is not enough: the job runs only
-when the change touches the `platform` path filter. Label a PR that only touches
-`ui/` and the job *skips* — the label looks applied and nothing runs, which is not
-the same as a pass.
+**The label is enough — `e2e-full` is NOT path-gated.** It once was, and a
+labelled UI-only PR was silently skipped as a result; #646 removed the filter
+because it covered the specs and the cluster plumbing but not the product code
+under test. All three label-gated jobs now trigger on the label alone. (This
+section said the opposite until #697. If you are reasoning about whether a label
+"took", read the `if:` in `.github/workflows/ci.yml` rather than trusting prose —
+including this prose.)
 
-When it does run, it posts a sticky comment diffing this run against a **window of
+When it runs, it posts a sticky comment diffing this run against a **window of
 the last few full runs on `main`** — new failures / still failing / newly passing.
 Read the diff, not the red check. The full suite is flaky night to night (three
 consecutive nightlies failed 13, 7 and 12 specs with only partial overlap), so the
@@ -195,8 +261,29 @@ the nightly `e2e-full` usually cannot reproduce on the fast target at all: the
 fast stack has no sandbox pods, so it has no cold boots, no node CPU saturation,
 and no contention for provisioning — which is where those flakes live. A green
 `flake-check` on such a PR shows no *regression*; it is not evidence the flake is
-fixed. Use `e2e-full-flake-check` for those, and expect it to be slow (a cluster
-per run, ~13-25m before the first repetition).
+fixed. Use `e2e-full-flake-check` for those.
+
+It is the slowest of the three, but not as slow as this file used to claim.
+Measured end-to-end on #697 — on `ubuntu-latest`, which is no longer where this
+job runs: #703 moved it to the self-hosted fleet, so treat the shape as right
+and the absolute numbers as indicative. The one post-move data point agrees on
+the part that dominates (bring-up, 217s both times).
+
+| | |
+|---|--:|
+| k3d + the full platform rollout | 3m37s |
+| 5 targeted repetitions | 3m18s |
+| the control (its own rollout + 5 more) | 5m25s |
+| **total** | **13m08s** |
+
+So budget **~13 min**, not 25. The control is cheaper than the PR's own half
+because its bring-up reuses the already-populated registry — 117s against 217s,
+with all eight image pushes skipped on a content-tag HEAD.
+
+That budget is for a **targeted-only** run. Adding `flake-specs:` buys
+contention by running those specs alongside, and it is the dominant cost: job
+111985657548 spent 947s in the contention phase against 217s of bring-up, ~21
+min total. Add it when the flake needs contention to fire, not by default.
 
 ## Conventions
 

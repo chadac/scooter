@@ -21,9 +21,11 @@ from dataclasses import dataclass
 from fastapi import APIRouter, Depends
 
 from scooter_broker_lib.registry import register_provider
+from scooter_broker_lib.transports.mcp_tools import McpTools
 from scooter_broker_lib.types import AuthDependency, Identity, Provider, Transport
 
 from .approvals import EchoApprovals
+from .mcp_tools import echo_mcp_server
 
 PROVIDER_NAME = "echo"
 
@@ -64,12 +66,27 @@ def echo_contrib() -> Provider:
     """
     return Provider(
         name=PROVIDER_NAME,
-        # Two transports: the identity echo, and a HUMAN-APPROVAL flow built only from
-        # the public seam. The second one exists so the approval path has a consumer
-        # that is not aws — the mechanism and one integration's needs were previously
-        # indistinguishable, and the end-to-end path could only be tested by mocking
-        # STS/IAM/OpenFGA. Why: PR #651.
-        transports=[EchoTransport(), EchoApprovals()],
+        # Three transports: the identity echo, a HUMAN-APPROVAL flow built only from
+        # the public seam, and the contrib's AGENT TOOLS.
+        #
+        # The approval one exists so that path has a consumer that is not aws — the
+        # mechanism and one integration's needs were previously indistinguishable, and
+        # the end-to-end path could only be tested by mocking STS/IAM/OpenFGA. Why:
+        # PR #651.
+        #
+        # McpTools is the reference for the tool surface (issue #700): it carries the
+        # contrib's own FastMCP server, which the broker mounts namespace-less so tool
+        # names stay flat. `upstream` is declared on it rather than read off a sibling
+        # transport, because a provider may ship tools with NO proxy route — a search
+        # provider has no reason to expose one — and a factory shipping both passes the
+        # same local variable to each. httpbin is a stand-in for a real API; nothing in
+        # the test suite calls it, since the tools are unit-tested against a fake
+        # response.
+        transports=[
+            EchoTransport(),
+            EchoApprovals(),
+            McpTools(server=echo_mcp_server(), upstream="https://httpbin.org"),
+        ],
         credential=None,  # diagnostic transport: delivers no secret
         enabled=True,
     )

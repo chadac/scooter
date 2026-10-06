@@ -16,7 +16,7 @@ images, Deployments, the option reference in these docs — derives from that.
 ```nix
 # platform.nix
 {
-  agentSandbox = {
+  scooter = {
     namespace = "agent-sandbox";
 
     # The chat UI + API, behind your ingress (auth is YOUR ingress's job — Scooter
@@ -47,7 +47,7 @@ nix build .#platform-manifests   # or wire mkPlatform into your own flake
 kubectl apply -f result
 ```
 
-The full set of options — every `agentSandbox.*` knob with types, defaults, and
+The full set of options — every `scooter.*` knob with types, defaults, and
 examples — is in the [configuration reference](reference/options/index.md), generated
 directly from the modules so it cannot drift from the code.
 

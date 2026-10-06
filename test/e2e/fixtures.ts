@@ -139,7 +139,10 @@ export class Chat {
    *  is the race-free primitive for multi-turn conversations: it guarantees the run
    *  finished (a new assistant message exists) before returning, so the next send
    *  can't be dropped mid-run. */
-  async sendTurn(text: string, timeout = 45_000) {
+  // TARGET-AWARE, like completeTurn/startLongRun: on a cluster a turn waits for a ready
+  // sandbox pod (cold boot, longer under CONVERSATION_POD_CAP=1) before the exec even starts.
+  // Fast keeps 45s so a genuine hang there still fails fast. Why: PR #720.
+  async sendTurn(text: string, timeout = process.env.E2E_TARGET === "full" ? 120_000 : 45_000) {
     const before = await this.assistantMessages().count();
     await this.send(text);
     await expect

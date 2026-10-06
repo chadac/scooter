@@ -86,8 +86,11 @@ function localJobs(): JobManager {
 }
 
 /** Bind the REAL MCP endpoint on a loopback port. Returns its per-conversation URL. */
+const HARNESS_SECRET = "realclaude-harness-conv-secret";
+
 async function serveMcp(deps: Partial<Parameters<typeof createMcpEndpoint>[0]> = {}): Promise<{
   url: string;
+  authHeaders: Record<string, string>;
   close: () => Promise<void>;
 }> {
   // Listen FIRST so the endpoint is built once, with the real port in its baseUrl —
@@ -112,10 +115,20 @@ async function serveMcp(deps: Partial<Parameters<typeof createMcpEndpoint>[0]> =
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const port = (server.address() as { port: number }).port;
-  const endpoint = createMcpEndpoint({ baseUrl: `http://127.0.0.1:${port}`, jobs: localJobs(), ...deps });
+  const endpoint = createMcpEndpoint({
+    baseUrl: `http://127.0.0.1:${port}`,
+    jobs: localJobs(),
+    // The endpoint takes its conversation from a signed token, so the harness has to
+    // mint one like the real caller does. `?conv=` is gone. Why: issue #700.
+    convTokenSecret: HARNESS_SECRET,
+    ...deps,
+  });
   handle = endpoint.handle;
   return {
     url: endpoint.urlFor("conv-test"),
+    authHeaders: Object.fromEntries(
+      endpoint.headersFor("conv-test").map((h) => [h.name, h.value]),
+    ),
     close: () => new Promise<void>((r) => server.close(() => r())),
   };
 }
@@ -142,7 +155,11 @@ describe("the scooter-env MCP endpoint answers over HTTP", () => {
     servers.push(mcp.close);
     const res = await fetch(mcp.url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        ...mcp.authHeaders,
+      },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
     });
     expect(res.ok).toBe(true);
@@ -216,7 +233,11 @@ describe("the harness itself is load-bearing", () => {
     servers.push(mcp.close);
     const res = await fetch(mcp.url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        ...mcp.authHeaders,
+      },
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
     });
     expect(await res.text()).not.toMatch(/run_background/);

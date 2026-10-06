@@ -11,7 +11,7 @@
 { config, lib, ... }:
 
 let
-  cfg = config.agentSandbox;
+  cfg = config.scooter;
   bcfg = cfg.broker;
 
   # Static shares external origin + CSP allowlist. Both fall back to the public
@@ -28,7 +28,7 @@ let
     else "";
 in
 {
-  options.agentSandbox.broker = with lib; {
+  options.scooter.broker = with lib; {
     enable = mkOption {
       type = types.bool;
       default = false;
@@ -101,6 +101,27 @@ in
       default = { };
       example = literalExpression ''{ "eks.amazonaws.com/role-arn" = "arn:aws:iam::…"; }'';
       description = "Annotations on the agent-broker ServiceAccount (IRSA and the like).";
+    };
+    # The agent-facing MCP endpoint. A nested `mcp.enable` rather than a flat
+    # `mcpEnabled`, matching `datadog.enable` / `aws.enable` — the namespace is where
+    # the endpoint's other knobs (per-tool gating, a tool allowlist) will land.
+    mcp = {
+      enable = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Serve the agent-facing MCP endpoint (`POST /mcp`) — the contrib-contributed
+          agent tools, scoped to ONE conversation per request by a conversation token
+          (an allowlisted control-plane SA token plus a signed conversation token, or a
+          sandbox's own SA). See issue #700.
+
+          ON by default. The tool set is whatever the ENABLED providers contribute, so a
+          deployment with no tool-bearing contrib serves an endpoint with an empty
+          `tools/list` — which costs nothing, because the endpoint being served is a
+          separate question from it being OFFERED to the agent. Nothing offers it yet;
+          that lands with the provider tools in phase 2.
+        '';
+      };
     };
     jiraSiteUrl = mkOption {
       type = types.str;
@@ -276,6 +297,10 @@ in
       };
     };
 
+    # --- Web search ------------------------------------------------------------
+    # No options here: each search contrib declares its own in
+    # contrib/<name>/deployment.nix, and any number may be enabled. Why: PR #707.
+
     # --- Static shares (broker/shares/) — persistent static webpages --------
     # The broker's shares feature lets agents publish static bundles, served at
     # /s/<uuid>/ and embeddable in the conversation UI. Off by default; when on,
@@ -355,13 +380,13 @@ in
   # while everything else stays gated on `enable`. The gated body keeps its own
   # indentation so this wrapper is the whole diff.
   config = lib.mkMerge [
-  # The tables the `broker` database holds (agentSandbox.db, #606). The OWNER is
+  # The tables the `broker` database holds (scooter.db, #606). The OWNER is
   # declared here and the tables MERGE in from wherever the code that writes them
   # lives: permission_requests is contrib/aws/deployment.nix's now (stage 2 of #606).
   # static_shares + static_share_versions are still here because `shares` is not a
   # contrib yet; they move on the same line when it becomes one.
   {
-    agentSandbox.db.broker = {
+    scooter.db.broker = {
       owner = "broker";
       tables = {
         sandbox_size = { writers = [ "broker" ]; };
@@ -372,7 +397,7 @@ in
     };
   }
   (lib.mkIf bcfg.enable {
-    # mkMerge (not //): the fga block and every contrib's deployment module each
+    # mkMerge (not //): the fga block and every contrib's platform module each
     # add to `deployments`/`services`, and a shallow // would REPLACE those keys
     # (dropping agent-broker). mkMerge deep-merges so all of them coexist.
     kubernetes.resources = lib.mkMerge [
@@ -480,6 +505,25 @@ in
                   # request, with the agent-host looking like a stranger. It was
                   # AWS_APPROVER_SERVICE_ACCOUNTS for that reason. Why: #599.
                   { name = "APPROVER_SERVICE_ACCOUNTS"; value = "system:serviceaccount:${cfg.namespace}:agent-host"; }
+
+                  # --- The agent-facing MCP endpoint (#700) ---------------------------
+                  # Who may act FOR a conversation by presenting a conversation token.
+                  # SEPARATE from APPROVER_SERVICE_ACCOUNTS above even though both name
+                  # the agent-host: that one means "may relay a human's approve/deny",
+                  # this one means "may act as any conversation it holds a signed token
+                  # for". Collapsing them would make the second an accidental
+                  # consequence of the first.
+                  { name = "MCP_CALLER_SERVICE_ACCOUNTS"; value = "system:serviceaccount:${cfg.namespace}:agent-host"; }
+                  # The shared HS256 key. Same Secret the agent-host signs with — one
+                  # name, one key, no way for the bytes to diverge.
+                  {
+                    name = "CONV_TOKEN_SECRET";
+                    valueFrom.secretKeyRef = { name = cfg.convTokenSecret; key = "secret"; };
+                  }
+                  # The broker's own tool surface. OFF until the provider tools move out
+                  # of the agent-host (phase 2): an empty tools/list offered to the agent
+                  # is worse than no endpoint at all.
+                  { name = "MCP_ENABLED"; value = lib.boolToString bcfg.mcp.enable; }
                 ] ++ lib.optional (cfg.postgres.sslmode != null)
                   { name = "BROKER_DB_SSLMODE"; value = cfg.postgres.sslmode; }
                 ++ lib.optional (bcfg.jiraSiteUrl != "")
@@ -665,7 +709,7 @@ in
     # dedicated owner role (agent-pg-broker / agent-pg-openfga). The `broker` db is
     # used by every store in the broker image — its own and any contrib's, which is
     # why the BROKER_DB_* env above is unconditional; openfga only when FGA is on.
-    agentSandbox.postgres.consumers = lib.mkMerge [
+    scooter.postgres.consumers = lib.mkMerge [
       { broker = { db = "broker"; user = "broker"; }; }
       (lib.mkIf bcfg.fga.enable { openfga = { db = "openfga"; user = "openfga"; }; })
     ];

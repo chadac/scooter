@@ -3,7 +3,7 @@
 #
 # TWO sources, in order:
 #
-#   1. The `agentSandbox.db` MODULE OPTION (#606) — the topology: which databases
+#   1. The `scooter.db` MODULE OPTION (#606) — the topology: which databases
 #      exist, which tables are in each, who writes and who reads. From it:
 #        - lib/sql/owners.toml     the ownership manifest
 #        - lib/sql/atlas.hcl       one Atlas env per database
@@ -37,7 +37,7 @@ cd "$ROOT"
 # --- step 1: render the spec artifacts from the module system ----------------
 # Built, not evaluated with `nix eval`, so both files come out of one
 # derivation and can't disagree with each other.
-echo "rendering lib/sql spec artifacts from agentSandbox.db ..."
+echo "rendering lib/sql spec artifacts from scooter.db ..."
 spec="$(nix build --no-link --print-out-paths "$ROOT#db-spec")"
 install -m 644 "$spec/owners.toml"    lib/sql/owners.toml
 install -m 644 "$spec/atlas.hcl"      lib/sql/atlas.hcl

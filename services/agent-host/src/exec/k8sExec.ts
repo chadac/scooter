@@ -117,7 +117,10 @@ export async function pollForReadyPod(ref: SandboxRef, deps: ResolveReadyPodDeps
       // of the zombie-sandbox bug: the resume lands last, the conversation is evicted
       // everywhere, and the pod runs forever. Success was previously silent, which is
       // why 9-12h zombies had no trace of WHO woke them.
-      log.warn("resume-on-missing-pod: resuming the sandbox (idle-suspend self-heal)", {
+      // States the OBSERVATION, not a cause: this fires for any missing pod (eviction,
+      // node pressure, a deleted Sandbox), and naming idle-suspend here sent a flake
+      // investigation after a 30-minute timer that could not have fired. Why: PR #722.
+      log.warn("resume-on-missing-pod: no pod for this sandbox; resuming it", {
         namespace: ref.namespace,
         pod_name: ref.name,
       });

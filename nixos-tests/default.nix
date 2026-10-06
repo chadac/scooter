@@ -57,6 +57,10 @@ in
   # The heavy VM test is nightly-only, so without this a pure-eval break is invisible
   # until a red nightly nobody reads (#609). Fast eval-check, no VM.
   dev-env-reconverge-eval = runTest ./reconverge-eval.nix;
+  # The SHELL half of the same guard: the re-converge expression reaches Nix intact
+  # through scooter-apply-module's double-quoted `--expr`. Eval cannot see a quote
+  # bash ate, so this is its own check. Fast build, no VM. Why: PR #696.
+  dev-env-reconverge-quoting = runTest ./reconverge-quoting.nix;
   # The deployment-DEFAULT module fetch: broker-modules.nix fetches the broker's
   # default.tar.gz and imports the modules it contains; fail-safe to no imports when
   # unconfigured. A fast pure-eval check (not a VM); the in-pod switch is Tier-2.
@@ -75,5 +79,8 @@ in
   # base + a writable upper for runtime builds). Composes on top of whatever
   # /nix/store is — baked OCI store, bare EC2/VM host store, or the framework's
   # own VM overlay — so this VM test exercises the real mechanism.
+  # The journal on the workspace PVC: systemd PID 1 logs ONLY to the journal, and by
+  # default that journal dies with the container it was explaining. Why: PR #703.
+  dev-env-journal-persist = runTest ./journal-persist.nix;
   dev-env-overlay-store = runTest ./overlay-store.nix;
 }

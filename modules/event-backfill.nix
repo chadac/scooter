@@ -30,7 +30,7 @@
 { config, lib, ... }:
 
 let
-  cfg = config.agentSandbox;
+  cfg = config.scooter;
   bcfg = cfg.eventBackfill;
   ns = cfg.namespace;
 
@@ -38,7 +38,7 @@ let
   hmCfg = cfg.conversationController.historyMirror;
 in
 {
-  options.agentSandbox.eventBackfill = with lib; {
+  options.scooter.eventBackfill = with lib; {
     enable = mkEnableOption ''
       the one-shot event backfill Job (history mirror PVC → Postgres). Turn ON to run the
       migration, verify the report shows all conversations OK, then turn OFF. REQUIRES
@@ -76,8 +76,8 @@ in
     # read config's structure — an infinite recursion.
     kubernetes.resources.jobs.agent-event-backfill =
       assert lib.assertMsg hmCfg.retainForMigration ''
-        agentSandbox.eventBackfill.enable = true requires
-        agentSandbox.conversationController.historyMirror.retainForMigration = true.
+        scooter.eventBackfill.enable = true requires
+        scooter.conversationController.historyMirror.retainForMigration = true.
 
         The backfill Job reads conversation history FROM the mirror PVC, so the PVC must stay
         provisioned for the whole run. Enabling the backfill without retaining the PVC would

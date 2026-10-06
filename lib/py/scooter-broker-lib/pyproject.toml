@@ -13,6 +13,11 @@ dependencies = [
   "fastapi",
   "httpx",
   "sqlalchemy",
+  # The agent-tool surface: a contrib declares tools on a FastMCP server and types
+  # against ToolContext/ToolResult here. Unlike pyjwt (removed in #567 because it
+  # served ONE integration), this is the surface itself — every tool-bearing contrib
+  # needs it. Why: issue #700.
+  "fastmcp",
 ]
 
 # hatchling auto-detects the `scooter_broker_lib` package.

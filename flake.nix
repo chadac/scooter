@@ -41,7 +41,7 @@
     let
       # The PLATFORM's agent skills — the ones that document no contrib, so nothing
       # gates them. A skill for a contrib lives in that contrib and is gated on it
-      # (contrib/skills.nix -> modules/platform.nix), never passed through here.
+      # (contrib/<name>/contrib.nix -> modules/platform.nix), never passed through here.
       #
       # Every ./skills/*.md read into the
       # `filename -> content` attrset the platform module's `agent.skills` option
@@ -90,7 +90,7 @@
       # aarch64 image locally (unaffected); only the ghcr REF text is x86_64-pinned.
       pubImages = self.packages.x86_64-linux;
       # The content-tagged ghcr image refs (the kubenix DEFAULTS). A deploy that ships
-      # to another registry overrides these via agentSandbox.*Image / registryPrefix
+      # to another registry overrides these via scooter.*Image / registryPrefix
       # (e.g. the odin localhost:5000 deploy). The FREE images are a PURE set (no flags
       # needed). The claude variant bakes the UNFREE claude-code CLI, so its .outPath
       # forces an allowUnfree check — split out, resolved only under --impure +
@@ -380,18 +380,18 @@
           };
 
           # Render the platform manifests (namespace, agent-host Deployment + RBAC) with
-          # kubenix. `mkPlatform` takes the full `agentSandbox` config for a render, so
+          # kubenix. `mkPlatform` takes the full `scooter` config for a render, so
           # each flavor declares its own images AND agent config — the e2e flavor is a
           # dummy agent with test hooks; the ghcr flavor is a real production deploy.
           # `extraModules` is how a TEST render opts into test-only overrides (modules/testing.nix).
           # A deploy render passes none, so it cannot enable a dummy agent or an unauthenticated
           # test webhook even by setting a stray boolean — the options only exist with the module.
-          mkPlatformWith = extraModules: agentSandbox: kubenix.evalModules.${system} {
+          mkPlatformWith = extraModules: scooter: kubenix.evalModules.${system} {
             module = { kubenix, ... }: {
               imports = [ ./modules/platform.nix ] ++ extraModules;
               kubenix.project = "agent-sandbox";
               kubernetes.version = "1.31";
-              inherit agentSandbox;
+              inherit scooter;
             };
           };
           mkPlatform = mkPlatformWith [ ];
@@ -546,6 +546,13 @@
               # echo pins `enable = false` (it must never ship), so the fixture
               # overrides rather than merges.
               withEcho = derive [{ contribs.echo.enable = lib.mkForce true; }];
+              # Just the fixture: pkgs/sandbox-os already carries the contribs the
+              # repo enables, so passing the whole list would duplicate aws.
+              echoOnly = lib.subtractLists (derive [ ]).treeRelative withEcho.treeRelative;
+              # Through `extraModuleFiles`, the arg a deployment layering its own
+              # modules into the image should use: imported AND carried into the
+              # re-converge list. Passing the fixture the other way (`extraModules`)
+              # would leave it out of that list, which is the bug #717 closed.
               sandboxWithEcho = import ./pkgs/sandbox-os {
                 inherit lib n2c uvNix;
                 pkgs = sandboxPkgs;
@@ -553,7 +560,7 @@
                   src = nix-stubs;
                   package = nix-stubs.packages.${system}.nix-stubs;
                 };
-                extraModules = withEcho;
+                extraModuleFiles = echoOnly;
               };
               # Reached through the CONFIG, not re-derived here, so this fails if the
               # image stops baking the tree the in-pod rebuild reads.
@@ -571,17 +578,22 @@
                   package = nix-stubs.packages.${system}.nix-stubs;
                 };
               };
+              # The baked re-converge list, as the image renders it: resolved store
+              # paths under the vendored tree. Read through the CONFIG so this fails
+              # if the image stops rendering it at all.
+              listFile = sandboxWithEcho.nixos.config.environment.etc."scooter/reconverge-modules.json".source;
             in
             # 1. A derived module is real sandbox config, not just a valid file.
             assert sandboxWithEcho.nixos.config.environment.etc ? "scooter/contrib-echo";
-            # 2. modules/sandbox-os actually imports contribs.nix — only that file
-            # declares this marker, so its absence means the surface is wired to
-            # nothing while (1) and (3) still pass.
-            assert sandboxWithEcho.nixos.config.environment.etc ? "scooter/contrib-modules";
-            # 3. …and contribs.nix imports EXACTLY what the deriver returns for this
-            # source. (1) + (2) + (3) is the whole chain: source -> list -> image.
-            assert (import ./modules/sandbox-os/contribs.nix { inherit lib; }).imports
-              == derive [ ];
+            # 2. The fixture reached the image through `extraModuleFiles`, which is
+            # also what the re-converge replays — so it is exactly the disabled
+            # contrib and nothing else. (1) proves it landed; this proves HOW.
+            assert echoOnly == [ "contrib/echo/sandbox.nix" ];
+            # 3. …and with no fixture, the carried list is EXACTLY what the deriver
+            # returns for this source. (1) + (2) + (3) is the whole chain: source ->
+            # list -> image -> the list a self-modify replays.
+            assert shipped.nixos.config.programs.scooterModule.extraReconvergeModuleFiles
+              == (derive [ ]).treeRelative;
             # 4. The shipped image, with no fixture: aws's half must be in it, or the
             # sandbox silently lost `~/.aws/config` and every `aws --profile` with it.
             # Asserted on the UNIT rather than a marker file — that is the thing a
@@ -591,17 +603,32 @@
             assert lib.any (p: (p.pname or p.name or "") == "scooter-aws")
               shipped.nixos.config.environment.systemPackages;
             pkgs.runCommand "contrib-sandbox-check" { } ''
-              # 5. The in-pod half: the vendored tree carries contrib/ AND the deriver
-              # at the repo's layout, so a rebuild in the pod computes the same list
-              # from the same source. dev-env-reconverge-eval proves it evaluates.
-              test -f ${tree}/contrib/sandbox-modules.nix
-              test -f ${tree}/contrib/echo/sandbox.nix
-              test -f ${tree}/modules/sandbox-os/contribs.nix
+              # 5. The in-pod half. Every entry in the baked list must be a file that
+              # EXISTS, UNDER THE VENDORED TREE — the two ways this list fails in the
+              # pod and nowhere else:
+              #   a path that resolves nowhere is a module the first self-modify
+              #   silently drops (the sandbox loses a contrib's tools and nothing
+              #   says so);
+              #   a path outside the tree is a reference to the FLAKE SOURCE, which
+              #   drags the whole repo into the sandbox closure and re-tags every
+              #   image when any file in it moves (#614).
+              echo "baked re-converge list:"
+              ${pkgs.jq}/bin/jq -r '.[]' ${listFile}
+              for p in $(${pkgs.jq}/bin/jq -r '.[]' ${listFile}); do
+                case "$p" in
+                  ${tree}/*) ;;
+                  *) echo "FAIL: $p is not under the baked tree ${tree}" >&2; exit 1 ;;
+                esac
+                test -f "$p" || { echo "FAIL: $p is in the list but is not a file" >&2; exit 1; }
+              done
+              # Both halves are actually in there (jq over an empty list would pass
+              # the loop above vacuously).
+              ${pkgs.jq}/bin/jq -e 'map(endswith("/contrib/aws/sandbox.nix")) | any' ${listFile} >/dev/null
+              ${pkgs.jq}/bin/jq -e 'map(endswith("/contrib/echo/sandbox.nix")) | any' ${listFile} >/dev/null
               # aws's sandbox half embeds the CLI source from its OWN tree, so the
               # vendored copy needs both ends. This is the one the whole-repo vendoring
               # (#614) bought: a curated subset would have shipped the module without
               # its source.
-              test -f ${tree}/contrib/aws/sandbox.nix
               test -f ${tree}/contrib/aws/scooter_contrib_aws/cli.py
               touch $out
             '';
@@ -618,7 +645,7 @@
             # pkgs/sandbox-image was retired).
             default = sandboxOsImage.image;
 
-            # `nix build .#options-doc` -> the agentSandbox.* option reference as JSON,
+            # `nix build .#options-doc` -> the scooter.* option reference as JSON,
             # rendered FROM the module system (nixosOptionsDoc), so the published reference can
             # never drift from the code. JSON rather than CommonMark on purpose: the docs build
             # splits it into one page PER NAMESPACE (so mkdocs search scores each separately
@@ -626,7 +653,7 @@
             # See docs/gen_options.py.
             options-doc =
               (pkgs.nixosOptionsDoc {
-                options = { agentSandbox = (mkPlatform { }).options.agentSandbox; };
+                options = { scooter = (mkPlatform { }).options.scooter; };
                 warningsAreErrors = false;
                 # Repo-relative declaration links instead of /nix/store paths.
                 transformOptions = opt: opt // {
@@ -642,19 +669,19 @@
               }).optionsJSON;
 
             # `nix build .#db-spec` -> the lib/sql artifacts RENDERED from the
-            # `agentSandbox.db` module option (#606): the ownership manifest and atlas.hcl's
+            # `scooter.db` module option (#606): the ownership manifest and atlas.hcl's
             # per-database envs. `just db-generate` copies these into lib/sql and
             # `just db-generate-check` fails CI on drift — so "which databases exist" and
             # "who owns which table" have exactly one source. (The database LIST is not a
             # third artifact: owners.toml's top-level sections are it.)
             #
-            # Evaluated with an EMPTY agentSandbox config: the in-tree declarations are
+            # Evaluated with an EMPTY scooter config: the in-tree declarations are
             # unconditional, so the artifacts don't depend on a deployment's feature
             # flags. (A contrib declaring tables inside `mkIf cfg.enable` — stage 2 of
             # #606 — is what makes them deployment-shaped; that is the point at which
             # an out-of-tree deployment regenerates its own.)
             db-spec =
-              let spec = (mkPlatform { }).config.agentSandbox.dbSpec; in
+              let spec = (mkPlatform { }).config.scooter.dbSpec; in
               pkgs.runCommand "db-spec" {
                 ownersToml = spec.ownersToml;
                 atlasHcl = spec.atlasHcl;
@@ -674,7 +701,9 @@
             contrib-echo = contribsWithExamples.packages.echo.broker;
             contrib-echo-webhooks = contribsWithExamples.packages.echo.webhooks;
             contrib-airtable = contribs.packages.airtable.broker;
+            contrib-brave = contribs.packages.brave.broker;
             contrib-datadog = contribs.packages.datadog.broker;
+            contrib-duckduckgo = contribs.packages.duckduckgo.broker;
             contrib-github = contribs.packages.github.broker;
             contrib-github-webhooks = contribs.packages.github.webhooks;
             contrib-gitlab = contribs.packages.gitlab.broker;
@@ -682,6 +711,7 @@
             contrib-grafana = contribs.packages.grafana.broker;
             contrib-jira = contribs.packages.jira.broker;
             contrib-jira-webhooks = contribs.packages.jira.webhooks;
+            contrib-kagi = contribs.packages.kagi.broker;
             contrib-slack = contribs.packages.slack.broker;
             contrib-slack-webhooks = contribs.packages.slack.webhooks;
 
@@ -842,7 +872,9 @@
             contrib-echo = contribsWithExamples.packages.echo.broker;
             contrib-echo-webhooks = contribsWithExamples.packages.echo.webhooks;
             contrib-airtable = contribs.packages.airtable.broker;
+            contrib-brave = contribs.packages.brave.broker;
             contrib-datadog = contribs.packages.datadog.broker;
+            contrib-duckduckgo = contribs.packages.duckduckgo.broker;
             contrib-github = contribs.packages.github.broker;
             contrib-github-webhooks = contribs.packages.github.webhooks;
             contrib-gitlab = contribs.packages.gitlab.broker;
@@ -850,6 +882,7 @@
             contrib-grafana = contribs.packages.grafana.broker;
             contrib-jira = contribs.packages.jira.broker;
             contrib-jira-webhooks = contribs.packages.jira.webhooks;
+            contrib-kagi = contribs.packages.kagi.broker;
             contrib-slack = contribs.packages.slack.broker;
             contrib-slack-webhooks = contribs.packages.slack.webhooks;
             # The shared Python libraries (the lib split).
@@ -868,14 +901,14 @@
           });
 
         # The built-in agent skills as a `filename -> content` attrset, for a host
-        # flake to thread into `agentSandbox.agent.skills` (so a custom deploy ships
+        # flake to thread into `scooter.agent.skills` (so a custom deploy ships
         # the same skills the default render does). e.g.
-        #   agentSandbox.agent.skills = scooter.lib.scooterSkills;
+        #   scooter.agent.skills = scooter.lib.scooterSkills;
         lib.scooterSkills = scooterSkills;
 
         # kubenix modules: SandboxTemplate / SandboxWarmPool / Sandbox generators
         # (+ gateway/broker/webhooks Deployments, post-PoC). See modules/.
-        kubenixModules.agentSandbox = ./modules;
+        kubenixModules.scooter = ./modules;
         # The bare platform module — image refs default to the floating
         # `${registryPrefix}<name>:latest`. Import this if you want to pin images
         # yourself. `platform` keeps the raw module; `default` (below) adds the
@@ -887,12 +920,12 @@
         # reproducible pin out of the box — same content → same tag → no needless pod
         # roll — instead of a floating :latest. The tags are x86_64-pinned pure text
         # (see ghcrImages), so this module stays system-independent. Override any
-        # agentSandbox.*Image / registryPrefix to ship elsewhere.
+        # scooter.*Image / registryPrefix to ship elsewhere.
         kubenixModules.default = { lib, ... }: {
           imports = [ ./modules/platform.nix ];
           # Per-leaf mkDefault so a consumer's explicit override of any single image
-          # still wins (a set-level mkDefault would clobber sibling agentSandbox config).
-          config.agentSandbox = {
+          # still wins (a set-level mkDefault would clobber sibling scooter config).
+          config.scooter = {
             agentHostImage = lib.mkDefault ghcrImages.agentHost;
             sandboxImage = lib.mkDefault ghcrImages.sandboxOs;
             uiImage = lib.mkDefault ghcrImages.ui;

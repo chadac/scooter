@@ -50,9 +50,14 @@ class FakeAgent implements Agent {
   // into one (and, via duplicate message ids, drops a later turn's reply on thread
   // reset). So mirror real behavior and give each tool call a fresh id.
   private toolCallSeq = 0;
-  /** The scooter-env MCP endpoint newSession offers per session (already scoped by ?conv=).
-   *  Kept so the `~subagent` directive can call tools the way goose does. */
+  /** The scooter-env MCP endpoint newSession offers per session, with the HEADERS it was
+   *  offered alongside. Kept so the `~subagent` directive can call tools the way goose does.
+   *
+   *  The headers are not optional decoration: the endpoint takes its conversation from the
+   *  bearer conversation token in them (it used to be `?conv=` on the URL), so dropping
+   *  them means every tool call 401s. Why: issue #700. */
   private mcpUrl = new Map<string, string>();
+  private mcpHeaders = new Map<string, Record<string, string>>();
 
   async initialize(_p: InitializeRequest): Promise<InitializeResponse> {
     return { protocolVersion: PROTOCOL_VERSION, agentCapabilities: { loadSession: false } };
@@ -60,9 +65,22 @@ class FakeAgent implements Agent {
 
   async newSession(p: NewSessionRequest): Promise<NewSessionResponse> {
     const sessionId = `fake-${Math.random().toString(36).slice(2, 10)}`;
-    const offered = (p as { mcpServers?: Array<{ name?: string; url?: string }> }).mcpServers ?? [];
+    const offered =
+      (
+        p as {
+          mcpServers?: Array<{ name?: string; url?: string; headers?: Array<{ name: string; value: string }> }>;
+        }
+      ).mcpServers ?? [];
     const env = offered.find((s) => s.name === "scooter-env" && typeof s.url === "string");
-    if (env?.url) this.mcpUrl.set(sessionId, env.url);
+    if (env?.url) {
+      this.mcpUrl.set(sessionId, env.url);
+      // `headers` is HttpHeader[] ({name,value}) per the ACP schema, which is what a real
+      // client receives and sends back.
+      this.mcpHeaders.set(
+        sessionId,
+        Object.fromEntries((env.headers ?? []).map((h) => [h.name, h.value])),
+      );
+    }
     return { sessionId };
   }
 
@@ -74,7 +92,11 @@ class FakeAgent implements Agent {
     if (!url) return "no scooter-env MCP endpoint was offered to this session";
     const res = await fetch(url, {
       method: "POST",
-      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        ...(this.mcpHeaders.get(sessionId) ?? {}),
+      },
       body: JSON.stringify({
         jsonrpc: "2.0",
         id: 1,

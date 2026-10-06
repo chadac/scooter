@@ -5,18 +5,18 @@
 # (audience agent-host) so the agent-host honors the task `owner` — the scheduler's
 # SA is added to the agent-host WEBHOOKS_SERVICE_ACCOUNT trust list (platform.nix).
 #
-# Store: the shared platform Postgres (agentSandbox.postgres, always on) — the
+# Store: the shared platform Postgres (scooter.postgres, always on) — the
 # scheduler's own `scheduler` db + auto-provisioned role. Durable across restarts.
 # SQLite remains only as the app's local-dev / unit-test default (no DB_* env).
 
 { config, lib, ... }:
 
 let
-  cfg = config.agentSandbox;
+  cfg = config.scooter;
   scfg = cfg.scheduler;
 in
 {
-  options.agentSandbox.scheduler = with lib; {
+  options.scooter.scheduler = with lib; {
     enable = mkOption {
       type = types.bool;
       default = false;
@@ -52,9 +52,9 @@ in
       example = "DEBUG";
       description = "Root log level (LOG_LEVEL) — INFO logs task fires/spawns; DEBUG is verbose.";
     };
-    # Durability: the scheduler ALWAYS uses the shared Postgres now (agentSandbox.
+    # Durability: the scheduler ALWAYS uses the shared Postgres now (scooter.
     # postgres) — its own `scheduler` db + role, auto-provisioned. No per-module
-    # Postgres knobs; point the platform at RDS via agentSandbox.postgres.external.
+    # Postgres knobs; point the platform at RDS via scooter.postgres.external.
   };
 
   # mkMerge: the table declarations are UNCONDITIONAL (see modules/db-spec.nix) —
@@ -62,9 +62,9 @@ in
   # while everything else stays gated on `enable`. The gated body keeps its own
   # indentation so this wrapper is the whole diff.
   config = lib.mkMerge [
-  # The tables the `scheduler` database holds (agentSandbox.db, #606).
+  # The tables the `scheduler` database holds (scooter.db, #606).
   {
-    agentSandbox.db.scheduler = {
+    scooter.db.scheduler = {
       owner = "scheduler";
       tables = {
         scheduled_tasks = { writers = [ "scheduler" ]; };
@@ -158,7 +158,7 @@ in
 
     # Register with the shared Postgres so the provisioning Job creates the
     # `scheduler` database + a `scheduler` role that owns it (agent-pg-scheduler).
-    agentSandbox.postgres.consumers.scheduler = { db = "scheduler"; user = "scheduler"; };
+    scooter.postgres.consumers.scheduler = { db = "scheduler"; user = "scheduler"; };
   })
   ];
 }

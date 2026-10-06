@@ -29,10 +29,9 @@
     ./local-modules.nix
     ./registry-modules.nix
     ./overlay-store.nix
+    ./journal-persist.nix
     ./warm-store-seed.nix
     ./dbus-container.nix
-    # The enabled contribs' sandbox halves, derived from the source (contrib/).
-    ./contribs.nix
   ];
 
   # The agent-editable modules dir lives on the workspace PVC (durable + writable:
@@ -118,6 +117,10 @@
   # --- broker/git carry-over from the legacy sandbox image -------------------
   # So the agent-host's exec'd commands (broker whoami, brokered git) work
   # unchanged in the new image.
+  # The journal is the ONLY record of what systemd did (PID 1 logs nowhere else), so
+  # it must outlive the container restart that destroys the evidence. Why: PR #703.
+  services.scooterJournalPersist.enable = true;
+
   programs.scooterCarryOver.enable = true;
 
   # STAGE 5 carry-over (from the old entrypoint.sh, must not regress):
@@ -127,6 +130,6 @@
   # These become packages / systemd units / activation scripts here.
   #
   # The aws items from that list (scooter-aws*, the awscli2 stub, the ~/.aws/config
-  # render) are contrib/aws/sandbox.nix, layered in through ./contribs.nix — still
-  # in this image, no longer in this file. Why: #599.
+  # render) are contrib/aws/sandbox.nix, layered into the image by pkgs/sandbox-os —
+  # still in this image, no longer in this file. Why: #599, #717.
 }

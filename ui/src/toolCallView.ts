@@ -9,7 +9,8 @@
  * lowercase, spaces/punct -> "_") and match that against the known tool names.
  * We also accept the raw registerTool titles as a fallback, so either shape works.
  *
- * Returns null for anything we don't specialize (web_search, web_fetch,
+ * Returns null for anything we do not specialize (a search contrib’s
+ * <provider>_web_search, web_fetch,
  * modify_environment, unknown) — the caller renders the generic ToolFallback.
  *
  * A CONTRIB registers its tools through the runtime manifest instead of this
@@ -35,8 +36,15 @@ export interface ToolCallVisual {
   action: string;
 }
 
-/** Keyed by the underlying tool NAME (the stable identity). The app's own tools;
- *  a contrib's arrive through the manifest. */
+/** Keyed by the underlying tool NAME (the stable identity).
+ *
+ *  KEPT after #700 moved slack_respond / slack_react / github_comment into
+ *  contrib/slack and contrib/github, which now declare them under `ui.tools` as well.
+ *  These are the NO-MANIFEST FALLBACK, not stale duplicates: `npm run dev` and the
+ *  Playwright fast stack serve no manifest at all (contrib/README.md), so emptying this
+ *  table would leave local development with no provider cards — which is what
+ *  contribManifest.test.ts guards. cardFor consults the manifest FIRST, so a deployment
+ *  still gets its rows from the contrib that owns the tool. */
 const BUILTIN_BY_TOOL: Record<string, ContribToolCard> = {
   slack_respond: { provider: "slack", argKey: "text", action: "replied in Slack" },
   slack_react: { provider: "slack", argKey: "emoji", action: "reacted in Slack" },

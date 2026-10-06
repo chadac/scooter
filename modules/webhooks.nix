@@ -11,11 +11,11 @@
 { config, lib, ... }:
 
 let
-  cfg = config.agentSandbox;
+  cfg = config.scooter;
   wcfg = cfg.webhooks;
 in
 {
-  options.agentSandbox.webhooks = with lib; {
+  options.scooter.webhooks = with lib; {
     enable = mkOption {
       type = types.bool;
       default = false;
@@ -92,7 +92,7 @@ in
     # The agent comments through the BROKER's GitHub App; the same App backs this
     # service, so `GET /app` here names the author to filter (see handlers/
     # github.py `_is_self_authored`). Point this at the broker's key Secret —
-    # agentSandbox.broker.githubApp.privateKeySecret, same namespace.
+    # scooter.broker.githubApp.privateKeySecret, same namespace.
     #
     # TODO: hoist shared App credentials (id + key Secret) into one place in the
     # kubenix catalog that broker and webhooks both reference, instead of each
@@ -139,7 +139,7 @@ in
     managerUrl = mkOption {
       type = types.str;
       default = if cfg.ingress.host != "" then "https://${cfg.ingress.host}" else "";
-      defaultText = lib.literalExpression ''"https://''${agentSandbox.ingress.host}" (when the chat host is set)'';
+      defaultText = lib.literalExpression ''"https://''${scooter.ingress.host}" (when the chat host is set)'';
       description = "Public UI base URL for the 'View conversation' deep-links (AGENT_MANAGER_URL).";
     };
 
@@ -155,7 +155,7 @@ in
 
     # Durable mapping store: the PR/Slack <-> conversation map MUST survive a pod
     # restart (else follow-up comments spawn a new conversation instead of resuming).
-    # It now lives in the shared platform Postgres (agentSandbox.postgres, always on)
+    # It now lives in the shared platform Postgres (scooter.postgres, always on)
     # — webhooks' own `webhooks` db + auto-provisioned role. No per-module knobs here.
 
     # The webhooks receiver's own generic Ingress — SEPARATE from the chat ingress
@@ -206,10 +206,10 @@ in
   # while everything else stays gated on `enable`. The gated body keeps its own
   # indentation so this wrapper is the whole diff.
   config = lib.mkMerge [
-  # The tables the `webhooks` database holds (agentSandbox.db, #606). owners.toml,
+  # The tables the `webhooks` database holds (scooter.db, #606). owners.toml,
   # the migrator's database list and the postgres GRANTs are all generated from this.
   {
-    agentSandbox.db.webhooks = {
+    scooter.db.webhooks = {
       owner = "webhooks";
       tables = {
         conversation_map = { writers = [ "webhooks" ]; readers = [ "agent-host" ]; };
@@ -284,7 +284,7 @@ in
                   { name = "LOG_LEVEL"; value = wcfg.logLevel; }
                   { name = "AGENT_MANAGER_URL"; value = wcfg.managerUrl; }
                 ] ++ [
-                  # Durable store: the shared platform Postgres (agentSandbox.postgres,
+                  # Durable store: the shared platform Postgres (scooter.postgres,
                   # always on). Webhooks' OWN `webhooks` db + auto-provisioned role
                   # (agent-pg-webhooks). DSN assembled app-side from these parts.
                   { name = "DB_HOST"; value = cfg.postgres.host; }
@@ -371,7 +371,7 @@ in
 
     # Register with the shared Postgres: the provisioning Job creates the `webhooks`
     # database + a `webhooks` role that owns it (secret agent-pg-webhooks).
-    agentSandbox.postgres.consumers.webhooks = { db = "webhooks"; user = "webhooks"; };
+    scooter.postgres.consumers.webhooks = { db = "webhooks"; user = "webhooks"; };
   })
   ];
 }

@@ -67,12 +67,12 @@ let
     root = repoRoot;
     fileset = lib.fileset.unions [
       (repoRoot + "/modules")
-      # contrib/: modules/sandbox-os/contribs.nix imports
-      # ../../contrib/sandbox-modules.nix, and each enabled contrib's sandbox
-      # half (contrib/<name>/sandbox.nix) is read from here at re-converge time.
-      # Omitting it broke dev-env-reconverge-eval and dev-env-contrib-sandbox with
-      #   path '/nix/store/...-sandbox-os-src/contrib/sandbox-modules.nix' does not exist
-      # -- the loud failure this allowlist is designed to produce.
+      # contrib/: the re-converge module list (programs.scooterModule.
+      # extraReconvergeModuleFiles, rendered by runtime-converge.nix) holds paths
+      # UNDER THIS TREE -- contrib/<name>/sandbox.nix -- so each enabled contrib's
+      # sandbox half is read from here at re-converge time. The registry itself is
+      # NOT evaluated in the pod any more (#717); the files still have to be here,
+      # and an omission fails the switch loudly, which is what this allowlist is for.
       (repoRoot + "/contrib")
       (repoRoot + "/pkgs")
       (repoRoot + "/services")

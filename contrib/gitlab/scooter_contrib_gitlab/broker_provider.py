@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from .config import GitlabSettings
+from .mcp_tools import gitlab_mcp_server
 from scooter_broker_lib.autolink import Link, rule
 from scooter_broker_lib.registry import register_provider
 from scooter_broker_lib.types import Provider
 from scooter_broker_lib.sources.static_token import StaticTokenSource
 from scooter_broker_lib.transports.git_credential import GitCredential
 from scooter_broker_lib.transports.http_proxy import HttpProxy
+from scooter_broker_lib.transports.mcp_tools import McpTools
 
 
 # Auto-link the MRs / issues an agent creates via the proxy. GitLab's create
@@ -27,6 +29,9 @@ _GITLAB_LINK_RULES = [
         lambda r: Link(source="gitlab", resource_type="issue", url=r.get("web_url", ""), title=r.get("title")),
     ),
 ]
+
+
+UPSTREAM = "https://gitlab.com"
 
 
 @register_provider
@@ -48,10 +53,14 @@ def gitlab() -> Provider:
             # (previously upstream ended in /api/v4, so /gitlab/api/v4/user became
             # gitlab.com/api/v4/api/v4/user -> 404; the double-prefix bug).
             HttpProxy(
-                upstream="https://gitlab.com",
+                upstream=UPSTREAM,
                 link_rules=_GITLAB_LINK_RULES,
                 agent_host_url=settings.agent_host_url,
             ),
+            # The agent tool (gitlab_comment), moved out of the agent-host by #700.
+            # contrib/gitlab already declared ui.tools.gitlab_comment for a tool it did
+            # not own; now it owns it, and it is absent when this contrib is not enabled.
+            McpTools(server=gitlab_mcp_server(), upstream=UPSTREAM),
         ],
         enabled=bool(settings.gitlab_token),
     )
