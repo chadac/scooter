@@ -122,8 +122,13 @@ export function inventory({ project } = {}) {
  *  test FILES in a shard that had been assigned 11 cluster tests.
  *
  *  Adding a file here means the shards start running it, so it is a deliberate
- *  list rather than a glob. */
-export const SHARDED_CLUSTER_SPECS = ["platform-smoke", "event-backfill"];
+ *  list rather than a glob.
+ *
+ *  THIS IS THE ONLY COPY. ci.yml's `cluster smoke` step reads it via
+ *  `test-inventory.mjs cluster-specs` rather than restating it. Off this list a test is
+ *  never SCHEDULED; missing from vitest's file filters its file is never LOADED, so `-t`
+ *  matches nothing. Both are silent -- the shard is green either way. Why: PR #723. */
+export const SHARDED_CLUSTER_SPECS = ["platform-smoke", "event-backfill", "event-log-durability"];
 
 export function clusterInventory() {
   const raw = execFileSync(join(REPO_ROOT, "node_modules", ".bin", "vitest"), ["list", "--project", "cluster", "--json"], {
@@ -230,6 +235,12 @@ function main() {
   const cmd = process.argv[2] ?? "list";
   if (cmd === "list") {
     process.stdout.write(JSON.stringify(combinedInventory(), null, 2));
+    return;
+  }
+  // The vitest positional filters for the shards' `cluster smoke` step. ci.yml used to
+  // hardcode this list a SECOND time; see SHARDED_CLUSTER_SPECS for what that cost.
+  if (cmd === "cluster-specs") {
+    process.stdout.write(SHARDED_CLUSTER_SPECS.join(" ") + "\n");
     return;
   }
   if (cmd === "verify") {

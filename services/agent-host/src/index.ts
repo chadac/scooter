@@ -35,14 +35,14 @@ import type { SandboxResources } from "./session/resources.js";
 import { brokerAuthHeaders as sharedBrokerAuthHeaders } from "./session/brokerAuth.js";
 import type { SandboxProvisioner } from "./session/manager.js";
 import { createFileConversationStore } from "./session/fileStore.js";
-import { createPgEventStore, withPgEvents } from "./session/eventStore.js";
+import { createPgEventStore, withPgEvents, type PgEventStore } from "./session/eventStore.js";
 import { agentHostDsnFromEnv } from "./db/agentHostDsn.js";
 import { createK8sOwnershipGuard } from "./session/k8sOwnershipGuard.js";
 import { createK8sConversationRegistry } from "./session/k8sConversationRegistry.js";
 import { withConversationRows } from "./session/pgConversationRegistry.js";
-import type { ConversationStore, ConversationLink } from "./session/manager.js";
-import { createPgLinkStore } from "./session/linkStore.js";
-import { createPgMetaStore } from "./session/metaStore.js";
+import type { ConversationStore, ConversationLink, ConversationMeta } from "./session/manager.js";
+import { createPgLinkStore, type LinkStore } from "./session/linkStore.js";
+import { createPgMetaStore, type MetaStore } from "./session/metaStore.js";
 import { createPvcAssetStore } from "./session/assetStore.js";
 import { createHybridAssetStore } from "./session/hybridAssetStore.js";
 import { createSessionBridge, PRIORITY_INTERRUPT, type AguiEvent, type ApproverIdentity } from "./bridge.js";
@@ -477,6 +477,59 @@ export async function hydrateWithRetry(
   }
 }
 
+/**
+ * The Postgres overlay laid over the file store (links, metadata, and the DELETE that has
+ * to undo all of it).
+ *
+ * Exported so a test can reach it, NOT for reuse: removeConversation has to drop every half
+ * of a conversation, and a half went missing here for as long as the event log has been in
+ * Postgres. Keep it out of main(). Why: PR #723.
+ */
+export function pgStoreOverrides(deps: {
+  fileStore: ConversationStore;
+  metaStore?: MetaStore;
+  linkStore?: LinkStore;
+  eventStore?: Pick<PgEventStore, "removeConversation">;
+}): Partial<ConversationStore> {
+  const { fileStore, metaStore, linkStore, eventStore } = deps;
+  return {
+    ...(linkStore
+      ? {
+          addLink: (id: SessionId, link: ConversationLink) => linkStore.addLink(id, link),
+          listLinks: (id: SessionId) => linkStore.listLinks(id),
+        }
+      : {}),
+    ...(metaStore
+      ? {
+          saveMeta: async (meta: ConversationMeta) => {
+            await metaStore.saveMeta(meta);
+            await fileStore.saveMeta?.(meta);
+          },
+          listConversations: () => metaStore.listConversations(),
+          removeConversation: async (id: SessionId) => {
+            await metaStore.removeConversation(id);
+            await fileStore.removeConversation?.(id);
+            // THE EVENT ROWS — see this function's comment. Two consequences beyond the
+            // leak: an orphan RUN_STARTED keeps being rediscovered as a dangling run (which
+            // re-registers the conversation it was deleted from), and the store's cached seq
+            // head survives, so the same id coming back collides on the PK.
+            // Swallowed like the meta delete above: the conversation is already gone from
+            // every listing, so leaked rows are a leak to reconcile, not a 500.
+            await eventStore?.removeConversation(id).catch((err: unknown) => {
+              hostLog.errorWith("failed to drop conversation_events; rows leaked", err, {
+                conversation_id: id,
+              });
+            });
+            // Drop the conversation's links too — the file store cleared them with its directory,
+            // but the shared PG resource_links table needs an explicit delete or an orphaned row
+            // survives the conversation and collides (global unique) with a later re-link.
+            await linkStore?.deleteByConversation(id);
+          },
+        }
+      : {}),
+  };
+}
+
 export async function main(
   config: AgentHostConfig & Partial<AgentHostConfigExtra> = configFromEnv(),
 ): Promise<() => Promise<void>> {
@@ -633,31 +686,7 @@ export async function main(
   // The event log stays on the file store — it is the one artifact that belongs there.
   // saveMeta writes BOTH: Postgres is authoritative for the list, and the file copy keeps
   // the mirror's per-conversation directory self-describing for recovery.
-  const overrides: Partial<ConversationStore> = {
-    ...(linkStore
-      ? {
-          addLink: (id: SessionId, link: ConversationLink) => linkStore.addLink(id, link),
-          listLinks: (id: SessionId) => linkStore.listLinks(id),
-        }
-      : {}),
-    ...(metaStore
-      ? {
-          saveMeta: async (meta) => {
-            await metaStore.saveMeta(meta);
-            await fileStore.saveMeta?.(meta);
-          },
-          listConversations: () => metaStore.listConversations(),
-          removeConversation: async (id: SessionId) => {
-            await metaStore.removeConversation(id);
-            await fileStore.removeConversation?.(id);
-            // Drop the conversation's links too — the file store cleared them with its directory,
-            // but the shared PG resource_links table needs an explicit delete or an orphaned row
-            // survives the conversation and collides (global unique) with a later re-link.
-            await linkStore?.deleteByConversation(id);
-          },
-        }
-      : {}),
-  };
+  const overrides = pgStoreOverrides({ fileStore, metaStore, linkStore, eventStore });
   const store: ConversationStore =
     Object.keys(overrides).length > 0
       ? new Proxy(fileStore, {
@@ -797,6 +826,13 @@ export async function main(
   // metric so an operator can alert (the store already logs each one loudly).
   store.onAppendError?.((conversationId) => {
     metrics.persistenceError?.({ conversationId });
+  });
+
+  // A seq collision is the fence failing OPEN (two pods both legitimate writers for a
+  // window — e.g. while the conversation is unassigned). The turn survives, so it is a
+  // separate counter from persistenceError rather than an error. Why: PR #723.
+  eventStore?.onAppendCollision((conversationId) => {
+    metrics.appendCollision?.({ conversationId });
   });
 
   // Build a bridge per conversation: connect exec to the sandbox pod, spawn

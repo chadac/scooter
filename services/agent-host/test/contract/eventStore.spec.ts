@@ -45,12 +45,19 @@ function fakeDb(): {
   rows: Array<Record<string, unknown>>;
   failNext: (e: Error) => void;
   assign: (conv: string, a: { hostPod: string | null; hostGeneration?: number }) => void;
+  /** A rival writer that takes the seq first: the next `n` inserts find their row already
+   *  there (Infinity = every one). Models an unfenced second pod writing into the same log
+   *  in the window between this writer's head read and its insert — which is the ONLY way
+   *  to collide deterministically, since a store that reads the head afterwards correctly
+   *  derives the next free seq. */
+  rivalSteals: (n: number) => void;
 } {
   const rows: Array<Record<string, unknown>> = [];
   // The conversations row the append fence reads. Absent = no row at all, which is a real
   // state (the append can beat the INSERT) and must not refuse.
   const assigned = new Map<string, { hostPod: string | null; hostGeneration?: number }>();
   let fail: Error | undefined;
+  let rivalLeft = 0;
   const client = {
     async query(cfg: { text: string; values?: unknown[] } | string, params: unknown[] = []) {
       const text = typeof cfg === "string" ? cfg : cfg.text;
@@ -80,6 +87,12 @@ function fakeDb(): {
             a?.hostPod != null &&
             (a.hostPod !== pod || (gen !== undefined && Number(a.hostGeneration ?? 0) !== Number(gen)));
           if (contradicts) return { rows: [], rowCount: 0 };
+        }
+        // A rival that wins every race: plant its row at the seq this writer derived,
+        // so the collision below fires no matter how often the writer re-derives.
+        if (rivalLeft > 0 && !rows.some((r) => r.conversation_id === conversation_id && r.seq === seq)) {
+          rivalLeft -= 1;
+          rows.push({ conversation_id, seq, event: { type: "RIVAL" }, checksum: `rival-${seq}`, prev_checksum: "" });
         }
         // The PK is a CORRECTNESS backstop, not just an index: a second writer
         // must collide loudly rather than interleave silently. Honour ON
@@ -147,6 +160,7 @@ function fakeDb(): {
     rows,
     failNext: (e) => (fail = e),
     assign: (conv, a) => assigned.set(conv, a),
+    rivalSteals: (n) => (rivalLeft = n),
   };
 }
 
@@ -183,20 +197,27 @@ describe("eventStore — ordering", () => {
     expect(rows.filter((r) => r.conversation_id === "conv-2").map((r) => r.seq)).toEqual([1]);
   });
 
-  it("a PK collision SURFACES — it must never be swallowed as ON CONFLICT DO NOTHING", async () => {
-    // One pod owns a conversation, but canWrite() fails OPEN on an unobserved
-    // one, so the invariant has a known hole. A second writer must be loud.
-    // Both stores seed their counter from the table, so a rival that starts
-    // LATER picks up the right seq — that is correct, not a collision. The real
-    // hazard is two writers holding STALE cached heads: a partitioned old owner
-    // keeps appending from the seq it remembers while the new owner advances.
-    // Model that by letting both cache the same head before either writes.
-    const { db } = fakeDb();
+  it("a PK collision KEEPS THE TURN: the loser re-derives and chains onto the winner", async () => {
+    // One pod owns a conversation, but canWrite() fails OPEN on an unobserved one and the
+    // fence opens whenever conversations.host_pod is absent, so two writers both being
+    // legitimate is a REACHABLE state, not a hypothetical. Both stores seed their counter
+    // from the table, so a rival that starts LATER picks up the right seq — that is
+    // correct, not a collision. The real hazard is two writers holding the same cached
+    // head: both compute the same seq, one wins, and the loser used to log
+    // "durable append FAILED (turn lost)" and DROP the user's event.
+    //
+    // It must not be swallowed (ON CONFLICT DO NOTHING loses it just as silently) and it
+    // must not be fatal: re-derive against the table and chain onto whatever is actually
+    // there. Observed in CI as a lost TOOL_CALL_RESULT at seq 15. Why: PR #723.
+    const { db, rows } = fakeDb();
     const a = store(db);
     const b = store(db);
     const errors: unknown[] = [];
+    const collisions: number[] = [];
     a.onAppendError((_id, e) => errors.push(e));
     b.onAppendError((_id, e) => errors.push(e));
+    a.onAppendCollision((_id, at) => collisions.push(at.attempt));
+    b.onAppendCollision((_id, at) => collisions.push(at.attempt));
 
     // Both seed head = seq 0 concurrently, so both compute seq 1.
     await Promise.all([
@@ -204,7 +225,61 @@ describe("eventStore — ordering", () => {
       b.appendEvent(CONV, run(2)[0]).catch(() => {}),
     ]);
 
-    expect(errors.length, "a duplicate (conversation_id, seq) must not be silent").toBeGreaterThan(0);
+    expect(errors, "the turn is recovered, so nothing was lost to report").toEqual([]);
+    expect(collisions, "a collision is never silent — it is the fence failing open").toEqual([1]);
+    // BOTH events are durable, at consecutive seqs, on ONE unforked chain.
+    expect(rows.map((r) => r.seq)).toEqual([1, 2]);
+    expect(rows[0].prev_checksum).toBe(EMPTY_CHECKSUM);
+    expect(rows[1].prev_checksum, "the loser chained onto the WINNER's row").toBe(rows[0].checksum);
+  });
+
+  it("a collision whose claim has since moved is REFUSED, not chained onto", async () => {
+    // The dangerous shape of a retry: we lost the seq BECAUSE the conversation was
+    // reassigned, and the new owner is advancing the log. Re-deriving would append a dead
+    // pod's event after the live one's. The fence rides every attempt and the epoch is
+    // re-resolved per attempt, so the retry refuses instead — one row, written by the
+    // rival, nothing from us.
+    const { db, rows, assign, rivalSteals } = fakeDb();
+    assign(CONV, { hostPod: "host-1", hostGeneration: 4 });
+    let gen = 4;
+    const s = createPgEventStore({ db, fence: { pod: "host-1", generation: () => gen } });
+    const errors: unknown[] = [];
+    s.onAppendError((_id, e) => errors.push(e));
+    s.onAppendCollision(() => {
+      // The reassignment lands between our collision and our retry — the order that makes
+      // a blind re-derive write a superseded pod's event into the new owner's log.
+      assign(CONV, { hostPod: "host-2", hostGeneration: 5 });
+      gen = 5;
+    });
+
+    rivalSteals(1); // the new owner takes the seq we derived
+    await s.appendEvent(CONV, run(1)[0]);
+
+    expect(
+      rows.map((r) => (r.event as { type: string }).type),
+      "the rival's row stands alone — the retry refused",
+    ).toEqual(["RIVAL"]);
+    expect(errors, "losing the claim is an outcome, not a failure").toEqual([]);
+  });
+
+  it("a writer that keeps losing still reports a LOST TURN — the retry is bounded", async () => {
+    // A rival that wins every race is a double-writer the fence has to settle; retrying
+    // forever would hide it behind unbounded latency. After the budget, the old loud
+    // behaviour stands: onAppendError fires and the append rejects.
+    const { db, rivalSteals } = fakeDb();
+    const s = store(db);
+    const errors: unknown[] = [];
+    const collisions: number[] = [];
+    s.onAppendError((_id, e) => errors.push(e));
+    s.onAppendCollision((_id, at) => collisions.push(at.attempt));
+    rivalSteals(Infinity);
+
+    // drizzle wraps the driver error, so the 23505 is one level down on `cause` — which is
+    // exactly why isSeqCollision looks there, and worth pinning.
+    await expect(s.appendEvent(CONV, run(1)[0])).rejects.toMatchObject({ cause: { code: "23505" } });
+
+    expect(errors, "the turn really is lost this time").toHaveLength(1);
+    expect(collisions, "every attempt in the budget was tried, then it stopped").toEqual([1, 2, 3, 4]);
   });
 });
 
