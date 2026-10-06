@@ -200,8 +200,10 @@ def test_zombie_escalation_reclaims_the_pod_but_keeps_the_workspace_pvc(cluster)
     k8s, core, custom = cluster
     for _ in range(50):
         reconcile_once(k8s, cap=10)
-        custom.sandboxes.setdefault("conv-fv25vg", {})  # (never recreated — see the assert below)
-        custom.sandboxes["conv-fv25vg"]["spec"] = {"operatingMode": "Running"}  # the resume race
+        # The resume race, re-armed each tick. Only if the Sandbox still EXISTS — resurrecting a
+        # deleted one here would hide the very thing this test asserts.
+        if "conv-fv25vg" in custom.sandboxes:
+            custom.sandboxes["conv-fv25vg"]["spec"] = {"operatingMode": "Running"}
 
     assert "conv-fv25vg" in custom.sandboxes, (
         "the repair deleted the Sandbox CR — its workspace PVC cascades with it (#709)"
