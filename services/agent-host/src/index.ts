@@ -87,7 +87,7 @@ import { createMetrics, type MetricsSink } from "./metrics/metrics.js";
 import { parsePriceTable } from "./metrics/pricing.js";
 import { createGooseUsageReader } from "./metrics/gooseUsage.js";
 import type { SandboxRef, SessionId } from "./types.js";
-import { formatError, logger } from "./log.js";
+import { formatError, logger, type Logger } from "./log.js";
 
 const hostLog = logger("agent-host");
 
@@ -422,6 +422,59 @@ function bedrockEnv(): Record<string, string> {
   // for some models — block/goose#7839). Deployer override, else 0.8.
   out.GOOSE_AUTO_COMPACT_THRESHOLD = process.env.GOOSE_AUTO_COMPACT_THRESHOLD ?? "0.8";
   return out;
+}
+
+/** Wall-clock budget for the startup hydrate (see hydrateWithRetry). */
+export const HYDRATE_BUDGET_MS = 60_000;
+
+/**
+ * Hydrate at startup, retrying until a WALL-CLOCK budget expires.
+ *
+ * A COLD dependency must not be read as a broken one. The budget is wall-clock rather than
+ * an attempt count because what it has to outlast is how long Postgres takes to accept
+ * connections, which is unrelated to the shape of the backoff curve. Why: PR #722.
+ */
+export async function hydrateWithRetry(
+  hydrate: () => Promise<void>,
+  log: Pick<Logger, "warn" | "errorWith">,
+  opts: {
+    budgetMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+    now?: () => number;
+  } = {},
+): Promise<void> {
+  const budgetMs = opts.budgetMs ?? HYDRATE_BUDGET_MS;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const now = opts.now ?? Date.now;
+  const started = now();
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await hydrate();
+      return;
+    } catch (err) {
+      const elapsed = now() - started;
+      // Cap the backoff: an uncapped curve spends the tail of the budget asleep, so the
+      // LAST attempt lands long before the deadline and the budget buys fewer tries than
+      // its wall-clock suggests.
+      const delay = Math.min(250 * 2 ** (attempt - 1), 5_000);
+      if (elapsed + delay >= budgetMs) {
+        log.errorWith(
+          "hydrate failed; cannot read the conversation source of truth, refusing to serve on a stale view",
+          err,
+          { attempts: attempt, waited_ms: elapsed, budget_ms: budgetMs },
+        );
+        throw err;
+      }
+      log.warn("hydrate attempt failed; retrying", {
+        attempt,
+        waited_ms: elapsed,
+        budget_ms: budgetMs,
+        retry_in_ms: delay,
+        error: formatError(err),
+      });
+      await sleep(delay);
+    }
+  }
 }
 
 export async function main(
@@ -1218,34 +1271,7 @@ export async function main(
   // never becomes ready, and k8s restarts it, which is the correct outcome for a pod that cannot
   // learn what it owns. NOTE this gates STARTUP only — once hydrated, a later list failure must
   // never yank an already-serving pod out of rotation.
-  {
-    const RETRIES = 5;
-    for (let attempt = 0; ; attempt++) {
-      try {
-        await sessions.hydrate();
-        break;
-      } catch (err) {
-        if (attempt === RETRIES - 1) {
-          // eslint-disable-next-line no-console
-          hostLog.errorWith(
-              "hydrate failed; cannot read the conversation source of truth, refusing to serve on a stale view",
-              err,
-              { attempts: RETRIES },
-            );
-          throw err;
-        }
-        const delay = 250 * 2 ** attempt;
-        // eslint-disable-next-line no-console
-        hostLog.warn("hydrate attempt failed; retrying", {
-            attempt: attempt + 1,
-            attempts: RETRIES,
-            retry_in_ms: delay,
-            error: formatError(err),
-          });
-        await new Promise((r) => setTimeout(r, delay));
-      }
-    }
-  }
+  await hydrateWithRetry(() => sessions.hydrate(), hostLog);
 
   // Forward every conversation's AG-UI events to subscribed UI connections.
   // (SessionManager already persists them to the store via its own wiring.)

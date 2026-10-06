@@ -1490,6 +1490,11 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           // ("agent reported an error") or a user cancel is NOT retryable → we stop immediately.
           const inputs = batch.map((b) => b.input);
           let res = await runPrompt(batch[0].input, inputs);
+          // Count runs PERFORMED, and distinguish a closed bridge from a spent budget: the
+          // break below leaves `retryable` set, so both used to report "exhausting retries"
+          // at RETRY_MAX — reading as 5 failed attempts when only 1 ran. Why: PR #722.
+          let attempts = 1;
+          let abandoned = false;
           for (let attempt = 1; res.retryable && attempt <= RETRY_MAX; attempt++) {
             const delayMs = Math.min(RETRY_BASE_MS * 2 ** (attempt - 1), RETRY_CAP_MS);
             // A run that fails and silently succeeds on retry looks to the user like
@@ -1497,11 +1502,22 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
             log.warn("retrying a wedged run", { attempt, max: RETRY_MAX, delay_ms: delayMs });
             emit({ type: "RUN_RETRYING", threadId: batch[0].input.threadId, attempt, max: RETRY_MAX, delayMs });
             await new Promise((r) => setTimeout(r, delayMs));
-            if (closed) break; // bridge stopped while backing off — abandon the retry
+            if (closed) {
+              abandoned = true; // bridge stopped while backing off — abandon the retry
+              break;
+            }
             res = await runPrompt(batch[0].input, inputs, true);
+            attempts++;
           }
           if (res.retryable) {
-            log.error("run FAILED after exhausting retries", { attempts: RETRY_MAX });
+            if (abandoned) {
+              log.warn("abandoned a wedged run: the bridge closed during the retry backoff", {
+                attempts,
+                max: RETRY_MAX,
+              });
+            } else {
+              log.error("run FAILED after exhausting retries", { attempts, max: RETRY_MAX });
+            }
           }
           for (const b of batch) b.resolve(res.runId); // all coalesced items share the (last) run
         } catch (err) {
