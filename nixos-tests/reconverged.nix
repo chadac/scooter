@@ -58,6 +58,13 @@ rec {
     ''}"
   ];
 
+  # The carry list as the POD embeds it: scooter-apply-module reads the list back
+  # through `unsafeDiscardStringContext`, so in-pod these entries carry NO store
+  # context — and the carry is embedded in the next system's reconverge-modules.json,
+  # whose writeText registers references only for a CONTEXTFUL string. Mirror the
+  # discard or that file, and so the toplevel, hashes differently. Why: PR #718.
+  carry = map (m: builtins.unsafeDiscardStringContext "${m}") vmModules;
+
   # MUST mirror what scooter-apply-module builds exactly — same modulesSrc, same
   # nixpkgs, same module order — including the keep-vm-units module threaded via
   # extraReconvergeModules.
@@ -84,7 +91,7 @@ rec {
     # the SAME derivation the pod builds, or the VM loses its offline cache hit.
     extraModules =
       vmModules
-      ++ [{ programs.scooterModule.extraReconvergeModules = map (m: "${m}") vmModules; }]
+      ++ [{ programs.scooterModule.extraReconvergeModules = carry; }]
       ++ [ "${scooterFixture}/module.nix" ];
   }).toplevel;
 }
