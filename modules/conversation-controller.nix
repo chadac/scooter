@@ -9,11 +9,11 @@
 { config, lib, ... }:
 
 let
-  cfg = config.agentSandbox;
+  cfg = config.scooter;
   ccfg = cfg.conversationController;
 in
 {
-  options.agentSandbox.conversationController = with lib; {
+  options.scooter.conversationController = with lib; {
     image = mkOption {
       type = types.str;
       default = "${cfg.registryPrefix}conversation-controller:latest";
@@ -349,7 +349,7 @@ in
                   # nothing else does — so until these reach the row, a row-sourced reader cannot
                   # trust phase (a Failed conversation would render as "running"). Its own
                   # `conversation_controller` role, granted read-write on exactly `conversations`
-                  # (modules/postgres.nix readers + the agentSandbox.db spec). Unset DSN is
+                  # (modules/postgres.nix readers + the scooter.db spec). Unset DSN is
                   # supported: rows.from_env() returns None and the controller skips the mirror.
                   # Why: PR #654.
                   { name = "AGENT_HOST_DB_HOST"; value = cfg.postgres.host; }

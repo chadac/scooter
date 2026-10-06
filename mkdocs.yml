@@ -29,7 +29,7 @@ theme:
 plugins:
   - search
   # Generates the option reference at build time from options.json (see docs/gen_options.py):
-  # one page per agentSandbox namespace + a filterable index. Nothing generated is committed.
+  # one page per scooter namespace + a filterable index. Nothing generated is committed.
   # The option pages are GENERATED before the build (docs/gen_options.py, run by `just docs`
   # and the Docs workflow) and listed via their directory's .pages file — mkdocs' own nav
   # cannot glob, and hand-listing generated pages in mkdocs.yml would rot.

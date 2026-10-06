@@ -1,3 +1,5 @@
+# echo DECLARED: what this contrib IS. No ./deployment.nix — it is disabled, so it
+# has no deployment options at all, and nothing would import them.
 {
   contribs.echo = {
     src = ./.;
@@ -19,6 +21,7 @@
       blockedTitle = "Only a reviewer can approve an echo request.";
       blockedHint = "You can't approve this echo request — ask a reviewer.";
     };
+
     # Never ship: echo's factory returns enabled=true unconditionally, so a
     # production broker would serve /echo/ping. Why: PR #573.
     enable = false;

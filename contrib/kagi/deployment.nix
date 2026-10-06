@@ -1,15 +1,16 @@
-# kagi's DEPLOYMENT half: the options an operator sets, and the broker env they render.
-# Layered into modules/platform.nix by contrib/deployment-modules.nix. See
-# contrib/brave/deployment.nix for the one rule (no bare sibling-contrib reads).
+# kagi's DEPLOYMENT half: the options an operator sets, and the broker env they
+# render. A kubenix module in the same eval as modules/platform.nix, found beside
+# ./contrib.nix. See contrib/brave/deployment.nix for the pattern and the one rule
+# (no bare sibling-contrib reads).
 { config, lib, ... }:
 
 let
   inherit (lib) mkOption types;
-  bcfg = config.agentSandbox.broker;
+  bcfg = config.scooter.broker;
   scfg = bcfg.kagi;
 in
 {
-  options.agentSandbox.broker.kagi = {
+  options.scooter.broker.kagi = {
     enable = mkOption {
       type = types.bool;
       default = false;
@@ -39,7 +40,7 @@ in
   };
 
   config = lib.mkIf (bcfg.enable && scfg.enable) {
-    agentSandbox.broker.extraEnv = [
+    scooter.broker.extraEnv = [
       {
         name = "KAGI_API_KEY";
         valueFrom.secretKeyRef = {

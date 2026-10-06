@@ -1,14 +1,15 @@
-# duckduckgo's DEPLOYMENT half. Layered into modules/platform.nix by
-# contrib/deployment-modules.nix. See contrib/brave/deployment.nix for the pattern.
+# duckduckgo's DEPLOYMENT half. A kubenix module in the same eval as
+# modules/platform.nix, found beside ./contrib.nix. See contrib/brave/deployment.nix
+# for the pattern and the one rule.
 { config, lib, ... }:
 
 let
   inherit (lib) mkOption types;
-  bcfg = config.agentSandbox.broker;
+  bcfg = config.scooter.broker;
   scfg = bcfg.duckduckgo;
 in
 {
-  options.agentSandbox.broker.duckduckgo = {
+  options.scooter.broker.duckduckgo = {
     enable = mkOption {
       type = types.bool;
       default = false;
@@ -34,7 +35,7 @@ in
   # No secret, so the only env is the switch itself. Gated on the broker too: without it
   # there is no container to inject env into.
   config = lib.mkIf (bcfg.enable && scfg.enable) {
-    agentSandbox.broker.extraEnv = [
+    scooter.broker.extraEnv = [
       { name = "DUCKDUCKGO_ENABLED"; value = "true"; }
     ];
   };

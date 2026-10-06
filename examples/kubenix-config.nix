@@ -1,7 +1,7 @@
 # Example platform configuration — a reference for deploying kubenix-agent-manager.
 #
 # This is a kubenix module that imports modules/platform.nix and sets the
-# `agentSandbox.*` options with EVERY feature turned on (agent-host, broker,
+# `scooter.*` options with EVERY feature turned on (agent-host, broker,
 # webhooks, UI, ingress, skills). Use it as a starting point for your own
 # deployment, and read modules/platform.nix for the full option set.
 #
@@ -15,7 +15,7 @@
   kubenix.project = "agent-sandbox";
   kubernetes.version = "1.31";
 
-  agentSandbox = {
+  scooter = {
     namespace = "agent-sandbox";
 
     # The HS256 key for CONVERSATION TOKENS — the credential naming which conversation
@@ -274,7 +274,7 @@
     };
 
     # Webhooks receiver (GitHub/Slack/…): its own host + NO auth (providers sign
-    # their requests). Generic ingress under agentSandbox.webhooks.ingress.
+    # their requests). Generic ingress under scooter.webhooks.ingress.
     webhooks.ingress = {
       enable = true;
       host = "scooter.example.com";

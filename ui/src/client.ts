@@ -521,7 +521,7 @@ export interface SandboxSizePreset {
   memory: string;
   gpu?: number;
   /** Deployment guidance for when to pick this size (kubenix
-   *  agentSandbox.sandboxSizes.<name>.hint). Absent when the deploy set none. */
+   *  scooter.sandboxSizes.<name>.hint). Absent when the deploy set none. */
   hint?: string;
 }
 

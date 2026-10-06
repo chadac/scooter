@@ -2,20 +2,20 @@
 #
 # Evaluated twice from two different copies of the repo: once at image build, and
 # once IN THE POD, where the re-converge rebuilds from the vendored tree (#614).
-# `lib` is the ONLY argument either side gets — the service-side args that
-# contrib/default.nix passes (broker, webhooks, python3Packages, the surface libs)
-# are built packages, which the pod has no flake and no network to produce. A
-# sandbox half that forces one is an eval error; nothing forces one today. Why: #607.
+# `lib` is the ONLY argument either side gets, which is free now that the schema
+# itself is lib-only (#711): the pod has no flake and no network, so anything that
+# forced a derivation here would be an eval error there.
 #
-# `extraModules` is for a TEST that needs a contrib the repo does not ship enabled
-# (see the dev-env-contrib-sandbox check). The image itself passes none: which
-# contribs are enabled is a property of the source, which is exactly what lets both
-# sides agree without anything being threaded through. Why: PR #607.
+# `extraModules` is for a TEST that needs a contrib the repo ships disabled (see the
+# dev-env-contrib-sandbox check). The image itself passes none: which contribs are
+# enabled is a property of the source, which is exactly what lets both sides agree
+# without anything being threaded through. Why: PR #607.
 { lib, extraModules ? [ ] }:
 
 let
   # A second module system, so the NixOS-side `imports` gets plain paths rather than
-  # config values it cannot read that early. Collapsing the two: #615.
+  # config values it cannot read that early — the same shape as
+  # contrib/platform-modules.nix, for the same reason (#615).
   eval = lib.evalModules {
     specialArgs = { inherit lib; };
     modules = [ ./all-modules.nix ] ++ extraModules;

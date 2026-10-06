@@ -26,8 +26,8 @@ services.
 ```
 contrib/<name>/
   pyproject.toml            # package + entry points (both groups if it spans services); hatchling backend
-  default.nix               # the contrib MODULE: declares `contribs.<name>` (see schema below)
-  deployment.nix            # optional: a KUBENIX module -> declares agentSandbox.* options
+  contrib.nix               # the DECLARATION: `contribs.<name>` (see schema below)
+  deployment.nix            # optional: a KUBENIX module -> declares scooter.* options
   sandbox.nix               # optional: a NIXOS module  -> goes into the sandbox-os image
   scooter_contrib_<name>/
     __init__.py             # neutral; imports NEITHER broker nor webhooks
@@ -36,25 +36,29 @@ contrib/<name>/
   tests/
 ```
 
-**Three module systems, three files, and they are not interchangeable** — this is the
-thing most easily got backwards:
+**One file per half, named for what is in it** — the three are not interchangeable,
+and which eval reads which is the thing most easily got backwards:
 
-| file | module system | declares / contributes |
+| file | eval | declares / contributes |
 |---|---|---|
-| `default.nix` | the `contribs` eval (`contrib/all-modules.nix`) | `contribs.<name>`: `src`, `services.*`, `ui`, `skills`, `approvals`, and pointers to the two halves below. Touches **no** `agentSandbox.*` option. |
-| `deployment.nix` | kubenix, via `modules/platform.nix` | its own `agentSandbox.broker.<name>.*` options, and the manifests/env they render |
+| `contrib.nix` | every eval that reads the registry | `contribs.<name>`: `src`, `services.*`, `ui`, `skills`, `approvals`, `sandbox.module`. What the contrib **is**. |
+| `deployment.nix` | kubenix, with `modules/platform.nix` | its own `scooter.broker.<name>.*` options, and the manifests/env they render |
 | `sandbox.nix` | NixOS, via `contrib/sandbox-modules.nix` | packages, systemd units, activation — anything in the agent's sandbox image |
 
-`default.nix` cannot declare an `agentSandbox.*` option itself: the `contribs` eval is a
-**separate** `evalModules` (#615) whose option set is `contribs.*` only, so there is no
-`agentSandbox` there to declare into. That separation is also why the halves are handed
-over as paths — a value stored and passed to the other system's `imports`, never
-evaluated in this one.
+`deployment.nix` is a module in the **same eval** as `modules/platform.nix`, so it
+declares `scooter.*` options exactly where any other platform option is declared —
+there is no registration step and nothing to list (#711).
 
-`contrib/aws` is the only contrib with all three; `contrib/echo` has `default.nix` +
-`sandbox.nix`, which was the whole shape of a contrib before `deployment.module` existed
-(#607 added the sandbox half, #636 the deployment half three days later). A contrib with
-only a deployment half is the common case — every broker integration.
+`contrib.nix` is the one file that cannot do that, and that is why it is a separate
+file rather than the top of `deployment.nix`: it is read by evals that have no
+`scooter.*` tree at all — the package build, and the sandbox image *plus its in-pod
+re-converge*, which runs with `lib` and no flake. A `scooter.broker.<name>.extraEnv`
+definition there is "option does not exist" in two of the three (#615, #607).
+
+`contrib/aws` is the only contrib with all three. `contrib/echo` has `contrib.nix` +
+`sandbox.nix`, which was the whole shape of a contrib before the deployment half
+existed (#607 added the sandbox half, #636 the deployment half three days later). A
+contrib with only a deployment half is the common case — every broker integration.
 
 **Rule: the top-level module stays import-light.** The service-coupled modules
 import their host service (`broker.*` / `webhooks.*`), which is present at
@@ -63,20 +67,29 @@ on `broker`/`webhooks` — doing so would create a build cycle, since a service
 depends on the contribs injected into it. Whichever group a service loads pulls
 in only the matching module; the other is never imported in that image.
 
-## The contrib module (`contrib/<name>/default.nix`)
+## The contrib declaration (`contrib/<name>/contrib.nix`)
 
 Each contrib is a **module**, and `contribs.<name>` is a typed submodule with a
 preset of options — so the spec has defaults, a contrib declares only what it
 actually needs, and adding a field to the spec no longer means editing every
-contrib. The schema lives in `contrib/options.nix` + `contrib/submodule.nix`;
-`contrib/all-modules.nix` is every contrib plus that schema, as one module you
-can import.
+contrib. The schema lives in `contrib/spec.nix` + `contrib/submodule.nix`, is
+**`lib`-only** (nothing in it forces a derivation — the build is
+`contrib/build.nix`, applied by `contrib/default.nix` where `pkgs` exists), and
+`contrib/all-modules.nix` is every contrib plus that schema, as one module you can
+import.
 
 Its import list is **explicit** — a `readDir` made every eval walk the directory
-and defeated Nix's import caching — and since each contrib is a directory whose
-module is its `default.nix`, an entry is just `./<name>`. Adding a contrib means
-adding it there; `just check-contrib-coverage` fails CI if you forget, because an
-unimported contrib is never built and never tested.
+and defeated Nix's import caching — so an entry is `./<name>/contrib.nix`. Adding a
+contrib means adding it there; `just check-contrib-coverage` fails CI if you forget,
+because an unimported contrib is never built and never tested.
+
+`enable` stays the one switch, declared by the contrib like everything else about
+it. The platform cannot read it directly — `imports` resolves before any option in
+that eval exists, and reading one there is `infinite recursion encountered`, not a
+catchable error (#615) — so `contrib/platform-modules.nix` answers the question in a
+*separate* lib-only eval and hands back plain paths, exactly as
+`contrib/sandbox-modules.nix` does for the image. That indirection is why a disabled
+contrib's options *do not exist* (#599) rather than being quietly ignored.
 
 ```nix
 {
@@ -87,8 +100,7 @@ unimported contrib is never built and never tested.
       enable = true;
       pythonDeps = ps: [ ps.httpx ];    # extra deps for THIS half only
     };
-    # enable = false;                    # absent from the build entirely
-    # version = "0.0.0";
+    # version = "0.0.0";                # stamped on the built distribution
   };
 }
 ```
@@ -132,66 +144,82 @@ nothing is threaded in, and nothing has to be carried across a switch. That is
 also why the module must live in the repo, and why anything it refers to
 relatively (`../../pkgs/…`) resolves identically on both sides.
 
-That eval gets **`lib` and nothing else**. The service-side arguments
-`contrib/default.nix` passes — `broker`, `webhooks`, `python3Packages`, the
-surface libs — are built packages, and the pod has neither a flake nor a network
-to produce them, so a sandbox half that reaches for one fails at eval. Keep the
-sandbox module to `pkgs` and plain NixOS config; a contrib may still take those
-args for its *service* half, which this eval never forces.
+That eval gets **`lib` and nothing else** — free now that the schema itself is
+lib-only (#711) — and the pod has neither a flake nor a network to build anything,
+so a sandbox half that forces a derivation fails at eval. Keep the sandbox module
+to `pkgs` and plain NixOS config.
 
 See `contrib/aws/sandbox.nix` for the shipped one and `contrib/echo/sandbox.nix`
 for the fixture (echo is `enable = false`, so it covers the disabled-contrib path
-a shipped contrib cannot), and the `dev-env-contrib-sandbox` check for what is
+an enabled contrib cannot), and the `dev-env-contrib-sandbox` check for what is
 asserted.
 
-### Contributing deployment config (`deployment.module`)
+### Contributing deployment config (`contrib/<name>/deployment.nix`)
 
 The options an operator sets to configure the integration, and the manifests it
-renders, belong to the contrib as well:
+renders, belong to the contrib as well — as a file the platform finds by name:
 
 ```nix
-contribs.aws = {
-  src = ./.;
-  deployment.module = ./deployment.nix;   # a kubenix module
-};
+# contrib/aws/deployment.nix — a kubenix module, nothing to register
+{ config, lib, ... }:
+{
+  options.scooter.broker.aws = { /* … */ };
+  config = lib.mkIf (config.scooter.broker.enable && config.scooter.broker.aws.enable) { /* … */ };
+}
 ```
 
-**One half, one file, named for the half**: `deployment.nix` is the kubenix module,
-`sandbox.nix` the NixOS module baked into the agent's image. `contrib/aws` ships both,
-and they are not interchangeable — the names are what keep a reader from reaching for
-the wrong one. A contrib with only a deployment half still gets its own
-`deployment.nix`, even when that is two options and one env entry.
+**One half, one file, named for what is in it**: `deployment.nix` is the kubenix module,
+`sandbox.nix` the NixOS module baked into the agent's image, `contrib.nix` the
+declaration both of them hang off. `contrib/aws` ships all three, and they are not
+interchangeable — the names are what keep a reader from reaching for the wrong one.
+A contrib with only a deployment half still gets its own `deployment.nix`, even when
+that is two options and one env entry.
 
 `modules/platform.nix` imports it, so it can declare its own options
-(`agentSandbox.broker.aws.*`) and render its own `kubernetes.resources`. It
+(`scooter.broker.aws.*`) and render its own `kubernetes.resources`. It
 reaches a service's existing Deployment through that service's seams rather than
 redeclaring the container:
 
 | what it needs to add | the seam |
 |---|---|
-| env on the broker container | `agentSandbox.broker.extraEnv` |
+| env on the broker container | `scooter.broker.extraEnv` |
 | a mounted ConfigMap | `broker.extraVolumes` + `broker.extraVolumeMounts` |
 | a rollout when its config changes | `broker.podAnnotations` (hash the ConfigMap) |
 | an IRSA / cloud identity annotation | `broker.serviceAccountAnnotations` |
 | anything of its own | `kubernetes.resources.*` directly |
 
-Derived from the source tree like the sandbox modules — `contrib/deployment-modules.nix`
-returns the enabled contribs' modules — and, for the same reason, that eval gets
-**`lib` and nothing else**: an external deployer imports `platform.nix` with no
-`pkgs` to build a contrib's Python half with, and a manifest needs none.
+Found beside the declaration, not declared: `contrib/platform-modules.nix` hands
+`modules/platform.nix` the enabled contribs’ `contrib.nix` **and** `deployment.nix`
+files as plain paths, so adding an integration still edits no platform file, and
+there is no `deployment.module` left to keep in sync with the filename.
 
-Two consequences worth knowing:
+That file is a separate lib-only `evalModules`, like `contrib/sandbox-modules.nix`
+and for the same reason: the platform's `imports` cannot read `config.contribs`
+to find out which contribs are enabled — `imports` resolves first, so that is
+`infinite recursion encountered`, and `tryEval` does not catch recursion (#615).
+What #711 removed is not the eval but the *schema's* dependency on built packages,
+which is what kept the contribs out of the kubenix eval in the first place.
+
+`just check-contrib-coverage` fails CI on a stray `.nix` in a contrib directory,
+which is the typo this convention would otherwise swallow.
+
+Nothing here may force a derivation: an external deployer imports `modules/platform.nix`
+with no `pkgs` to build a contrib's Python half with, and a manifest needs none.
+
+Three consequences worth knowing:
 
 - **This is where a contrib's skills gate comes from.** `skills` ships on
-  `agentSandbox.broker.<name>.enable` (below), and this module is what declares
-  that option. A contrib shipping skills and no deployment module has no gate, and
-  `platform.nix` throws.
+  `scooter.broker.<name>.enable` (below), and this module is what declares
+  that option. A contrib shipping skills and no deployment half has no gate, and
+  `deployment.nix` throws.
 - **An option that does not exist is an eval error**, so a manifest configuring an
-  integration this image never built in fails loudly instead of being ignored.
+  integration this image never built in fails loudly instead of being ignored. That
+  is `enable` doing its job through platform-modules.nix, and `examples/check.nix`
+  asserts it in both directions.
 - **The same cuts the other way for a contrib READING a sibling's option.** A
-  deployment module may touch any part of the tree — the module system has no notion
+  platform module may touch any part of the tree — the module system has no notion
   of ownership, and a contrib is free to declare an option another one also declares.
-  But `config.agentSandbox.broker.kagi.enable` resolves only where kagi was also
+  But `config.scooter.broker.kagi.enable` resolves only where kagi was also
   built, so a bare cross-contrib reference breaks every image that ships one without
   the other. You *can* work around it (guard with `?`, or declare the option
   yourself); prefer not needing to. A constraint that wants two contribs in scope at
@@ -204,7 +232,7 @@ references inside `modules/broker.nix` before #599.
 
 Only the BROKER has these seams today. Adding them to another service is a
 `bcfg.extraEnv`-shaped option plus one `++` in that service's module; a contrib's
-deployment module is not per-service, so nothing about it changes when they exist.
+platform module is not per-service, so nothing about it changes when they exist.
 
 ### Contributing agent skills (`skills`)
 
@@ -219,10 +247,10 @@ contribs.aws = {
 ```
 
 **The gate is the contrib's NAME** — a skill ships iff
-`agentSandbox.broker.<name>.enable` is true in the *deployment*, which is a
+`scooter.broker.<name>.enable` is true in the *deployment*, which is a
 different question from whether the contrib is enabled in this source tree. A
 contrib shipping skills therefore needs a broker option of the same name;
-`platform.nix` throws at eval if there isn't one, rather than shipping a skill
+`deployment.nix` throws at eval if there isn’t one, rather than shipping a skill
 nothing gates.
 
 That gating is the point, not bookkeeping. A skill for a provider that isn't
@@ -231,9 +259,10 @@ the feature being *broken*, which is how the grafana skill once sent an agent
 chasing a `loki/` path that never existed. `scooter-aws.md` shipped into every
 deployment, aws or not, until this moved.
 
-`contrib/skills.nix` derives the set the same `lib`-only way
-`contrib/sandbox-modules.nix` does, so `modules/platform.nix` needs no `pkgs` to
-read it. `examples/check.nix` renders the platform with each gate on and off and
+`modules/platform.nix` reads the set straight off `config.contribs` — the enabled
+contribs are modules in its own eval (#711), so there is no second module system to
+re-derive it from and nothing that could disagree with the build.
+`examples/check.nix` renders the platform with each gate on and off and
 asserts the file follows — and fails if a contrib ships a skill that table
 doesn't cover. Skills that document the *platform* (`scooter-github.md`,
 `sandbox-shell-safety.md`) stay in the top-level `skills/`: they document no
@@ -411,15 +440,20 @@ runtime manifest removes.
 
 ### What the framework does with it
 
-`contrib/submodule.nix` builds each contrib ONCE PER TARGET SERVICE — each
-variant depending only on that service's extension surface, so a both-services
-contrib cannot put the webhooks surface on the broker's path — and exposes it as
-`contribs.<name>.services.<svc>.package`. `contrib/default.nix` buckets those
-into the per-service lists the flake injects. `fastapi` is already available in
-both services.
+`contrib/build.nix` builds each contrib ONCE PER TARGET SERVICE — each variant
+depending only on that service's extension surface, so a both-services contrib
+cannot put the webhooks surface on the broker's path. `contrib/default.nix` buckets
+those into the per-service lists the flake injects. `fastapi` is already available
+in both services.
 
-`enable = false` means ABSENT, the way it does in NixOS: no derivation is
-produced and nothing in any build artifact comes from it. `echo` is disabled
+It is plain Nix over the evaluated spec rather than a `package` option, and that
+is deliberate: an option would make the schema take `python3Packages` and the
+surface libs as module args, which the kubenix eval and the in-pod re-converge have
+no way to supply. The schema stays lib-only; only this file resolves a derivation
+(#711).
+
+`enable = false` means ABSENT, the way it does in NixOS: no derivation
+is produced and nothing in any build artifact comes from it. `echo` is disabled
 because its provider is unconditionally enabled, so shipping it would serve
 `/echo/ping` from a production broker.
 
@@ -429,7 +463,7 @@ untested reference implementation rots the moment a surface changes:
 
 ```nix
 # flake.nix — reachable only from packages/checks, never from a service image
-contribsWithExamples = contribs.withModules [{ contribs.echo.enable = true; }];
+contribsWithExamples = contribs.withModules [{ contribs.echo.enable = lib.mkForce true; }];
 ```
 
 Because `tests/` is shared by both variants, every enabled service's

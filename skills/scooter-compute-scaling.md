@@ -84,7 +84,7 @@ packed on a node.
 ### Named presets (recommended)
 
 **The preset table is per-deployment** — an operator defines it in kubenix
-(`agentSandbox.sandboxSizes`), and a deployment may offer none at all. So there are
+(`scooter.sandboxSizes`), and a deployment may offer none at all. So there are
 no preset names to memorise, and **this skill deliberately doesn't list any**: any
 table here would be a guess about your cluster.
 

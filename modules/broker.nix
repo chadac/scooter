@@ -11,7 +11,7 @@
 { config, lib, ... }:
 
 let
-  cfg = config.agentSandbox;
+  cfg = config.scooter;
   bcfg = cfg.broker;
 
   # Static shares external origin + CSP allowlist. Both fall back to the public
@@ -28,7 +28,7 @@ let
     else "";
 in
 {
-  options.agentSandbox.broker = with lib; {
+  options.scooter.broker = with lib; {
     enable = mkOption {
       type = types.bool;
       default = false;
@@ -380,13 +380,13 @@ in
   # while everything else stays gated on `enable`. The gated body keeps its own
   # indentation so this wrapper is the whole diff.
   config = lib.mkMerge [
-  # The tables the `broker` database holds (agentSandbox.db, #606). The OWNER is
+  # The tables the `broker` database holds (scooter.db, #606). The OWNER is
   # declared here and the tables MERGE in from wherever the code that writes them
   # lives: permission_requests is contrib/aws/deployment.nix's now (stage 2 of #606).
   # static_shares + static_share_versions are still here because `shares` is not a
   # contrib yet; they move on the same line when it becomes one.
   {
-    agentSandbox.db.broker = {
+    scooter.db.broker = {
       owner = "broker";
       tables = {
         sandbox_size = { writers = [ "broker" ]; };
@@ -397,7 +397,7 @@ in
     };
   }
   (lib.mkIf bcfg.enable {
-    # mkMerge (not //): the fga block and every contrib's deployment module each
+    # mkMerge (not //): the fga block and every contrib's platform module each
     # add to `deployments`/`services`, and a shallow // would REPLACE those keys
     # (dropping agent-broker). mkMerge deep-merges so all of them coexist.
     kubernetes.resources = lib.mkMerge [
@@ -709,7 +709,7 @@ in
     # dedicated owner role (agent-pg-broker / agent-pg-openfga). The `broker` db is
     # used by every store in the broker image — its own and any contrib's, which is
     # why the BROKER_DB_* env above is unconditional; openfga only when FGA is on.
-    agentSandbox.postgres.consumers = lib.mkMerge [
+    scooter.postgres.consumers = lib.mkMerge [
       { broker = { db = "broker"; user = "broker"; }; }
       (lib.mkIf bcfg.fga.enable { openfga = { db = "openfga"; user = "openfga"; }; })
     ];

@@ -1,6 +1,6 @@
 """A deployment that asks for TLS to Postgres must actually get it.
 
-The kubenix module emits BROKER_DB_SSLMODE from `agentSandbox.postgres.sslmode`,
+The kubenix module emits BROKER_DB_SSLMODE from `scooter.postgres.sslmode`,
 but BrokerSettings had no matching field, so
 pydantic dropped the variable and every broker store — aws permission requests, the
 module registry, static shares — opened a cleartext connection to a server the

@@ -141,7 +141,7 @@ let
   modelPlatform = flake.inputs.kubenix.evalModules.${system} {
     module = { lib, ... }: {
       imports = [ ./kubenix-config.nix ];
-      agentSandbox.fakeAgent = lib.mkForce false;
+      scooter.fakeAgent = lib.mkForce false;
     };
   };
   mHostEnv =
@@ -169,8 +169,8 @@ let
   noGoosePlatform = flake.inputs.kubenix.evalModules.${system} {
     module = { lib, ... }: {
       imports = [ ./kubenix-config.nix ];
-      agentSandbox.fakeAgent = lib.mkForce false;
-      agentSandbox.agent.availableModels = lib.mkForce {
+      scooter.fakeAgent = lib.mkForce false;
+      scooter.agent.availableModels = lib.mkForce {
         "claude-code"."claude-opus-5" = { default = true; };
         "claude-code"."claude-fable-5" = { };
         byoc."claude-opus-5" = { default = true; };
@@ -202,7 +202,7 @@ let
   # Shared Postgres probe timeout: the k8s DEFAULT pg_isready probe timeout (1s) once
   # killed the DB in a restart loop (pg_isready couldn't answer in 1s under load),
   # cascading to the broker + every conversation. Postgres is ALWAYS on now
-  # (agentSandbox.postgres), so agent-shared-db renders in the base platform — assert
+  # (scooter.postgres), so agent-shared-db renders in the base platform — assert
   # both probes carry a GENEROUS timeout so this can't silently regress.
   dbCtr = platform.config.kubernetes.resources.deployments.agent-shared-db.spec.template.spec.containers.postgres;
   dbTimeoutOk = (dbCtr.livenessProbe.timeoutSeconds or 1) >= 3 && (dbCtr.readinessProbe.timeoutSeconds or 1) >= 3;
@@ -219,7 +219,7 @@ let
   ingressOffPlatform = flake.inputs.kubenix.evalModules.${system} {
     module = { lib, ... }: {
       imports = [ ./kubenix-config.nix ];
-      agentSandbox.ingress.enable = lib.mkForce false;
+      scooter.ingress.enable = lib.mkForce false;
     };
   };
   ioRes = ingressOffPlatform.config.kubernetes.resources;
@@ -259,8 +259,8 @@ let
   testProblems =
     (if !(prodRes.configMaps ? agent-testing-marker) then [ ]
      else [ "production render carries the agent-testing-marker ConfigMap (testing.nix leaked in)" ])
-    ++ (if !(prodPlatform.options.agentSandbox ? testing) then [ ]
-        else [ "agentSandbox.testing option exists WITHOUT importing modules/testing.nix (a deploy could set it)" ]);
+    ++ (if !(prodPlatform.options.scooter ? testing) then [ ]
+        else [ "scooter.testing option exists WITHOUT importing modules/testing.nix (a deploy could set it)" ]);
 
   # The SCHEDULER (enabled in the example) must render its Deployment and carry the relay key
   # + tick — a scheduled run is otherwise silently never delivered.
@@ -287,9 +287,9 @@ let
   # the example never sets means the example (and the docs that point at it) silently fell
   # behind. Listed exceptions are namespaces a reference config legitimately leaves at its
   # default; everything else must appear.
-  allNamespaces = builtins.attrNames (platform.options.agentSandbox or { });
+  allNamespaces = builtins.attrNames (platform.options.scooter or { });
   exampleText = builtins.readFile ./kubenix-config.nix;
-  # Left at defaults on purpose: `core` is not a namespace (bare agentSandbox.* options are
+  # Left at defaults on purpose: `core` is not a namespace (bare scooter.* options are
   # covered elsewhere in the example), the conversation controller is ON by default, postgres
   # is provisioned implicitly by the features that need it, and legacyStateMigration is a
   # one-shot upgrade path rather than a feature to showcase.
@@ -300,12 +300,12 @@ let
   # defaultSandboxSizeName is readOnly — derived from the sandboxSizes preset marked
   # `default = true`, so a config CANNOT set it. The sizeGuard checks below cover it
   # instead, which is stronger than a mention in the example.
-  # `db` is declared by the MODULES that own each service (agentSandbox.db.<database>,
+  # `db` is declared by the MODULES that own each service (scooter.db.<database>,
   # #606), not by a deployment — a reference config setting it would be describing
   # lib/sql, which is in-tree. `dbSpec` is readOnly, rendered from it. Both are checked
   # far more strongly than a mention here: `just db-generate-check` regenerates
   # owners.toml and atlas.hcl from the option and fails CI on any drift.
-  # `sandboxPod` is a CONTRIB seam, like `db`: a contrib's deployment module sets it,
+  # `sandboxPod` is a CONTRIB seam, like `db`: a contrib's platform module sets it,
   # a deployment does not — an operator wanting extra pod config has
   # deployTools.sandboxManifestOverlay, which is consumer-owned and overlays on top of it.
   # sandboxSeamProblems below checks it end to end (rendered with aws on, absent with
@@ -323,7 +323,7 @@ let
     (n: !(builtins.elem n coverageExempt)
         && builtins.match ".*[^a-zA-Z]${n}[^a-zA-Z].*" exampleText == null)
     allNamespaces;
-  coverageProblems = map (n: "example never sets agentSandbox.${n} (add it, or add to coverageExempt with a reason)") uncovered;
+  coverageProblems = map (n: "example never sets scooter.${n} (add it, or add to coverageExempt with a reason)") uncovered;
 
   # GATED SKILLS: a skill for a capability that is not wired teaches the agent to call a
   # route that 404s, and then to misread that 404 as the feature being broken. Render the
@@ -333,7 +333,7 @@ let
     e = flake.inputs.kubenix.evalModules.${system} {
       module = { lib, ... }: {
         imports = [ ./kubenix-config.nix ];
-        agentSandbox.broker = brokerOverride lib;
+        scooter.broker = brokerOverride lib;
       };
     };
     cms = e.config.kubernetes.resources.configMaps or { };
@@ -358,11 +358,16 @@ let
       };
     };
   };
-  # Driven off contrib/skills.nix — the SAME source platform.nix ships from — so a
-  # contrib that starts shipping a skill fails here until its gate is proven.
+  # Driven off the RENDER's own `contribs` tree — the shipped contribs are modules in
+  # the platform eval (#711), so this is literally the set platform.nix ships from,
+  # not a second derivation of it. A contrib that starts shipping a skill fails here
+  # until its gate is proven.
   nixpkgsLib = flake.inputs.nixpkgs.lib;
-  contribSkills = import ../contrib/skills.nix { lib = nixpkgsLib; };
-  skillProblems = nixpkgsLib.concatLists (nixpkgsLib.mapAttrsToList
+  contribSkills = nixpkgsLib.mapAttrs (_: c: c.skills)
+    (nixpkgsLib.filterAttrs (_: c: c.skills != { }) platform.config.contribs);
+  skillProblems = (if contribSkills != { } then [ ] else
+  [ "no contrib ships a skill — this check reads platform.config.contribs, so an EMPTY set means the contribs stopped reaching the platform eval, not that nobody documents anything" ])
+  ++ nixpkgsLib.concatLists (nixpkgsLib.mapAttrsToList
     (name: skills:
       if !(skillGates ? ${name})
       then [ ("contrib ${name} ships ${toString (builtins.attrNames skills)} but examples/check.nix has no gate case — add one to skillGates") ]
@@ -383,13 +388,13 @@ let
   bumpedMigrator = flake.inputs.kubenix.evalModules.${system} {
     module = { lib, ... }: {
       imports = [ ./kubenix-config.nix ];
-      agentSandbox.dbMigrate.image = lib.mkForce "example.test/agent-db-migrator:next";
+      scooter.dbMigrate.image = lib.mkForce "example.test/agent-db-migrator:next";
     };
   };
   bumpedInit = flake.inputs.kubenix.evalModules.${system} {
     module = { lib, ... }: {
       imports = [ ./kubenix-config.nix ];
-      agentSandbox.postgres.kubectlImage = lib.mkForce "example.test/kubectl:next";
+      scooter.postgres.kubectlImage = lib.mkForce "example.test/kubectl:next";
     };
   };
   isHashed = base: n: builtins.match "${base}-[0-9a-f]{10}" n != null;
@@ -411,7 +416,7 @@ let
 
   # SIZE-DEFAULT GUARD: exactly one sandboxSizes preset may set `default = true`.
   # kubenix has no NixOS `assertions` option, so that rule is enforced by a `throw` in
-  # agentSandbox.defaultSandboxSizeName — and a throw only fires when something READS
+  # scooter.defaultSandboxSizeName — and a throw only fires when something READS
   # the option. The agent-host always reads it (it renders SANDBOX_RESOURCES), so the
   # guard always has teeth. A guard that silently stops firing is worse than no guard,
   # so pin both directions here rather than trusting it.
@@ -420,7 +425,7 @@ let
       e = flake.inputs.kubenix.evalModules.${system} {
         module = { lib, ... }: {
           imports = [ ./kubenix-config.nix ];
-          agentSandbox.sandboxSizes = lib.mkForce sizes;
+          scooter.sandboxSizes = lib.mkForce sizes;
         };
       };
     in (builtins.tryEval (builtins.deepSeq e.config.kubernetes.resources true)).success;
@@ -432,6 +437,60 @@ let
         then [ "a catalog with NO `default = true` rendered — the guard is a no-op" ] else [ ])
     ++ (if renderSizes { a = { cpu = "1"; memory = "2Gi"; default = true; }; b = { cpu = "2"; memory = "4Gi"; default = true; }; }
         then [ "a catalog with TWO `default = true` rendered — the guard is a no-op" ] else [ ]);
+
+  # THE RENAMED ROOT (#710). `agentSandbox.*` is gone, and a manifest still on it must
+  # FAIL TO RENDER. The guard is a `throw` forced from one leaf of the render, so the
+  # thing that can silently break is the FORCING, not the message: unforce it and a
+  # deployment on the old prefix renders a manifest with its whole config ignored —
+  # every option back at its default, which is a working-looking cluster missing every
+  # feature. Rendered rather than asserted on the option, for exactly that reason.
+  renders = extra:
+    let
+      e = flake.inputs.kubenix.evalModules.${system} {
+        module = { ... }: {
+          imports = [ ./kubenix-config.nix ];
+          config = extra;
+        };
+      };
+    in (builtins.tryEval (builtins.deepSeq e.config.kubernetes.resources true)).success;
+
+  # THE CONTRIBS ARE MODULES IN THE PLATFORM EVAL, AND ONLY THE ENABLED ONES (#599,
+  # #711). Three claims, because each fails in a different direction and two of them
+  # fail SILENTLY:
+  #
+  #   positive — an enabled contrib's own options are declared, and its declaration
+  #              reached `config.contribs`. Without this the two negatives below are
+  #              vacuously true and the whole block proves nothing.
+  #   negative — a DISABLED contrib contributes neither. Its options must not exist,
+  #              so a manifest configuring an integration this image never built is
+  #              an eval error rather than a block k8s happily applies.
+  #
+  # Asserted against `platform.options` rather than a render: an option that exists
+  # but is never read renders identically to one that does not exist at all.
+  contribEval = nixpkgsLib.evalModules {
+    specialArgs = { lib = nixpkgsLib; };
+    modules = [ ../contrib/all-modules.nix ];
+  };
+  disabled = builtins.attrNames (nixpkgsLib.filterAttrs (_: c: !c.enable) contribEval.config.contribs);
+  brokerOpts = platform.options.scooter.broker;
+  disabledContribProblems =
+    (if disabled != [ ] then [ ] else
+    [ "every contrib is enabled — the disabled-contrib negatives below test nothing; keep one disabled fixture (echo) or delete them" ])
+    ++ (if brokerOpts ? brave then [ ] else
+    [ "scooter.broker.brave is not declared — an enabled contrib's deployment.nix did not reach the platform eval (contrib/platform-modules.nix), so every disabled-contrib check below passes for the wrong reason" ])
+    ++ (if platform.config.contribs ? aws then [ ] else
+    [ "config.contribs.aws is missing — the contrib DECLARATIONS are not in the platform eval, so contrib skills are read from an empty set" ])
+    ++ map (n: "scooter.broker.${n}.* is declared but ${n} is disabled — a manifest can configure an integration this image never built (#599)")
+    (builtins.filter (n: brokerOpts ? ${n}) disabled)
+    ++ map (n: "config.contribs.${n} reached the platform eval but ${n} is disabled — its skills would be shipped by an image that never built it")
+    (builtins.filter (n: platform.config.contribs ? ${n}) disabled);
+
+  legacyRootProblems =
+    (if renders { } then [ ]
+     else [ "the example stopped rendering through the legacy-root harness (the check is broken, not the example)" ])
+    ++ (if renders { agentSandbox.broker.enable = true; }
+        then [ "a config on the OLD root (agentSandbox.*) still rendered — the #710 guard is a no-op, so that deployment silently gets every option at its default" ]
+        else [ ]);
 
   # OWNER ATTRIBUTION (#527). The ROUTER stamps spec.owner on create and scopes the
   # conversation list, so it needs (a) the identity config the agent-host gets, and (b) the
@@ -447,7 +506,7 @@ let
   albPlatform = flake.inputs.kubenix.evalModules.${system} {
     module = { lib, ... }: {
       imports = [ ./kubenix-config.nix ];
-      agentSandbox.auth.mode = lib.mkForce "alb-oidc";
+      scooter.auth.mode = lib.mkForce "alb-oidc";
     };
   };
   albRouterEnv =
@@ -478,8 +537,8 @@ let
   awsOffPlatform = flake.inputs.kubenix.evalModules.${system} {
     module = { lib, ... }: {
       imports = [ ./kubenix-config.nix ];
-      agentSandbox.broker.aws.enable = lib.mkForce false;
-      agentSandbox.broker.shares.enable = lib.mkForce false;
+      scooter.broker.aws.enable = lib.mkForce false;
+      scooter.broker.shares.enable = lib.mkForce false;
     };
   };
   awsOffBrokerEnv =
@@ -505,9 +564,9 @@ let
     (n: "broker.env.${n} declared more than once (k8s keeps the LAST value silently — a contrib's broker.extraEnv must not reuse a core name)")
     (builtins.filter (n: countNamed brokerEnv n > 1) brokerEnvNames);
 
-  # A CONTRIB'S DEPLOYMENT MODULE REACHES THE BROKER DEPLOYMENT. aws's option tree
+  # A CONTRIB'S PLATFORM MODULE REACHES THE BROKER DEPLOYMENT. aws's option tree
   # and its manifests live in contrib/aws/deployment.nix, which modules/platform.nix
-  # imports without naming it (contrib/deployment-modules.nix) — so this asserts the
+  # imports without naming it (contrib/platform-modules.nix) — so this asserts the
   # seams carry, rather than that the file exists. All four kinds in one render, each
   # of which was an inline `lib.optionals bcfg.aws.enable` in modules/broker.nix:
   #   env         -> AWS_ENABLED           (broker.extraEnv)
@@ -528,13 +587,13 @@ let
     ++ (if hasName (res.deployments.agent-broker.spec.template.spec.volumes or [ ]) "aws-accounts" then [ ]
         else [ "broker.volumes aws-accounts missing (broker.extraVolumes) — the mount above has no source" ])
     ++ (if (res.configMaps or { }) ? agent-broker-aws-accounts then [ ]
-        else [ "configMaps.agent-broker-aws-accounts missing — a contrib's deployment module cannot render its own resources" ])
+        else [ "configMaps.agent-broker-aws-accounts missing — a contrib's platform module cannot render its own resources" ])
     ++ (if builtins.all (c: !(hasName (c.volumeMounts or [ ]) "aws-accounts")) awsOffCtrs then [ ]
         else [ "aws-off: broker still mounts aws-accounts — the seam is wired unconditionally, so the pod mounts a ConfigMap that is not rendered" ])
     ++ (if builtins.all (c: countNamed (c.env or [ ]) "AWS_ENABLED" == 0) awsOffCtrs then [ ]
         else [ "aws-off: broker.env.AWS_ENABLED present — contrib env is not gated on the contrib's own enable" ]);
 
-  # A CONTRIB'S DEPLOYMENT MODULE REACHES THE SANDBOX POD. Same seam shape as the
+  # A CONTRIB'S PLATFORM MODULE REACHES THE SANDBOX POD. Same seam shape as the
   # broker one above, but the consumer is the agent-host: it writes the Sandbox CR, so
   # a contrib's mount can only take effect if the manifest-overlay ConfigMap carries
   # it. The negative half matters more here than on the broker — aws's registry mount
@@ -557,7 +616,7 @@ let
   sandboxSeamProblems =
     (if contribPodSpec != null then [ ]
      else [ ("configMaps.sandbox-manifest-overlay has no contrib.yaml — contrib/aws/deployment.nix"
-             + " did not reach the sandbox pod through agentSandbox.sandboxPod, so no sandbox"
+             + " did not reach the sandbox pod through scooter.sandboxPod, so no sandbox"
              + " renders ~/.aws/config and `scooter-aws` has no profiles") ])
     ++ (if contribPodSpec == null || contribCtr != null then [ ]
         else [ "contrib.yaml patches no container named `sandbox` — it would merge onto nothing" ])
@@ -606,10 +665,10 @@ let
   # be in the spec with the DEPLOYMENT's aws off — that is the invariant keeping the
   # generated schema a function of the source tree rather than of a deploy flag.
   # Why: PR #637.
-  awsOffTables = awsOffPlatform.config.agentSandbox.db.broker.tables or { };
+  awsOffTables = awsOffPlatform.config.scooter.db.broker.tables or { };
   stage2Problems =
     (if awsOffTables ? permission_requests then [ ]
-     else [ ("aws-off: agentSandbox.db.broker.tables.permission_requests missing —"
+     else [ ("aws-off: scooter.db.broker.tables.permission_requests missing —"
              + " a contrib's table declaration is gated on the DEPLOYMENT running it,"
              + " so `just db-generate` drops the table and the migration history no"
              + " longer describes this tree") ])
@@ -624,8 +683,8 @@ let
   fgaNoAwsPlatform = flake.inputs.kubenix.evalModules.${system} {
     module = { lib, ... }: {
       imports = [ ./kubenix-config.nix ];
-      agentSandbox.broker.aws.enable = lib.mkForce false;
-      agentSandbox.broker.fga.enable = true;
+      scooter.broker.aws.enable = lib.mkForce false;
+      scooter.broker.fga.enable = true;
     };
   };
   fnaRes = fgaNoAwsPlatform.config.kubernetes.resources;
@@ -636,7 +695,7 @@ let
      else [ "fga-without-aws: deployments.openfga missing — the authorization server is still gated on an integration" ])
     ++ (if countNamed fnaBrokerEnv "FGA_ENABLED" == 1 then [ ]
         else [ "fga-without-aws: broker.env.FGA_ENABLED missing — the broker builds a NoopAuthorizer and every approver check passes" ])
-    ++ (if (fgaNoAwsPlatform.config.agentSandbox.postgres.consumers or { }) ? openfga then [ ]
+    ++ (if (fgaNoAwsPlatform.config.scooter.postgres.consumers or { }) ? openfga then [ ]
         else [ "fga-without-aws: postgres.consumers.openfga missing — openfga has no database or role" ]);
 
   # THE APPROVER ALLOWLIST IS CORE AUTH'S, NOT AWS'S. core/auth.py admits a listed
@@ -654,7 +713,7 @@ let
   sharesNoAwsPlatform = flake.inputs.kubenix.evalModules.${system} {
     module = { lib, ... }: {
       imports = [ ./kubenix-config.nix ];
-      agentSandbox.broker.aws.enable = lib.mkForce false;
+      scooter.broker.aws.enable = lib.mkForce false;
       # shares.enable stays true (the example sets it) — that is the point.
     };
   };
@@ -690,7 +749,7 @@ let
   tlsPlatform = flake.inputs.kubenix.evalModules.${system} {
     module = { lib, ... }: {
       imports = [ ./kubenix-config.nix ];
-      agentSandbox.postgres.external = {
+      scooter.postgres.external = {
         host = "pg.example.invalid";
         sslmode = "require";
         user = "postgres";
@@ -734,8 +793,8 @@ let
       (containersOf w))
     allWorkloads;
 
-  allProblems = searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ approvalProblems ++ stage2Problems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems;
+  allProblems = disabledContribProblems ++ legacyRootProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ approvalProblems ++ stage2Problems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems;
 in
 if allProblems == [ ]
-then "ok: deployments = ${haveDeps}; datadog + airtable + brave + kagi + duckduckgo (three search providers, each with its own tool) + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; deploy-time Jobs are spec-hash named\n"
+then "ok: deployments = ${haveDeps}; datadog + airtable + brave + kagi + duckduckgo (three search providers, each with its own tool) + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; the renamed root (agentSandbox.*) fails the render; contribs reach the platform eval and the disabled one does not; deploy-time Jobs are spec-hash named\n"
 else builtins.throw "example manifests missing: ${builtins.concatStringsSep ", " allProblems}"

@@ -12,10 +12,10 @@
 
 let
   inherit (lib) mkOption types;
-  cfg = config.agentSandbox;
+  cfg = config.scooter;
 in
 {
-  options.agentSandbox.warmPool = {
+  options.scooter.warmPool = {
     enable = mkOption { type = types.bool; default = false; };
     replicas = mkOption { type = types.int; default = 0; };
   };

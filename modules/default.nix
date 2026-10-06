@@ -27,7 +27,7 @@ in
     ./agent-host.nix
   ];
 
-  options.agentSandbox = {
+  options.scooter = {
     namespace = mkOption {
       type = types.str;
       default = "agent-sandbox";

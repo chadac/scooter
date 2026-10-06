@@ -18,12 +18,12 @@
 # `password`) — never committed, never hand-managed. Consumers read their own secret.
 #
 # The consumer set is assembled by platform.nix from which features are enabled and
-# fed in via `agentSandbox.postgres.consumers`. Each entry: { db; user; }.
+# fed in via `scooter.postgres.consumers`. Each entry: { db; user; }.
 
 { config, lib, kubenix, ... }:
 
 let
-  cfg = config.agentSandbox;
+  cfg = config.scooter;
   pcfg = cfg.postgres;
   ns = cfg.namespace;
 
@@ -197,7 +197,7 @@ let
   initJobName = kubenix.lib.k8s.mkNameHash { name = "agent-postgres-init"; data = initJobSpec; };
 in
 {
-  options.agentSandbox.postgres = with lib; {
+  options.scooter.postgres = with lib; {
     image = mkOption {
       type = types.str;
       default = "postgres:16-alpine";

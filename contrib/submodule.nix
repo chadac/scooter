@@ -1,58 +1,18 @@
-# The option preset every contrib gets, plus its build.
+# The option preset every contrib gets. Why: PR #585.
 #
-# A module, so a contrib's own `options` merge in. `scooter` is the parent
-# config: every other contrib, already evaluated. Why: PR #585.
-{ name, lib, config, scooter, python3Packages, scooterBrokerLib, scooterWebhooksLib, broker, webhooks, ... }:
+# `lib`-only: the schema is read by three evals and only one of them has a `pkgs`
+# (see contrib/spec.nix). What a contrib BUILDS TO is therefore not an option here —
+# contrib/build.nix derives it from this spec, which is also what lets the kubenix
+# eval import a contrib without resolving a single derivation. Why: #711.
+{ name, lib, ... }:
 
 let
   inherit (lib) mkOption mkEnableOption types literalExpression;
 
-  # Built once per service against only that service's surface: one build carrying
-  # both drags scooter_webhooks_lib into the broker image. Why: PR #567.
-  surfaces = {
-    broker = { surface = scooterBrokerLib; entryModule = "broker_provider"; };
-    webhooks = { surface = scooterWebhooksLib; entryModule = "webhooks_handler"; };
-  };
-
-  # What pythonDeps receives. Nested so contribs cannot shadow nixpkgs
-  # (python3Packages.jira is the Jira client), and holds only contribs targeting
-  # this service, so naming one that does not is an error.
-  pkgsFor = svc: python3Packages // {
-    scooterContrib = lib.mapAttrs (_: c: c.services.${svc}.package)
-      (lib.filterAttrs (_: c: c.enable && c.services.${svc}.enable) scooter.contribs);
-  };
-
-  # tests/ is shared across variants, so every service's deps are check inputs for
-  # each one. Check-only, so the runtime closure stays per-service.
-  checkDepsFor = svc: lib.concatMap (s: s.pythonDeps (pkgsFor svc))
-    (lib.attrValues (lib.filterAttrs (_: s: s.enable) config.services));
-
-  buildFor = svc:
-    let s = surfaces.${svc}; in
-    python3Packages.buildPythonPackage {
-      # Must stay the distribution name: the metadata-check hook looks the wheel up
-      # by it. Variants differ by inputs, not pname.
-      pname = config.distName;
-      inherit (config) version src;
-      pyproject = true;
-      build-system = [ python3Packages.hatchling ];
-
-      dependencies = [ python3Packages.fastapi s.surface ]
-        ++ config.services.${svc}.pythonDeps (pkgsFor svc);
-
-      # Checked in the environment it will live in, so a bad import fails here
-      # rather than at service startup.
-      pythonImportsCheck = [ config.pyModule "${config.pyModule}.${s.entryModule}" ];
-
-      nativeCheckInputs = (with python3Packages; [
-        pytestCheckHook
-        pytest-asyncio
-        broker
-        webhooks
-      ]) ++ checkDepsFor svc;
-
-      meta.description = "Scooter contrib module: ${name} (${svc})";
-    };
+  # The services a contrib can plug into. NAMES only — the surface package and
+  # entry-point module each one builds against live in contrib/build.nix, because
+  # they are packages and this file may not force one.
+  serviceNames = [ "broker" "webhooks" ];
 
   # Tier 1 of the UI surface: METADATA only -- a brand row and tool-card entries
   # the app already keys off a hardcoded name. A contrib shipping React
@@ -170,17 +130,14 @@ let
         description = ''
           Extra deps for the ${svc} variant. Per service: a dep listed for both
           halves lands in both closures.
+
+          Receives nixpkgs' python packages plus `scooterContrib.<name>` — the other
+          contribs targeting THIS service, nested so a contrib cannot shadow nixpkgs
+          (python3Packages.jira is the Jira client). Applied by contrib/build.nix,
+          which is the only place a package is resolved.
         '';
       };
-
-      package = mkOption {
-        type = types.package;
-        readOnly = true;
-        description = "This contrib built for ${svc}. Set by the framework.";
-      };
     };
-
-    config.package = buildFor svc;
   };
 in
 {
@@ -190,8 +147,12 @@ in
       default = true;
       description = ''
         Build this contrib and inject it into the images it targets. `false` means
-        absent — no derivation at all. Build a disabled one with `withModules`
-        (contrib/default.nix) rather than weakening this.
+        absent — no derivation at all, and no options either: the platform drops a
+        disabled contrib before importing it, so configuring one is an eval error
+        rather than a block that is silently ignored (#599).
+
+        Build a disabled one with `withModules` (contrib/default.nix) rather than
+        weakening this.
       '';
     };
 
@@ -252,39 +213,6 @@ in
       };
     };
 
-    deployment = mkOption {
-      default = { };
-      description = "What this contrib adds to the platform's kubenix manifests.";
-      type = types.submodule {
-        options.module = mkOption {
-          type = types.nullOr types.path;
-          default = null;
-          example = literalExpression "./deployment.nix";
-          description = ''
-            A kubenix module layered into the platform eval (modules/platform.nix
-            imports it) — where this contrib declares its OWN deployment options
-            and renders its own manifests. `null` means it adds nothing.
-
-            Not per-service, unlike `services.<svc>`: one module, free to touch any
-            option the platform declares, because a contrib with both a broker and a
-            webhooks half still has ONE set of deployment knobs. It reaches into a
-            service's Deployment through that service's seams
-            (agentSandbox.broker.extraEnv and friends) and renders anything of its
-            own straight into kubernetes.resources.
-
-            Gets `{ config, lib, ... }` and NOTHING built: contrib/deployment-modules.nix
-            is lib-only because an external deployer imports platform.nix with no
-            `pkgs` to build a contrib's Python half with. A module forcing a package
-            arg is an eval error. Same constraint as `sandbox.module` (#607) and
-            `skills` (#618), for the same reason.
-
-            A contrib shipping `skills` must declare `agentSandbox.broker.<name>.enable`
-            here — that option IS the gate platform.nix ships its skills on.
-          '';
-        };
-      };
-    };
-
     approvals = mkOption {
       default = null;
       description = ''
@@ -301,7 +229,7 @@ in
         contrib manifest into the UI image. Where the contrib's verbs actually live
         on the broker is DEPLOYMENT config — an operator can run the same contrib
         against a differently-mounted broker — so it is declared by the contrib's
-        deployment module as `agentSandbox.approvals.<name>`, which is also already
+        platform module as `scooter.approvals.<name>`, which is also already
         gated on that deployment enabling the contrib.
 
         Neither fact is stated twice; they simply belong to different lifecycles.
@@ -339,13 +267,13 @@ in
         Agent skills documenting this contrib, keyed by the filename the agent sees.
 
         Gated on THIS CONTRIB'S NAME: they ship only where
-        `agentSandbox.broker.<name>.enable` is true, so a contrib shipping skills
-        must have a broker option of the same name (platform.nix throws otherwise).
+        `scooter.broker.<name>.enable` is true, so a contrib shipping skills
+        must have a broker option of the same name (deployment.nix throws otherwise).
         A skill for an integration that is off teaches the agent to call a route
         that 404s, and then to read that 404 as the feature being broken.
 
         Paths, not strings: the file stays a readable .md next to the code it
-        documents, and the platform module reads it (contrib/skills.nix).
+        documents, and modules/platform.nix reads it straight off `config.contribs`.
       '';
     };
 
@@ -353,13 +281,11 @@ in
       default = { };
       description = "Which services this contrib plugs into. Fixed key set, so a typo is an eval error.";
       type = types.submodule {
-        options = lib.mapAttrs
-          (svc: _: mkOption {
-            type = types.submodule (serviceModule svc);
-            default = { };
-            description = "The ${svc} half of this contrib.";
-          })
-          surfaces;
+        options = lib.genAttrs serviceNames (svc: mkOption {
+          type = types.submodule (serviceModule svc);
+          default = { };
+          description = "The ${svc} half of this contrib.";
+        });
       };
     };
   };

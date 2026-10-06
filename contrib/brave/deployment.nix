@@ -1,21 +1,23 @@
-# brave's DEPLOYMENT half: the options an operator sets, and the broker env they render.
-# Layered into modules/platform.nix by contrib/deployment-modules.nix (pattern: #599).
+# brave's DEPLOYMENT half: the options an operator sets, and the broker env they
+# render. A kubenix module in the same eval as modules/platform.nix, which finds it
+# beside ./contrib.nix — so these options are declared exactly where any other
+# platform option is, with no registration step and nothing to list. Why: #599, #711.
 #
 # Don't reach for a SIBLING contrib's options bare: `bcfg.kagi.enable` resolves only in
 # an image that also builds kagi, so it breaks every image shipping one without the
 # other. Workarounds and when to prefer neither: contrib/README.md.
 #
 # `{ config, lib, ... }` only, and nothing built: an external deployer imports
-# platform.nix with no `pkgs` (see contrib/deployment-modules.nix).
+# modules/platform.nix with no `pkgs`, so forcing a package here is an eval error.
 { config, lib, ... }:
 
 let
   inherit (lib) mkOption types;
-  bcfg = config.agentSandbox.broker;
+  bcfg = config.scooter.broker;
   scfg = bcfg.brave;
 in
 {
-  options.agentSandbox.broker.brave = {
+  options.scooter.broker.brave = {
     enable = mkOption {
       type = types.bool;
       default = false;
@@ -51,7 +53,7 @@ in
   # on, so a deployment that sets `enable` and forgets the secret gets a broker with no
   # brave provider and an agent with no brave_web_search — never a tool that 401s.
   config = lib.mkIf (bcfg.enable && scfg.enable) {
-    agentSandbox.broker.extraEnv = [
+    scooter.broker.extraEnv = [
       {
         name = "BRAVE_SEARCH_API_KEY";
         valueFrom.secretKeyRef = {

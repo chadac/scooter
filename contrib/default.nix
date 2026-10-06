@@ -1,44 +1,44 @@
 { lib, writeText, python3Packages, broker, webhooks, scooterBrokerLib, scooterWebhooksLib, ... }:
 
-# Contrib registry: evaluates all-modules.nix and buckets it by service.
+# Contrib registry: evaluates all-modules.nix, builds it, and buckets it by service.
 #
 #   contribs = pkgs.callPackage ./contrib { inherit broker webhooks; ... };
 #   broker   = pkgs.callPackage ./services/broker { contribs = contribs.broker; ... };
 #
-# A contrib build-depends on the extension surface libs, never on the
-# broker/webhooks apps — that would be a build cycle. They are CHECK-only inputs
-# so a contrib's tests can drive the real services. Why: PR #567.
+# The EVAL is lib-only (contrib/spec.nix) and shared with the sandbox image and the
+# kubenix platform; the BUILD is contrib/build.nix, applied here because this is the
+# only one of the three consumers that has a `pkgs`. Why: #711.
 
 let
   mkUiManifest = import ./ui-manifest.nix { inherit lib writeText; };
+  mkPackages = import ./build.nix {
+    inherit lib python3Packages broker webhooks scooterBrokerLib scooterWebhooksLib;
+  };
 
   evalWith = extraModules: lib.evalModules {
-    specialArgs = {
-      inherit lib python3Packages broker webhooks scooterBrokerLib scooterWebhooksLib;
-    };
+    specialArgs = { inherit lib; };
     modules = [ ./all-modules.nix ] ++ extraModules;
   };
 
   mkOutputs = eval:
     let
-      # Dropped before anything can reference a package, so a disabled contrib
-      # never reaches a derivation.
+      # Dropped before anything can reference a package, so a contrib that ships
+      # nowhere never reaches a derivation.
       contribs = lib.filterAttrs (_: c: c.enable) eval.config.contribs;
 
-      enabledServices = c: lib.filterAttrs (_: s: s.enable) c.services;
+      # name -> service -> derivation.
+      byName = mkPackages contribs;
 
-      forService = svc: lib.mapAttrsToList (_: c: c.services.${svc}.package)
-        (lib.filterAttrs (_: c: c.services.${svc}.enable) contribs);
+      forService = svc: lib.mapAttrsToList (_: variants: variants.${svc})
+        (lib.filterAttrs (_: variants: variants ? ${svc}) byName);
 
       # Keyed <name>-<service>: both variants share a derivation name, so a
       # name-keyed consumer (linkFarm) would collapse them. Why: PR #573.
       everyVariant = lib.listToAttrs (lib.concatLists (lib.mapAttrsToList
-        (name: c: lib.mapAttrsToList
-          (svc: s: lib.nameValuePair "${name}-${svc}" s.package)
-          (enabledServices c))
-        contribs));
-
-      byName = lib.mapAttrs (_: c: lib.mapAttrs (_: s: s.package) (enabledServices c)) contribs;
+        (name: variants: lib.mapAttrsToList
+          (svc: drv: lib.nameValuePair "${name}-${svc}" drv)
+          variants)
+        byName));
     in
     {
       broker = forService "broker";
