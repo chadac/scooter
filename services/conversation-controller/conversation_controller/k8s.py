@@ -41,7 +41,7 @@ DELETION_COST_ANNOTATION = "controller.kubernetes.io/pod-deletion-cost"
 AGENT_HOST_DEPLOYMENT = "agent-host"  # the Deployment the controller autoscales
 
 # The upstream agent-sandbox Sandbox CR (what the reaper GCs). EVERY Sandbox call must address
-# itself through these — an open-coded group/version 404s silently. Why: PR #710.
+# itself through these — an open-coded group/version 404s silently. Why: PR #725.
 SANDBOX_GROUP = "agents.x-k8s.io"
 SANDBOX_VERSION = "v1beta1"
 SANDBOX_PLURAL = "sandboxes"
@@ -207,7 +207,7 @@ class ControllerK8s:
     def suspend_sandbox(self, name: str) -> None:
         """Set the Sandbox's spec.operatingMode=Suspended (the zombie repair). Merge-patch,
         idempotent; a 404 (sandbox already gone) is fine — which is why the version MUST come
-        from SANDBOX_VERSION: an unserved version 404s too, and lands here as success. PR #710."""
+        from SANDBOX_VERSION: an unserved version 404s too, and lands here as success. PR #725."""
         _, custom, _ = _apis()
         try:
             custom.patch_namespaced_custom_object(
