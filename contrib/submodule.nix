@@ -151,7 +151,8 @@ in
         options are still DECLARED — the platform imports every contrib (#719) — but
         setting one fails the render rather than being silently ignored, because
         `shipGate` in modules/platform.nix throws on a contrib configured but not
-        shipped (#599).
+        shipped (#599). Setting this false alone is always legal — that is how a
+        deployment trims the contrib set.
 
         Build a disabled one with `withModules` (contrib/default.nix) rather than
         weakening this.
@@ -268,11 +269,14 @@ in
       description = ''
         Agent skills documenting this contrib, keyed by the filename the agent sees.
 
-        Gated on THIS CONTRIB'S NAME: they ship only where
-        `scooter.broker.<name>.enable` is true, so a contrib shipping skills
-        must have a broker option of the same name (deployment.nix throws otherwise).
-        A skill for an integration that is off teaches the agent to call a route
-        that 404s, and then to read that 404 as the feature being broken.
+        Gated on `enable` above: they ship only where this contrib is BUILT. A
+        skill for an integration no image contains teaches the agent to call a
+        route that 404s, and then to read that 404 as the feature being broken.
+
+        Deployment config does NOT gate them — an agent should know an
+        integration's interface even where this deployment has not wired it, and
+        a 404 then means "not enabled here", which is the broker's answer to
+        give rather than a gap in the agent's knowledge.
 
         Paths, not strings: the file stays a readable .md next to the code it
         documents, and modules/platform.nix reads it straight off `config.contribs`.

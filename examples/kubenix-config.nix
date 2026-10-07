@@ -87,61 +87,8 @@
       # The agent-facing MCP endpoint: contrib-contributed agent tools, scoped per
       # conversation by a conversation token (see #700). On by default; stated here
       # because the manifest coverage check requires the example to exercise every
-      # option namespace. With `echo` enabled this serves its sample tools.
+      # option namespace. It serves whatever tools the SHIPPED contribs contribute.
       mcp.enable = true;
-
-      # Datadog provider: proxies /datadog/* -> https://api.<site> with the two
-      # keys injected, so the agent can query metrics/logs/monitors without
-      # seeing them. Point the secrets at a Secret in the broker namespace.
-      datadog = {
-        enable = true;
-        site = "datadoghq.com";
-        apiKeySecret = { name = "datadog-keys"; key = "DATADOG_API_KEY"; };
-        appKeySecret = { name = "datadog-keys"; key = "DATADOG_APP_KEY"; };
-      };
-
-      # Airtable provider: proxies /airtable/* -> https://api.airtable.com with a
-      # personal access token injected, so the agent can read/write bases without
-      # seeing it. The PAT's own scopes + base grants bound what it can reach.
-      airtable = {
-        enable = true;
-        tokenSecret = { name = "airtable-token"; key = "AIRTABLE_TOKEN"; };
-      };
-
-      # AWS permissions broker: dynamic, approval-gated STS access per account. The
-      # account registry is rendered into a ConfigMap; the broker pod carries a
-      # checksum/aws-accounts annotation so editing an account auto-rolls the pod.
-      aws = {
-        enable = true;
-        accounts.readonly-sandbox = {
-          account_id = "123456789012";
-          broker_role_arn = "arn:aws:iam::123456789012:role/agent-token-broker-base";
-          enabled = true;
-          description = "Sandbox account for safe read-only exploration (S3, logs).";
-          auto_approve_read_only = true;
-        };
-      };
-
-      # Web search. BOTH providers are on here because this example exists to cover
-      # every option namespace — and because they are no longer exclusive: each
-      # contributes a tool named for itself (`brave_web_search`, `kagi_web_search`), so
-      # the agent gets one tool per index and picks. A real deployment usually enables
-      # the one it pays for; enabling NONE is also valid, and the agent then has no
-      # search tool at all — which is better than the DuckDuckGo-Instant-Answer tool
-      # this replaced, which answered real queries with an empty result set (PR #698).
-      brave = {
-        enable = true;
-        apiKeySecret = { name = "brave-search-key"; key = "BRAVE_SEARCH_API_KEY"; };
-      };
-      kagi = {
-        enable = true;
-        apiKeySecret = { name = "kagi-search-key"; key = "KAGI_API_KEY"; };
-      };
-      # The keyless one: no secret to configure, so the switch is the whole config. Also
-      # the least reliable — it reads DuckDuckGo's public results page, which is
-      # rate-limited per egress IP — which is why it is OFF by default and why a
-      # deployment that can pay for search should prefer brave.
-      duckduckgo.enable = true;
 
       # Static shares: agents publish static bundles the broker serves at
       # /s/<uuid>/ and the UI embeds. Persists to the shared Postgres `broker` DB.
@@ -281,6 +228,58 @@
       className = "nginx";
       annotations."cert-manager.io/cluster-issuer" = "letsencrypt";
       tlsSecretName = "webhooks-tls";
+    };
+  };
+
+  # --- Contribs: each integration's own options ---
+  contribs = {
+    # Datadog provider: proxies /datadog/* -> https://api.<site> with the two
+    # keys injected, so the agent can query metrics/logs/monitors without
+    # seeing them. Point the secrets at a Secret in the broker namespace.
+    datadog = {
+      site = "datadoghq.com";
+      apiKeySecret = { name = "datadog-keys"; key = "DATADOG_API_KEY"; };
+      appKeySecret = { name = "datadog-keys"; key = "DATADOG_APP_KEY"; };
+    };
+
+    # Airtable provider: proxies /airtable/* -> https://api.airtable.com with a
+    # personal access token injected, so the agent can read/write bases without
+    # seeing it. The PAT's own scopes + base grants bound what it can reach.
+    airtable.tokenSecret = { name = "airtable-token"; key = "AIRTABLE_TOKEN"; };
+
+    # AWS permissions broker: dynamic, approval-gated STS access per account. The
+    # account registry is rendered into a ConfigMap; the broker pod carries a
+    # checksum/aws-accounts annotation so editing an account auto-rolls the pod.
+    aws.accounts.readonly-sandbox = {
+      account_id = "123456789012";
+      broker_role_arn = "arn:aws:iam::123456789012:role/agent-token-broker-base";
+      enabled = true;
+      description = "Sandbox account for safe read-only exploration (S3, logs).";
+      auto_approve_read_only = true;
+    };
+
+    # Both search providers: not exclusive, one tool each.
+    brave.apiKeySecret = { name = "brave-search-key"; key = "BRAVE_SEARCH_API_KEY"; };
+    kagi.apiKeySecret = { name = "kagi-search-key"; key = "KAGI_API_KEY"; };
+    # The keyless one: no secret to configure, so shipping it is the whole config.
+    # Keyless but least reliable; prefer brave when paying.
+
+    # siteUrl only builds the human /browse/{KEY} link.
+    jira.siteUrl = "https://example.atlassian.net";
+
+    # Mounts only when url and token both resolve.
+    grafana = {
+      url = "https://grafana.example.com";
+      tokenSecret = { name = "grafana-token"; key = "GRAFANA_TOKEN"; };
+    };
+
+    # Token proxies: `name` has no default, so configure or drop.
+    slack.botTokenSecret = { name = "slack-bot-token"; key = "SLACK_BOT_TOKEN"; };
+    gitlab.tokenSecret = { name = "gitlab-token"; key = "GITLAB_TOKEN"; };
+    github = {
+      appId = "123456";
+      installationId = "7890123";
+      privateKeySecret = { name = "github-app-key"; key = "private-key"; };
     };
   };
 }

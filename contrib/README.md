@@ -27,7 +27,7 @@ services.
 contrib/<name>/
   pyproject.toml            # package + entry points (both groups if it spans services); hatchling backend
   contrib.nix               # the DECLARATION: `contribs.<name>` (see schema below)
-  deployment.nix            # optional: a KUBENIX module -> declares scooter.* options
+  deployment.nix            # optional: a KUBENIX module -> renders manifests/env
   sandbox.nix               # optional: a NIXOS module  -> goes into the sandbox-os image
   scooter_contrib_<name>/
     __init__.py             # neutral; imports NEITHER broker nor webhooks
@@ -42,18 +42,23 @@ and which eval reads which is the thing most easily got backwards:
 | file | eval | declares / contributes |
 |---|---|---|
 | `contrib.nix` | every eval that reads the registry | `contribs.<name>`: `src`, `services.*`, `ui`, `skills`, `approvals`, `sandbox.module`. What the contrib **is**. |
-| `deployment.nix` | kubenix, with `modules/platform.nix` | its own `scooter.broker.<name>.*` options, and the manifests/env they render |
+| `deployment.nix` | kubenix, with `modules/platform.nix` | the manifests/env this deployment's `contribs.<name>.*` config renders |
 | `sandbox.nix` | NixOS, via `pkgs/sandbox-os` (and the baked re-converge list) | packages, systemd units, activation — anything in the agent's sandbox image |
 
 `deployment.nix` is a module in the **same eval** as `modules/platform.nix`, so it
-declares `scooter.*` options exactly where any other platform option is declared —
-there is no registration step and nothing to list (#711).
+reaches the whole `scooter.*` tree exactly as any other platform module does —
+there is no registration step and nothing to list (#711). What it does *not* do is
+declare options: a contrib's deployment options are declared by its `contrib.nix`,
+under `contribs.<name>`, so one tree holds both halves of an integration. See
+*Extending the preset* below.
 
 `contrib.nix` is the one file that cannot do that, and that is why it is a separate
 file rather than the top of `deployment.nix`: it is read by evals that have no
 `scooter.*` tree at all — the package build, and the sandbox image *plus its in-pod
-re-converge*, which runs with `lib` and no flake. A `scooter.broker.<name>.extraEnv`
-definition there is "option does not exist" in two of the three (#615, #607).
+re-converge*, which runs with `lib` and no flake. A `scooter.broker.extraEnv`
+definition there is "option does not exist" in two of the three (#615, #607) — which
+is exactly the split: `contrib.nix` *declares* `contribs.<name>.siteUrl`, and
+`deployment.nix` is what reads it and writes `scooter.broker.extraEnv`.
 
 `contrib/aws` is the only contrib with all three. `contrib/echo` has `contrib.nix` +
 `sandbox.nix`, which was the whole shape of a contrib before the deployment half
@@ -161,17 +166,36 @@ asserted.
 
 ### Contributing deployment config (`contrib/<name>/deployment.nix`)
 
-The options an operator sets to configure the integration, and the manifests it
-renders, belong to the contrib as well — as a file the platform finds by name:
+The manifests an integration renders belong to the contrib as well — as a file the
+platform finds by name. The options an operator *sets* are declared one file over,
+in `contrib.nix`, so both halves of a contrib live under one name:
+
+```nix
+# contrib/aws/contrib.nix — the DECLARATION, read by every eval
+{ lib, ... }:
+{
+  contribs.aws = {
+    options.accounts = lib.mkOption { /* … */ };
+    config = { src = ./.; services.broker.enable = true; /* … */ };
+  };
+}
+```
 
 ```nix
 # contrib/aws/deployment.nix — a kubenix module, nothing to register
 { config, lib, ... }:
+let ccfg = config.contribs.aws; in
 {
-  options.scooter.broker.aws = { /* … */ };
-  config = lib.mkIf (config.scooter.broker.enable && config.scooter.broker.aws.enable) { /* … */ };
+  config = lib.mkIf (config.scooter.broker.enable && ccfg.enable) { /* … */ };
 }
 ```
+
+**`contribs.<name>.enable` is the only gate.** It used to be two — one for "build
+this" and one for "deploy this" — which meant every integration spelled its name
+twice, in two different trees, and a deployment could set one and not the other. Now
+shipping a contrib and configuring it are the same decision: `enable` (default true)
+says whether this build contains the integration at all, and the config beside it is
+what that integration is configured with.
 
 **One half, one file, named for what is in it**: `deployment.nix` is the kubenix module,
 `sandbox.nix` the NixOS module baked into the agent's image, `contrib.nix` the
@@ -180,8 +204,8 @@ interchangeable — the names are what keep a reader from reaching for the wrong
 A contrib with only a deployment half still gets its own `deployment.nix`, even when
 that is two options and one env entry.
 
-`modules/platform.nix` imports it, so it can declare its own options
-(`scooter.broker.aws.*`) and render its own `kubernetes.resources`. It
+`modules/platform.nix` imports it, so it reads its own config
+(`config.contribs.aws.*`) and renders its own `kubernetes.resources`. It
 reaches a service's existing Deployment through that service's seams rather than
 redeclaring the container:
 
@@ -213,29 +237,42 @@ with no `pkgs` to build a contrib's Python half with, and a manifest needs none.
 
 Three consequences worth knowing:
 
-- **This is where a contrib's skills gate comes from.** `skills` ships on
-  `scooter.broker.<name>.enable` (below), and this module is what declares
-  that option. A contrib shipping skills and no deployment half has no gate, and
-  `deployment.nix` throws.
+- **A deployment half is optional.** `skills` gates on `contribs.<name>.enable`
+  (below), which every contrib has from the preset, so a contrib can ship skills with
+  no `deployment.nix` at all. That used to throw: the gate was an option only
+  `deployment.nix` could declare.
 - **Configuring a contrib this build does not ship fails the render.** The options
   exist — every contrib is imported — so the error comes from `shipGate` in
   `modules/platform.nix`, which throws from a leaf every render produces. That is
   `enable` doing its job, and `examples/check.nix` asserts it in both directions:
   unshipping a contrib the example configures must fail, and unshipping one it does
-  not must still render.
-- **The same cuts the other way for a contrib READING a sibling's option.** A
-  platform module may touch any part of the tree — the module system has no notion
-  of ownership, and a contrib is free to declare an option another one also declares.
-  But `config.scooter.broker.kagi.enable` resolves only where kagi was also
-  built, so a bare cross-contrib reference breaks every image that ships one without
-  the other. You *can* work around it (guard with `?`, or declare the option
-  yourself); prefer not needing to. A constraint that wants two contribs in scope at
-  once either belongs in the platform module, or — as the brave/kagi search
-  exclusivity turned out to be — should not exist. Why: PR #707.
+  not must still render. Dropping a contrib therefore means dropping its config too —
+  `contribs.<name> = lib.mkForce { enable = false; }` replaces the whole tree, which
+  is the shape the check's own renders use.
+- **A contrib READING a sibling's config has the mirror problem.** A platform module
+  may touch any part of the tree — the module system has no notion of ownership. But
+  `config.contribs.kagi.apiKeySecret` resolves only where kagi was also built, so a
+  bare cross-contrib reference breaks every image that ships one without the other.
+  You *can* work around it (guard with `?`); prefer not needing to. A constraint that
+  wants two contribs in scope at once either belongs in the platform module, or — as
+  the brave/kagi search exclusivity turned out to be — should not exist. Why: PR #707.
 
-`contrib/aws/deployment.nix` is the worked example: the account registry, the
-`AWS_*` env, the rollout annotation and the IRSA annotation, which were ~40
-references inside `modules/broker.nix` before #599.
+**`contrib/aws` is the worked example**, and it is worth reading as a pair:
+`contrib.nix` declares the seven options (`accounts`, `region`, `externalId`,
+`brokerPrincipalArn`, `serviceAccountRoleArn`, `roleTtlHours`, `approverClaim`), and
+`deployment.nix` turns them into the account-registry ConfigMap, the `AWS_*` env, the
+rollout annotation and the IRSA annotation — ~40 references inside
+`modules/broker.nix` before #599, and a second option tree before this.
+
+`examples/kubenix-config.nix` is the worked example from the *operator's* side: it
+configures every shipped contrib under `contribs.*`, and `examples/check.nix`
+asserts it still covers all of them.
+
+`modules/broker.nix` declares only the broker's OWN options (`enable`, `image`,
+`testProvider`, `agentHostUrl`, `extraEnv`, `extraVolumes`, `extraVolumeMounts`,
+`podAnnotations`, `serviceAccountAnnotations`, `mcp`, `shares`, `fga`); no
+integration's options live there, and nothing under `scooter.broker` is named after
+a contrib.
 
 Only the BROKER has these seams today. Adding them to another service is a
 `bcfg.extraEnv`-shaped option plus one `++` in that service's module; a contrib's
@@ -253,12 +290,12 @@ contribs.aws = {
 };
 ```
 
-**The gate is the contrib's NAME** — a skill ships iff
-`scooter.broker.<name>.enable` is true in the *deployment*, which is a
-different question from whether the contrib is enabled in this source tree. A
-contrib shipping skills therefore needs a broker option of the same name;
-`deployment.nix` throws at eval if there isn’t one, rather than shipping a skill
-nothing gates.
+**The gate is `contribs.<name>.enable`** — a skill ships iff the contrib is
+*built*, so no image carries instructions for code it does not contain. Deployment
+config does not gate it: an agent should know an integration's interface even where
+this deployment has not wired the credential, and a 404 then means "not enabled
+here", which is the broker's answer to give rather than a gap in the agent's
+knowledge.
 
 That gating is the point, not bookkeeping. A skill for a provider that isn't
 wired teaches the agent to call a route that 404s — and then to read that 404 as
@@ -331,8 +368,8 @@ gate: there is no resource to be attached to.
 
 ### Extending the preset
 
-A contrib can declare its **own** options by using the strict module form; they
-merge into its config tree, and `config` is its own:
+A contrib declares its **own** options by using the strict module form; they merge
+into its config tree, and `config` is its own:
 
 ```nix
 {
@@ -342,6 +379,19 @@ merge into its config tree, and `config` is its own:
   };
 }
 ```
+
+**This is where every deployment option lives** — not an edge case. The preset in
+`contrib/submodule.nix` covers what a contrib *is* (`src`, `services`, `ui`,
+`skills`, `approvals`, `sandbox`); anything an operator configures is declared here,
+by the contrib that reads it. That split is also what `shipGate` keys on: the preset's
+fields are the contrib declaring itself, so only the options a contrib added of its
+own count as deployment config, and setting one on a contrib this build does not ship
+fails the render.
+
+Nest only where the API being configured is nested — `tokenSecret.{name,key}` is a
+Secret reference, so it is one option with two fields. Do not re-state the contrib
+name inside its own tree: `contribs.github.appId`, never
+`contribs.github.app.appId`, because `contribs.github` already said which app.
 
 The file itself is a top-level module, so the **parent** config — every other
 contrib — is available as its `config` argument. Bind it with

@@ -191,7 +191,7 @@ let
     ++ (if ngOpus != [ ] && (builtins.head ngOpus).default then [ ]
         else [ "no-goose: AGENT_MODELS_JSON claude-opus-5 should be default:true" ]);
 
-  # broker.aws (enabled in the example) must stamp a checksum/aws-accounts annotation
+  # contribs.aws (configured in the example) must stamp a checksum/aws-accounts annotation
   # on the broker pod template, so editing an account rolls the pod (a ConfigMap
   # content change alone doesn't trigger a rollout). Assert the annotation is present.
   brokerAnno = res.deployments.agent-broker.spec.template.metadata.annotations or { };
@@ -325,55 +325,57 @@ let
     allNamespaces;
   coverageProblems = map (n: "example never sets scooter.${n} (add it, or add to coverageExempt with a reason)") uncovered;
 
-  # GATED SKILLS: a skill for a capability that is not wired teaches the agent to call a
-  # route that 404s, and then to misread that 404 as the feature being broken. Render the
-  # platform with each gate on and off and assert the skill follows.
-  # mkForce: a gate the EXAMPLE already sets would otherwise conflict, not override.
-  skillsWith = brokerOverride: let
+  # Same guard for `contribs.*`, the other option root.
+  #
+  # Derived from the platform eval; exempt: no-option and unshipped contribs.
+  contribNames = builtins.attrNames platform.config.contribs;
+  # Own options = resolved fields minus the shared spec's.
+  bareContribs = (nixpkgsLib.evalModules {
+    specialArgs = { lib = nixpkgsLib; };
+    modules = [ ../contrib/all-modules.nix ];
+  }).config.contribs;
+  specFields = builtins.attrNames (nixpkgsLib.evalModules {
+    specialArgs = { lib = nixpkgsLib; name = "schema"; };
+    modules = [ ../contrib/submodule.nix ];
+  }).options;
+  ownOptions = n: nixpkgsLib.subtractLists specFields (builtins.attrNames bareContribs.${n});
+  uncoveredContribs = builtins.filter
+    (n: platform.config.contribs.${n}.enable
+        && ownOptions n != [ ]
+        && builtins.match ".*[^a-zA-Z]${n}[^a-zA-Z].*" exampleText == null)
+    contribNames;
+  contribCoverageProblems = map
+    (n: "example never sets contribs.${n} (it declares ${builtins.toString (ownOptions n)} — configure it, or stop shipping it)")
+    uncoveredContribs;
+
+  # A skill ships iff its contrib is built. Why: PR #727.
+  skillsWith = contribOverride: let
     e = flake.inputs.kubenix.evalModules.${system} {
       module = { lib, ... }: {
         imports = [ ./kubenix-config.nix ];
-        scooter.broker = brokerOverride lib;
+        contribs = contribOverride lib;
       };
     };
     cms = e.config.kubernetes.resources.configMaps or { };
   in if cms ? agent-skills then builtins.attrNames cms.agent-skills.data else [ ];
-  gateProblems = file: gate: override: let
-    shipped = enable: builtins.elem file (skillsWith (override enable));
-  in (if shipped true then [ ] else [ "${file} missing when ${gate} = true" ])
-     ++ (if shipped false then [ "${file} SHIPPED when ${gate} = false (the agent will chase a 404)" ] else [ ]);
-  # One override per contrib that ships skills. Written out rather than derived,
-  # because enabling a provider can require its OTHER options (grafana a url, slack a
-  # token secret) — a bare `enable = true` would be an eval error, not a render. For a
-  # provider the example already configures, mkForce on `enable` is the whole override.
-  skillGates = {
-    grafana = enable: lib: { grafana = { enable = lib.mkForce enable; url = "https://example.grafana.net"; }; };
-    airtable = enable: lib: { airtable.enable = lib.mkForce enable; };
-    aws = enable: lib: { aws.enable = lib.mkForce enable; };
-    datadog = enable: lib: { datadog.enable = lib.mkForce enable; };
-    slack = enable: lib: {
-      slack = {
-        enable = lib.mkForce enable;
-        botTokenSecret = { name = "slack-bot"; key = "SLACK_BOT_TOKEN"; };
-      };
-    };
-  };
-  # Driven off the RENDER's own `contribs` tree — the shipped contribs are modules in
+  # mkForce the whole attr: dropping a contrib drops its config.
+  gateProblems = file: name: let
+    shipped = builtins.elem file (skillsWith (lib: { ${name}.enable = lib.mkForce true; }));
+    unshippedShips = builtins.elem file
+      (skillsWith (lib: { ${name} = lib.mkForce { enable = false; }; }));
+  in (if shipped then [ ] else [ "${file} missing when contribs.${name}.enable = true" ])
+     ++ (if unshippedShips then [ "${file} SHIPPED when contribs.${name}.enable = false (it is not in the image)" ] else [ ]);
+  # Driven off the RENDER's own `contribs` tree -- the shipped contribs are modules in
   # the platform eval (#711), so this is literally the set platform.nix ships from,
-  # not a second derivation of it. A contrib that starts shipping a skill fails here
-  # until its gate is proven.
+  # not a second derivation of it. No per-contrib override table is needed any more:
+  # the gate is one bool every contrib has, not each one's own deployment options.
   nixpkgsLib = flake.inputs.nixpkgs.lib;
   contribSkills = nixpkgsLib.mapAttrs (_: c: c.skills)
     (nixpkgsLib.filterAttrs (_: c: c.enable && c.skills != { }) platform.config.contribs);
   skillProblems = (if contribSkills != { } then [ ] else
   [ "no contrib ships a skill — this check reads platform.config.contribs, so an EMPTY set means the contribs stopped reaching the platform eval, not that nobody documents anything" ])
   ++ nixpkgsLib.concatLists (nixpkgsLib.mapAttrsToList
-    (name: skills:
-      if !(skillGates ? ${name})
-      then [ ("contrib ${name} ships ${toString (builtins.attrNames skills)} but examples/check.nix has no gate case — add one to skillGates") ]
-      else nixpkgsLib.concatMap
-        (file: gateProblems file "broker.${name}.enable" skillGates.${name})
-        (builtins.attrNames skills))
+    (name: skills: nixpkgsLib.concatMap (file: gateProblems file name) (builtins.attrNames skills))
     contribSkills);
 
   # IMMUTABLE-JOB GUARD. A Job's spec.template CANNOT be patched, so re-applying a
@@ -476,7 +478,6 @@ let
   #   vacuity  — dropping a contrib the example does not configure still renders. Without
   #              it, a `shipGate` that threw on ANY disabled contrib would pass above.
   disabled = builtins.attrNames (nixpkgsLib.filterAttrs (_: c: !c.enable) platform.config.contribs);
-  brokerOpts = platform.options.scooter.broker;
 
   # The skill files an extra config renders, via the same ConfigMap `skillsWith` reads.
   skillFilesWith = extra:
@@ -491,11 +492,8 @@ let
     in if cms ? agent-skills then builtins.attrNames cms.agent-skills.data else [ ];
 
   # A DISABLED contrib that ships a skill — the case the `enable` filter on
-  # `contribSkills` exists for, and the only one not already covered by `shipGate`.
-  # Every shipped contrib's skill is gated on `scooter.broker.<name>.enable`, and a
-  # contrib with no such option makes that lookup THROW. echo is disabled and has no
-  # broker options, so without the filter this render dies on a confusing gate error
-  # rather than quietly dropping a skill no image was ever built to serve.
+  # `contribSkills` exists for, and the one `shipGate` deliberately does NOT cover.
+  # shipGate ignores spec fields; the enable filter drops dead skills.
   #
   # Injected here rather than committed to echo/contrib.nix: the fixture must be a
   # contrib the repo does not ship, and giving it a real skill file would ship one.
@@ -507,8 +505,8 @@ let
   disabledContribProblems =
     (if disabled != [ ] then [ ] else
     [ "every contrib is enabled — the disabled-contrib checks below test nothing; keep one disabled fixture (echo) or delete them" ])
-    ++ (if brokerOpts ? brave then [ ] else
-    [ "scooter.broker.brave is not declared — an enabled contrib's deployment.nix did not reach the platform eval (modules/platform.nix derives the halves from contrib/all-modules.nix), so every check below passes for the wrong reason" ])
+    ++ (if (platform.config.contribs.brave.apiKeySecret.name or "") == "brave-search-key" then [ ] else
+    [ "contribs.brave.apiKeySecret did not take the example's value — a contrib's own options are not reaching the platform eval (modules/platform.nix imports the declarations via contrib/all-modules.nix and their deployment halves beside them), so every check below passes for the wrong reason" ])
     ++ (if platform.config.contribs ? aws then [ ] else
     [ "config.contribs.aws is missing — the contrib DECLARATIONS are not in the platform eval, so contrib skills are read from an empty set" ])
     ++ (if echoSkillsRender then [ ] else
@@ -520,9 +518,8 @@ let
     ++ (if renders { contribs.brave.enable = nixpkgsLib.mkForce false; }
         then [ "a render configuring brave succeeded with brave UNSHIPPED (contribs.brave.enable = false) — shipGate is a no-op, so an operator gets a broker with no brave provider, an agent with no brave_web_search, and no error (#599)" ]
         else [ ])
-    # The example configures nothing under scooter.broker.github, so dropping it is a
-    # legal build choice and must stay one.
-    ++ (if renders { contribs.github.enable = nixpkgsLib.mkForce false; } then [ ]
+    # duckduckgo has no deployment options; unshipping stays legal.
+    ++ (if renders { contribs.duckduckgo.enable = nixpkgsLib.mkForce false; } then [ ]
         else [ "dropping a contrib the example never configures stopped the render — shipGate fires on `enable = false` alone instead of on the unshipped-AND-configured pair, so no deployment can trim the contrib set" ]);
 
   legacyRootProblems =
@@ -577,7 +574,8 @@ let
   awsOffPlatform = flake.inputs.kubenix.evalModules.${system} {
     module = { lib, ... }: {
       imports = [ ./kubenix-config.nix ];
-      scooter.broker.aws.enable = lib.mkForce false;
+      # mkForce the attr so the config goes with it.
+      contribs.aws = lib.mkForce { enable = false; };
       scooter.broker.shares.enable = lib.mkForce false;
     };
   };
@@ -701,19 +699,30 @@ let
     ++ (if builtins.all (e: e.name != "APPROVAL_CONTRIBS_JSON") awsOffApprovals then [ ]
         else [ "aws-off: host.env.APPROVAL_CONTRIBS_JSON present — approvals are not gated on the contrib's own enable" ]);
 
-  # `permission_requests` belongs to contrib/aws/deployment.nix now, and must still
-  # be in the spec with the DEPLOYMENT's aws off — that is the invariant keeping the
-  # generated schema a function of the source tree rather than of a deploy flag.
-  # Why: PR #637.
-  awsOffTables = awsOffPlatform.config.scooter.db.broker.tables or { };
+  # `permission_requests` belongs to contrib/aws/deployment.nix now, and must be in
+  # The table is declared whenever aws is built. Why: PR #637.
+  #
+  # aws shipped, broker off: the table still declares.
+  brokerOffPlatform = flake.inputs.kubenix.evalModules.${system} {
+    module = { lib, ... }: {
+      imports = [ ./kubenix-config.nix ];
+      scooter.broker.enable = lib.mkForce false;
+    };
+  };
+  brokerOffTables = brokerOffPlatform.config.scooter.db.broker.tables or { };
   stage2Problems =
-    (if awsOffTables ? permission_requests then [ ]
-     else [ ("aws-off: scooter.db.broker.tables.permission_requests missing —"
+    (if brokerOffTables ? permission_requests then [ ]
+     else [ ("broker-off: scooter.db.broker.tables.permission_requests missing —"
              + " a contrib's table declaration is gated on the DEPLOYMENT running it,"
              + " so `just db-generate` drops the table and the migration history no"
              + " longer describes this tree") ])
-    ++ (if (awsOffTables.permission_requests.writers or [ ]) == [ "broker" ] then [ ]
-        else [ "permission_requests.writers should be [\"broker\"] (the contrib writes through the broker's role)" ]);
+    ++ (if (brokerOffTables.permission_requests.writers or [ ]) == [ "broker" ] then [ ]
+        else [ "permission_requests.writers should be [\"broker\"] (the contrib writes through the broker's role)" ])
+    # Negative half: unshipping aws drops the table.
+    ++ (if (awsOffPlatform.config.scooter.db.broker.tables or { }) ? permission_requests
+        then [ ("aws-off: permission_requests is declared with aws UNSHIPPED — the"
+                + " table declaration is not gated on the contrib being built, so the"
+                + " schema describes a writer no image contains") ] else [ ]);
 
   # OPENFGA IS SUBSTRATE, NOT AWS'S. The authorizer core/authz.py builds from FGA_*
   # is handed to every provider through BrokerContext (#624), so `broker.fga` is a
@@ -723,7 +732,8 @@ let
   fgaNoAwsPlatform = flake.inputs.kubenix.evalModules.${system} {
     module = { lib, ... }: {
       imports = [ ./kubenix-config.nix ];
-      scooter.broker.aws.enable = lib.mkForce false;
+      # mkForce the attr so the config goes with it.
+      contribs.aws = lib.mkForce { enable = false; };
       scooter.broker.fga.enable = true;
     };
   };
@@ -753,7 +763,8 @@ let
   sharesNoAwsPlatform = flake.inputs.kubenix.evalModules.${system} {
     module = { lib, ... }: {
       imports = [ ./kubenix-config.nix ];
-      scooter.broker.aws.enable = lib.mkForce false;
+      # mkForce the attr so the config goes with it.
+      contribs.aws = lib.mkForce { enable = false; };
       # shares.enable stays true (the example sets it) — that is the point.
     };
   };
@@ -833,8 +844,8 @@ let
       (containersOf w))
     allWorkloads;
 
-  allProblems = disabledContribProblems ++ legacyRootProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ approvalProblems ++ stage2Problems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems;
+  allProblems = disabledContribProblems ++ legacyRootProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ contribCoverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ approvalProblems ++ stage2Problems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems;
 in
 if allProblems == [ ]
-then "ok: deployments = ${haveDeps}; datadog + airtable + brave + kagi + duckduckgo (three search providers, each with its own tool) + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every option namespace; skills gated on their capability; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; the renamed root (agentSandbox.*) fails the render; contribs reach the platform eval and configuring an unshipped one fails the render; deploy-time Jobs are spec-hash named\n"
+then "ok: deployments = ${haveDeps}; datadog + airtable + brave + kagi + duckduckgo (three search providers, each with its own tool) + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every scooter.* namespace and every shipped contrib's own options; skills gated on the contrib being built; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; the renamed root (agentSandbox.*) fails the render; contribs reach the platform eval and configuring an unshipped one fails the render; deploy-time Jobs are spec-hash named\n"
 else builtins.throw "example manifests missing: ${builtins.concatStringsSep ", " allProblems}"
