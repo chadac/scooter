@@ -3,14 +3,9 @@ package main
 // Subagent creation — POST /conversations/{parentId}/subagents.
 //
 // A subagent is a conversation like any other: a CR plus a `conversations` row. It differs only in
-// what it INHERITS from its parent (owner, sandbox pod, model) and in carrying parentId, which is
-// what makes the controller co-locate it on the parent's pod.
-//
-// It lives here, in the router, for the same reason top-level create does: there is ONE creator of
-// a conversation. The agent-host used to mint the child id itself and write the CR + row from
-// spawnChild — a second creation path with its own id minting, its own spec assembly and no row at
-// create time, which is exactly the split-ownership that made the `conversations` row's existence
-// depend on whichever writer happened to run first. Why: PR #726.
+// what it INHERITS from its parent (owner, sandbox pod, model) and in carrying parentId, which the
+// controller co-locates by. Here rather than in the agent-host so there is ONE creator of a
+// conversation. Why: PR #726.
 
 import (
 	"context"
@@ -23,18 +18,16 @@ import (
 	"github.com/google/uuid"
 )
 
-// parentLookup reads the parent conversation a subagent inherits from. Narrow (*Store satisfies
-// it) so the route is testable with a hand-written fake, like ConversationCreator.
+// parentLookup reads the parent a subagent inherits from. Narrow (*Store satisfies it) so the
+// route is testable without a Postgres, like ConversationCreator.
 type parentLookup interface {
 	ConversationByID(ctx context.Context, id string) (*ConversationRow, error)
 }
 
-// subagentRequest is the accepted body. No id and no owner: the id is minted here and the owner is
-// INHERITED from the parent row, so neither is a caller-controlled input.
+// subagentRequest is the accepted body. No id and no owner: both are derived, not caller input.
 type subagentRequest struct {
 	Title string `json:"title"`
-	// Model overrides the parent's for this subagent (a cheaper model for a mechanical
-	// subtask). Empty inherits.
+	// Empty inherits the parent's.
 	Model string `json:"model"`
 }
 
@@ -56,12 +49,9 @@ func SubagentCreate(method, path string) (parentID string, ok bool) {
 	return parts[1], true
 }
 
-// serveSubagentCreate creates the child conversation and returns 201, exactly like top-level
-// create: no agent-host is consulted, so a subagent can be created while the fleet is at capacity.
-//
-// `parents` is required — without the parent row there is nothing to inherit, and guessing (an
-// empty owner, no sandbox ref) would produce a subagent that lists under nobody and cannot be
-// co-located. A pg-less deploy gets 503 rather than a wrong conversation.
+// serveSubagentCreate creates the child and returns 201. No agent-host is consulted, so this
+// works at capacity. `parents` is REQUIRED: with no parent row there is nothing to inherit, and
+// guessing would produce a subagent owned by nobody that cannot be co-located.
 func serveSubagentCreate(w http.ResponseWriter, r *http.Request, creator ConversationCreator, parents parentLookup, parentID, owner string, trusted TrustedCaller) {
 	log := logger("subagent-create")
 	if parents == nil {
@@ -106,9 +96,9 @@ func serveSubagentCreate(w http.ResponseWriter, r *http.Request, creator Convers
 
 	id := uuid.NewString()
 	spec := map[string]interface{}{"parentId": parentID}
-	// Inherited, NOT taken from the request: the owner is what cost and the "my conversations"
-	// filter attribute by, and the sandbox ref is what makes the child share the parent's pod
-	// instead of provisioning a second one for the same tree.
+	// Inherited, NEVER from the request: a caller that could name the owner could mint a
+	// conversation owned by someone else, and a caller that could name the sandbox could attach
+	// a child to a pod it has no claim on.
 	if parent.Owner != nil && *parent.Owner != "" {
 		spec["owner"] = *parent.Owner
 	}
@@ -147,26 +137,18 @@ func serveSubagentCreate(w http.ResponseWriter, r *http.Request, creator Convers
 	})
 }
 
-// subagentResponse is the create response plus what the child inherited. The agent-host needs the
-// sandbox ref back: it reuses the parent's pod for the child's bridge, and reading it from the
-// response means it does not re-derive (and possibly disagree about) what the router just wrote.
+// subagentResponse is the create response plus what the child inherited. The sandbox ref is
+// returned so the host reads the pod it must reuse rather than re-deriving it.
 type subagentResponse struct {
 	createResponse
 	ParentID   string `json:"parentId"`
 	SandboxRef string `json:"sandboxRef,omitempty"`
 }
 
-// maySpawnSubagent authorizes the create. Spawning a subagent INHERITS the parent's owner, so an
-// unrestricted route would let anyone mint a conversation owned by someone else — the same
-// escalation the body-`owner` gate on POST /conversations exists to prevent.
-//
-// Two ways to pass, cheapest first:
-//   - the caller IS the parent's owner (a browser-driven spawn, identity from the ingress header);
-//   - the caller is a verified in-cluster service (the agent-host, which is what spawns subagents
-//     today and never passes through the ingress, so it carries no identity header at all).
-//
-// A parent with no owner has nothing to escalate to, so it is open — that is the anonymous and
-// kube-less dev stacks, which have no identity header and no TokenReview.
+// maySpawnSubagent authorizes the create: the child inherits the parent's owner, so an open route
+// would let anyone mint a conversation owned by someone else. Pass as the parent's owner, or as a
+// verified in-cluster caller (the agent-host carries no identity header). An UNOWNED parent is
+// open — nothing to escalate to, and that is the anonymous and kube-less stacks.
 func maySpawnSubagent(r *http.Request, parent *ConversationRow, owner string, trusted TrustedCaller) bool {
 	if parent.Owner == nil || *parent.Owner == "" {
 		return true
@@ -178,8 +160,7 @@ func maySpawnSubagent(r *http.Request, parent *ConversationRow, owner string, tr
 	return trusted != nil && trusted(r.Context(), r)
 }
 
-// specValue reads a string the handler just put in the spec, "" if absent. Not specString: the
-// response wants a plain string, and the spec here is this function's own construction.
+// specValue reads a string back out of the spec this handler just built, "" if absent.
 func specValue(spec map[string]interface{}, k string) string {
 	if v, ok := spec[k].(string); ok {
 		return v

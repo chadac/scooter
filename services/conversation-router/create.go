@@ -64,9 +64,8 @@ func (d *dynamicCreator) Create(ctx context.Context, c NewConversation) error {
 	return err
 }
 
-// Remove deletes the CR, for dualCreator's rollback when the row write fails. An
-// already-gone CR is success: the goal is "no CR left behind", and someone else having
-// deleted it satisfies that.
+// Remove deletes the CR for dualCreator's rollback. An already-gone CR is success — the goal is
+// "no CR left behind".
 func (d *dynamicCreator) Remove(ctx context.Context, name string) error {
 	err := d.dyn.Resource(conversationGVR).Namespace(d.namespace).Delete(ctx, name, metav1.DeleteOptions{})
 	if apierrors.IsNotFound(err) {
@@ -79,17 +78,10 @@ func (d *dynamicCreator) Remove(ctx context.Context, name string) error {
 // exists so the row can become the source of truth for existence — nothing can read a row that no
 // writer produces, and in the cluster stack nothing produced one at create time.
 //
-// BOTH writes are now required. A row failure used to be logged and swallowed, which was the right
-// asymmetry while the agent-host's saveMeta would insert the row later anyway: the create degraded
-// to "absent from the list until the host writes meta". The host no longer inserts (#726) — it only
-// updates columns on a row its creator wrote, and its append fence refuses a conversation whose row
-// is gone. So a swallowed row failure would now hand back a 201 for a conversation that can neither
-// list nor take a turn, which is worse than a failed create the caller can retry.
-//
-// The CR written moments earlier is rolled back when the row fails, so a failed create leaves
-// nothing behind. Best-effort: a rollback that itself fails leaves an orphan CR with no row, which
-// the controller sees as a conversation that never materialised — logged loudly, and still better
-// than the 201 that preceded it.
+// BOTH writes are REQUIRED. The agent-host no longer inserts the row, and its append fence refuses
+// a conversation whose row is gone — so swallowing a row failure would answer 201 for a
+// conversation that can neither list nor take a turn. The CR is rolled back, best-effort, so a
+// failed create leaves nothing behind. Why: PR #726.
 // conversationRowWriter is the row half. Narrow for the same reason ConversationCreator is: the
 // interesting behaviour here is which failure is fatal, and that must be testable without a
 // Postgres.
@@ -116,8 +108,8 @@ func (d *dualCreator) Create(ctx context.Context, c NewConversation) error {
 		log := logger("create")
 		remover, ok := d.cr.(crRemover)
 		if ok {
-			// Use a context that is NOT the request's: the row failure may well BE a cancelled
-			// request, and a rollback that inherits the cancellation never runs.
+			// NOT the request's context: the row failure may itself BE a cancellation, and an
+			// inherited one would skip the rollback.
 			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			defer cancel()
 			if rerr := remover.Remove(rctx, c.Name); rerr != nil {

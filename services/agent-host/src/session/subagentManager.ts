@@ -71,14 +71,9 @@ export function createSubagentManager(
 
   return {
     async spawn(parentId, args) {
-      // The ROUTER creates the child conversation (CR + row) and mints its id, the same way it
-      // creates a top-level one — so the row exists before the child's first event and nothing
-      // has to arbitrate who owns a row that is not there yet. Why: PR #726.
-      //
-      // Minting locally is the fallback for a stack with no router to ask: the native
-      // single-host mode, which has no control plane and no row either. It is NOT a fallback for
-      // a router that is merely unreachable — createChild rejects there, and a second id-minting
-      // path under failure is exactly what this removed.
+      // The ROUTER mints the id and creates the child (CR + row), so the row exists before the
+      // child's first event. Local minting is for a stack with NO router (native single-host) —
+      // never for one that is merely unreachable, which rejects. Why: PR #726.
       const childThreadId = createChild
         ? (await createChild(parentId, { title: args.title, model: args.model })).id
         : randomUUID();

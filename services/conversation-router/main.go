@@ -198,8 +198,8 @@ func main() {
 // the correct IP shortly, and meanwhile any ready pod can serve via the mirror-hydrated state).
 func newRouter(shutdownCtx context.Context, cfg config, cache *OwnershipCache, creator ConversationCreator, trusted TrustedCaller, store *Store, writeStore *WriteStore, links *LinkStore, hub *sseHub) http.Handler {
 	fallback := cfg.fallback
-	// A typed-nil *Store in an interface is NOT nil, so narrow it once here rather than handing
-	// the handler a parentLookup that passes a `!= nil` check and panics on first use.
+	// A typed-nil *Store in an interface is NOT nil: narrow it once, or the handler gets a
+	// parentLookup that passes `!= nil` and panics on first use.
 	var parents parentLookup
 	if store != nil {
 		parents = store
@@ -219,10 +219,8 @@ func newRouter(shutdownCtx context.Context, cfg config, cache *OwnershipCache, c
 			serveConversationCreate(w, r, creator, ownerFrom(r), trusted)
 			return
 		}
-		// SUBAGENT create is the same control-plane write, with the parent row supplying what the
-		// child inherits (owner, sandbox pod, model). Served here so there is ONE creator of a
-		// conversation; the agent-host calls this instead of writing a CR + row itself. See
-		// subagent.go.
+		// SUBAGENT create is the same control-plane write, inheriting from the parent row. Here,
+		// not in the agent-host, so there is ONE creator of a conversation. See subagent.go.
 		if parentID, ok := SubagentCreate(r.Method, r.URL.Path); ok {
 			serveSubagentCreate(w, r, creator, parents, parentID, ownerFrom(r), trusted)
 			return

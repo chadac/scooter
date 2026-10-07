@@ -11,23 +11,20 @@ package main
 // INSERT fires the conversations_changed trigger, so the router's own LISTEN loop pushes the new
 // row to the sidebar without anyone having to publish it.
 //
-// sandbox_ref is NULL for a top-level create (the host provisions the sandbox and patches the ref
-// in later) and SET for a subagent, which inherits its parent's pod. The kube-less stack has no CR
-// to converge the column from, so a subagent row that did not carry the ref at insert would never
-// get one. Why: PR #726.
+// sandbox_ref is NULL for a top-level create (the host patches it in after provisioning) and SET
+// for a subagent: the kube-less stack has no CR to converge the column from. Why: PR #726.
 const insertConversationSQL = `
 	INSERT INTO conversations
 	  (id, thread_id, title, created_at, last_activity_at, model, owner, parent_id, sandbox_ref)
 	VALUES ($1, $1, $2, $3, $3, $4, $5, $6, $7)
 	ON CONFLICT (id) DO NOTHING`
 
-// conversationRow is a create projected onto insertConversationSQL's columns. A struct rather than
-// a positional tuple because args() below is then the ONE place that fixes column order: a new
-// column cannot be added to the SQL and silently bound to the wrong parameter at one call site.
+// conversationRow is a create projected onto insertConversationSQL's columns. A struct, not a
+// positional tuple, so args() below is the ONE place column order is fixed.
 type conversationRow struct {
 	ID    string
 	Title string
-	// Now fills created_at AND last_activity_at (one bind, $3 twice).
+	// Fills created_at AND last_activity_at ($3 twice).
 	Now        int64
 	Model      *string
 	Owner      *string
@@ -35,11 +32,9 @@ type conversationRow struct {
 	SandboxRef *string
 }
 
-// conversationRowOf projects a create onto the row's columns. Pure, so the mapping (which create
-// field becomes which column) is unit-testable without a database. Title comes from the create
-// itself, NOT from the spec map — the spec is the CR's, and the CR has no title field. It is a
-// plain string because the column is NOT NULL (absent becomes "", not NULL); the nullable columns
-// go through specString.
+// conversationRowOf projects a create onto the row's columns. Pure, so the mapping is testable
+// without a database. Title comes from the create, NOT the spec map — the CR has no title field —
+// and is a plain string because the column is NOT NULL (absent becomes "", not NULL).
 func conversationRowOf(c NewConversation, now int64) conversationRow {
 	return conversationRow{
 		ID:         c.Name,

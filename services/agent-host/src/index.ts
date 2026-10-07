@@ -1151,10 +1151,8 @@ export async function main(
   // conversation's sandbox (see todo/docs/SUBAGENTS.md +
   // todo/docs/SUBAGENT_INTERACTION.md). Extracted to session/subagentManager.ts so
   // the spawn/list/check/cancel/send/monitor/search logic is unit-testable.
-  // The CHILD CONVERSATION is created by the conversation-router, like every other
-  // conversation (#726): it mints the id and writes the CR + the `conversations` row, inheriting
-  // owner/sandbox/model from the parent row. Unset CONVERSATION_ROUTER_URL = the native
-  // single-host stack, which has no router (and no row) — spawn mints the id locally there.
+  // The router creates the child conversation, like every other (#726). Unset = the native
+  // single-host stack, which has no router and no row; spawn mints the id locally there.
   const subagentCreator = process.env.CONVERSATION_ROUTER_URL
     ? createRouterSubagentCreator({
         url: process.env.CONVERSATION_ROUTER_URL,

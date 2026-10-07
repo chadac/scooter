@@ -43,18 +43,10 @@ export interface PgEventStoreConfig {
  * the seven appendEvent call sites, while a fence on the statement cannot be forgotten by
  * a new one.
  *
- * The row must EXIST, and must not contradict this pod. A row that names nobody still
- * allows: assignment is the controller's to make and a brand-new conversation appends
- * before it lands. Refusing an absent claim outright ("no generation => no writes") would
- * need the claim read from the ROW, and while it comes from the CR watch an
- * unobserved-but-assigned conversation is indistinguishable from an unassigned one —
- * failing closed there would drop first turns.
- *
- * A MISSING row refuses, which it did not before #726. Every conversation's row is now
- * written by its creator (the conversation-router, for subagents too) before the
- * conversation can be prompted, so "no row" no longer means "not created yet" — it means
- * DELETED, by a teardown that raced this in-flight append. Letting those stragglers
- * through wrote unarbitrated events for a conversation nobody can read any more.
+ * The row must EXIST and must not contradict this pod. A MISSING row refuses: every row is
+ * written by its creator before the conversation can be prompted, so absence means DELETED.
+ * An UNCLAIMED row (host_pod null) still appends — a first turn precedes assignment, and
+ * failing closed there would drop it. Why: PR #726.
  */
 export interface AppendFence {
   /** This pod's name — the identity the row must not contradict. */
@@ -171,9 +163,8 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
   // once per token, and one line each would bury the reassignment that caused it.
   const refusals = new Map<SessionId, number>();
 
-  /** The fence predicate, or nothing when unfenced. See AppendFence for the semantics:
-   *  `exists (...)` requires the row, and the disjunct is what keeps an UNCLAIMED row
-   *  (host_pod null, not yet assigned) writable. */
+  /** The fence predicate, or nothing when unfenced. `exists (...)` requires the row; the
+   *  disjunct keeps an unclaimed one writable. See AppendFence. */
   const fenceClause = (id: SessionId, gen: number | undefined) => {
     const fence = config.fence;
     if (!fence) return sql.empty();
@@ -187,11 +178,8 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
               )`;
   };
 
-  /** Which of the two refusals happened, for the sampled log line only. The statement
-   *  cannot say — it returns zero rows either way — and the distinction is the whole
-   *  question when a refusal is investigated: a reassignment (expected, transient) reads
-   *  nothing like a conversation torn down under an in-flight run. One extra read on a
-   *  path that only runs on a sampled refusal. */
+  /** Which refusal it was — the statement cannot say, it returns zero rows either way.
+   *  Sampled path only, so the extra read is not on the append hot path. */
   const refusalCause = async (id: SessionId) => {
     try {
       const rows = await db

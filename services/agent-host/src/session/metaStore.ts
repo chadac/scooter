@@ -116,9 +116,8 @@ export function createPgMetaStore(config: PgMetaStoreConfig): MetaStore {
     return values;
   };
 
-  /** Seed from a file store the first time this table is empty. DO NOTHING so a row
-   *  already present always wins. The one INSERT left in this store: a backfilled
-   *  conversation predates the router and has no creator to have written its row. */
+  /** Seed from a file store the first time this table is empty. DO NOTHING so a row already
+   *  present always wins. The only INSERT here: a backfilled conversation has no creator. */
   const backfill = async (metas: ConversationMeta[]): Promise<void> => {
     for (const meta of metas) {
       await db.insert(conversations).values(rowValues(meta)).onConflictDoNothing({ target: conversations.id });
@@ -127,20 +126,8 @@ export function createPgMetaStore(config: PgMetaStoreConfig): MetaStore {
   };
 
   return {
-    /**
-     * UPDATE, not an upsert. The row is written by the conversation's CREATOR — the
-     * conversation-router, for subagents too since #726 — before the conversation can be
-     * prompted, so there is never a row for this to insert. Two consequences, both wanted:
-     *
-     *   - a conversation with no row stays without one, rather than the host silently
-     *     becoming its creator (which is what made the row's existence depend on whichever
-     *     writer ran first, and forced the append fence to tolerate a missing row);
-     *   - a straggler save from an in-flight run cannot RESURRECT the row of a conversation
-     *     that was just torn down. An upsert did, and a resurrected row re-opens the fence
-     *     for events nobody can read.
-     *
-     * A save that matches no row is therefore normal at teardown, not an error.
-     */
+    /** UPDATE, not upsert: the creator writes the row, and a straggler save at teardown must
+     *  not resurrect a removed one. Matching no row is normal. Why: PR #726. */
     async saveMeta(meta) {
       try {
         await db.update(conversations).set(rowValues(meta)).where(eq(conversations.id, meta.id));

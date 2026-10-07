@@ -1,20 +1,9 @@
 /**
- * Creating a SUBAGENT conversation through the conversation-router.
+ * Creating a SUBAGENT conversation through the conversation-router — the ONE creator of a
+ * conversation, so the child's row exists before its first event.
  *
- * Subagents were the last conversations the agent-host created for itself: spawn() minted a
- * `randomUUID()` and spawnChild() wrote the CR, while the `conversations` row appeared only when
- * saveMeta() first ran. Top-level conversations have not worked that way since PR #654 — the
- * router mints the id and writes CR + row together at create time.
- *
- * Two writers of "a conversation now exists" is what made the row's existence depend on which one
- * ran first, and the agent-host's own append fence then had to tolerate a missing row (see the
- * conversation in PR #679). So the host asks the router instead: ONE creator, one id, and the row
- * exists before the child's first event.
- *
- * The router infers everything else from the PARENT row — owner, sandbox pod, model — so this
- * carries no identity of its own. The agent-host authenticates with its projected SA token
- * (audience `agent-host`, the Service the router fronts), which the router verifies by TokenReview;
- * it is not passing along a user's identity and cannot choose an owner. Why: PR #726.
+ * Carries no identity: the router derives owner/sandbox/model from the parent row. The SA token
+ * (audience `agent-host`) authenticates this service, it does not pass along a user. Why: PR #726.
  */
 
 import { formatError, logger } from "../log.js";
@@ -29,11 +18,8 @@ export interface CreatedSubagent {
   sandboxRef?: string;
 }
 
-/**
- * Create a subagent conversation for `parentId`. Resolves with the router-minted id.
- * REJECTS on any failure — a caller must not fall back to minting its own id, because that is
- * precisely the second creation path this removes.
- */
+/** Resolves with the ROUTER-minted id. REJECTS on failure — a caller must not fall back to
+ *  minting its own, which is the second creation path this removes. */
 export type SubagentCreator = (
   parentId: string,
   args: { title?: string; model?: string },
@@ -49,8 +35,7 @@ export interface RouterSubagentsConfig {
   fetchImpl?: typeof fetch;
 }
 
-/** Read the SA token fresh per call: projected tokens ROTATE, so a value cached at boot
- *  expires and every subagent spawn then 401s a few hours into the pod's life. */
+/** Fresh per call: projected tokens ROTATE, so a value cached at boot later 401s. */
 async function authHeaders(tokenPath?: string): Promise<Record<string, string>> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (!tokenPath) return headers;
@@ -58,8 +43,8 @@ async function authHeaders(tokenPath?: string): Promise<Record<string, string>> 
     const { readFile } = await import("node:fs/promises");
     headers["Authorization"] = `Bearer ${(await readFile(tokenPath, "utf8")).trim()}`;
   } catch (e) {
-    // ENOENT is the local/dev case (no projected token); anything else is a real fault and
-    // must not be downgraded into an unauthenticated request that silently 404s.
+    // ENOENT is the no-token dev case. Any other error must NOT become an unauthenticated
+    // request — the router refuses that as a 404 indistinguishable from a missing parent.
     if ((e as { code?: string })?.code !== "ENOENT") {
       throw new Error(`failed to read the router token at ${tokenPath}: ${(e as Error)?.message ?? e}`, { cause: e });
     }
@@ -88,9 +73,8 @@ export function createRouterSubagentCreator(config: RouterSubagentsConfig): Suba
     }
     if (res.status !== 201) {
       const detail = (await res.text().catch(() => "")).slice(0, 500);
-      // 404 here is the router refusing the caller as much as a genuinely missing parent — it
-      // answers 404 for both on purpose (a 403 would confirm the parent exists). Log the status
-      // so a deploy whose SA is not on the router's trust list is diagnosable.
+      // A 404 is a refused CALLER as often as a missing parent — the router answers both
+      // alike — so log the status: an SA off the trust list looks identical otherwise.
       log.warn("subagent create rejected", { parent_id: parentId, status: res.status, detail });
       throw new Error(`conversation-router refused the subagent create (${res.status}): ${detail}`);
     }

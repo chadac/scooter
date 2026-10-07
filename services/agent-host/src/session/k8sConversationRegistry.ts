@@ -166,16 +166,9 @@ export function createK8sConversationRegistry(
       if (spec.sandboxRef) cleanSpec.sandboxRef = spec.sandboxRef;
       if (spec.creatorPod) cleanSpec.creatorPod = spec.creatorPod;
 
-      // PATCH FIRST, create only as the fallback. The CR already exists for every
-      // conversation a creator made — the router writes it for top-level (#654) and for
-      // subagents (#726) — so creating first meant a guaranteed 409 before the patch that
-      // was always going to be the real write. That is one wasted apiserver write per
-      // conversation start and per subagent spawn, on a client that retries 429s.
-      //
-      // MERGE patch, not replace, so this only adds the fields the host owns — above all
-      // sandboxRef, which the router derives its routing short-id from and which a
-      // provisioning-free creator cannot know. owner/model/parentId stay as the creator set
-      // them.
+      // PATCH first, create only on 404: a creator made the CR for every conversation that
+      // has one, so create-first was a guaranteed 409. MERGE, so this adds only the host's
+      // fields (above all sandboxRef) and leaves owner/model/parentId. Why: PR #726.
       await throttled("register.patchSpec", id, () =>
         custom.patchNamespacedCustomObject(
           { group: GROUP, version: VERSION, namespace, plural: PLURAL, name: id, body: { spec: cleanSpec } },
@@ -183,16 +176,13 @@ export function createK8sConversationRegistry(
         ),
       )
         .catch(async (e: { code?: number }) => {
+          // Only a 404 means "no CR" — do NOT create on any other error, which would be a
+          // guess. Never throws: the guard fails open, so a dropped write costs placement,
+          // not the turn.
           if (e?.code !== 404) {
-            // Any other error must not fail the conversation: log it and continue. The guard
-            // fails open for an unregistered conversation, so the only cost is that it pins to
-            // the default pod until a later register() (or the controller) converges it.
             log.errorWith("failed to patch Conversation CR", e, { conversation_id: id });
             return;
           }
-          // 404 = no CR to patch. The paths that reach here have no creator ahead of them:
-          // the native/kube-less stack, and adoption of a conversation that predates the
-          // router. Create it.
           await throttled("register", id, () =>
             custom.createNamespacedCustomObject({
               group: GROUP,
@@ -207,9 +197,8 @@ export function createK8sConversationRegistry(
               },
             }),
           ).catch((ce: { code?: number }) => {
-            // 409 = a creator wrote it between our patch's 404 and this create. The spec we
-            // would have set is the creator's own plus our fields, and the next register()
-            // (revive, or the sandboxRef re-register after provisioning) patches those in.
+            // 409 = a creator landed inside the 404 window; the next register() patches our
+            // fields in.
             if (ce?.code === 409) return;
             log.errorWith("failed to create Conversation CR", ce, { conversation_id: id });
           });
