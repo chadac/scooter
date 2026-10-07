@@ -1,6 +1,4 @@
-# aws DECLARED: what this contrib IS — the halves that are built, not deployed.
-# Its deployment config lives in ./deployment.nix and its sandbox half in
-# ./sandbox.nix, each landing in a different eval (contrib/README.md).
+# What aws IS. Deployment: ./deployment.nix. Sandbox: ./sandbox.nix.
 { lib, ... }:
 
 let

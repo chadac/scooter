@@ -29,10 +29,7 @@ MIN_PAGE_OPTIONS = 3
 
 PREFIX = "scooter."
 
-# The second option root. A contrib owns BOTH halves of itself — what it builds to and
-# how a deployment configures it — so an integration's options live under
-# `contribs.<name>` rather than `scooter.broker.<name>`. It gets its own page instead of
-# being folded under a `scooter.` title that would misname every option on it.
+# Second option root: contribs.<name> gets its own page.
 CONTRIBS_PREFIX = "contribs"
 
 

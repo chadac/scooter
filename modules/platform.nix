@@ -27,54 +27,20 @@ let
     ++ lib.filter builtins.pathExists
       (map (p: builtins.dirOf p + "/deployment.nix") contribDecls);
 
-  # CONFIGURING A CONTRIB THIS BUILD DOES NOT SHIP must fail the render, not be
-  # silently ignored. Every contrib's options are DECLARED whether or not it ships
-  # (the platform imports them all, #719), so their absence is no longer what
-  # catches the mistake. Why: #599, PR #719.
-  #
-  # Both halves of a contrib now live under `contribs.<name>`, so "is anything set
-  # here?" would fire on every contrib: `contrib.nix` unconditionally sets src,
-  # services, ui and skills, which are the contrib DECLARING itself, not a deployer
-  # configuring a dead one. Two filters separate the two, and both are needed:
-  #
-  #   SCHEMA — contrib/submodule.nix is the preset every contrib gets, so its fields
-  #     are the declaration surface. A DEPLOYMENT option exists only because a
-  #     contrib declared one of its own in its `options` block, so the deployer-facing
-  #     fields are the resolved contrib's MINUS the shared spec's. This also excludes
-  #     `enable` for free, and must: setting it false is how a deployment TRIMS the
-  #     contrib set, and firing on that would mean no build could drop a contrib.
-  #   VALUE — a declared option still RESOLVES when nobody set it (to its default), so
-  #     the schema filter alone would fire on `contribs.aws.region` in every render.
-  #     So diff each remaining field against the SAME field in a registry-only eval
-  #     (contrib/all-modules.nix with no deployment config): what differs is what a
-  #     deployer spelled. A field set to exactly its default is a no-op and stays
-  #     silent, which is the right answer — it would render nothing either way.
-  #
-  # Read off resolved config rather than `definitionsWithLocations`: a definition list
-  # ignores priority, so a render that drops a contrib by overriding it
-  # (`contribs.<n> = lib.mkForce { enable = false; }`) would still be seen carrying the
-  # config it just overrode. The resolved tree is what would actually be deployed.
-  #
-  # THE KNOWN GAP, accepted deliberately: a deployer who sets a SPEC field on an
-  # unshipped contrib (`contribs.<n>.skills`, `.src`, `.ui`) is not caught, because
-  # those are indistinguishable from the contrib declaring itself. Only the fields a
-  # contrib declared for a deployer are. This is the narrow side of the trade and the
-  # right one — crying wolf on every contrib in every render would make the guard
-  # worthless, and `skills` on a dead contrib is already handled: the `enable` filter
-  # on `contribSkills` below drops it, which examples/check.nix asserts directly.
+  # Configuring an unshipped contrib must fail the render. Why: #599, #719.
+  # Two filters find deployer-set fields: not in the shared spec,
+  # and differing from a registry-only eval. Rationale: PR #727.
+  # Known gap: spec fields (src, ui, skills) are not caught.
   specFields = lib.attrNames (lib.evalModules {
     specialArgs = { inherit lib; name = "schema"; };
     modules = [ ../contrib/submodule.nix ];
   }).options;
-  # The registry with NO deployment config — the baseline every field is compared to.
-  # lib-only (contrib/spec.nix), so this costs no second kubenix eval.
+  # Baseline: the registry with no deployment config.
   bareContribs = (lib.evalModules {
     specialArgs = { inherit lib; };
     modules = [ ../contrib/all-modules.nix ];
   }).config.contribs;
-  # tryEval both sides: an option with no default THROWS when read, and one that
-  # throws in both evals is equally unset in both. deepSeq, because the throw can be
-  # nested (a submodule's own defaultless field).
+  # tryEval both sides: a defaultless option throws when read.
   fieldVal = tree: n: f:
     let r = builtins.tryEval (builtins.deepSeq (tree.${n}.${f} or null) (tree.${n}.${f} or null));
     in if r.success then { ok = r.value; } else null;

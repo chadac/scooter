@@ -5,7 +5,7 @@ let
   ccfg = config.contribs.grafana;
 in
 {
-  # Both env vars unset => the provider reports disabled and /grafana/* 404s.
+  # Unset env => provider disabled, /grafana/* 404s.
   config = lib.mkIf (config.scooter.broker.enable && ccfg.enable) {
     scooter.broker.extraEnv = [
       { name = "GRAFANA_URL"; value = ccfg.url; }

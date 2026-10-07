@@ -325,23 +325,11 @@ let
     allNamespaces;
   coverageProblems = map (n: "example never sets scooter.${n} (add it, or add to coverageExempt with a reason)") uncovered;
 
-  # THE SAME GUARD FOR `contribs.*`, which is now the other half of the option
-  # surface: every integration's deployment options moved out of `scooter.broker`
-  # and under its own contrib. Removing them from `scooter.broker` did NOT make the
-  # guard above vacuous (a contrib was never a top-level `scooter.*` namespace — it
-  # sat one level down, which `allNamespaces` never walked), but it did leave a whole
-  # root uncovered, so assert it here rather than let a new contrib's options ship
-  # with nothing exercising them.
+  # Same guard for `contribs.*`, the other option root.
   #
-  # Derived from the contribs the platform eval actually carries, so a NEW contrib is
-  # covered the day it lands. Exempt: a contrib with no deployment options of its own
-  # has nothing for the example to set (duckduckgo is the pure enable-only case), and
-  # one the repo deliberately does not ship must not be configured here — shipGate
-  # would reject exactly that.
+  # Derived from the platform eval; exempt: no-option and unshipped contribs.
   contribNames = builtins.attrNames platform.config.contribs;
-  # Its own options are the resolved fields MINUS the shared spec's — the same
-  # distinction modules/platform.nix's shipGate draws. Read off a bare registry eval
-  # so a field the example sets is not what makes it appear.
+  # Own options = resolved fields minus the shared spec's.
   bareContribs = (nixpkgsLib.evalModules {
     specialArgs = { lib = nixpkgsLib; };
     modules = [ ../contrib/all-modules.nix ];
@@ -360,12 +348,7 @@ let
     (n: "example never sets contribs.${n} (it declares ${builtins.toString (ownOptions n)} — configure it, or stop shipping it)")
     uncoveredContribs;
 
-  # GATED SKILLS: a skill ships iff its contrib is BUILT (contribs.<name>.enable).
-  # Deployment config does not gate it -- an agent should know an integration's
-  # interface even where this deployment has not wired it; a 404 then means "not
-  # enabled here", which is the broker's answer to give, not a gap in the agent's
-  # knowledge. Render with each contrib built and not built, and assert the skill
-  # follows. mkForce: `enable` defaults true, so this must override.
+  # A skill ships iff its contrib is built. Why: PR #727.
   skillsWith = contribOverride: let
     e = flake.inputs.kubenix.evalModules.${system} {
       module = { lib, ... }: {
@@ -375,14 +358,7 @@ let
     };
     cms = e.config.kubernetes.resources.configMaps or { };
   in if cms ? agent-skills then builtins.attrNames cms.agent-skills.data else [ ];
-  # UNSHIPPING REPLACES THE WHOLE CONTRIB ATTR rather than just forcing `enable`
-  # false. Not incidental to the fixture — it is what `shipGate` requires of a real
-  # deployment: both halves of a contrib now live under `contribs.<name>`, so
-  # dropping one means dropping its config too, and unshipping a contrib while
-  # leaving `contribs.<name>.tokenSecret` behind is exactly the misconfiguration
-  # #599 exists to reject. mkForce on the attr wins it outright, so the example's
-  # config for that contrib is gone from the resolved tree, which is what shipGate
-  # reads.
+  # mkForce the whole attr: dropping a contrib drops its config.
   gateProblems = file: name: let
     shipped = builtins.elem file (skillsWith (lib: { ${name}.enable = lib.mkForce true; }));
     unshippedShips = builtins.elem file
@@ -517,12 +493,7 @@ let
 
   # A DISABLED contrib that ships a skill — the case the `enable` filter on
   # `contribSkills` exists for, and the one `shipGate` deliberately does NOT cover.
-  # `skills` is a field of the shared spec (contrib/submodule.nix), and shipGate
-  # ignores spec fields because a contrib sets them to DECLARE itself; so a skill on
-  # an unshipped contrib must render clean and be dropped by the `enable` filter,
-  # which is what this asserts. The narrower guard is the right one: declaring a
-  # skill is how a contrib documents itself, and the mistake worth failing a render
-  # over is a DEPLOYER wiring an integration no image contains.
+  # shipGate ignores spec fields; the enable filter drops dead skills.
   #
   # Injected here rather than committed to echo/contrib.nix: the fixture must be a
   # contrib the repo does not ship, and giving it a real skill file would ship one.
@@ -547,11 +518,7 @@ let
     ++ (if renders { contribs.brave.enable = nixpkgsLib.mkForce false; }
         then [ "a render configuring brave succeeded with brave UNSHIPPED (contribs.brave.enable = false) — shipGate is a no-op, so an operator gets a broker with no brave provider, an agent with no brave_web_search, and no error (#599)" ]
         else [ ])
-    # duckduckgo declares NO deployment options at all (its `enable` was its whole
-    # config), so the example cannot configure it even in principle — dropping it is
-    # a legal build choice and must stay one. The pair matters: shipGate must fire on
-    # unshipped-AND-configured, never on `enable = false` alone, or no deployment
-    # could trim the contrib set.
+    # duckduckgo has no deployment options; unshipping stays legal.
     ++ (if renders { contribs.duckduckgo.enable = nixpkgsLib.mkForce false; } then [ ]
         else [ "dropping a contrib the example never configures stopped the render — shipGate fires on `enable = false` alone instead of on the unshipped-AND-configured pair, so no deployment can trim the contrib set" ]);
 
@@ -607,10 +574,7 @@ let
   awsOffPlatform = flake.inputs.kubenix.evalModules.${system} {
     module = { lib, ... }: {
       imports = [ ./kubenix-config.nix ];
-      # mkForce on the ATTR, not just `enable`: the example configures aws, and
-      # unshipping a contrib while leaving its config behind is what `shipGate`
-      # rejects (#599). Overriding the attr drops both halves, as a real
-      # deployment dropping aws would.
+      # mkForce the attr so the config goes with it.
       contribs.aws = lib.mkForce { enable = false; };
       scooter.broker.shares.enable = lib.mkForce false;
     };
@@ -736,16 +700,9 @@ let
         else [ "aws-off: host.env.APPROVAL_CONTRIBS_JSON present — approvals are not gated on the contrib's own enable" ]);
 
   # `permission_requests` belongs to contrib/aws/deployment.nix now, and must be in
-  # the spec whenever aws is BUILT — even where this deployment runs no broker to
-  # write it. That is the invariant keeping the generated schema a function of the
-  # SOURCE TREE rather than of a deploy flag: `just db-generate` renders from bare
-  # defaults, so a table gated on a deployment flag vanishes from the committed
-  # schema and the migration history stops describing this tree. Why: PR #637.
+  # The table is declared whenever aws is built. Why: PR #637.
   #
-  # The render is aws SHIPPED with the broker OFF — the two gates in
-  # contrib/aws/deployment.nix pulled apart. `awsOffPlatform` above cannot show this:
-  # it unships aws outright (which correctly drops the declaration too), so the thing
-  # under test needs its own eval.
+  # aws shipped, broker off: the table still declares.
   brokerOffPlatform = flake.inputs.kubenix.evalModules.${system} {
     module = { lib, ... }: {
       imports = [ ./kubenix-config.nix ];
@@ -761,8 +718,7 @@ let
              + " longer describes this tree") ])
     ++ (if (brokerOffTables.permission_requests.writers or [ ]) == [ "broker" ] then [ ]
         else [ "permission_requests.writers should be [\"broker\"] (the contrib writes through the broker's role)" ])
-    # And the NEGATIVE half, which is what `awsOffPlatform` is the right render for:
-    # UNSHIPPING aws does drop the table, because then nothing in the tree declares it.
+    # Negative half: unshipping aws drops the table.
     ++ (if (awsOffPlatform.config.scooter.db.broker.tables or { }) ? permission_requests
         then [ ("aws-off: permission_requests is declared with aws UNSHIPPED — the"
                 + " table declaration is not gated on the contrib being built, so the"
@@ -776,10 +732,7 @@ let
   fgaNoAwsPlatform = flake.inputs.kubenix.evalModules.${system} {
     module = { lib, ... }: {
       imports = [ ./kubenix-config.nix ];
-      # mkForce on the ATTR, not just `enable`: the example configures aws, and
-      # unshipping a contrib while leaving its config behind is what `shipGate`
-      # rejects (#599). Overriding the attr drops both halves, as a real
-      # deployment dropping aws would.
+      # mkForce the attr so the config goes with it.
       contribs.aws = lib.mkForce { enable = false; };
       scooter.broker.fga.enable = true;
     };
@@ -810,10 +763,7 @@ let
   sharesNoAwsPlatform = flake.inputs.kubenix.evalModules.${system} {
     module = { lib, ... }: {
       imports = [ ./kubenix-config.nix ];
-      # mkForce on the ATTR, not just `enable`: the example configures aws, and
-      # unshipping a contrib while leaving its config behind is what `shipGate`
-      # rejects (#599). Overriding the attr drops both halves, as a real
-      # deployment dropping aws would.
+      # mkForce the attr so the config goes with it.
       contribs.aws = lib.mkForce { enable = false; };
       # shares.enable stays true (the example sets it) — that is the point.
     };

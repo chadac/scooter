@@ -231,13 +231,7 @@
     };
   };
 
-  # --- Contribs: each integration's own options, under its own name -----------
-  #
-  # A contrib owns BOTH halves of itself — what it builds to and how a deployment
-  # configures it — so there is one tree per integration rather than a second copy
-  # of the contrib set hanging off `scooter.broker`. `enable` ships it (default
-  # true, so it is stated below only where turning one OFF is the point); the rest
-  # is deployment config, read by that contrib's own deployment.nix.
+  # --- Contribs: each integration's own options ---
   contribs = {
     # Datadog provider: proxies /datadog/* -> https://api.<site> with the two
     # keys injected, so the agent can query metrics/logs/monitors without
@@ -264,37 +258,22 @@
       auto_approve_read_only = true;
     };
 
-    # Web search. BOTH providers are configured here because this example exists to
-    # cover every option namespace — and because they are no longer exclusive: each
-    # contributes a tool named for itself (`brave_web_search`, `kagi_web_search`), so
-    # the agent gets one tool per index and picks. A real deployment usually ships
-    # the one it pays for; shipping NONE is also valid, and the agent then has no
-    # search tool at all — which is better than the DuckDuckGo-Instant-Answer tool
-    # this replaced, which answered real queries with an empty result set (PR #698).
+    # Both search providers: not exclusive, one tool each.
     brave.apiKeySecret = { name = "brave-search-key"; key = "BRAVE_SEARCH_API_KEY"; };
     kagi.apiKeySecret = { name = "kagi-search-key"; key = "KAGI_API_KEY"; };
     # The keyless one: no secret to configure, so shipping it is the whole config.
-    # Also the least reliable — it reads DuckDuckGo's public results page, which is
-    # rate-limited per egress IP — so a deployment that can pay for search should
-    # drop this one (`contribs.duckduckgo.enable = false`) and prefer brave.
+    # Keyless but least reliable; prefer brave when paying.
 
-    # Jira: the site URL only builds the human /browse/{KEY} link the broker
-    # attaches to an issue the agent creates; the proxy itself needs no config.
+    # siteUrl only builds the human /browse/{KEY} link.
     jira.siteUrl = "https://example.atlassian.net";
 
-    # Grafana: the proxy mounts only when BOTH the URL and the token resolve, so
-    # a deployment that ships grafana without these simply gets no /grafana/*.
+    # Mounts only when url and token both resolve.
     grafana = {
       url = "https://grafana.example.com";
       tokenSecret = { name = "grafana-token"; key = "GRAFANA_TOKEN"; };
     };
 
-    # The three token proxies. Each injects its credential into a transparent
-    # http-proxy route so the agent can reach the API without seeing the secret.
-    # Their `name` options have NO default — a shipped-but-unconfigured one fails
-    # the render rather than rendering a pod with a dangling secretKeyRef, so a
-    # deployment not using one of these drops it (`contribs.slack.enable = false`)
-    # instead of leaving it half-configured.
+    # Token proxies: `name` has no default, so configure or drop.
     slack.botTokenSecret = { name = "slack-bot-token"; key = "SLACK_BOT_TOKEN"; };
     gitlab.tokenSecret = { name = "gitlab-token"; key = "GITLAB_TOKEN"; };
     github = {

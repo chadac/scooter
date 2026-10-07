@@ -387,12 +387,7 @@
           # A deploy render passes none, so it cannot enable a dummy agent or an unauthenticated
           # test webhook even by setting a stray boolean — the options only exist with the module.
           #
-          # `scooter.contribs` is lifted OUT to the module root: each integration's
-          # deployment options live under `contribs.<name>`, beside the contrib's own
-          # declaration, rather than under `scooter.broker.<name>`. A render that turns
-          # the broker ON must say which contribs it ships, because several of them
-          # require a credential with no default and would otherwise fail the render
-          # (which is the point — see `shipGate` in modules/platform.nix).
+          # `contribs` is at the module root, not under `scooter`.
           mkPlatformWith = extraModules: full:
             let scooter = builtins.removeAttrs full [ "contribs" ];
             in kubenix.evalModules.${system} {
@@ -407,12 +402,7 @@
           mkPlatform = mkPlatformWith [ ];
           mkTestPlatform = mkPlatformWith [ ./modules/testing.nix ];
 
-          # THE CONTRIBS A BROKER-ON RENDER SHIPS. Everything with no credential to
-          # configure stays at its default (`enable = true`); the token proxies are
-          # dropped, because a render that ships one without its secret cannot come up
-          # and a test/deploy manifest should not carry a dangling secretKeyRef. A real
-          # deployment re-enables the ones it has credentials for — see
-          # examples/kubenix-config.nix, which configures all of them.
+          # Drop the token proxies: no secret to configure here.
           unconfiguredContribs = lib.genAttrs
             [ "slack" "gitlab" "github" "airtable" "brave" "datadog" "grafana" ]
             (_: { enable = false; });
@@ -480,9 +470,7 @@
               image = imgs.webhooks;
               # testWebhook comes from modules/testing.nix — not repeated here.
             };
-            # The e2e suites configure no integration credentials, so drop the contribs
-            # that need one. The keyless/self-gating ones stay on and the MCP endpoint
-            # still serves their tools.
+            # e2e configures no credentials; drop contribs needing one.
             contribs = unconfiguredContribs;
           };
           mkTestPlatformImages = imgs: mkTestPlatform (mkTestPlatformConfig imgs);
@@ -546,9 +534,7 @@
             warmStore.image = ghcrImages.warmStoreController;
             byoc.image = ghcrImages.byocController;
             # This manifest carries no integration credentials — the secrets are
-            # per-cluster, so a published deploy render cannot name them. The contribs
-            # needing one are therefore dropped here and re-enabled (with their
-            # `contribs.<name>.*` config) by the deployment that has the secrets.
+            # Bare render: platform only, no integrations.
             contribs = unconfiguredContribs;
           };
 

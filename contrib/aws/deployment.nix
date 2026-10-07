@@ -1,4 +1,4 @@
-# aws's DEPLOYMENT half: the manifests it renders, off contribs.aws. Why: #599.
+# aws's deployment half. Reads contribs.aws; why: #599.
 #
 # `{ config, lib, ... }` only, and nothing built: an external deployer imports
 # modules/platform.nix with no `pkgs`, so forcing a package here is an eval error.
