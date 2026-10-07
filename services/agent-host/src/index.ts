@@ -1161,6 +1161,11 @@ export async function main(
         tokenPath: process.env.CONVERSATION_ROUTER_TOKEN_PATH,
       })
     : undefined;
+  // The one combination that silently loses subagents: no router to write the row, and a
+  // saveMeta that only updates. Why: PR #726.
+  if (!subagentCreator && process.env.AGENT_HOST_DB_DSN) {
+    hostLog.warn("CONVERSATION_ROUTER_URL unset with a Postgres store: a spawned subagent will have no conversations row and will not list");
+  }
   const subagentManager: SubagentManager = createSubagentManager(sessions, store, subagentCreator);
 
   // marimo notebook tools: target THIS conversation's in-pod marimo at podIP:2718.
