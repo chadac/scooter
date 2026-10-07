@@ -43,10 +43,7 @@ export interface PgEventStoreConfig {
  * the seven appendEvent call sites, while a fence on the statement cannot be forgotten by
  * a new one.
  *
- * The row must EXIST and must not contradict this pod. A MISSING row refuses: every row is
- * written by its creator before the conversation can be prompted, so absence means DELETED.
- * An UNCLAIMED row (host_pod null) still appends — a first turn precedes assignment, and
- * failing closed there would drop it. Why: PR #726.
+ * The row must exist and must not contradict us.
  */
 export interface AppendFence {
   /** This pod's name — the identity the row must not contradict. */
@@ -163,8 +160,7 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
   // once per token, and one line each would bury the reassignment that caused it.
   const refusals = new Map<SessionId, number>();
 
-  /** The fence predicate, or nothing when unfenced. `exists (...)` requires the row; the
-   *  disjunct keeps an unclaimed one writable. See AppendFence. */
+  /** The fence predicate; see AppendFence for the semantics. */
   const fenceClause = (id: SessionId, gen: number | undefined) => {
     const fence = config.fence;
     if (!fence) return sql.empty();
@@ -178,8 +174,7 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
               )`;
   };
 
-  /** Which refusal it was — the statement cannot say, it returns zero rows either way.
-   *  Sampled path only, so the extra read is not on the append hot path. */
+  /** Which refusal it was, since the statement cannot say. */
   const refusalCause = async (id: SessionId) => {
     try {
       const rows = await db

@@ -1,14 +1,7 @@
 /**
  * Tier 1 contract — the ConversationRegistry writes the assignment-table CR.
  *
- * register() converges the `Conversation` CR the controller assigns a hostPod to and the
- * router forwards by. It PATCHES first and creates only on 404: every conversation a
- * creator made already has a CR (the router writes it — #654 top-level, #726 subagents),
- * so create-first guaranteed a 409 before the patch that was always the real write.
- *
- * It MUST be idempotent and MUST NOT throw on any k8s error — a conversation has to start
- * locally even if the CR write fails (the guard fails open until a CR appears).
- * noopRegistry (the single-replica default) does nothing.
+ * register() patches the CR first and creates only on 404.
  */
 
 import { describe, it, expect, vi } from "vitest";
@@ -52,8 +45,7 @@ describe("noopRegistry (single-replica default)", () => {
 });
 
 describe("k8sConversationRegistry.register", () => {
-  // THE COMMON PATH. A creator wrote the CR, so one merge-patch is the whole operation —
-  // no create, so no guaranteed 409 ahead of it.
+  // THE COMMON PATH: one merge-patch, no 409 first.
   it("PATCHES the existing CR and does not attempt a create", async () => {
     const { kc, creates, specPatches } = fakeKc();
     await createK8sConversationRegistry("agent-sandbox", kc).register("conv-abc", {
@@ -69,8 +61,7 @@ describe("k8sConversationRegistry.register", () => {
       group: "scooter.chadac.dev", version: "v1alpha1", plural: "conversations",
       namespace: "agent-sandbox", name: "conv-abc",
     });
-    // MERGE patch — the creator's owner/model/parentId must survive, and sandboxRef (which
-    // the router derives its routing short-id from) must land.
+    // MERGE, so the creator's own spec fields survive.
     const body = specPatches[0].body as { spec: Record<string, string> };
     expect(body.spec).toEqual({
       model: "claude-opus-4-8",
@@ -90,7 +81,7 @@ describe("k8sConversationRegistry.register", () => {
   });
 
   it("CREATES on 404 — the stacks with no creator ahead of them still get a CR", async () => {
-    // The native/kube-less stack and adoption of a conversation that predates the router.
+    // The kube-less stack, and adoption of an older conversation.
     const { kc, creates } = fakeKc({ specPatchCode: 404 });
     await createK8sConversationRegistry("ns", kc).register("conv-1", { model: "m", sandboxRef: "conv-abc" });
 
@@ -226,7 +217,7 @@ function recordingSleep() {
 
 describe("k8sConversationRegistry throttling (429)", () => {
   it("retries a throttled register instead of dropping the spec write", async () => {
-    // register() patches first now, so the throttled call on the hot path is the PATCH.
+    // The throttled hot-path call is now the PATCH.
     const { kc, specPatches } = throttlingKc({ failSpecPatch: [{ code: 429 }] });
     const { sleep, waits } = recordingSleep();
     await createK8sConversationRegistry("ns", kc, { sleep }).register("conv-1", { model: "m" });

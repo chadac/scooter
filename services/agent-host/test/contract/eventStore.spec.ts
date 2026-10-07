@@ -47,9 +47,7 @@ function fakeDb(): {
   assign: (conv: string, a: { hostPod: string | null; hostGeneration?: number }) => void;
 } {
   const rows: Array<Record<string, unknown>> = [];
-  // The conversations row the append fence reads. Absent = no row at all, which since #726
-  // means the conversation was DELETED (its creator writes the row before it can be
-  // prompted) — so the fence refuses.
+  // The conversations row the fence reads; absent now means DELETED.
   const assigned = new Map<string, { hostPod: string | null; hostGeneration?: number }>();
   let fail: Error | undefined;
   const client = {
@@ -69,9 +67,7 @@ function fakeDb(): {
         // drizzle SERIALIZES jsonb to a string before binding; Postgres returns
         // it parsed. Model that, or every event->>'type' filter sees a string.
         const parsed = typeof event === "string" ? JSON.parse(event) : event;
-        // The APPEND FENCE rides this statement: `... select $1..$5 where exists (a row
-        // that does not contradict the presented claim)`. Evaluated BEFORE the PK, as
-        // Postgres does — a fenced-out append never reaches the constraint.
+        // The fence rides this statement, evaluated before the PK.
         if (/WHERE EXISTS/i.test(text)) {
           // The subquery correlates on the conversation id, which is therefore bound a
           // SECOND time ahead of the claim: [...5 row values, id, pod, gen?].
@@ -101,8 +97,7 @@ function fakeDb(): {
         return { rows: [], rowCount: before - rows.length };
       }
       if (head.startsWith("SELECT") && /FROM\s+"?CONVERSATIONS"?/i.test(text)) {
-        // The refusal-cause read: which of the two refusals happened, for the sampled log
-        // line. Absent row => the store reports row-deleted.
+        // The refusal-cause read, for the sampled log line.
         const a = assigned.get(values[0] as string);
         return a ? { rows: [[a.hostPod, a.hostGeneration ?? 0]], rowCount: 1 } : { rows: [], rowCount: 0 };
       }
@@ -278,8 +273,7 @@ describe("eventStore — the append fence", () => {
   });
 
   it("an UNCLAIMED row appends — the first turn beats the controller's assignment", async () => {
-    // Assignment is the controller's to make and a brand-new conversation is prompted
-    // before it lands. A row naming nobody is not a contradiction.
+    // A row naming nobody is not a contradiction.
     const { db, rows, assign } = fakeDb();
     assign(CONV, { hostPod: null });
 
@@ -289,11 +283,7 @@ describe("eventStore — the append fence", () => {
   });
 
   it("FAILS CLOSED on a missing row: no row means DELETED, not 'not created yet'", async () => {
-    // The row used to be allowed to be absent, because the agent-host's own saveMeta
-    // inserted it and an append could beat that INSERT. Every conversation's row is now
-    // written by its creator before it can be prompted (#726), so the only way to reach an
-    // append with no row is a teardown that raced an in-flight run — and those stragglers
-    // were writing unarbitrated events for a conversation nobody can read again.
+    // No row now means a teardown raced this append.
     const { db, rows } = fakeDb(); // nothing assigned: no row at all
     const s = fencedStore(db, "host-1", 3);
 

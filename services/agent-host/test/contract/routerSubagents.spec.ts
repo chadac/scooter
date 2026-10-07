@@ -1,10 +1,5 @@
 /**
- * The agent-host -> conversation-router subagent create (session/routerSubagents.ts), and the
- * spawn path that uses it.
- *
- * What matters here is that the HOST STOPS MINTING IDS: the child's id comes back from the
- * router, which created the CR + row under it. A failure must REJECT rather than fall back to a
- * local uuid — the fallback is the second creation path #726 removed.
+ * The router mints subagent ids now, not the host.
  */
 
 import { mkdtemp, writeFile } from "node:fs/promises";
@@ -23,7 +18,7 @@ import type { SessionId } from "../../src/types.js";
 
 const PARENT = "parent-1" as SessionId;
 
-/** A fetch stub that records the request and answers with `status` + `body`. */
+/** A fetch stub recording the request, answering `status` and `body`. */
 function fetchStub(status: number, body: unknown) {
   const calls: Array<{ url: string; init: RequestInit }> = [];
   const impl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
@@ -61,7 +56,7 @@ describe("createRouterSubagentCreator", () => {
 
     expect(created).toEqual({ id: "router-minted-1", title: "Review", sandboxRef: "conv-abc123" });
     expect(calls).toHaveLength(1);
-    // The trailing slash on the base URL must not double up.
+    // The base URL's trailing slash must not double up.
     expect(calls[0].url).toBe("http://agent-host:8080/conversations/parent-1/subagents");
     expect(calls[0].init.method).toBe("POST");
     expect(JSON.parse(String(calls[0].init.body))).toEqual({ title: "Review", model: "model-cheap" });

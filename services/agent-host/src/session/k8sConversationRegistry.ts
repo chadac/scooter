@@ -166,9 +166,7 @@ export function createK8sConversationRegistry(
       if (spec.sandboxRef) cleanSpec.sandboxRef = spec.sandboxRef;
       if (spec.creatorPod) cleanSpec.creatorPod = spec.creatorPod;
 
-      // PATCH first, create only on 404: a creator made the CR for every conversation that
-      // has one, so create-first was a guaranteed 409. MERGE, so this adds only the host's
-      // fields (above all sandboxRef) and leaves owner/model/parentId. Why: PR #726.
+      // PATCH first: create-first was a guaranteed 409 (PR #726).
       await throttled("register.patchSpec", id, () =>
         custom.patchNamespacedCustomObject(
           { group: GROUP, version: VERSION, namespace, plural: PLURAL, name: id, body: { spec: cleanSpec } },
@@ -176,9 +174,7 @@ export function createK8sConversationRegistry(
         ),
       )
         .catch(async (e: { code?: number }) => {
-          // Only a 404 means "no CR" — do NOT create on any other error, which would be a
-          // guess. Never throws: the guard fails open, so a dropped write costs placement,
-          // not the turn.
+          // Only a 404 means there is no CR.
           if (e?.code !== 404) {
             log.errorWith("failed to patch Conversation CR", e, { conversation_id: id });
             return;
@@ -197,8 +193,7 @@ export function createK8sConversationRegistry(
               },
             }),
           ).catch((ce: { code?: number }) => {
-            // 409 = a creator landed inside the 404 window; the next register() patches our
-            // fields in.
+            // A creator landed inside the 404 window.
             if (ce?.code === 409) return;
             log.errorWith("failed to create Conversation CR", ce, { conversation_id: id });
           });

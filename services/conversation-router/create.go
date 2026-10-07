@@ -64,8 +64,7 @@ func (d *dynamicCreator) Create(ctx context.Context, c NewConversation) error {
 	return err
 }
 
-// Remove deletes the CR for dualCreator's rollback. An already-gone CR is success — the goal is
-// "no CR left behind".
+// Remove rolls the CR back; already-gone is success.
 func (d *dynamicCreator) Remove(ctx context.Context, name string) error {
 	err := d.dyn.Resource(conversationGVR).Namespace(d.namespace).Delete(ctx, name, metav1.DeleteOptions{})
 	if apierrors.IsNotFound(err) {
@@ -78,10 +77,8 @@ func (d *dynamicCreator) Remove(ctx context.Context, name string) error {
 // exists so the row can become the source of truth for existence — nothing can read a row that no
 // writer produces, and in the cluster stack nothing produced one at create time.
 //
-// BOTH writes are REQUIRED. The agent-host no longer inserts the row, and its append fence refuses
-// a conversation whose row is gone — so swallowing a row failure would answer 201 for a
-// conversation that can neither list nor take a turn. The CR is rolled back, best-effort, so a
-// failed create leaves nothing behind. Why: PR #726.
+// BOTH writes are REQUIRED now; see PR #726.
+//
 // conversationRowWriter is the row half. Narrow for the same reason ConversationCreator is: the
 // interesting behaviour here is which failure is fatal, and that must be testable without a
 // Postgres.
@@ -89,8 +86,7 @@ type conversationRowWriter interface {
 	CreateConversation(ctx context.Context, c NewConversation) error
 }
 
-// crRemover rolls back the CR when the row write fails. Optional — a creator that cannot delete
-// (a test fake, a stack with no CR) simply leaves the CR, which is the pre-#726 outcome.
+// crRemover rolls back the CR; optional, so some creators cannot.
 type crRemover interface {
 	Remove(ctx context.Context, name string) error
 }
@@ -108,8 +104,7 @@ func (d *dualCreator) Create(ctx context.Context, c NewConversation) error {
 		log := logger("create")
 		remover, ok := d.cr.(crRemover)
 		if ok {
-			// NOT the request's context: the row failure may itself BE a cancellation, and an
-			// inherited one would skip the rollback.
+			// NOT the request's context, which may itself be the cancellation.
 			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			defer cancel()
 			if rerr := remover.Remove(rctx, c.Name); rerr != nil {

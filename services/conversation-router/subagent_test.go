@@ -10,8 +10,7 @@ import (
 	"testing"
 )
 
-// fakeParents is a parentLookup over an in-memory map: a missing key is a deleted/unknown parent
-// (nil, nil), matching Store.ConversationByID's contract.
+// fakeParents is a parentLookup over an in-memory map.
 type fakeParents struct {
 	rows map[string]*ConversationRow
 	err  error
@@ -26,7 +25,7 @@ func (f *fakeParents) ConversationByID(_ context.Context, id string) (*Conversat
 
 func str(s string) *string { return &s }
 
-// aParent is a live owned conversation on a provisioned pod — what a subagent inherits from.
+// aParent is a live owned conversation on a pod.
 func aParent(id string) *ConversationRow {
 	return &ConversationRow{
 		ID: id, ThreadID: id, Title: "Parent",
@@ -51,8 +50,7 @@ func postSubagent(t *testing.T, c ConversationCreator, p parentLookup, parentID,
 	return w
 }
 
-// The whole point of the endpoint: the child is created with what it INHERITS, from the parent row
-// rather than from the request.
+// The child inherits from the parent row, not the request.
 func TestSubagentInheritsOwnerSandboxAndModel(t *testing.T) {
 	c := &fakeCreator{}
 	p := &fakeParents{rows: map[string]*ConversationRow{"parent-1": aParent("parent-1")}}
@@ -108,8 +106,7 @@ func TestSubagentModelOverrideWins(t *testing.T) {
 	}
 }
 
-// A caller who is not the owner must not be able to mint a conversation owned by someone else —
-// the same escalation the body-`owner` gate on POST /conversations prevents.
+// A stranger must not mint someone else's conversation.
 func TestSubagentRefusesAStrangerAndDoesNotLeakExistence(t *testing.T) {
 	c := &fakeCreator{}
 	p := &fakeParents{rows: map[string]*ConversationRow{"parent-1": aParent("parent-1")}}
@@ -123,8 +120,7 @@ func TestSubagentRefusesAStrangerAndDoesNotLeakExistence(t *testing.T) {
 	}
 }
 
-// The agent-host is the caller that actually spawns subagents today, and it never passes through
-// the ingress — it has no identity header at all, so TokenReview is its only way in.
+// The agent-host has no identity header, only TokenReview.
 func TestSubagentAllowsAVerifiedInClusterCaller(t *testing.T) {
 	c := &fakeCreator{}
 	p := &fakeParents{rows: map[string]*ConversationRow{"parent-1": aParent("parent-1")}}
@@ -139,8 +135,7 @@ func TestSubagentAllowsAVerifiedInClusterCaller(t *testing.T) {
 	}
 }
 
-// The anonymous and kube-less stacks have no identity header and no TokenReview; an unowned parent
-// has no owner to escalate to, so it must stay creatable.
+// An unowned parent stays creatable, for anonymous stacks.
 func TestSubagentOfAnUnownedParentIsOpen(t *testing.T) {
 	c := &fakeCreator{}
 	parent := aParent("parent-1")
@@ -169,8 +164,7 @@ func TestSubagentUnknownParentIs404(t *testing.T) {
 	}
 }
 
-// Without the parent row there is nothing to inherit. Guessing (no owner, no sandbox ref) would
-// produce a subagent that lists under nobody and cannot be co-located, so report unavailable.
+// With no parent row there is nothing to inherit.
 func TestSubagentWithoutAStoreIs503(t *testing.T) {
 	c := &fakeCreator{}
 	w := postSubagent(t, c, nil, "parent-1", `{}`, nil, nil)

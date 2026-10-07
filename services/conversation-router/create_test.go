@@ -347,8 +347,7 @@ func TestDualCreatorPropagatesCRFailureAndSkipsTheRow(t *testing.T) {
 	}
 }
 
-// removableCreator is a fakeCreator that can also roll its CR back (what dynamicCreator does in
-// production). fakeCreator alone deliberately CANNOT, so both branches are reachable in tests.
+// removableCreator can roll its CR back; fakeCreator deliberately cannot.
 type removableCreator struct {
 	fakeCreator
 	removed   []string
@@ -363,10 +362,7 @@ func (r *removableCreator) Remove(_ context.Context, name string) error {
 	return nil
 }
 
-// A row failure now FAILS the create, and the CR written moments earlier is rolled back. This
-// expectation is the inverse of the one that stood while the agent-host's saveMeta would insert the
-// row later: it no longer does (#726), and the append fence refuses a conversation with no row — so
-// swallowing the failure would answer 201 for a conversation that can neither list nor take a turn.
+// A row failure now fails the create (PR #726).
 func TestDualCreatorFailsTheCreateOnARowFailureAndRollsBackTheCR(t *testing.T) {
 	cr := &removableCreator{}
 	d := &dualCreator{cr: cr, rows: &fakeRowWriter{err: errors.New("pg down")}}
@@ -386,9 +382,7 @@ func TestDualCreatorFailsTheCreateOnARowFailureAndRollsBackTheCR(t *testing.T) {
 	}
 }
 
-// The rollback is best-effort: a creator that cannot delete, or whose delete fails, still fails the
-// create. An orphan CR with no row is the pre-#726 outcome and the controller can see it; a 201 for
-// an unusable conversation cannot be seen by anyone.
+// The rollback is best-effort, so the create still fails.
 func TestDualCreatorStillFailsWhenTheRollbackCannotHappen(t *testing.T) {
 	cannotRemove := &dualCreator{cr: &fakeCreator{}, rows: &fakeRowWriter{err: errors.New("pg down")}}
 	if err := cannotRemove.Create(context.Background(), NewConversation{Name: "conv-1"}); err == nil {
@@ -404,7 +398,7 @@ func TestDualCreatorStillFailsWhenTheRollbackCannotHappen(t *testing.T) {
 	}
 }
 
-// The create route surfaces the row failure to the caller rather than reporting success.
+// The route surfaces the row failure rather than reporting success.
 func TestCreateSurfacesARowFailure(t *testing.T) {
 	d := &dualCreator{cr: &removableCreator{}, rows: &fakeRowWriter{err: errors.New("pg down")}}
 	w := postCreate(t, d, `{}`, nil)

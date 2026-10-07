@@ -25,10 +25,7 @@ func TestListsWhateverRowsExist(t *testing.T) {
 	}
 }
 
-// conversationRowOf is the create -> conversations-row projection (shared by both stacks). Locks
-// down which fields map to which nullable columns, that "" / a missing key become a NULL (nil)
-// rather than an empty string, and that the title comes from the create itself — it is not, and
-// must not be, a spec key.
+// conversationRowOf maps create fields onto the row's nullable columns.
 func TestConversationRowOf(t *testing.T) {
 	r := conversationRowOf(NewConversation{
 		Name:  "conv-1",
@@ -81,8 +78,7 @@ func TestConversationRowOf(t *testing.T) {
 	}
 }
 
-// args() is the ONE place column order is fixed; the INSERT has nine placeholders over seven binds
-// ($1 and $3 appear twice), so a drifted projection would bind a value to the wrong column.
+// args() alone fixes column order against the INSERT's placeholders.
 func TestConversationRowArgsOrderMatchesTheInsert(t *testing.T) {
 	owner, model, parent, ref := "alice", "model-fast", "conv-parent", "conv-abc123"
 	args := conversationRow{

@@ -1330,8 +1330,7 @@ in
                       [ "system:serviceaccount:${cfg.namespace}:agent-webhooks" ]
                       ++ lib.optional cfg.scheduler.enable "system:serviceaccount:${cfg.namespace}:agent-scheduler"
                     ); }
-                  # Subagent creation goes through the router (#726). The `agent-host` Service IS
-                  # the router's front door, so this is that Service, not the pods behind it.
+                  # Subagent creation goes through the router (PR #726).
                   { name = "CONVERSATION_ROUTER_URL"; value = "http://agent-host.${cfg.namespace}.svc.cluster.local:8080"; }
                   { name = "CONVERSATION_ROUTER_TOKEN_PATH"; value = "/var/run/secrets/conversation-router/token"; }
                   # Durable: the AG-UI event log (history) on the per-pod PVC.
@@ -1664,8 +1663,7 @@ in
               ++ lib.optional cfg.broker.enable
                 { name = "broker-token"; projected.sources = [{ serviceAccountToken = { audience = "agent-broker"; path = "token"; }; }]; }
               ++ [
-                # Audience `agent-host` — the Service the router fronts, so its existing
-                # WEBHOOKS_TOKEN_AUDIENCE verifies this the same way it does webhooks/scheduler.
+                # Audience `agent-host`, the Service the router fronts.
                 { name = "conversation-router-token";
                   projected.sources = [{ serviceAccountToken = { audience = "agent-host"; path = "token"; }; }]; }
               ];

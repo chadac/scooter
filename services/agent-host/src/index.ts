@@ -1151,16 +1151,14 @@ export async function main(
   // conversation's sandbox (see todo/docs/SUBAGENTS.md +
   // todo/docs/SUBAGENT_INTERACTION.md). Extracted to session/subagentManager.ts so
   // the spawn/list/check/cancel/send/monitor/search logic is unit-testable.
-  // The router creates the child conversation, like every other (#726). Unset = the native
-  // single-host stack, which has no router and no row; spawn mints the id locally there.
+  // The router creates the child conversation (PR #726).
   const subagentCreator = process.env.CONVERSATION_ROUTER_URL
     ? createRouterSubagentCreator({
         url: process.env.CONVERSATION_ROUTER_URL,
         tokenPath: process.env.CONVERSATION_ROUTER_TOKEN_PATH,
       })
     : undefined;
-  // The one combination that silently loses subagents: no router to write the row, and a
-  // saveMeta that only updates. Why: PR #726.
+  // No router plus an update-only saveMeta silently loses subagents.
   if (!subagentCreator && process.env.AGENT_HOST_DB_DSN) {
     hostLog.warn("CONVERSATION_ROUTER_URL unset with a Postgres store: a spawned subagent will have no conversations row and will not list");
   }

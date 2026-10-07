@@ -71,9 +71,7 @@ export function createSubagentManager(
 
   return {
     async spawn(parentId, args) {
-      // The ROUTER mints the id and creates the child (CR + row), so the row exists before the
-      // child's first event. Local minting is for a stack with NO router (native single-host) —
-      // never for one that is merely unreachable, which rejects. Why: PR #726.
+      // The ROUTER mints the id, before any event.
       const childThreadId = createChild
         ? (await createChild(parentId, { title: args.title, model: args.model })).id
         : randomUUID();

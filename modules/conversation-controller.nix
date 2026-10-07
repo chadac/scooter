@@ -486,13 +486,7 @@ in
                 ++ lib.optional (cfg.auth.userHeader != "x-auth-user")
                   { name = "AUTH_USER_HEADER"; value = cfg.auth.userHeader; }
                 ++ [
-                  # The SA(s) the router trusts as in-cluster callers: they may set `owner` in the
-                  # POST /conversations BODY, and spawn a subagent of a conversation they do not
-                  # own. None passes through the ingress that injects an identity header, so there
-                  # is none to read. Verified by TokenReview (see the ClusterRole below).
-                  #
-                  # SUPERSET of the agent-host's own /agui list (platform.nix), same env var name:
-                  # the agent-host is a trusted caller OF the router, not of itself. Why: PR #726.
+                  # The SA(s) the router trusts as in-cluster callers (PR #726).
                   { name = "WEBHOOKS_SERVICE_ACCOUNT";
                     value = lib.concatStringsSep "," (
                       [ "system:serviceaccount:${cfg.namespace}:agent-webhooks"

@@ -33,11 +33,7 @@ const meta = (over: Partial<ConversationMeta> = {}): ConversationMeta =>
 /**
  * A tiny in-memory stand-in for the pg Pool covering the statements this store issues,
  * honouring the id primary key and both conflict actions.
- *
- * `created(id)` stands in for the row the conversation's CREATOR wrote — the
- * conversation-router, at create time. saveMeta UPDATES that row and inserts nothing
- * (#726), so a test that does not call this is testing a conversation that was never
- * created, and nothing should appear.
+ * `created(id)` stands in for the row the creator wrote.
  */
 function fakeDb(): {
   db: NodePgDatabase;
@@ -81,8 +77,7 @@ function fakeDb(): {
       }
 
       if (head.startsWith("UPDATE")) {
-        // set id, thread_id, title, created_at, last_activity_at, model, owner, parent_id,
-        // user_titled, starred, pending_queue  WHERE id = <last param>
+        // Every column, then the target id as the last param.
         const [id, threadId, title, createdAt, lastActivityAt, model, owner, parentId, userTitled, starred, pendingQueue, target] =
           values as [string, string, string, number, number, string | null, string | null, string | null, boolean | null, boolean | null, unknown, string];
         if (!rows.has(target)) return { rows: [], rowCount: 0 }; // no row => nothing written
@@ -117,7 +112,7 @@ function fakeDb(): {
       throw new Error(`unexpected sql: ${text}`);
     },
   };
-  /** The create-time row the router writes: identity columns only, no metadata yet. */
+  /** The create-time row: identity columns, no metadata yet. */
   const created = (id: string) => {
     rows.set(id, {
       id,
@@ -155,9 +150,7 @@ describe("conversation metadata in Postgres", () => {
     expect((await store.listConversations()).map((m) => m.id).sort()).toEqual(["conv-1", "conv-2"]);
   });
 
-  // saveMeta is an UPDATE, not an upsert. The host is not a creator of conversations, and a
-  // straggler save at teardown must not resurrect the row of one that was just removed —
-  // a resurrected row re-opens the append fence for events nobody can read. Why: PR #726.
+  // An upsert would resurrect a row removed at teardown.
   it("saveMeta writes NOTHING when the conversation has no row", async () => {
     const { db, rows } = fakeDb();
     const store = createPgMetaStore({ db });

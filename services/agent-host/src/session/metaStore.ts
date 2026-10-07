@@ -116,8 +116,7 @@ export function createPgMetaStore(config: PgMetaStoreConfig): MetaStore {
     return values;
   };
 
-  /** Seed from a file store the first time this table is empty. DO NOTHING so a row already
-   *  present always wins. The only INSERT here: a backfilled conversation has no creator. */
+  /** Seed from files; a backfilled conversation has no creator. */
   const backfill = async (metas: ConversationMeta[]): Promise<void> => {
     for (const meta of metas) {
       await db.insert(conversations).values(rowValues(meta)).onConflictDoNothing({ target: conversations.id });
@@ -126,8 +125,7 @@ export function createPgMetaStore(config: PgMetaStoreConfig): MetaStore {
   };
 
   return {
-    /** UPDATE, not upsert: the creator writes the row, and a straggler save at teardown must
-     *  not resurrect a removed one. Matching no row is normal. Why: PR #726. */
+    /** UPDATE, so a straggler save cannot resurrect a removed row. */
     async saveMeta(meta) {
       try {
         await db.update(conversations).set(rowValues(meta)).where(eq(conversations.id, meta.id));

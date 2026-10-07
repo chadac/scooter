@@ -1,41 +1,36 @@
 /**
- * Creating a SUBAGENT conversation through the conversation-router — the ONE creator of a
- * conversation, so the child's row exists before its first event.
- *
- * Carries no identity: the router derives owner/sandbox/model from the parent row. The SA token
- * (audience `agent-host`) authenticates this service, it does not pass along a user. Why: PR #726.
+ * Subagent creation through the router, the one creator (PR #726).
  */
 
 import { formatError, logger } from "../log.js";
 
 const log = logger("routerSubagents");
 
-/** What the router created: the child's id, plus what it inherited. */
+/** What the router created, plus what the child inherited. */
 export interface CreatedSubagent {
   id: string;
   title?: string;
-  /** The parent's sandbox the child shares. Absent when the parent has none yet. */
+  /** The parent's sandbox the child shares, if it has one. */
   sandboxRef?: string;
 }
 
-/** Resolves with the ROUTER-minted id. REJECTS on failure — a caller must not fall back to
- *  minting its own, which is the second creation path this removes. */
+/** REJECTS rather than let a caller mint its own id. */
 export type SubagentCreator = (
   parentId: string,
   args: { title?: string; model?: string },
 ) => Promise<CreatedSubagent>;
 
 export interface RouterSubagentsConfig {
-  /** The router's base URL (the `agent-host` Service front door). */
+  /** The router's base URL, which is the `agent-host` Service. */
   url: string;
-  /** Projected SA token for the router's TokenReview. Absent => unauthenticated (dev). */
+  /** Projected SA token; absent means unauthenticated, for dev. */
   tokenPath?: string;
-  /** Request timeout; a slow control-plane write must not hold the parent's turn open. */
+  /** A slow write must not hold the parent's turn open. */
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
 }
 
-/** Fresh per call: projected tokens ROTATE, so a value cached at boot later 401s. */
+/** Fresh per call, because projected tokens rotate. */
 async function authHeaders(tokenPath?: string): Promise<Record<string, string>> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (!tokenPath) return headers;
@@ -43,8 +38,7 @@ async function authHeaders(tokenPath?: string): Promise<Record<string, string>> 
     const { readFile } = await import("node:fs/promises");
     headers["Authorization"] = `Bearer ${(await readFile(tokenPath, "utf8")).trim()}`;
   } catch (e) {
-    // ENOENT is the no-token dev case. Any other error must NOT become an unauthenticated
-    // request — the router refuses that as a 404 indistinguishable from a missing parent.
+    // Only ENOENT may become an unauthenticated request.
     if ((e as { code?: string })?.code !== "ENOENT") {
       throw new Error(`failed to read the router token at ${tokenPath}: ${(e as Error)?.message ?? e}`, { cause: e });
     }
@@ -73,8 +67,7 @@ export function createRouterSubagentCreator(config: RouterSubagentsConfig): Suba
     }
     if (res.status !== 201) {
       const detail = (await res.text().catch(() => "")).slice(0, 500);
-      // A 404 is a refused CALLER as often as a missing parent — the router answers both
-      // alike — so log the status: an SA off the trust list looks identical otherwise.
+      // Log the status: a refused caller also answers 404.
       log.warn("subagent create rejected", { parent_id: parentId, status: res.status, detail });
       throw new Error(`conversation-router refused the subagent create (${res.status}): ${detail}`);
     }

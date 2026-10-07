@@ -11,16 +11,14 @@ package main
 // INSERT fires the conversations_changed trigger, so the router's own LISTEN loop pushes the new
 // row to the sidebar without anyone having to publish it.
 //
-// sandbox_ref is NULL for a top-level create (the host patches it in after provisioning) and SET
-// for a subagent: the kube-less stack has no CR to converge the column from. Why: PR #726.
+// sandbox_ref is SET for a subagent, NULL for top-level.
 const insertConversationSQL = `
 	INSERT INTO conversations
 	  (id, thread_id, title, created_at, last_activity_at, model, owner, parent_id, sandbox_ref)
 	VALUES ($1, $1, $2, $3, $3, $4, $5, $6, $7)
 	ON CONFLICT (id) DO NOTHING`
 
-// conversationRow is a create projected onto insertConversationSQL's columns. A struct, not a
-// positional tuple, so args() below is the ONE place column order is fixed.
+// conversationRow is the row projection; args() alone fixes order.
 type conversationRow struct {
 	ID    string
 	Title string
@@ -32,9 +30,7 @@ type conversationRow struct {
 	SandboxRef *string
 }
 
-// conversationRowOf projects a create onto the row's columns. Pure, so the mapping is testable
-// without a database. Title comes from the create, NOT the spec map — the CR has no title field —
-// and is a plain string because the column is NOT NULL (absent becomes "", not NULL).
+// conversationRowOf is that projection, pure and so testable.
 func conversationRowOf(c NewConversation, now int64) conversationRow {
 	return conversationRow{
 		ID:         c.Name,
