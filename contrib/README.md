@@ -237,6 +237,10 @@ Three consequences worth knowing:
 `AWS_*` env, the rollout annotation and the IRSA annotation, which were ~40
 references inside `modules/broker.nix` before #599.
 
+Every contrib with deployment config now has one. `modules/broker.nix` declares
+only the broker's OWN options (`enable`, `image`, `extraEnv`, `shares`, `fga`,
+the seams); no integration's options live there.
+
 Only the BROKER has these seams today. Adding them to another service is a
 `bcfg.extraEnv`-shaped option plus one `++` in that service's module; a contrib's
 platform module is not per-service, so nothing about it changes when they exist.
