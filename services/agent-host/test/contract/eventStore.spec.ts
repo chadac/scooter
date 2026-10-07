@@ -47,8 +47,9 @@ function fakeDb(): {
   assign: (conv: string, a: { hostPod: string | null; hostGeneration?: number }) => void;
 } {
   const rows: Array<Record<string, unknown>> = [];
-  // The conversations row the append fence reads. Absent = no row at all, which is a real
-  // state (the append can beat the INSERT) and must not refuse.
+  // The conversations row the append fence reads. Absent = no row at all, which since #726
+  // means the conversation was DELETED (its creator writes the row before it can be
+  // prompted) — so the fence refuses.
   const assigned = new Map<string, { hostPod: string | null; hostGeneration?: number }>();
   let fail: Error | undefined;
   const client = {
@@ -68,18 +69,19 @@ function fakeDb(): {
         // drizzle SERIALIZES jsonb to a string before binding; Postgres returns
         // it parsed. Model that, or every event->>'type' filter sees a string.
         const parsed = typeof event === "string" ? JSON.parse(event) : event;
-        // The APPEND FENCE rides this statement: `... select $1..$5 where not exists (a row
-        // contradicting the presented claim)`. Evaluated BEFORE the PK, as Postgres does —
-        // a fenced-out append never reaches the constraint.
-        if (/NOT EXISTS/i.test(text)) {
+        // The APPEND FENCE rides this statement: `... select $1..$5 where exists (a row
+        // that does not contradict the presented claim)`. Evaluated BEFORE the PK, as
+        // Postgres does — a fenced-out append never reaches the constraint.
+        if (/WHERE EXISTS/i.test(text)) {
           // The subquery correlates on the conversation id, which is therefore bound a
           // SECOND time ahead of the claim: [...5 row values, id, pod, gen?].
           const [, pod, gen] = values.slice(5) as [string, string, number | undefined];
           const a = assigned.get(conversation_id);
-          const contradicts =
-            a?.hostPod != null &&
-            (a.hostPod !== pod || (gen !== undefined && Number(a.hostGeneration ?? 0) !== Number(gen)));
-          if (contradicts) return { rows: [], rowCount: 0 };
+          const allowed =
+            a !== undefined && // the row must EXIST
+            (a.hostPod == null || // unclaimed: assignment has not landed yet
+              (a.hostPod === pod && (gen === undefined || Number(a.hostGeneration ?? 0) === Number(gen))));
+          if (!allowed) return { rows: [], rowCount: 0 };
         }
         // The PK is a CORRECTNESS backstop, not just an index: a second writer
         // must collide loudly rather than interleave silently. Honour ON
@@ -97,6 +99,12 @@ function fakeDb(): {
         const before = rows.length;
         for (let i = rows.length - 1; i >= 0; i--) if (rows[i].conversation_id === conversation_id) rows.splice(i, 1);
         return { rows: [], rowCount: before - rows.length };
+      }
+      if (head.startsWith("SELECT") && /FROM\s+"?CONVERSATIONS"?/i.test(text)) {
+        // The refusal-cause read: which of the two refusals happened, for the sampled log
+        // line. Absent row => the store reports row-deleted.
+        const a = assigned.get(values[0] as string);
+        return a ? { rows: [[a.hostPod, a.hostGeneration ?? 0]], rowCount: 1 } : { rows: [], rowCount: 0 };
       }
       if (head.startsWith("SELECT")) {
         // drizzle asks for rowMode:"array": positional values in SELECT order.
@@ -269,16 +277,29 @@ describe("eventStore — the append fence", () => {
     expect(rows).toHaveLength(1);
   });
 
-  it("an UNCLAIMED row appends — and so does a conversation with no row yet", async () => {
-    // Both are the first-turn path. The fence blocks a CONTRADICTION; silence is not one.
+  it("an UNCLAIMED row appends — the first turn beats the controller's assignment", async () => {
+    // Assignment is the controller's to make and a brand-new conversation is prompted
+    // before it lands. A row naming nobody is not a contradiction.
     const { db, rows, assign } = fakeDb();
     assign(CONV, { hostPod: null });
+
+    await fencedStore(db, "host-1", 3).appendEvent(CONV, run(1)[0]);
+
+    expect(rows).toHaveLength(1);
+  });
+
+  it("FAILS CLOSED on a missing row: no row means DELETED, not 'not created yet'", async () => {
+    // The row used to be allowed to be absent, because the agent-host's own saveMeta
+    // inserted it and an append could beat that INSERT. Every conversation's row is now
+    // written by its creator before it can be prompted (#726), so the only way to reach an
+    // append with no row is a teardown that raced an in-flight run — and those stragglers
+    // were writing unarbitrated events for a conversation nobody can read again.
+    const { db, rows } = fakeDb(); // nothing assigned: no row at all
     const s = fencedStore(db, "host-1", 3);
 
-    await s.appendEvent(CONV, run(1)[0]);
-    await s.appendEvent("conv-no-row" as SessionId, run(1)[0]); // nothing in conversations
+    await expect(s.appendEvent("conv-deleted" as SessionId, run(1)[0])).resolves.toBeUndefined();
 
-    expect(rows.map((r) => r.conversation_id)).toEqual([CONV, "conv-no-row"]);
+    expect(rows).toEqual([]);
   });
 
   it("no observed generation narrows the fence to pod identity — it does not widen it", async () => {

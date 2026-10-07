@@ -97,7 +97,7 @@ export function createPgMetaStore(config: PgMetaStoreConfig): MetaStore {
         }),
   });
 
-  const upsert = async (meta: ConversationMeta, overwrite: boolean): Promise<void> => {
+  const rowValues = (meta: ConversationMeta) => {
     const values = {
       id: meta.id,
       threadId: meta.threadId,
@@ -113,23 +113,37 @@ export function createPgMetaStore(config: PgMetaStoreConfig): MetaStore {
       // after re-enqueuing, and collapsing that to NULL would re-deliver the messages.
       pendingQueue: meta.pendingQueue === undefined ? null : meta.pendingQueue,
     };
-    const q = db.insert(conversations).values(values);
-    await (overwrite
-      ? q.onConflictDoUpdate({ target: conversations.id, set: values })
-      : q.onConflictDoNothing({ target: conversations.id }));
+    return values;
   };
 
   /** Seed from a file store the first time this table is empty. DO NOTHING so a row
-   *  already present always wins. */
+   *  already present always wins. The one INSERT left in this store: a backfilled
+   *  conversation predates the router and has no creator to have written its row. */
   const backfill = async (metas: ConversationMeta[]): Promise<void> => {
-    for (const meta of metas) await upsert(meta, false);
+    for (const meta of metas) {
+      await db.insert(conversations).values(rowValues(meta)).onConflictDoNothing({ target: conversations.id });
+    }
     log.info("backfilled file conversation metadata into postgres", { conversations: metas.length });
   };
 
   return {
+    /**
+     * UPDATE, not an upsert. The row is written by the conversation's CREATOR — the
+     * conversation-router, for subagents too since #726 — before the conversation can be
+     * prompted, so there is never a row for this to insert. Two consequences, both wanted:
+     *
+     *   - a conversation with no row stays without one, rather than the host silently
+     *     becoming its creator (which is what made the row's existence depend on whichever
+     *     writer ran first, and forced the append fence to tolerate a missing row);
+     *   - a straggler save from an in-flight run cannot RESURRECT the row of a conversation
+     *     that was just torn down. An upsert did, and a resurrected row re-opens the fence
+     *     for events nobody can read.
+     *
+     * A save that matches no row is therefore normal at teardown, not an error.
+     */
     async saveMeta(meta) {
       try {
-        await upsert(meta, true);
+        await db.update(conversations).set(rowValues(meta)).where(eq(conversations.id, meta.id));
       } catch (e) {
         log.error("saveMeta failed (metadata not persisted)", {
           conversation_id: meta.id,
