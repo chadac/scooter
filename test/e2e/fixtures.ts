@@ -129,7 +129,14 @@ export class Chat {
    *  a PRIOR turn's identical reply already satisfies (the fake agent says the same
    *  thing every turn) — so it returns immediately and the next send can race an
    *  unfinished run, dropping a turn. Use `sendTurn` (count-based) for >1 turn. */
-  async waitForReply(re: RegExp = /\S/, timeout = 45_000) {
+  // TARGET-AWARE, like sendTurn/completeTurn/startLongRun: a reply on the full target
+  // waits for a ready sandbox pod first, and under CONVERSATION_POD_CAP=1 a second
+  // conversation in one spec funds a whole extra cold boot. Fast keeps 45s so a
+  // genuine hang there still fails fast. Why: PR #726.
+  async waitForReply(
+    re: RegExp = /\S/,
+    timeout = process.env.E2E_TARGET === "full" ? 120_000 : 45_000,
+  ) {
     await expect(this.page.getByText(re).first()).toBeVisible({ timeout });
   }
 
