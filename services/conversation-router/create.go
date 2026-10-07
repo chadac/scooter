@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"
@@ -63,21 +64,43 @@ func (d *dynamicCreator) Create(ctx context.Context, c NewConversation) error {
 	return err
 }
 
+// Remove deletes the CR, for dualCreator's rollback when the row write fails. An
+// already-gone CR is success: the goal is "no CR left behind", and someone else having
+// deleted it satisfies that.
+func (d *dynamicCreator) Remove(ctx context.Context, name string) error {
+	err := d.dyn.Resource(conversationGVR).Namespace(d.namespace).Delete(ctx, name, metav1.DeleteOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
 // dualCreator writes both stores on create: the Conversation CR and the `conversations` row. It
 // exists so the row can become the source of truth for existence — nothing can read a row that no
 // writer produces, and in the cluster stack nothing produced one at create time.
 //
-// The CR stays AUTHORITATIVE for the request: its error is returned, and a row failure is logged
-// but swallowed. That asymmetry is what keeps this step additive — a swallowed row failure leaves a
-// CR with no row, which is a state the rest of the system already tolerates, rather than failing a
-// create that would otherwise succeed. The asymmetry INVERTS once the router reads existence from
-// the row: a row failure has to fail the create then, because a conversation with no row will not
-// list.
+// BOTH writes are now required. A row failure used to be logged and swallowed, which was the right
+// asymmetry while the agent-host's saveMeta would insert the row later anyway: the create degraded
+// to "absent from the list until the host writes meta". The host no longer inserts (#726) — it only
+// updates columns on a row its creator wrote, and its append fence refuses a conversation whose row
+// is gone. So a swallowed row failure would now hand back a 201 for a conversation that can neither
+// list nor take a turn, which is worse than a failed create the caller can retry.
+//
+// The CR written moments earlier is rolled back when the row fails, so a failed create leaves
+// nothing behind. Best-effort: a rollback that itself fails leaves an orphan CR with no row, which
+// the controller sees as a conversation that never materialised — logged loudly, and still better
+// than the 201 that preceded it.
 // conversationRowWriter is the row half. Narrow for the same reason ConversationCreator is: the
 // interesting behaviour here is which failure is fatal, and that must be testable without a
 // Postgres.
 type conversationRowWriter interface {
 	CreateConversation(ctx context.Context, c NewConversation) error
+}
+
+// crRemover rolls back the CR when the row write fails. Optional — a creator that cannot delete
+// (a test fake, a stack with no CR) simply leaves the CR, which is the pre-#726 outcome.
+type crRemover interface {
+	Remove(ctx context.Context, name string) error
 }
 
 type dualCreator struct {
@@ -90,8 +113,22 @@ func (d *dualCreator) Create(ctx context.Context, c NewConversation) error {
 		return err
 	}
 	if err := d.rows.CreateConversation(ctx, c); err != nil {
-		logger("create").Error("conversation row insert failed; the CR was created, so this degrades to the pre-dual-write behaviour (absent from the list until agent-host writes meta)",
-			errAttr(err), slog.String("conversation_id", c.Name))
+		log := logger("create")
+		remover, ok := d.cr.(crRemover)
+		if ok {
+			// Use a context that is NOT the request's: the row failure may well BE a cancelled
+			// request, and a rollback that inherits the cancellation never runs.
+			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer cancel()
+			if rerr := remover.Remove(rctx, c.Name); rerr != nil {
+				log.Error("conversation row insert failed AND the CR rollback failed; a CR with no row is left behind",
+					errAttr(rerr), slog.String("conversation_id", c.Name), slog.String("row_error", err.Error()))
+				return fmt.Errorf("could not write the conversation row: %w", err)
+			}
+		}
+		log.Error("conversation row insert failed; the create is refused",
+			errAttr(err), slog.String("conversation_id", c.Name), slog.Bool("cr_rolled_back", ok))
+		return fmt.Errorf("could not write the conversation row: %w", err)
 	}
 	return nil
 }
