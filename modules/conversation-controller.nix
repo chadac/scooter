@@ -486,15 +486,20 @@ in
                 ++ lib.optional (cfg.auth.userHeader != "x-auth-user")
                   { name = "AUTH_USER_HEADER"; value = cfg.auth.userHeader; }
                 ++ [
-                  # The SA(s) allowed to set `owner` in the POST /conversations BODY —
-                  # webhooks/scheduler, which create conversations on a human's behalf and
-                  # never pass through the ingress that injects an identity header. Verified
-                  # by TokenReview (see the ClusterRole below), so it is not spoofable. Same
-                  # env var + value as the agent-host's /agui check, so ONE setting
-                  # configures both ends of the same trust chain.
+                  # The SA(s) the router trusts as in-cluster callers: they may set `owner` in
+                  # the POST /conversations BODY, and spawn a subagent of a conversation they do
+                  # not own. All three create conversations on a human's behalf and none passes
+                  # through the ingress that injects an identity header, so there is no header
+                  # for the router to read. Verified by TokenReview (see the ClusterRole below),
+                  # so it is not spoofable.
+                  #
+                  # SUPERSET of the agent-host's own /agui list (platform.nix), which has the
+                  # same env var name: the agent-host is a trusted caller OF the router (it asks
+                  # it to create subagents, #726) but is not a caller of itself.
                   { name = "WEBHOOKS_SERVICE_ACCOUNT";
                     value = lib.concatStringsSep "," (
-                      [ "system:serviceaccount:${cfg.namespace}:agent-webhooks" ]
+                      [ "system:serviceaccount:${cfg.namespace}:agent-webhooks"
+                        "system:serviceaccount:${cfg.namespace}:agent-host" ]
                       ++ lib.optional cfg.scheduler.enable "system:serviceaccount:${cfg.namespace}:agent-scheduler"
                     ); }
                   # Audience the callers' projected tokens are minted for. They mount an

@@ -1330,6 +1330,16 @@ in
                       [ "system:serviceaccount:${cfg.namespace}:agent-webhooks" ]
                       ++ lib.optional cfg.scheduler.enable "system:serviceaccount:${cfg.namespace}:agent-scheduler"
                     ); }
+                  # The router is the ONE creator of a conversation, subagents included: spawning
+                  # a child POSTs /conversations/<parent>/subagents and the router mints the id +
+                  # writes the CR and the row together (#726). The `agent-host` Service IS the
+                  # router's front door, so this is that Service — not the pods behind it. Unset
+                  # (native single-host) = the host mints the child id itself.
+                  { name = "CONVERSATION_ROUTER_URL"; value = "http://agent-host.${cfg.namespace}.svc.cluster.local:8080"; }
+                  # The agent-host's own SA token, audience `agent-host` — the Service it is
+                  # calling, so the router's TokenReview verifies it with the same audience the
+                  # webhooks/scheduler callers use.
+                  { name = "CONVERSATION_ROUTER_TOKEN_PATH"; value = "/var/run/secrets/conversation-router/token"; }
                   # Durable: the AG-UI event log (history) on the per-pod PVC.
                   # EPHEMERAL cache (emptyDir), not the durable record — see
                   # docs/CONVERSATION_STATE_MODEL.md.
@@ -1624,7 +1634,12 @@ in
                   # The agent-host's own broker token — it relays AWS approve/deny and
                   # queries shares/links on a conversation's behalf. NOT provisioning:
                   # the agent-host writes the Sandbox CR itself.
-                  { name = "broker-token"; mountPath = "/var/run/secrets/broker"; readOnly = true; };
+                  { name = "broker-token"; mountPath = "/var/run/secrets/broker"; readOnly = true; }
+                ++ [
+                  # The token the agent-host presents when it asks the router to create a
+                  # subagent conversation (#726).
+                  { name = "conversation-router-token"; mountPath = "/var/run/secrets/conversation-router"; readOnly = true; }
+                ];
                 readinessProbe.httpGet = { path = "/healthz"; port = "agui"; };
                 # Graceful drain on rollout. preStop sleeps briefly so the Service
                 # stops routing NEW traffic to this pod (endpoint removal propagates)
@@ -1655,7 +1670,14 @@ in
               ++ lib.optional (cfg.observability.otel.enable && cfg.observability.otel.pricing != { })
                 { name = "pricing"; configMap.name = "agent-pricing"; }
               ++ lib.optional cfg.broker.enable
-                { name = "broker-token"; projected.sources = [{ serviceAccountToken = { audience = "agent-broker"; path = "token"; }; }]; };
+                { name = "broker-token"; projected.sources = [{ serviceAccountToken = { audience = "agent-broker"; path = "token"; }; }]; }
+              ++ [
+                # Audience `agent-host`: the Service the router fronts, which is what the router
+                # TokenReviews against (WEBHOOKS_TOKEN_AUDIENCE). Same audience the
+                # webhooks/scheduler callers mount, so one setting verifies every trusted caller.
+                { name = "conversation-router-token";
+                  projected.sources = [{ serviceAccountToken = { audience = "agent-host"; path = "token"; }; }]; }
+              ];
             };
           };
         };
