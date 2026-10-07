@@ -166,45 +166,53 @@ export function createK8sConversationRegistry(
       if (spec.sandboxRef) cleanSpec.sandboxRef = spec.sandboxRef;
       if (spec.creatorPod) cleanSpec.creatorPod = spec.creatorPod;
 
-      await throttled("register", id, () =>
-        custom.createNamespacedCustomObject({
-          group: GROUP,
-          version: VERSION,
-          namespace,
-          plural: PLURAL,
-          body: {
-            apiVersion: `${GROUP}/${VERSION}`,
-            kind: "Conversation",
-            metadata: { name: id, namespace },
-            spec: cleanSpec,
-          },
-        }),
+      // PATCH FIRST, create only as the fallback. The CR already exists for every
+      // conversation a creator made — the router writes it for top-level (#654) and for
+      // subagents (#726) — so creating first meant a guaranteed 409 before the patch that
+      // was always going to be the real write. That is one wasted apiserver write per
+      // conversation start and per subagent spawn, on a client that retries 429s.
+      //
+      // MERGE patch, not replace, so this only adds the fields the host owns — above all
+      // sandboxRef, which the router derives its routing short-id from and which a
+      // provisioning-free creator cannot know. owner/model/parentId stay as the creator set
+      // them.
+      await throttled("register.patchSpec", id, () =>
+        custom.patchNamespacedCustomObject(
+          { group: GROUP, version: VERSION, namespace, plural: PLURAL, name: id, body: { spec: cleanSpec } },
+          setHeaderOptions("Content-Type", PatchStrategy.MergePatch),
+        ),
       )
         .catch(async (e: { code?: number }) => {
-          // 409 AlreadyExists = the CR is already there. That is now the COMMON case, not a
-          // rare race: the router creates the CR (POST /conversations) with no sandboxRef,
-          // because it does not provision. Swallowing the 409 meant the fields the host owns
-          // — above all sandboxRef, which the router derives its routing short-id from —
-          // could never be written, so a router-created conversation stayed unroutable.
-          // Merge-patch the spec instead. Merge (not replace) so we only add our own fields
-          // and leave owner/model/parentId as the creator set them.
-          if (e?.code === 409) {
-            await throttled("register.patchSpec", id, () =>
-              custom.patchNamespacedCustomObject(
-                { group: GROUP, version: VERSION, namespace, plural: PLURAL, name: id, body: { spec: cleanSpec } },
-                setHeaderOptions("Content-Type", PatchStrategy.MergePatch),
-              ),
-            )
-              .catch((pe: { code?: number }) => {
-                if (pe?.code === 404) return; // deleted between create and patch
-                log.errorWith("failed to patch Conversation CR", pe, { conversation_id: id });
-              });
+          if (e?.code !== 404) {
+            // Any other error must not fail the conversation: log it and continue. The guard
+            // fails open for an unregistered conversation, so the only cost is that it pins to
+            // the default pod until a later register() (or the controller) converges it.
+            log.errorWith("failed to patch Conversation CR", e, { conversation_id: id });
             return;
           }
-          // Any OTHER error must not fail the conversation: log it and continue. The guard
-          // fails open for an unregistered conversation, so the only cost is that it pins
-          // to the default pod until a later register() (or the controller) creates the CR.
-          log.errorWith("failed to create Conversation CR", e, { conversation_id: id });
+          // 404 = no CR to patch. The paths that reach here have no creator ahead of them:
+          // the native/kube-less stack, and adoption of a conversation that predates the
+          // router. Create it.
+          await throttled("register", id, () =>
+            custom.createNamespacedCustomObject({
+              group: GROUP,
+              version: VERSION,
+              namespace,
+              plural: PLURAL,
+              body: {
+                apiVersion: `${GROUP}/${VERSION}`,
+                kind: "Conversation",
+                metadata: { name: id, namespace },
+                spec: cleanSpec,
+              },
+            }),
+          ).catch((ce: { code?: number }) => {
+            // 409 = a creator wrote it between our patch's 404 and this create. The spec we
+            // would have set is the creator's own plus our fields, and the next register()
+            // (revive, or the sandboxRef re-register after provisioning) patches those in.
+            if (ce?.code === 409) return;
+            log.errorWith("failed to create Conversation CR", ce, { conversation_id: id });
+          });
         });
     },
 
