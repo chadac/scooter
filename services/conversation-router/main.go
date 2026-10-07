@@ -198,6 +198,11 @@ func main() {
 // the correct IP shortly, and meanwhile any ready pod can serve via the mirror-hydrated state).
 func newRouter(shutdownCtx context.Context, cfg config, cache *OwnershipCache, creator ConversationCreator, trusted TrustedCaller, store *Store, writeStore *WriteStore, links *LinkStore, hub *sseHub) http.Handler {
 	fallback := cfg.fallback
+	// A typed-nil *Store in an interface is NOT nil.
+	var parents parentLookup
+	if store != nil {
+		parents = store
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The conversation LIST and its live events stream are served HERE from Postgres, not
 		// proxied. An agent-host only knows the conversations it currently hosts (with podCap=1 the
@@ -211,6 +216,11 @@ func newRouter(shutdownCtx context.Context, cfg config, cache *OwnershipCache, c
 		// CR consults no agent-host. See create.go.
 		if IsConversationCreate(r.Method, r.URL.Path) {
 			serveConversationCreate(w, r, creator, ownerFrom(r), trusted)
+			return
+		}
+		// SUBAGENT create is served here too; see subagent.go.
+		if parentID, ok := SubagentCreate(r.Method, r.URL.Path); ok {
+			serveSubagentCreate(w, r, creator, parents, parentID, ownerFrom(r), trusted)
 			return
 		}
 		if IsConversationListRoute(r.Method, r.URL.Path) {

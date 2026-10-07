@@ -486,15 +486,11 @@ in
                 ++ lib.optional (cfg.auth.userHeader != "x-auth-user")
                   { name = "AUTH_USER_HEADER"; value = cfg.auth.userHeader; }
                 ++ [
-                  # The SA(s) allowed to set `owner` in the POST /conversations BODY —
-                  # webhooks/scheduler, which create conversations on a human's behalf and
-                  # never pass through the ingress that injects an identity header. Verified
-                  # by TokenReview (see the ClusterRole below), so it is not spoofable. Same
-                  # env var + value as the agent-host's /agui check, so ONE setting
-                  # configures both ends of the same trust chain.
+                  # The SA(s) the router trusts as in-cluster callers (PR #726).
                   { name = "WEBHOOKS_SERVICE_ACCOUNT";
                     value = lib.concatStringsSep "," (
-                      [ "system:serviceaccount:${cfg.namespace}:agent-webhooks" ]
+                      [ "system:serviceaccount:${cfg.namespace}:agent-webhooks"
+                        "system:serviceaccount:${cfg.namespace}:agent-host" ]
                       ++ lib.optional cfg.scheduler.enable "system:serviceaccount:${cfg.namespace}:agent-scheduler"
                     ); }
                   # Audience the callers' projected tokens are minted for. They mount an

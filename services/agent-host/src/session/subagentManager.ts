@@ -12,6 +12,7 @@ import type { AguiEvent } from "../bridge.js";
 import type { SubagentManager, SubagentStatus } from "../agent/subagentTools.js";
 import { foldTurnsWithTools } from "../agent/subagentTranscript.js";
 import { PRIORITY_INTERRUPT } from "../bridge.js";
+import type { SubagentCreator } from "./routerSubagents.js";
 
 /** The (minimal) child conversation shape the manager reasons about — a subset of
  *  SessionManager's Conversation. A running child has a bridge with a live run. */
@@ -57,7 +58,11 @@ async function collect(it: AsyncIterable<AguiEvent>): Promise<AguiEvent[]> {
   return out;
 }
 
-export function createSubagentManager(sessions: SubagentSessions, store: SubagentStore): SubagentManager {
+export function createSubagentManager(
+  sessions: SubagentSessions,
+  store: SubagentStore,
+  createChild?: SubagentCreator,
+): SubagentManager {
   /** Resolve a child that belongs to `parentId` (scoping), else undefined. */
   const ownChild = (parentId: string, subagentId: string): SubagentConversation | undefined => {
     const c = sessions.get(subagentId as SessionId);
@@ -66,7 +71,10 @@ export function createSubagentManager(sessions: SubagentSessions, store: Subagen
 
   return {
     async spawn(parentId, args) {
-      const childThreadId = randomUUID();
+      // The ROUTER mints the id, before any event.
+      const childThreadId = createChild
+        ? (await createChild(parentId, { title: args.title, model: args.model })).id
+        : randomUUID();
       const child = await sessions.spawnChild(parentId as SessionId, childThreadId, args);
       return { id: child.id, title: child.title };
     },

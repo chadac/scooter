@@ -85,7 +85,6 @@ func (d *devCreator) Close() {
 // Create inserts a fresh conversations row — the ONLY write this stack makes on create, since there
 // is no CR here. The row shape itself lives in conversationrow.go, shared with the cluster path.
 func (d *devCreator) Create(ctx context.Context, c NewConversation) error {
-	id, now, title, model, owner, parent := conversationRowArgs(c, time.Now().UnixMilli())
-	_, err := d.pool.Exec(ctx, insertConversationSQL, id, title, now, model, owner, parent)
+	_, err := d.pool.Exec(ctx, insertConversationSQL, conversationRowOf(c, time.Now().UnixMilli()).args()...)
 	return err
 }

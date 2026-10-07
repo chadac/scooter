@@ -10,19 +10,42 @@ package main
 // single id that is both). ON CONFLICT DO NOTHING keeps a retry or a double-create idempotent. The
 // INSERT fires the conversations_changed trigger, so the router's own LISTEN loop pushes the new
 // row to the sidebar without anyone having to publish it.
+//
+// sandbox_ref is SET for a subagent, NULL for top-level.
 const insertConversationSQL = `
 	INSERT INTO conversations
-	  (id, thread_id, title, created_at, last_activity_at, model, owner, parent_id)
-	VALUES ($1, $1, $2, $3, $3, $4, $5, $6)
+	  (id, thread_id, title, created_at, last_activity_at, model, owner, parent_id, sandbox_ref)
+	VALUES ($1, $1, $2, $3, $3, $4, $5, $6, $7)
 	ON CONFLICT (id) DO NOTHING`
 
-// conversationRowArgs projects a create into the row's columns, in insertConversationSQL's order.
-// Pure, so the mapping (which create field becomes which column) is unit-testable without a
-// database. title comes from the create itself, NOT from the spec map — the spec is the CR's, and
-// the CR has no title field. It is a plain string because the column is NOT NULL (absent becomes
-// "", not NULL); the nullable columns go through specString.
-func conversationRowArgs(c NewConversation, now int64) (rowID string, createdAt int64, title string, model, owner, parent *string) {
-	return c.Name, now, c.Title, specString(c.Spec, "model"), specString(c.Spec, "owner"), specString(c.Spec, "parentId")
+// conversationRow is the row projection; args() alone fixes order.
+type conversationRow struct {
+	ID    string
+	Title string
+	// Fills created_at AND last_activity_at ($3 twice).
+	Now        int64
+	Model      *string
+	Owner      *string
+	ParentID   *string
+	SandboxRef *string
+}
+
+// conversationRowOf is that projection, pure and so testable.
+func conversationRowOf(c NewConversation, now int64) conversationRow {
+	return conversationRow{
+		ID:         c.Name,
+		Title:      c.Title,
+		Now:        now,
+		Model:      specString(c.Spec, "model"),
+		Owner:      specString(c.Spec, "owner"),
+		ParentID:   specString(c.Spec, "parentId"),
+		SandboxRef: specString(c.Spec, "sandboxRef"),
+	}
+}
+
+// args binds the row to insertConversationSQL's placeholders, in order.
+func (r conversationRow) args() []any {
+	return []any{r.ID, r.Title, r.Now, r.Model, r.Owner, r.ParentID, r.SandboxRef}
 }
 
 // specString reads a string spec value, treating "" and a non-string as absent (a NULL column).

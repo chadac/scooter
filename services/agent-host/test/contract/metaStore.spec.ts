@@ -33,8 +33,13 @@ const meta = (over: Partial<ConversationMeta> = {}): ConversationMeta =>
 /**
  * A tiny in-memory stand-in for the pg Pool covering the statements this store issues,
  * honouring the id primary key and both conflict actions.
+ * `created(id)` stands in for the row the creator wrote.
  */
-function fakeDb(): { db: NodePgDatabase; rows: Map<string, Record<string, unknown>> } {
+function fakeDb(): {
+  db: NodePgDatabase;
+  rows: Map<string, Record<string, unknown>>;
+  created: (id: string) => void;
+} {
   const rows = new Map<string, Record<string, unknown>>();
 
   // Column order must match lib/sql/agent_host/schema.sql: drizzle's bare .select()
@@ -71,6 +76,27 @@ function fakeDb(): { db: NodePgDatabase; rows: Map<string, Record<string, unknow
         return { rows: [], rowCount: 1 };
       }
 
+      if (head.startsWith("UPDATE")) {
+        // Every column, then the target id as the last param.
+        const [id, threadId, title, createdAt, lastActivityAt, model, owner, parentId, userTitled, starred, pendingQueue, target] =
+          values as [string, string, string, number, number, string | null, string | null, string | null, boolean | null, boolean | null, unknown, string];
+        if (!rows.has(target)) return { rows: [], rowCount: 0 }; // no row => nothing written
+        rows.set(target, {
+          id,
+          thread_id: threadId,
+          title,
+          created_at: String(createdAt),
+          last_activity_at: String(lastActivityAt),
+          model,
+          owner,
+          parent_id: parentId,
+          user_titled: userTitled,
+          starred,
+          pending_queue: pendingQueue,
+        });
+        return { rows: [], rowCount: 1 };
+      }
+
       if (head.startsWith("SELECT")) {
         const out = [...rows.values()]
           .sort((a, b) => Number(b.last_activity_at) - Number(a.last_activity_at))
@@ -86,7 +112,24 @@ function fakeDb(): { db: NodePgDatabase; rows: Map<string, Record<string, unknow
       throw new Error(`unexpected sql: ${text}`);
     },
   };
-  return { db: drizzle(client as never), rows };
+  /** The create-time row: identity columns, no metadata yet. */
+  const created = (id: string) => {
+    rows.set(id, {
+      id,
+      thread_id: id,
+      title: "",
+      created_at: "0",
+      last_activity_at: "0",
+      model: null,
+      owner: null,
+      parent_id: null,
+      user_titled: null,
+      starred: null,
+      pending_queue: null,
+    });
+  };
+
+  return { db: drizzle(client as never), rows, created };
 }
 
 /** A file-backed store standing in for one a deployment still carries on disk. */
@@ -96,7 +139,10 @@ const legacyWith = (metas: ConversationMeta[]) => ({
 
 describe("conversation metadata in Postgres", () => {
   it("THE ROLLOUT SHAPE: conversations list when the file store is wiped", async () => {
-    const store = createPgMetaStore({ db: fakeDb().db, legacy: legacyWith([]) });
+    const { db, created } = fakeDb();
+    const store = createPgMetaStore({ db, legacy: legacyWith([]) });
+    created("conv-1");
+    created("conv-2");
 
     await store.saveMeta(meta({ id: "conv-1" as SessionId }));
     await store.saveMeta(meta({ id: "conv-2" as SessionId }));
@@ -104,8 +150,33 @@ describe("conversation metadata in Postgres", () => {
     expect((await store.listConversations()).map((m) => m.id).sort()).toEqual(["conv-1", "conv-2"]);
   });
 
+  // An upsert would resurrect a row removed at teardown.
+  it("saveMeta writes NOTHING when the conversation has no row", async () => {
+    const { db, rows } = fakeDb();
+    const store = createPgMetaStore({ db });
+
+    await store.saveMeta(meta({ id: "never-created" as SessionId }));
+
+    expect(rows.size).toBe(0);
+    expect(await store.listConversations()).toEqual([]);
+  });
+
+  it("saveMeta does not RESURRECT a removed conversation", async () => {
+    const { db, created, rows } = fakeDb();
+    const store = createPgMetaStore({ db });
+    created("conv-1");
+    await store.saveMeta(meta());
+    await store.removeConversation("conv-1" as SessionId);
+
+    await store.saveMeta(meta({ title: "a straggler from an in-flight run" }));
+
+    expect(rows.size).toBe(0);
+  });
+
   it("round-trips every field", async () => {
-    const store = createPgMetaStore({ db: fakeDb().db });
+    const { db, created } = fakeDb();
+    const store = createPgMetaStore({ db });
+    created("conv-1");
     const full = meta({
       model: "claude-opus-4",
       owner: "user@example.com",
@@ -120,7 +191,9 @@ describe("conversation metadata in Postgres", () => {
   });
 
   it("PRESERVES pendingQueue — a user's undelivered message is not lost", async () => {
-    const store = createPgMetaStore({ db: fakeDb().db });
+    const { db, created } = fakeDb();
+    const store = createPgMetaStore({ db });
+    created("conv-1");
     await store.saveMeta(
       meta({ pendingQueue: [{ text: "first", priority: 0 }, { text: "second", priority: 1 }] }),
     );
@@ -134,8 +207,9 @@ describe("conversation metadata in Postgres", () => {
   it("persists a CLEARED queue as empty, not absent", async () => {
     // revive() clears the queue after re-enqueuing. Collapsing [] to NULL would make the
     // next hydrate re-deliver messages the user already received.
-    const { db, rows } = fakeDb();
+    const { db, created } = fakeDb();
     const store = createPgMetaStore({ db });
+    created("conv-1");
     await store.saveMeta(meta({ pendingQueue: [{ text: "queued", priority: 0 }] }));
     await store.saveMeta(meta({ pendingQueue: [] }));
 
@@ -143,8 +217,9 @@ describe("conversation metadata in Postgres", () => {
   });
 
   it("parses a pendingQueue delivered as raw jsonb text", async () => {
-    const { db, rows } = fakeDb();
+    const { db, rows, created } = fakeDb();
     const store = createPgMetaStore({ db });
+    created("conv-1");
     await store.saveMeta(meta({ pendingQueue: [{ text: "q", priority: 0 }] }));
     rows.get("conv-1")!.pending_queue = JSON.stringify([{ text: "q", priority: 0 }]);
 
@@ -152,7 +227,9 @@ describe("conversation metadata in Postgres", () => {
   });
 
   it("PRESERVES parentId — the subagent hierarchy survives", async () => {
-    const store = createPgMetaStore({ db: fakeDb().db });
+    const { db, created } = fakeDb();
+    const store = createPgMetaStore({ db });
+    created("sub-1");
     await store.saveMeta(meta({ id: "sub-1" as SessionId, parentId: "conv-root" as SessionId }));
 
     expect((await store.listConversations())[0].parentId).toBe("conv-root");
@@ -160,7 +237,9 @@ describe("conversation metadata in Postgres", () => {
 
   it("coerces bigint timestamps back to numbers", async () => {
     // The idle sweep and the sidebar sort do arithmetic on these.
-    const store = createPgMetaStore({ db: fakeDb().db });
+    const { db, created } = fakeDb();
+    const store = createPgMetaStore({ db });
+    created("conv-1");
     await store.saveMeta(meta({ createdAt: 1_700_000_000_000, lastActivityAt: 1_700_000_009_999 }));
 
     const [got] = await store.listConversations();
@@ -169,7 +248,9 @@ describe("conversation metadata in Postgres", () => {
   });
 
   it("omits absent optionals rather than materializing them as null", async () => {
-    const store = createPgMetaStore({ db: fakeDb().db });
+    const { db, created } = fakeDb();
+    const store = createPgMetaStore({ db });
+    created("conv-1");
     await store.saveMeta(meta());
 
     const [got] = await store.listConversations();
@@ -179,7 +260,9 @@ describe("conversation metadata in Postgres", () => {
   });
 
   it("saveMeta UPDATES an existing conversation in place", async () => {
-    const store = createPgMetaStore({ db: fakeDb().db });
+    const { db, created } = fakeDb();
+    const store = createPgMetaStore({ db });
+    created("conv-1");
     await store.saveMeta(meta({ title: "New chat" }));
     await store.saveMeta(meta({ title: "Renamed", userTitled: true }));
 
@@ -190,7 +273,10 @@ describe("conversation metadata in Postgres", () => {
   });
 
   it("orders the list by recency", async () => {
-    const store = createPgMetaStore({ db: fakeDb().db });
+    const { db, created } = fakeDb();
+    const store = createPgMetaStore({ db });
+    created("older");
+    created("newer");
     await store.saveMeta(meta({ id: "older" as SessionId, lastActivityAt: 1_000 }));
     await store.saveMeta(meta({ id: "newer" as SessionId, lastActivityAt: 9_000 }));
 
@@ -198,7 +284,9 @@ describe("conversation metadata in Postgres", () => {
   });
 
   it("removeConversation keeps it from coming back", async () => {
-    const store = createPgMetaStore({ db: fakeDb().db });
+    const { db, created } = fakeDb();
+    const store = createPgMetaStore({ db });
+    created("conv-1");
     await store.saveMeta(meta());
     await store.removeConversation("conv-1" as SessionId);
 
@@ -245,7 +333,9 @@ describe("seeding from file-backed metadata", () => {
 
   it("does not seed once the database has any conversation", async () => {
     const legacy = legacyWith([meta({ id: "on-disk" as SessionId })]);
-    const store = createPgMetaStore({ db: fakeDb().db, legacy });
+    const { db, created } = fakeDb();
+    const store = createPgMetaStore({ db, legacy });
+    created("live");
 
     await store.saveMeta(meta({ id: "live" as SessionId }));
     expect((await store.listConversations()).map((m) => m.id)).toEqual(["live"]);

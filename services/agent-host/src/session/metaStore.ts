@@ -97,7 +97,7 @@ export function createPgMetaStore(config: PgMetaStoreConfig): MetaStore {
         }),
   });
 
-  const upsert = async (meta: ConversationMeta, overwrite: boolean): Promise<void> => {
+  const rowValues = (meta: ConversationMeta) => {
     const values = {
       id: meta.id,
       threadId: meta.threadId,
@@ -113,23 +113,22 @@ export function createPgMetaStore(config: PgMetaStoreConfig): MetaStore {
       // after re-enqueuing, and collapsing that to NULL would re-deliver the messages.
       pendingQueue: meta.pendingQueue === undefined ? null : meta.pendingQueue,
     };
-    const q = db.insert(conversations).values(values);
-    await (overwrite
-      ? q.onConflictDoUpdate({ target: conversations.id, set: values })
-      : q.onConflictDoNothing({ target: conversations.id }));
+    return values;
   };
 
-  /** Seed from a file store the first time this table is empty. DO NOTHING so a row
-   *  already present always wins. */
+  /** Seed from files; a backfilled conversation has no creator. */
   const backfill = async (metas: ConversationMeta[]): Promise<void> => {
-    for (const meta of metas) await upsert(meta, false);
+    for (const meta of metas) {
+      await db.insert(conversations).values(rowValues(meta)).onConflictDoNothing({ target: conversations.id });
+    }
     log.info("backfilled file conversation metadata into postgres", { conversations: metas.length });
   };
 
   return {
+    /** UPDATE, so a straggler save cannot resurrect a removed row. */
     async saveMeta(meta) {
       try {
-        await upsert(meta, true);
+        await db.update(conversations).set(rowValues(meta)).where(eq(conversations.id, meta.id));
       } catch (e) {
         log.error("saveMeta failed (metadata not persisted)", {
           conversation_id: meta.id,

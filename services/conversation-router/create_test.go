@@ -347,17 +347,62 @@ func TestDualCreatorPropagatesCRFailureAndSkipsTheRow(t *testing.T) {
 	}
 }
 
-// A row failure must NOT fail the create. Swallowing it leaves a CR with no row, a state the rest
-// of the system tolerates, so the worst case is a missing row rather than a create that fails where
-// it would otherwise succeed. This expectation inverts once the row is the source of truth for
-// existence: a conversation with no row will not list, so the create has to fail.
-func TestDualCreatorSwallowsRowFailure(t *testing.T) {
-	cr := &fakeCreator{}
+// removableCreator can roll its CR back; fakeCreator deliberately cannot.
+type removableCreator struct {
+	fakeCreator
+	removed   []string
+	removeErr error
+}
+
+func (r *removableCreator) Remove(_ context.Context, name string) error {
+	if r.removeErr != nil {
+		return r.removeErr
+	}
+	r.removed = append(r.removed, name)
+	return nil
+}
+
+// A row failure now fails the create (PR #726).
+func TestDualCreatorFailsTheCreateOnARowFailureAndRollsBackTheCR(t *testing.T) {
+	cr := &removableCreator{}
 	d := &dualCreator{cr: cr, rows: &fakeRowWriter{err: errors.New("pg down")}}
-	if err := d.Create(context.Background(), NewConversation{Name: "conv-1"}); err != nil {
-		t.Fatalf("a row failure must not fail the create, got %v", err)
+
+	err := d.Create(context.Background(), NewConversation{Name: "conv-1"})
+	if err == nil {
+		t.Fatal("a row failure must fail the create")
+	}
+	if !strings.Contains(err.Error(), "pg down") {
+		t.Errorf("the cause should survive: %v", err)
 	}
 	if len(cr.calls) != 1 {
-		t.Errorf("the CR write should still have happened: %+v", cr.calls)
+		t.Errorf("the CR write should have happened before the row: %+v", cr.calls)
+	}
+	if len(cr.removed) != 1 || cr.removed[0] != "conv-1" {
+		t.Errorf("the CR must be rolled back, got %+v", cr.removed)
+	}
+}
+
+// The rollback is best-effort, so the create still fails.
+func TestDualCreatorStillFailsWhenTheRollbackCannotHappen(t *testing.T) {
+	cannotRemove := &dualCreator{cr: &fakeCreator{}, rows: &fakeRowWriter{err: errors.New("pg down")}}
+	if err := cannotRemove.Create(context.Background(), NewConversation{Name: "conv-1"}); err == nil {
+		t.Error("a creator with no rollback must still fail the create")
+	}
+
+	removeFails := &dualCreator{
+		cr:   &removableCreator{removeErr: errors.New("apiserver down")},
+		rows: &fakeRowWriter{err: errors.New("pg down")},
+	}
+	if err := removeFails.Create(context.Background(), NewConversation{Name: "conv-1"}); err == nil {
+		t.Error("a failed rollback must still fail the create")
+	}
+}
+
+// The route surfaces the row failure rather than reporting success.
+func TestCreateSurfacesARowFailure(t *testing.T) {
+	d := &dualCreator{cr: &removableCreator{}, rows: &fakeRowWriter{err: errors.New("pg down")}}
+	w := postCreate(t, d, `{}`, nil)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("want 502, got %d (%s)", w.Code, w.Body.String())
 	}
 }

@@ -245,8 +245,7 @@ func (s *WriteStore) SetUserTitle(ctx context.Context, id, title string) (*Conve
 // visible to GET /conversations, which reads rows: without it the row appears only when agent-host
 // first persists meta.
 func (s *WriteStore) CreateConversation(ctx context.Context, c NewConversation) error {
-	id, now, title, model, owner, parent := conversationRowArgs(c, time.Now().UnixMilli())
-	_, err := s.pool.Exec(ctx, insertConversationSQL, id, title, now, model, owner, parent)
+	_, err := s.pool.Exec(ctx, insertConversationSQL, conversationRowOf(c, time.Now().UnixMilli()).args()...)
 	return err
 }
 

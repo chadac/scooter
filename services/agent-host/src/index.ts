@@ -72,6 +72,7 @@ import {
   type SubagentStatus,
 } from "./agent/subagentTools.js";
 import { createSubagentManager } from "./session/subagentManager.js";
+import { createRouterSubagentCreator } from "./session/routerSubagents.js";
 import { lastRunCompleted } from "./session/danglingRun.js";
 import { randomUUID } from "node:crypto";
 import { createHttpSchedulerClient } from "./agent/schedulerClient.js";
@@ -1150,7 +1151,18 @@ export async function main(
   // conversation's sandbox (see todo/docs/SUBAGENTS.md +
   // todo/docs/SUBAGENT_INTERACTION.md). Extracted to session/subagentManager.ts so
   // the spawn/list/check/cancel/send/monitor/search logic is unit-testable.
-  const subagentManager: SubagentManager = createSubagentManager(sessions, store);
+  // The router creates the child conversation (PR #726).
+  const subagentCreator = process.env.CONVERSATION_ROUTER_URL
+    ? createRouterSubagentCreator({
+        url: process.env.CONVERSATION_ROUTER_URL,
+        tokenPath: process.env.CONVERSATION_ROUTER_TOKEN_PATH,
+      })
+    : undefined;
+  // No router plus an update-only saveMeta silently loses subagents.
+  if (!subagentCreator && process.env.AGENT_HOST_DB_DSN) {
+    hostLog.warn("CONVERSATION_ROUTER_URL unset with a Postgres store: a spawned subagent will have no conversations row and will not list");
+  }
+  const subagentManager: SubagentManager = createSubagentManager(sessions, store, subagentCreator);
 
   // marimo notebook tools: target THIS conversation's in-pod marimo at podIP:2718.
   // Real sandboxes only (a fake/local sandbox has no pod IP). The pod IP is resolved

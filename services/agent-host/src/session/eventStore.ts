@@ -43,13 +43,7 @@ export interface PgEventStoreConfig {
  * the seven appendEvent call sites, while a fence on the statement cannot be forgotten by
  * a new one.
  *
- * It fences on CONTRADICTION only: an append is refused when the row names a different
- * host, or this pod at a different epoch. A row that names nobody — or no row at all —
- * does not refuse, because existence is not this fence's job and a brand-new conversation
- * appends before anything has assigned it. Refusing an absent claim outright ("no
- * generation => no writes") requires reading the claim from the ROW; while it comes from
- * the CR watch, an unobserved-but-assigned conversation is indistinguishable from an
- * unassigned one, and failing closed there would drop first turns.
+ * The row must exist and must not contradict us.
  */
 export interface AppendFence {
   /** This pod's name — the identity the row must not contradict. */
@@ -166,22 +160,36 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
   // once per token, and one line each would bury the reassignment that caused it.
   const refusals = new Map<SessionId, number>();
 
-  /** The fence predicate, or nothing when unfenced. See AppendFence for the semantics;
-   *  `not exists (... contradiction ...)` is what makes a missing or unclaimed row allow. */
+  /** The fence predicate; see AppendFence for the semantics. */
   const fenceClause = (id: SessionId, gen: number | undefined) => {
     const fence = config.fence;
     if (!fence) return sql.empty();
-    const wrongEpoch = gen === undefined ? sql.empty() : sql` or ${conversations.hostGeneration} <> ${gen}`;
+    const rightEpoch = gen === undefined ? sql.empty() : sql` and ${conversations.hostGeneration} = ${gen}`;
     return sql`
-              where not exists (
+              where exists (
                 select 1 from ${conversations}
                  where ${conversations.id} = ${id}
-                   and ${conversations.hostPod} is not null
-                   and (${conversations.hostPod} <> ${fence.pod}${wrongEpoch})
+                   and (${conversations.hostPod} is null
+                        or (${conversations.hostPod} = ${fence.pod}${rightEpoch}))
               )`;
   };
 
-  const onFenced = (id: SessionId, presented: number | undefined) => {
+  /** Which refusal it was, since the statement cannot say. */
+  const refusalCause = async (id: SessionId) => {
+    try {
+      const rows = await db
+        .select({ hostPod: conversations.hostPod, hostGeneration: conversations.hostGeneration })
+        .from(conversations)
+        .where(eq(conversations.id, id))
+        .limit(1);
+      if (!rows[0]) return { cause: "row-deleted" as const };
+      return { cause: "claimed-elsewhere" as const, host_pod: rows[0].hostPod, host_generation: Number(rows[0].hostGeneration) };
+    } catch (error) {
+      return { cause: "unknown" as const, cause_error: formatError(error) };
+    }
+  };
+
+  const onFenced = async (id: SessionId, presented: number | undefined) => {
     // The head came from a log this pod no longer drives; the new owner is advancing seq
     // past it. Drop it so a conversation reassigned BACK re-seeds from the table instead of
     // colliding on the PK.
@@ -191,11 +199,12 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
     if (n === 1 || n % 100 === 0) {
       // presented_generation is the epoch the STATEMENT carried, not a fresh read of the
       // cache: an investigation into a refusal needs what was actually presented.
-      log.warn("append fenced by the conversations row (this pod is not the host)", {
+      log.warn("append refused by the conversations row (this pod is not the writer)", {
         conversation_id: id,
         pod: config.fence?.pod,
         presented_generation: presented,
         refused: n,
+        ...(await refusalCause(id)),
       });
     }
   };
@@ -240,7 +249,7 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
               // says this pod is no longer the writer. Do NOT advance the head or notify
               // listeners — nothing was committed, and claiming otherwise would hand the
               // integrity stream a checksum no reader can find.
-              onFenced(id, presented);
+              await onFenced(id, presented);
               return;
             }
             heads.set(id, { seq, checksum });

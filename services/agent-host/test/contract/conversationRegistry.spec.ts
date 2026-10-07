@@ -1,11 +1,7 @@
 /**
  * Tier 1 contract — the ConversationRegistry writes the assignment-table CR.
  *
- * register() creates a `Conversation` CR (the controller then assigns it a hostPod, the
- * router forwards to it). It MUST be idempotent (409 AlreadyExists = a re-start/race =
- * no-op) and MUST NOT throw on any k8s error — a conversation has to start locally even
- * if the CR write fails (the guard fails open until a CR appears). noopRegistry (the
- * single-replica default) does nothing.
+ * register() patches the CR first and creates only on 404.
  */
 
 import { describe, it, expect, vi } from "vitest";
@@ -49,19 +45,24 @@ describe("noopRegistry (single-replica default)", () => {
 });
 
 describe("k8sConversationRegistry.register", () => {
-  it("creates a Conversation CR named by the conversation id, with the spec fields set", async () => {
-    const { kc, creates } = fakeKc();
+  // THE COMMON PATH: one merge-patch, no 409 first.
+  it("PATCHES the existing CR and does not attempt a create", async () => {
+    const { kc, creates, specPatches } = fakeKc();
     await createK8sConversationRegistry("agent-sandbox", kc).register("conv-abc", {
       model: "claude-opus-4-8",
       owner: "alice",
       parentId: "conv-parent",
       sandboxRef: "conv-conv-abc",
     });
-    expect(creates).toHaveLength(1);
-    const body = creates[0].body as { metadata: { name: string }; kind: string; spec: Record<string, string> };
-    expect(creates[0]).toMatchObject({ group: "scooter.chadac.dev", version: "v1alpha1", plural: "conversations", namespace: "agent-sandbox" });
-    expect(body.kind).toBe("Conversation");
-    expect(body.metadata.name).toBe("conv-abc");
+
+    expect(creates, "create-first was a wasted apiserver write on every start").toHaveLength(0);
+    expect(specPatches).toHaveLength(1);
+    expect(specPatches[0]).toMatchObject({
+      group: "scooter.chadac.dev", version: "v1alpha1", plural: "conversations",
+      namespace: "agent-sandbox", name: "conv-abc",
+    });
+    // MERGE, so the creator's own spec fields survive.
+    const body = specPatches[0].body as { spec: Record<string, string> };
     expect(body.spec).toEqual({
       model: "claude-opus-4-8",
       owner: "alice",
@@ -71,47 +72,43 @@ describe("k8sConversationRegistry.register", () => {
   });
 
   it("omits undefined spec fields (anonymous, no parent) rather than sending nulls", async () => {
-    const { kc, creates } = fakeKc();
+    const { kc, specPatches } = fakeKc();
     await createK8sConversationRegistry("agent-sandbox", kc).register("conv-1", { model: "m" });
-    const body = creates[0].body as { spec: Record<string, string> };
+    const body = specPatches[0].body as { spec: Record<string, string> };
     expect(body.spec).toEqual({ model: "m" });
     expect("owner" in body.spec).toBe(false);
     expect("parentId" in body.spec).toBe(false);
   });
 
-  it("swallows a 409 AlreadyExists (idempotent re-register / race)", async () => {
-    const { kc } = fakeKc({ code: 409 });
+  it("CREATES on 404 — the stacks with no creator ahead of them still get a CR", async () => {
+    // The kube-less stack, and adoption of an older conversation.
+    const { kc, creates } = fakeKc({ specPatchCode: 404 });
+    await createK8sConversationRegistry("ns", kc).register("conv-1", { model: "m", sandboxRef: "conv-abc" });
+
+    expect(creates).toHaveLength(1);
+    const body = creates[0].body as { metadata: { name: string }; kind: string; spec: Record<string, string> };
+    expect(body.kind).toBe("Conversation");
+    expect(body.metadata.name).toBe("conv-1");
+    expect(body.spec).toEqual({ model: "m", sandboxRef: "conv-abc" });
+  });
+
+  it("swallows a 409 on that create (a creator wrote the CR inside the 404 window)", async () => {
+    const { kc } = fakeKc({ specPatchCode: 404, code: 409 });
     await expect(createK8sConversationRegistry("ns", kc).register("conv-1", {})).resolves.toBeUndefined();
   });
 
-  it("PATCHES the spec on 409 so a router-created CR gets its sandboxRef", async () => {
-    // The router creates the CR (POST /conversations) with no sandboxRef — it does not
-    // provision. So 409 is now the COMMON path, not a rare race. Swallowing it outright
-    // meant sandboxRef could never be written, and the router derives its routing short-id
-    // from that field: the conversation stayed unroutable for its whole life.
-    const { kc, specPatches } = fakeKc({ code: 409 });
-    await createK8sConversationRegistry("ns", kc).register("conv-1", {
-      model: "sonnet",
-      sandboxRef: "conv-abc123",
-    });
-
-    expect(specPatches).toHaveLength(1);
-    const body = specPatches[0].body as { spec: Record<string, string> };
-    expect(body.spec.sandboxRef).toBe("conv-abc123");
-    // MERGE patch, not replace — owner/model/parentId as the creator set them must survive.
-    expect(specPatches[0].name).toBe("conv-1");
-  });
-
-  it("swallows a 404 on the 409 spec-patch (CR deleted mid-flight)", async () => {
-    const { kc } = fakeKc({ code: 409, specPatchCode: 404 });
-    await expect(
-      createK8sConversationRegistry("ns", kc).register("conv-1", { sandboxRef: "conv-abc" }),
-    ).resolves.toBeUndefined();
-  });
-
-  it("swallows a non-409 error (a conversation must still start) and logs it", async () => {
+  it("swallows a non-404 patch error (a conversation must still start) and logs it", async () => {
     const err = vi.spyOn(console, "error").mockImplementation(() => {});
-    const { kc } = fakeKc({ code: 500 });
+    const { kc, creates } = fakeKc({ specPatchCode: 500 });
+    await expect(createK8sConversationRegistry("ns", kc).register("conv-1", {})).resolves.toBeUndefined();
+    expect(creates, "a 500 is not 'no CR' — creating would be a guess").toHaveLength(0);
+    expect(err).toHaveBeenCalled();
+    err.mockRestore();
+  });
+
+  it("swallows a failed create after a 404 and logs it", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { kc } = fakeKc({ specPatchCode: 404, code: 500 });
     await expect(createK8sConversationRegistry("ns", kc).register("conv-1", {})).resolves.toBeUndefined();
     expect(err).toHaveBeenCalled();
     err.mockRestore();
@@ -161,11 +158,17 @@ describe("k8sConversationRegistry.setPhase (liveness → status.phase)", () => {
  */
 
 /** Records every call and can be told to fail the next N with a given error. */
-function throttlingKc(opts: { failStatus?: Array<{ code: number; headers?: Record<string, string> }>; failCreate?: Array<{ code: number; headers?: Record<string, string> }> } = {}) {
+function throttlingKc(opts: {
+  failStatus?: Array<{ code: number; headers?: Record<string, string> }>;
+  failCreate?: Array<{ code: number; headers?: Record<string, string> }>;
+  failSpecPatch?: Array<{ code: number; headers?: Record<string, string> }>;
+} = {}) {
   const failStatus = [...(opts.failStatus ?? [])];
   const failCreate = [...(opts.failCreate ?? [])];
+  const failSpecPatch = [...(opts.failSpecPatch ?? [])];
   const phases: string[] = [];
   const creates: number[] = [];
+  const specPatches: number[] = [];
   let holdNext = false;
   let release: (() => void) | undefined;
   const api = {
@@ -185,13 +188,19 @@ function throttlingKc(opts: { failStatus?: Array<{ code: number; headers?: Recor
       if (f) throw Object.assign(new Error("k8s"), f);
       return {};
     },
-    patchNamespacedCustomObject: async () => ({}),
+    patchNamespacedCustomObject: async () => {
+      specPatches.push(1);
+      const f = failSpecPatch.shift();
+      if (f) throw Object.assign(new Error("k8s"), f);
+      return {};
+    },
     deleteNamespacedCustomObject: async () => ({}),
   };
   return {
     kc: { makeApiClient: () => api as never } as never,
     phases,
     creates,
+    specPatches,
     hold: () => {
       holdNext = true;
     },
@@ -207,11 +216,23 @@ function recordingSleep() {
 }
 
 describe("k8sConversationRegistry throttling (429)", () => {
-  it("retries a throttled create instead of dropping the CR", async () => {
-    const { kc, creates } = throttlingKc({ failCreate: [{ code: 429 }] });
+  it("retries a throttled register instead of dropping the spec write", async () => {
+    // The throttled hot-path call is now the PATCH.
+    const { kc, specPatches } = throttlingKc({ failSpecPatch: [{ code: 429 }] });
     const { sleep, waits } = recordingSleep();
     await createK8sConversationRegistry("ns", kc, { sleep }).register("conv-1", { model: "m" });
-    expect(creates).toHaveLength(2); // throttled once, then landed
+    expect(specPatches).toHaveLength(2); // throttled once, then landed
+    expect(waits).toHaveLength(1);
+  });
+
+  it("retries a throttled CREATE too, on the 404 path", async () => {
+    const { kc, creates } = throttlingKc({
+      failSpecPatch: [{ code: 404 }],
+      failCreate: [{ code: 429 }],
+    });
+    const { sleep, waits } = recordingSleep();
+    await createK8sConversationRegistry("ns", kc, { sleep }).register("conv-1", { model: "m" });
+    expect(creates).toHaveLength(2);
     expect(waits).toHaveLength(1);
   });
 

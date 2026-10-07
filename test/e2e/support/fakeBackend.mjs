@@ -181,6 +181,8 @@ spawnService("agent-host", "node", [join(REPO_ROOT, "services/agent-host/dist/in
   // Durable conversation metadata + event log in the ephemeral PG — the row the router lists and
   // hydrates from, and the source of the conversations_changed NOTIFY the router pushes.
   AGENT_HOST_DB_DSN: DSN,
+  // REQUIRED with a DSN: nothing else writes the row.
+  CONVERSATION_ROUTER_URL: `http://127.0.0.1:${ROUTER_PORT}`,
   // Switches agent-host's link store from files to the shared PG resource_links table, so a link
   // POSTed here is visible to the router's list enrichment (see WEBHOOKS_DSN).
   WEBHOOKS_DB_DSN: WEBHOOKS_DSN,
