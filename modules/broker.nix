@@ -103,8 +103,8 @@ in
       description = "Annotations on the agent-broker ServiceAccount (IRSA and the like).";
     };
     # The agent-facing MCP endpoint. A nested `mcp.enable` rather than a flat
-    # `mcpEnabled`, matching `datadog.enable` / `aws.enable` — the namespace is where
-    # the endpoint's other knobs (per-tool gating, a tool allowlist) will land.
+    # `mcpEnabled`, matching `shares` / `fga` below — the namespace is where the
+    # endpoint's other knobs (per-tool gating, a tool allowlist) will land.
     mcp = {
       enable = mkOption {
         type = types.bool;

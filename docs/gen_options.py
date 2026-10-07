@@ -29,10 +29,20 @@ MIN_PAGE_OPTIONS = 3
 
 PREFIX = "scooter."
 
+# The second option root. A contrib owns BOTH halves of itself — what it builds to and
+# how a deployment configures it — so an integration's options live under
+# `contribs.<name>` rather than `scooter.broker.<name>`. It gets its own page instead of
+# being folded under a `scooter.` title that would misname every option on it.
+CONTRIBS_PREFIX = "contribs"
+
 
 def namespace_of(name: str) -> str:
     """The top-level namespace: scooter.byoc.ingress.host -> byoc. Options directly under
-    scooter (e.g. scooter.namespace) group as "core"."""
+    scooter (e.g. scooter.namespace) group as "core". The `contribs.*` root is one
+    namespace of its own, since the per-contrib level is a submodule placeholder
+    (`contribs.<name>.…`) rather than a page's worth of options each."""
+    if name == CONTRIBS_PREFIX or name.startswith(CONTRIBS_PREFIX + "."):
+        return CONTRIBS_PREFIX
     rest = name[len(PREFIX):] if name.startswith(PREFIX) else name
     parts = rest.split(".")
     return parts[0] if len(parts) > 1 else "core"
@@ -104,7 +114,12 @@ def main() -> None:
         groups["misc"].update(misc)
 
     for ns, opts in sorted(groups.items()):
-        title = "Core" if ns == "core" else ("Other options" if ns == "misc" else f"`scooter.{ns}`")
+        title = (
+            "Core" if ns == "core"
+            else "Other options" if ns == "misc"
+            else f"`{ns}`" if ns == CONTRIBS_PREFIX
+            else f"`scooter.{ns}`"
+        )
         lines = [
             f"# {title}",
             "",
@@ -120,8 +135,9 @@ def main() -> None:
     index = [
         "# Configuration options",
         "",
-        f"Every `scooter.*` option ({len(options)} total), generated from the kubenix "
-        "modules via `nixosOptionsDoc` — this reference cannot drift from the code.",
+        f"Every `scooter.*` and `contribs.*` option ({len(options)} total), generated from "
+        "the kubenix modules via `nixosOptionsDoc` — this reference cannot drift from the "
+        "code.",
         "",
         "Type to filter; click an option to jump to its full entry.",
         "",

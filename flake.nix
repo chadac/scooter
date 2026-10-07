@@ -386,16 +386,36 @@
           # `extraModules` is how a TEST render opts into test-only overrides (modules/testing.nix).
           # A deploy render passes none, so it cannot enable a dummy agent or an unauthenticated
           # test webhook even by setting a stray boolean — the options only exist with the module.
-          mkPlatformWith = extraModules: scooter: kubenix.evalModules.${system} {
-            module = { kubenix, ... }: {
-              imports = [ ./modules/platform.nix ] ++ extraModules;
-              kubenix.project = "agent-sandbox";
-              kubernetes.version = "1.31";
-              inherit scooter;
+          #
+          # `scooter.contribs` is lifted OUT to the module root: each integration's
+          # deployment options live under `contribs.<name>`, beside the contrib's own
+          # declaration, rather than under `scooter.broker.<name>`. A render that turns
+          # the broker ON must say which contribs it ships, because several of them
+          # require a credential with no default and would otherwise fail the render
+          # (which is the point — see `shipGate` in modules/platform.nix).
+          mkPlatformWith = extraModules: full:
+            let scooter = builtins.removeAttrs full [ "contribs" ];
+            in kubenix.evalModules.${system} {
+              module = { kubenix, ... }: {
+                imports = [ ./modules/platform.nix ] ++ extraModules;
+                kubenix.project = "agent-sandbox";
+                kubernetes.version = "1.31";
+                contribs = full.contribs or { };
+                inherit scooter;
+              };
             };
-          };
           mkPlatform = mkPlatformWith [ ];
           mkTestPlatform = mkPlatformWith [ ./modules/testing.nix ];
+
+          # THE CONTRIBS A BROKER-ON RENDER SHIPS. Everything with no credential to
+          # configure stays at its default (`enable = true`); the token proxies are
+          # dropped, because a render that ships one without its secret cannot come up
+          # and a test/deploy manifest should not carry a dangling secretKeyRef. A real
+          # deployment re-enables the ones it has credentials for — see
+          # examples/kubenix-config.nix, which configures all of them.
+          unconfiguredContribs = lib.genAttrs
+            [ "slack" "gitlab" "github" "airtable" "brave" "datadog" "grafana" ]
+            (_: { enable = false; });
 
           # E2E/cluster-test render (`nix build .#platform-manifests`): the DUMMY agent +
           # test providers, and images SIDE-LOADED into k3s so it uses bare local names
@@ -460,6 +480,10 @@
               image = imgs.webhooks;
               # testWebhook comes from modules/testing.nix — not repeated here.
             };
+            # The e2e suites configure no integration credentials, so drop the contribs
+            # that need one. The keyless/self-gating ones stay on and the MCP endpoint
+            # still serves their tools.
+            contribs = unconfiguredContribs;
           };
           mkTestPlatformImages = imgs: mkTestPlatform (mkTestPlatformConfig imgs);
           platform = mkTestPlatformImages {
@@ -521,6 +545,11 @@
             conversationController.routerImage = ghcrImages.conversationRouter;
             warmStore.image = ghcrImages.warmStoreController;
             byoc.image = ghcrImages.byocController;
+            # This manifest carries no integration credentials — the secrets are
+            # per-cluster, so a published deploy render cannot name them. The contribs
+            # needing one are therefore dropped here and re-enabled (with their
+            # `contribs.<name>.*` config) by the deployment that has the secrets.
+            contribs = unconfiguredContribs;
           };
 
           # Tier-1-style config-correctness tests for the dev-environment sandbox:
@@ -651,9 +680,17 @@
             # splits it into one page PER NAMESPACE (so mkdocs search scores each separately
             # instead of returning one 4k-line document) and feeds the client-side filter table.
             # See docs/gen_options.py.
+            # `contribs` is published alongside `scooter`: an integration's deployment
+            # options live under `contribs.<name>` now, beside the contrib's own
+            # declaration, so a reference of `scooter.*` alone would document the
+            # platform and none of the integrations. Rendered from a BARE render, so
+            # every contrib's options appear whether or not a deployment configures
+            # them. docs/gen_options.py pages these under their contrib's name.
             options-doc =
               (pkgs.nixosOptionsDoc {
-                options = { scooter = (mkPlatform { }).options.scooter; };
+                options = {
+                  inherit ((mkPlatform { }).options) scooter contribs;
+                };
                 warningsAreErrors = false;
                 # Repo-relative declaration links instead of /nix/store paths.
                 transformOptions = opt: opt // {

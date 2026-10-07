@@ -27,21 +27,74 @@ let
     ++ lib.filter builtins.pathExists
       (map (p: builtins.dirOf p + "/deployment.nix") contribDecls);
 
-  # An unshipped contrib's options are DECLARED now, so this — not their absence — is
-  # what keeps configuring one an error instead of a block k8s silently applies.
-  # A `throw` forced from the same leaf as `legacyRoot`, for the same reasons.
-  # Why: #599, PR #719.
-  unshippedConfigured = lib.filter
-    (n: lib.any (o: o.isDefined or false)
-      (lib.attrValues (options.scooter.broker.${n} or { })))
+  # CONFIGURING A CONTRIB THIS BUILD DOES NOT SHIP must fail the render, not be
+  # silently ignored. Every contrib's options are DECLARED whether or not it ships
+  # (the platform imports them all, #719), so their absence is no longer what
+  # catches the mistake. Why: #599, PR #719.
+  #
+  # Both halves of a contrib now live under `contribs.<name>`, so "is anything set
+  # here?" would fire on every contrib: `contrib.nix` unconditionally sets src,
+  # services, ui and skills, which are the contrib DECLARING itself, not a deployer
+  # configuring a dead one. Two filters separate the two, and both are needed:
+  #
+  #   SCHEMA — contrib/submodule.nix is the preset every contrib gets, so its fields
+  #     are the declaration surface. A DEPLOYMENT option exists only because a
+  #     contrib declared one of its own in its `options` block, so the deployer-facing
+  #     fields are the resolved contrib's MINUS the shared spec's. This also excludes
+  #     `enable` for free, and must: setting it false is how a deployment TRIMS the
+  #     contrib set, and firing on that would mean no build could drop a contrib.
+  #   VALUE — a declared option still RESOLVES when nobody set it (to its default), so
+  #     the schema filter alone would fire on `contribs.aws.region` in every render.
+  #     So diff each remaining field against the SAME field in a registry-only eval
+  #     (contrib/all-modules.nix with no deployment config): what differs is what a
+  #     deployer spelled. A field set to exactly its default is a no-op and stays
+  #     silent, which is the right answer — it would render nothing either way.
+  #
+  # Read off resolved config rather than `definitionsWithLocations`: a definition list
+  # ignores priority, so a render that drops a contrib by overriding it
+  # (`contribs.<n> = lib.mkForce { enable = false; }`) would still be seen carrying the
+  # config it just overrode. The resolved tree is what would actually be deployed.
+  #
+  # THE KNOWN GAP, accepted deliberately: a deployer who sets a SPEC field on an
+  # unshipped contrib (`contribs.<n>.skills`, `.src`, `.ui`) is not caught, because
+  # those are indistinguishable from the contrib declaring itself. Only the fields a
+  # contrib declared for a deployer are. This is the narrow side of the trade and the
+  # right one — crying wolf on every contrib in every render would make the guard
+  # worthless, and `skills` on a dead contrib is already handled: the `enable` filter
+  # on `contribSkills` below drops it, which examples/check.nix asserts directly.
+  specFields = lib.attrNames (lib.evalModules {
+    specialArgs = { inherit lib; name = "schema"; };
+    modules = [ ../contrib/submodule.nix ];
+  }).options;
+  # The registry with NO deployment config — the baseline every field is compared to.
+  # lib-only (contrib/spec.nix), so this costs no second kubenix eval.
+  bareContribs = (lib.evalModules {
+    specialArgs = { inherit lib; };
+    modules = [ ../contrib/all-modules.nix ];
+  }).config.contribs;
+  # tryEval both sides: an option with no default THROWS when read, and one that
+  # throws in both evals is equally unset in both. deepSeq, because the throw can be
+  # nested (a submodule's own defaultless field).
+  fieldVal = tree: n: f:
+    let r = builtins.tryEval (builtins.deepSeq (tree.${n}.${f} or null) (tree.${n}.${f} or null));
+    in if r.success then { ok = r.value; } else null;
+  # name -> the deployment options a deployer actually set on it.
+  deployerSet = n: lib.filter (f: fieldVal config.contribs n f != fieldVal bareContribs n f)
+    (lib.subtractLists specFields (lib.attrNames config.contribs.${n}));
+  unshippedConfigured = lib.filter (n: deployerSet n != [ ])
     (lib.attrNames (lib.filterAttrs (_: c: !c.enable) config.contribs));
+  # A `throw` forced from the same leaf as `legacyRoot`, for the same reasons.
   shipGate = v:
     if unshippedConfigured == [ ] then v
     else throw ''
-      This config sets `scooter.broker.<name>.*` for ${lib.concatStringsSep ", " unshippedConfigured},
-      which this build does not ship: their `contribs.<name>.enable` is false, so no
-      image contains them and the options you set would render into a deployment that
-      cannot serve them.
+      This config sets options for contribs this build does not ship:
+
+      ${lib.concatMapStringsSep "\n      " (n:
+        "${n}: ${lib.concatMapStringsSep ", " (f: "contribs.${n}.${f}") (deployerSet n)}")
+        unshippedConfigured}
+
+      Each has `contribs.<name>.enable = false`, so no image contains it and the
+      options above would render into a deployment that cannot serve them.
 
       Either drop the config, or ship the contrib by layering a module that enables it
       (`contribs.<name>.enable = lib.mkForce true`) onto the same eval — the shape
@@ -159,7 +212,6 @@ let
   # (see `imports`), so there is no second module system to re-derive them from.
   # `enable` is filtered HERE rather than at the import: an unshipped contrib's skill
   # would document a route no image serves. Why: #711, #719.
-  bcfg = config.scooter.broker;
   contribSkills = lib.mapAttrs (_: c: c.skills)
     (lib.filterAttrs (_: c: c.enable && c.skills != { }) config.contribs);
 
@@ -169,16 +221,9 @@ let
   # to re-derive here.
   approvalContribsJson =
     if cfg.approvals == { } then null else builtins.toJSON cfg.approvals;
-  gateOf = name:
-    if (bcfg.${name} or null) ? enable then bcfg.${name}.enable
-    else throw ("contrib ${name} ships skills, which are gated on "
-      + "scooter.broker.${name}.enable — but no such option exists. "
-      + "See contrib/README.md.");
-  gatedSkills = lib.concatMapAttrs
-    (name: skills: lib.optionalAttrs (gateOf name) skills)
-    contribSkills;
   builtins' = lib.optionalAttrs cfg.agent.builtinSkills
-    (lib.mapAttrs (_: file: builtins.readFile file) gatedSkills);
+    (lib.mapAttrs (_: file: builtins.readFile file)
+      (lib.concatMapAttrs (_: skills: skills) contribSkills));
   allSkills = builtins' // cfg.agent.skills;
 in
 {
@@ -186,7 +231,7 @@ in
   # unauthenticated test webhook) must be opted into by a TEST manifest, so a deploy that never
   # imports it cannot enable them by setting a stray boolean. See modules/testing.nix.
   # The contribs are modules in THIS eval (`contribModules` above), derived from
-  # contrib/ and not listed: each declares its own scooter.broker.<name> options and
+  # contrib/ and not listed: each declares its own `contribs.<name>` options and
   # renders its own manifests, so adding an integration edits no platform file.
   # contrib/spec.nix comes with them, via all-modules.nix — it is the schema for the
   # `contribs.*` tree the skills above are read from. Why: #599, #711, #719.
@@ -742,7 +787,7 @@ in
         default = true;
         description = ''
           Ship the contribs' own skills, each only when the capability it documents
-          is enabled (e.g. scooter-grafana only with broker.grafana.enable). Set false
+          is built (e.g. scooter-grafana only with contribs.grafana.enable). Set false
           to supply every skill yourself via `skills`. The platform's ungated skills
           are NOT affected — a deployment threads those in through `skills` (the flake
           exposes them as `lib.scooterSkills`).
