@@ -25,53 +25,77 @@ func TestListsWhateverRowsExist(t *testing.T) {
 	}
 }
 
-// conversationRowArgs is the create -> conversations-row projection (shared by both stacks). Locks down which fields map to which
-// nullable columns, that "" / a missing key become a NULL (nil) rather than an empty string, and
-// that the title comes from the create itself — it is not, and must not be, a spec key.
-func TestConversationRowArgs(t *testing.T) {
-	id, now, title, model, owner, parent := conversationRowArgs(NewConversation{
+// conversationRowOf is the create -> conversations-row projection (shared by both stacks). Locks
+// down which fields map to which nullable columns, that "" / a missing key become a NULL (nil)
+// rather than an empty string, and that the title comes from the create itself — it is not, and
+// must not be, a spec key.
+func TestConversationRowOf(t *testing.T) {
+	r := conversationRowOf(NewConversation{
 		Name:  "conv-1",
 		Title: "Seeded one",
 		Spec: map[string]interface{}{
-			"owner":    "alice",
-			"model":    "model-fast",
-			"parentId": "",
+			"owner":      "alice",
+			"model":      "model-fast",
+			"parentId":   "",
+			"sandboxRef": "conv-abc123",
 		},
 	}, 4242)
-	if id != "conv-1" || now != 4242 {
-		t.Fatalf("id/now wrong: %s %d", id, now)
+	if r.ID != "conv-1" || r.Now != 4242 {
+		t.Fatalf("id/now wrong: %s %d", r.ID, r.Now)
 	}
-	if title != "Seeded one" {
-		t.Errorf("title should map through: %q", title)
+	if r.Title != "Seeded one" {
+		t.Errorf("title should map through: %q", r.Title)
 	}
-	if owner == nil || *owner != "alice" {
-		t.Errorf("owner should map through: %v", owner)
+	if r.Owner == nil || *r.Owner != "alice" {
+		t.Errorf("owner should map through: %v", r.Owner)
 	}
-	if model == nil || *model != "model-fast" {
-		t.Errorf("model should map through: %v", model)
+	if r.Model == nil || *r.Model != "model-fast" {
+		t.Errorf("model should map through: %v", r.Model)
 	}
-	if parent != nil {
-		t.Errorf("empty parentId must be NULL (nil), got %q", *parent)
+	if r.SandboxRef == nil || *r.SandboxRef != "conv-abc123" {
+		t.Errorf("sandboxRef should map through: %v", r.SandboxRef)
+	}
+	if r.ParentID != nil {
+		t.Errorf("empty parentId must be NULL (nil), got %q", *r.ParentID)
 	}
 
 	// A bare spec (top-level create, no owner/model/title): title is "" (NOT NULL column) and the
-	// three nullable columns are NULL.
-	_, _, title, model, owner, parent = conversationRowArgs(NewConversation{Name: "conv-2", Spec: map[string]interface{}{}}, 1)
-	if title != "" {
-		t.Errorf("bare spec title must be empty string, got %q", title)
+	// nullable columns are NULL.
+	r = conversationRowOf(NewConversation{Name: "conv-2", Spec: map[string]interface{}{}}, 1)
+	if r.Title != "" {
+		t.Errorf("bare spec title must be empty string, got %q", r.Title)
 	}
-	if model != nil || owner != nil || parent != nil {
-		t.Errorf("bare spec must be all-NULL, got model=%v owner=%v parent=%v", model, owner, parent)
+	if r.Model != nil || r.Owner != nil || r.ParentID != nil || r.SandboxRef != nil {
+		t.Errorf("bare spec must be all-NULL, got %+v", r)
 	}
 
 	// A title smuggled into the spec is NOT a title. The spec is the CR's, and the CR has no
 	// such field — the apiserver prunes it, so anything that read it there would be reading a
 	// value production never stores.
-	_, _, title, _, _, _ = conversationRowArgs(NewConversation{
+	r = conversationRowOf(NewConversation{
 		Name: "conv-3",
 		Spec: map[string]interface{}{"title": "from the spec"},
 	}, 1)
-	if title != "" {
-		t.Errorf("spec[title] must not become the row title, got %q", title)
+	if r.Title != "" {
+		t.Errorf("spec[title] must not become the row title, got %q", r.Title)
+	}
+}
+
+// args() is the ONE place column order is fixed; the INSERT has nine placeholders over seven binds
+// ($1 and $3 appear twice), so a drifted projection would bind a value to the wrong column.
+func TestConversationRowArgsOrderMatchesTheInsert(t *testing.T) {
+	owner, model, parent, ref := "alice", "model-fast", "conv-parent", "conv-abc123"
+	args := conversationRow{
+		ID: "conv-1", Title: "T", Now: 7,
+		Model: &model, Owner: &owner, ParentID: &parent, SandboxRef: &ref,
+	}.args()
+	want := []any{"conv-1", "T", int64(7), &model, &owner, &parent, &ref}
+	if len(args) != len(want) {
+		t.Fatalf("want %d args, got %d", len(want), len(args))
+	}
+	for i := range want {
+		if args[i] != want[i] {
+			t.Errorf("arg %d: want %v, got %v", i+1, want[i], args[i])
+		}
 	}
 }
