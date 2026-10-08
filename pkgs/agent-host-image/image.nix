@@ -34,7 +34,7 @@ let
   claudeCode = pkgs.claude-code;
   claudeLayer = n2c.buildLayer { deps = [ claudeCode ]; };
 in
-{
+let
   image = n2c.buildImage {
     name = "agent-host";
     tag = "latest";
@@ -64,4 +64,8 @@ in
       ExposedPorts = { "8080/tcp" = { }; };
     };
   };
+in
+# A kubenix module: this image declares its own scooter.images entry.
+{
+  config.scooter.images.agent-host.package = lib.mkDefault image;
 }

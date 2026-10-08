@@ -2,7 +2,7 @@
 
 # OCI image for the scheduler service.
 
-{
+let
   image = n2c.buildImage {
     name = "agent-scheduler";
     tag = "latest";
@@ -20,4 +20,8 @@
       ExposedPorts = { "8080/tcp" = { }; };
     };
   };
+in
+# A kubenix module: this image declares its own scooter.images entry.
+{
+  config.scooter.images.agent-scheduler.package = lib.mkDefault image;
 }

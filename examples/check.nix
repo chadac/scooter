@@ -8,8 +8,10 @@
 let
   flake = builtins.getFlake (toString ../.);
   system = builtins.currentSystem;
+  # The vended entry point: it loads platform.nix and the image modules.
+  evalPlatform = flake.legacyPackages.${system}.evalPlatform;
 
-  platform = flake.inputs.kubenix.evalModules.${system} {
+  platform = evalPlatform {
     module = ./kubenix-config.nix;
   };
 
@@ -138,7 +140,7 @@ let
   # (rich: ids + hints + default) into the agent-host env, and GOOSE_MODEL as the
   # derived default. NOTE: the example sets fakeAgent, which gates these off — so
   # render a NON-fake platform to force the model-env derivation + assert it.
-  modelPlatform = flake.inputs.kubenix.evalModules.${system} {
+  modelPlatform = evalPlatform {
     module = { lib, ... }: {
       imports = [ ./kubenix-config.nix ];
       scooter.fakeAgent = lib.mkForce false;
@@ -166,7 +168,7 @@ let
   # a correct render picks the chosen opus; the pre-fix bug picked fable on sort order alone
   # (and fable was the priciest model). The alphabetically-earlier id is what makes this test
   # fail for the RIGHT reason if the fallback regresses. Render a non-fake, no-goose platform.
-  noGoosePlatform = flake.inputs.kubenix.evalModules.${system} {
+  noGoosePlatform = evalPlatform {
     module = { lib, ... }: {
       imports = [ ./kubenix-config.nix ];
       scooter.fakeAgent = lib.mkForce false;
@@ -216,7 +218,7 @@ let
   # "View conversation" deep-links degrade to a raw conversation id. Render a second
   # platform with ingress disabled and assert the URLs are set AND no chat Ingress
   # was rendered.
-  ingressOffPlatform = flake.inputs.kubenix.evalModules.${system} {
+  ingressOffPlatform = evalPlatform {
     module = { lib, ... }: {
       imports = [ ./kubenix-config.nix ];
       scooter.ingress.enable = lib.mkForce false;
@@ -246,7 +248,7 @@ let
   # with canned text — and nothing would have objected. They now live in a module a deploy never
   # imports, and this asserts the separation actually holds in the RENDERED manifest rather than
   # trusting the option plumbing.
-  prodPlatform = flake.inputs.kubenix.evalModules.${system} {
+  prodPlatform = evalPlatform {
     module = { ... }: { imports = [ ./kubenix-config.nix ]; };
   };
   prodRes = prodPlatform.config.kubernetes.resources;
@@ -318,6 +320,8 @@ let
     "sandboxRuntimeClass" "serviceAccountRoleArn"
     "agentHostImage" "sandboxImage" "uiImage" "defaultSandboxSizeName"
     "db" "dbSpec" "sandboxPod" "approvals"
+    # declared per-service module; a deployer overrides a ref, not the tree
+    "images" "imagesContentTag"
   ];
   uncovered = builtins.filter
     (n: !(builtins.elem n coverageExempt)
@@ -350,7 +354,7 @@ let
 
   # A skill ships iff its contrib is built. Why: PR #727.
   skillsWith = contribOverride: let
-    e = flake.inputs.kubenix.evalModules.${system} {
+    e = evalPlatform {
       module = { lib, ... }: {
         imports = [ ./kubenix-config.nix ];
         contribs = contribOverride lib;
@@ -387,13 +391,13 @@ let
   # a CREATE. Assert the hash actually MOVES with the spec: a name merely decorated with
   # a constant suffix reads as "hashed" and still wedges every upgrade.
   jobNameOf = p: name: p.config.kubernetes.resources.jobs.${name}.metadata.name or "";
-  bumpedMigrator = flake.inputs.kubenix.evalModules.${system} {
+  bumpedMigrator = evalPlatform {
     module = { lib, ... }: {
       imports = [ ./kubenix-config.nix ];
       scooter.dbMigrate.image = lib.mkForce "example.test/agent-db-migrator:next";
     };
   };
-  bumpedInit = flake.inputs.kubenix.evalModules.${system} {
+  bumpedInit = evalPlatform {
     module = { lib, ... }: {
       imports = [ ./kubenix-config.nix ];
       scooter.postgres.kubectlImage = lib.mkForce "example.test/kubectl:next";
@@ -424,7 +428,7 @@ let
   # so pin both directions here rather than trusting it.
   renderSizes = sizes:
     let
-      e = flake.inputs.kubenix.evalModules.${system} {
+      e = evalPlatform {
         module = { lib, ... }: {
           imports = [ ./kubenix-config.nix ];
           scooter.sandboxSizes = lib.mkForce sizes;
@@ -448,7 +452,7 @@ let
   # feature. Rendered rather than asserted on the option, for exactly that reason.
   renders = extra:
     let
-      e = flake.inputs.kubenix.evalModules.${system} {
+      e = evalPlatform {
         module = { ... }: {
           imports = [ ./kubenix-config.nix ];
           config = extra;
@@ -482,7 +486,7 @@ let
   # The skill files an extra config renders, via the same ConfigMap `skillsWith` reads.
   skillFilesWith = extra:
     let
-      e = flake.inputs.kubenix.evalModules.${system} {
+      e = evalPlatform {
         module = { ... }: {
           imports = [ ./kubenix-config.nix ];
           config = extra;
@@ -540,7 +544,7 @@ let
     let ctrs = builtins.attrValues (res.deployments.conversation-router.spec.template.spec.containers or { });
     in builtins.concatMap (c: c.env or [ ]) ctrs;
   routerEnvVal = name: let m = builtins.filter (e: e.name == name) routerEnv; in if m == [ ] then "" else (builtins.head m).value;
-  albPlatform = flake.inputs.kubenix.evalModules.${system} {
+  albPlatform = evalPlatform {
     module = { lib, ... }: {
       imports = [ ./kubenix-config.nix ];
       scooter.auth.mode = lib.mkForce "alb-oidc";
@@ -571,7 +575,7 @@ let
   # keeping two copies disjoint was hand-maintained. So assert BOTH halves of what
   # replaced it: present with aws OFF, and never declared twice with aws ON (k8s
   # silently keeps the last value of a duplicated env name).
-  awsOffPlatform = flake.inputs.kubenix.evalModules.${system} {
+  awsOffPlatform = evalPlatform {
     module = { lib, ... }: {
       imports = [ ./kubenix-config.nix ];
       # mkForce the attr so the config goes with it.
@@ -703,7 +707,7 @@ let
   # The table is declared whenever aws is built. Why: PR #637.
   #
   # aws shipped, broker off: the table still declares.
-  brokerOffPlatform = flake.inputs.kubenix.evalModules.${system} {
+  brokerOffPlatform = evalPlatform {
     module = { lib, ... }: {
       imports = [ ./kubenix-config.nix ];
       scooter.broker.enable = lib.mkForce false;
@@ -729,7 +733,7 @@ let
   # core option: a second feature wanting an approver gate must not have to enable
   # aws to get one. The render that proves it is fga ON with aws OFF — under the old
   # `broker.aws.fga` that combination could not be expressed at all.
-  fgaNoAwsPlatform = flake.inputs.kubenix.evalModules.${system} {
+  fgaNoAwsPlatform = evalPlatform {
     module = { lib, ... }: {
       imports = [ ./kubenix-config.nix ];
       # mkForce the attr so the config goes with it.
@@ -760,7 +764,7 @@ let
   # forces BOTH off, so it cannot see this. Assert the env is present there, and
   # that it names the agent-host (an empty value parses to an empty set, which
   # authenticates nobody and would pass a mere presence check).
-  sharesNoAwsPlatform = flake.inputs.kubenix.evalModules.${system} {
+  sharesNoAwsPlatform = evalPlatform {
     module = { lib, ... }: {
       imports = [ ./kubenix-config.nix ];
       # mkForce the attr so the config goes with it.
@@ -797,7 +801,7 @@ let
   # that forgets it fails this check on the day it lands, and a new consumer is covered
   # without editing this file. Needs a NON-cluster render: in-cluster leaves sslmode
   # null by design, so the example platform emits nothing and proves nothing.
-  tlsPlatform = flake.inputs.kubenix.evalModules.${system} {
+  tlsPlatform = evalPlatform {
     module = { lib, ... }: {
       imports = [ ./kubenix-config.nix ];
       scooter.postgres.external = {

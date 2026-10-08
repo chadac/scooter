@@ -2,7 +2,7 @@
 
 # OCI image for the Conversation CRD controller.
 
-{
+let
   image = n2c.buildImage {
     name = "conversation-controller";
     tag = "latest";
@@ -16,4 +16,8 @@
       Env = [ "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt" ];
     };
   };
+in
+# A kubenix module: this image declares its own scooter.images entry.
+{
+  config.scooter.images.conversation-controller.package = lib.mkDefault image;
 }

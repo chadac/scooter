@@ -32,8 +32,8 @@ in
     };
     image = mkOption {
       type = types.str;
-      default = "${cfg.registryPrefix}byoc-controller:latest";
-      defaultText = literalExpression ''"''${registryPrefix}byoc-controller:latest"'';
+      default = cfg.images.byoc-controller.ref;
+      defaultText = literalExpression "config.scooter.images.byoc-controller.ref";
       description = "OCI ref of the BYOC controller image.";
     };
     traceTunnel = mkOption {
@@ -115,6 +115,7 @@ in
   # while everything else stays gated on `enable`. The gated body keeps its own
   # indentation so this wrapper is the whole diff.
   config = lib.mkMerge [
+
   # The tables the `byoc` database holds (scooter.db, #606).
   {
     scooter.db.byoc = {

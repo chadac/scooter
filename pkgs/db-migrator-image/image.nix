@@ -94,8 +94,6 @@ let
       echo "all migrations applied"
     '';
   };
-in
-{
   image = n2c.buildImage {
     name = "agent-db-migrator";
     tag = "latest";
@@ -109,4 +107,8 @@ in
       Env = [ "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt" ];
     };
   };
+in
+# A kubenix module: this image declares its own scooter.images entry.
+{
+  config.scooter.images.agent-db-migrator.package = lib.mkDefault image;
 }

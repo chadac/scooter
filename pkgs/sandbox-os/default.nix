@@ -318,10 +318,6 @@ let
     fi
     exec ${toplevel}/init "$@"
   '';
-in
-{
-  inherit toplevel nixos;
-
   # nix build .#sandbox-os-image  ->  a nix2container image booting systemd PID 1.
   image = n2c.buildImage {
     inherit name tag;
@@ -371,4 +367,9 @@ in
       WorkingDir = "/workspace";
     };
   };
+in
+{
+  inherit toplevel nixos image;
+  # This image's own option definition, beside the thing it builds.
+  module = import ./module.nix { inherit image lib; };
 }

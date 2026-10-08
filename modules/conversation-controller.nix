@@ -16,8 +16,8 @@ in
   options.scooter.conversationController = with lib; {
     image = mkOption {
       type = types.str;
-      default = "${cfg.registryPrefix}conversation-controller:latest";
-      defaultText = literalExpression ''"''${registryPrefix}conversation-controller:latest"'';
+      default = cfg.images.conversation-controller.ref;
+      defaultText = literalExpression "config.scooter.images.conversation-controller.ref";
       description = "OCI ref of the conversation-controller image.";
     };
     replicas = mkOption {
@@ -88,8 +88,8 @@ in
     };
     routerImage = mkOption {
       type = types.str;
-      default = "${cfg.registryPrefix}conversation-router:latest";
-      defaultText = literalExpression ''"''${registryPrefix}conversation-router:latest"'';
+      default = cfg.images.conversation-router.ref;
+      defaultText = literalExpression "config.scooter.images.conversation-router.ref";
       description = "OCI ref of the conversation-router image.";
     };
     routerReplicas = mkOption {
@@ -221,7 +221,8 @@ in
     };
 
   };
-  config = {
+  config = lib.mkMerge [
+    ({
     kubernetes.resources = {
       # --- the CRD ---------------------------------------------------------
       customResourceDefinitions.conversations = {
@@ -509,5 +510,6 @@ in
         };
       };
     };
-  };
+  })
+  ];
 }

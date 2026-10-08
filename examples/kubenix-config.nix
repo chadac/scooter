@@ -10,7 +10,7 @@
 # example stops rendering and CI fails.
 { ... }:
 {
-  imports = [ ../modules/platform.nix ];
+  # No platform.nix import: evalPlatform supplies it.
 
   kubenix.project = "agent-sandbox";
   kubernetes.version = "1.31";

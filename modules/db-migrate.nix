@@ -169,13 +169,14 @@ in
     };
     image = mkOption {
       type = types.str;
-      default = "${cfg.registryPrefix}agent-db-migrator:latest";
-      defaultText = literalExpression ''"''${registryPrefix}agent-db-migrator:latest"'';
+      default = cfg.images.agent-db-migrator.ref;
+      defaultText = literalExpression "config.scooter.images.agent-db-migrator.ref";
       description = "OCI ref of the db-migrator image.";
     };
   };
 
-  config = lib.mkIf (mcfg.enable && enabledKeys != [ ]) {
+  config = lib.mkMerge [
+    (lib.mkIf (mcfg.enable && enabledKeys != [ ]) {
     # The Nix attr name stays fixed (it is what other modules would reference);
     # metadata.name is the hashed one that actually lands in the cluster.
     kubernetes.resources.jobs.agent-db-migrate = {
@@ -187,5 +188,6 @@ in
       };
       spec = jobSpec;
     };
-  };
+  })
+  ];
 }

@@ -255,8 +255,6 @@ let
       < ${nginxConfTemplate} > /tmp/nginx.conf
     exec ${pkgs.nginx}/bin/nginx -c /tmp/nginx.conf -g 'daemon off;'
   '';
-in
-{
   image = n2c.buildImage {
     name = "agent-sandbox-ui";
     tag = "latest";
@@ -283,4 +281,8 @@ in
       ExposedPorts = { "8080/tcp" = { }; };
     };
   };
+in
+# A kubenix module: this image declares its own scooter.images entry.
+{
+  config.scooter.images.agent-sandbox-ui.package = lib.mkDefault image;
 }

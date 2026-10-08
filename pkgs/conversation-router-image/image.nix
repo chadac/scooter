@@ -2,7 +2,7 @@
 
 # OCI image for the conversation router (Go binary).
 
-{
+let
   image = n2c.buildImage {
     name = "conversation-router";
     tag = "latest";
@@ -17,4 +17,8 @@
       ExposedPorts = { "8080/tcp" = { }; };
     };
   };
+in
+# A kubenix module: this image declares its own scooter.images entry.
+{
+  config.scooter.images.conversation-router.package = lib.mkDefault image;
 }

@@ -48,6 +48,7 @@ in
     image = mkOption {
       type = types.str;
       default = cfg.agentHostImage;
+      defaultText = literalExpression "config.scooter.agentHostImage";
       description = ''
         The agent-host image (it carries the compiled dist/scripts/runEventBackfill.js and its
         deps). Defaults to the same image agent-host runs, so the backfill loads with the exact

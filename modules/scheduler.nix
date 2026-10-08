@@ -24,8 +24,8 @@ in
     };
     image = mkOption {
       type = types.str;
-      default = "${cfg.registryPrefix}agent-scheduler:latest";
-      defaultText = literalExpression ''"''${registryPrefix}agent-scheduler:latest"'';
+      default = cfg.images.agent-scheduler.ref;
+      defaultText = literalExpression "config.scooter.images.agent-scheduler.ref";
       description = "OCI ref of the scheduler image.";
     };
     tickSeconds = mkOption {
@@ -62,6 +62,7 @@ in
   # while everything else stays gated on `enable`. The gated body keeps its own
   # indentation so this wrapper is the whole diff.
   config = lib.mkMerge [
+
   # The tables the `scheduler` database holds (scooter.db, #606).
   {
     scooter.db.scheduler = {

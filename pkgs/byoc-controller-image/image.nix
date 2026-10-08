@@ -3,7 +3,7 @@
 # OCI image for the BYOC controller (Node service). It holds the bring-your-own-Claude container
 # sockets so ANY agent-host replica can drive them — see todo/docs/BYO_CLAUDE_REMOTE_AGENT.md §L.
 
-{
+let
   image = n2c.buildImage {
     name = "byoc-controller";
     tag = "latest";
@@ -20,4 +20,8 @@
       ExposedPorts = { "8080/tcp" = { }; };
     };
   };
+in
+# A kubenix module: this image declares its own scooter.images entry.
+{
+  config.scooter.images.byoc-controller.package = lib.mkDefault image;
 }

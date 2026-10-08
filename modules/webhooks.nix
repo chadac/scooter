@@ -23,8 +23,8 @@ in
     };
     image = mkOption {
       type = types.str;
-      default = "${cfg.registryPrefix}agent-webhooks:latest";
-      defaultText = literalExpression ''"''${registryPrefix}agent-webhooks:latest"'';
+      default = cfg.images.agent-webhooks.ref;
+      defaultText = literalExpression "config.scooter.images.agent-webhooks.ref";
       description = "OCI ref of the webhooks image.";
     };
     testWebhook = mkOption {
@@ -206,6 +206,7 @@ in
   # while everything else stays gated on `enable`. The gated body keeps its own
   # indentation so this wrapper is the whole diff.
   config = lib.mkMerge [
+
   # The tables the `webhooks` database holds (scooter.db, #606). owners.toml,
   # the migrator's database list and the postgres GRANTs are all generated from this.
   {
