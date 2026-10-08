@@ -1,9 +1,8 @@
-{ pkgs, lib, n2c, agentHost, agent
-  # Bake the `claude` CLI (claude-code) onto PATH so goose's claude-code provider
-  # can shell out to it (subscription auth via a mounted ~/.claude credential). Off
-  # by default to keep the image lean (Bedrock/anthropic providers don't need it).
-, withClaudeCode ? false
-, ... }:
+{ pkgs, lib, n2c, agentHost, agent, ... }:
+{ config, ... }:
+let
+  # claude.enable bakes the unfree claude CLI; off keeps the image lean.
+  withClaudeCode = config.scooter.images.agent-host.claude.enable;
 
 # OCI image for the agent-host. Includes the node app (goose wrapped onto PATH
 # via the package) + cacert. It talks to the K8s API in-cluster (provisioner +
@@ -16,7 +15,6 @@
 # nix2container auto-split the rest with maxLayers, leaving only a thin app
 # layer to rebuild/push on a code change.
 
-let
   # goose writes temp files under /tmp (platform_extensions); the minimal nix
   # image has no /tmp, so `goose acp`'s session/new panics. Ship a world-writable
   # /tmp (and /var/tmp) so the agent process has scratch space.
@@ -68,9 +66,13 @@ in
 # A kubenix module: this image declares its own scooter.images entry.
 {
   config.scooter.images.agent-host = {
+    # This image's own option, declared on its own entry.
+    imports = [{
+      options.claude.enable = lib.mkEnableOption
+        "bake the unfree claude CLI into this image";
+    }];
     package = lib.mkDefault image;
     attr = "agent-host-image";
     refKey = "agentHost";
-    k3dPush = true;
   };
 }

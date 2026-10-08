@@ -288,6 +288,5 @@ in
     package = lib.mkDefault image;
     attr = "ui-image";
     refKey = "ui";
-    k3dPush = true;
   };
 }

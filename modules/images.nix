@@ -39,12 +39,6 @@ let
         description = "Its camelCase key in ghcr-image-refs; null to omit it.";
       };
 
-      k3dPush = mkOption {
-        type = types.bool;
-        default = false;
-        description = "Whether the k3d/e2e render pushes this to the local registry.";
-      };
-
       path = mkOption {
         type = types.nullOr types.str;
         default = if config.package == null then null else "${config.package}";
@@ -57,7 +51,8 @@ in
 {
   options.scooter.images = mkOption {
     default = { };
-    type = types.attrsOf (types.submodule imageModule);
+    # submoduleWith, so an image can add its own options via imports.
+    type = types.attrsOf (types.submoduleWith { modules = [ imageModule ]; });
     description = ''
       Images by canonical name (agent-host, agent-sandbox-os, ...). Each carries
       a `ref` for manifests, a `package` for builds and a `path` for side-loads.

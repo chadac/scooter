@@ -23,6 +23,5 @@ in
     package = lib.mkDefault image;
     attr = "conversation-controller-image";
     refKey = "conversationController";
-    k3dPush = true;
   };
 }

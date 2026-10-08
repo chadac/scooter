@@ -28,6 +28,5 @@ in
     package = lib.mkDefault image;
     attr = "broker-image";
     refKey = "broker";
-    k3dPush = true;
   };
 }

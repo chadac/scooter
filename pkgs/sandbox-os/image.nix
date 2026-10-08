@@ -375,6 +375,5 @@ in
     package = lib.mkDefault image;
     attr = "sandbox-os-image";
     refKey = "sandboxOs";
-    k3dPush = true;
   }; };
 }

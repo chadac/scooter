@@ -114,6 +114,5 @@ in
     package = lib.mkDefault image;
     attr = "db-migrator-image";
     refKey = "dbMigrator";
-    k3dPush = true;
   };
 }

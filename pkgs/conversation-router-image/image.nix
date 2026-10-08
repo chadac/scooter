@@ -24,6 +24,5 @@ in
     package = lib.mkDefault image;
     attr = "conversation-router-image";
     refKey = "conversationRouter";
-    k3dPush = true;
   };
 }

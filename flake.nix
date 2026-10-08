@@ -95,11 +95,6 @@
 
           # agent-host OCI image.
 
-          # Variant that also bakes the `claude` CLI
-          agentHostImageClaudeBuilder = import ./pkgs/agent-host-image {
-            inherit pkgs lib n2c agentHost agent;
-            withClaudeCode = true;
-          };
 
           # The contrib-free service builds, to break the cycle.
           brokerBase = pkgs.callPackage ./services/broker { inherit scooterSchema scooterLib scooterBrokerLib; };
@@ -283,9 +278,10 @@
 
           # attr -> k3d ref, for the push script
           k3dImageRefs = platformK3d.config.scooter.images;
-          # Each image says whether k3d pushes it.
-          k3dPushImages = lib.filterAttrs (_: img: img.k3dPush) k3dImageRefs;
-          k3dPushRefs = lib.mapAttrs' (_: img: lib.nameValuePair img.attr img.ref) k3dPushImages;
+          # Every image's k3d ref. k3d-platform-up.sh picks which to push --
+          # that list is e2e-only and stays in the script.
+          k3dPushRefs = lib.mapAttrs' (_: img: lib.nameValuePair img.attr img.ref)
+            (lib.filterAttrs (_: img: img.attr != null) k3dImageRefs);
 
           # The camelCase refs server-config reads, from the ghcr render.
           ghcrImageRefs = platformGhcr.config.scooter.images;
@@ -494,7 +490,10 @@
             # nix build .#agent-host-image  ->  agent-host OCI image
             agent-host-image = builtImages.agent-host.package;
             # nix build .#agent-host-image-claude  ->  + the claude CLI (claude-code provider)
-            agent-host-image-claude = agentHostImageClaudeBuilder.image;
+            agent-host-image-claude =
+              (evalPlatform {
+                module = { config.scooter.images.agent-host.claude.enable = true; };
+              }).config.scooter.images.agent-host.package;
 
             # nix build .#ui-image -> UI (nginx + static build) OCI
             ui-image = builtImages.agent-sandbox-ui.package;

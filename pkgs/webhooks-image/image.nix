@@ -27,6 +27,5 @@ in
     package = lib.mkDefault image;
     attr = "webhooks-image";
     refKey = "webhooks";
-    k3dPush = true;
   };
 }
