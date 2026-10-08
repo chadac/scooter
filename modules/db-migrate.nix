@@ -169,8 +169,8 @@ in
     };
     image = mkOption {
       type = types.str;
-      default = cfg.images.agent-db-migrator.ref;
-      defaultText = literalExpression "config.scooter.images.agent-db-migrator.ref";
+      default = cfg.images.agent-db-migrator.ref.fullUrl;
+      defaultText = literalExpression "config.scooter.images.agent-db-migrator.ref.fullUrl";
       description = "OCI ref of the db-migrator image.";
     };
   };

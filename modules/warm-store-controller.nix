@@ -23,8 +23,8 @@ in
 
     image = mkOption {
       type = types.str;
-      default = cfg.images.warm-store-controller.ref;
-      defaultText = literalExpression "config.scooter.images.warm-store-controller.ref";
+      default = cfg.images.warm-store-controller.ref.fullUrl;
+      defaultText = literalExpression "config.scooter.images.warm-store-controller.ref.fullUrl";
       description = "OCI ref of the warm-store-controller image.";
     };
     replicas = mkOption {

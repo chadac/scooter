@@ -57,7 +57,7 @@
       pubImages = self.packages.x86_64-linux;
       imagePackageConfig = { lib, config, ... }: {
         config.scooter.images = lib.mapAttrs
-          (_: img: { tag = lib.mkForce (config.scooter.imagesContentTag pubImages.${img.attr}); })
+          (_: img: { ref.tag = lib.mkForce (config.scooter.imagesContentTag pubImages.${img.attr}); })
           imageMeta;
       };
 
@@ -261,7 +261,7 @@
           # Side-loaded into k3s, so bare names on :latest
           platform = mkTestPlatform (mkTestPlatformConfig "" // {
             # Side-loaded: bare names on :latest, overriding the x86_64 tag pin.
-            images = builtins.mapAttrs (_: _: { tag = lib.mkOverride 40 "latest"; }) builtImages;
+            images = builtins.mapAttrs (_: _: { ref.tag = lib.mkOverride 40 "latest"; }) builtImages;
           });
           # `nix build .#platform-manifests-k3d`
           platformK3d = mkTestPlatformImages k3dRegistry;
@@ -280,13 +280,13 @@
           k3dImageRefs = platformK3d.config.scooter.images;
           # Every image's k3d ref. k3d-platform-up.sh picks which to push --
           # that list is e2e-only and stays in the script.
-          k3dPushRefs = lib.mapAttrs' (_: img: lib.nameValuePair img.attr img.ref)
+          k3dPushRefs = lib.mapAttrs' (_: img: lib.nameValuePair img.attr img.ref.fullUrl)
             (lib.filterAttrs (_: img: img.attr != null) k3dImageRefs);
 
           # The camelCase refs server-config reads, from the ghcr render.
           ghcrImageRefs = platformGhcr.config.scooter.images;
           # Each image names its own camelCase key, or omits itself.
-          ghcrRefs = lib.mapAttrs' (_: img: lib.nameValuePair img.refKey img.ref)
+          ghcrRefs = lib.mapAttrs' (_: img: lib.nameValuePair img.refKey img.ref.fullUrl)
             (lib.filterAttrs (_: img: img.refKey != null) ghcrImageRefs);
 
           # Tier-1-style config-correctness tests for the dev-environment sandbox

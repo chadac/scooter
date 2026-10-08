@@ -36,8 +36,8 @@ in
     };
     image = mkOption {
       type = types.str;
-      default = cfg.images.agent-broker.ref;
-      defaultText = literalExpression "config.scooter.images.agent-broker.ref";
+      default = cfg.images.agent-broker.ref.fullUrl;
+      defaultText = literalExpression "config.scooter.images.agent-broker.ref.fullUrl";
       description = "OCI ref of the broker image.";
     };
     testProvider = mkOption {

@@ -13,18 +13,31 @@ let
         description = "The image derivation. Null when a deployer only has a ref.";
       };
 
-      tag = mkOption {
-        type = types.str;
-        default = if config.package == null then "latest" else cfg.imagesContentTag config.package;
-        defaultText = literalExpression "the package's 12-char store hash, else \"latest\"";
-        description = "Tag only. Content-addressed, so an unchanged image does not roll pods.";
-      };
-
       ref = mkOption {
-        type = types.str;
-        default = "${cfg.registryPrefix}${name}:${config.tag}";
-        defaultText = literalExpression ''"''${registryPrefix}<name>:''${tag}"'';
-        description = "What a manifest names. Override to ship from another registry.";
+        description = "Where this image lives. Override image/tag to ship from elsewhere.";
+        type = types.submodule {
+          options = {
+            image = mkOption {
+              type = types.str;
+              default = "${cfg.registryPrefix}${name}";
+              defaultText = literalExpression ''"''${registryPrefix}<name>"'';
+              description = "Registry path, no tag.";
+            };
+            tag = mkOption {
+              type = types.str;
+              default = if config.package == null then "latest" else cfg.imagesContentTag config.package;
+              defaultText = literalExpression "the package's 12-char store hash, else \"latest\"";
+              description = "Tag only. Content-addressed, so an unchanged image does not roll pods.";
+            };
+            fullUrl = mkOption {
+              type = types.str;
+              default = "${config.ref.image}:${config.ref.tag}";
+              defaultText = literalExpression ''"''${ref.image}:''${ref.tag}"'';
+              description = "What a manifest names.";
+            };
+          };
+        };
+        default = { };
       };
 
       attr = mkOption {

@@ -32,8 +32,8 @@ in
     };
     image = mkOption {
       type = types.str;
-      default = cfg.images.byoc-controller.ref;
-      defaultText = literalExpression "config.scooter.images.byoc-controller.ref";
+      default = cfg.images.byoc-controller.ref.fullUrl;
+      defaultText = literalExpression "config.scooter.images.byoc-controller.ref.fullUrl";
       description = "OCI ref of the BYOC controller image.";
     };
     traceTunnel = mkOption {

@@ -16,8 +16,8 @@ in
   options.scooter.conversationController = with lib; {
     image = mkOption {
       type = types.str;
-      default = cfg.images.conversation-controller.ref;
-      defaultText = literalExpression "config.scooter.images.conversation-controller.ref";
+      default = cfg.images.conversation-controller.ref.fullUrl;
+      defaultText = literalExpression "config.scooter.images.conversation-controller.ref.fullUrl";
       description = "OCI ref of the conversation-controller image.";
     };
     replicas = mkOption {
@@ -88,8 +88,8 @@ in
     };
     routerImage = mkOption {
       type = types.str;
-      default = cfg.images.conversation-router.ref;
-      defaultText = literalExpression "config.scooter.images.conversation-router.ref";
+      default = cfg.images.conversation-router.ref.fullUrl;
+      defaultText = literalExpression "config.scooter.images.conversation-router.ref.fullUrl";
       description = "OCI ref of the conversation-router image.";
     };
     routerReplicas = mkOption {

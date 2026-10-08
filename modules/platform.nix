@@ -325,14 +325,14 @@ in
     };
     agentHostImage = mkOption {
       type = types.str;
-      default = cfg.images.agent-host.ref;
-      defaultText = literalExpression "config.scooter.images.agent-host.ref";
+      default = cfg.images.agent-host.ref.fullUrl;
+      defaultText = literalExpression "config.scooter.images.agent-host.ref.fullUrl";
       description = "OCI ref of the agent-host image.";
     };
     sandboxImage = mkOption {
       type = types.str;
-      default = cfg.images.agent-sandbox-os.ref;
-      defaultText = literalExpression "config.scooter.images.agent-sandbox-os.ref";
+      default = cfg.images.agent-sandbox-os.ref.fullUrl;
+      defaultText = literalExpression "config.scooter.images.agent-sandbox-os.ref.fullUrl";
       description = "OCI ref of the generic Nix sandbox image.";
     };
     sandboxRuntimeClass = mkOption {
@@ -539,8 +539,8 @@ in
     };
     uiImage = mkOption {
       type = types.str;
-      default = cfg.images.agent-sandbox-ui.ref;
-      defaultText = literalExpression "config.scooter.images.agent-sandbox-ui.ref";
+      default = cfg.images.agent-sandbox-ui.ref.fullUrl;
+      defaultText = literalExpression "config.scooter.images.agent-sandbox-ui.ref.fullUrl";
       description = "OCI ref of the UI image (nginx + static build + API proxy).";
     };
     ui.enable = mkOption {
@@ -715,8 +715,8 @@ in
         image = mkOption {
           type = types.str;
           # Published as "remote-agent" (not the n2c name scooter-remote-agent).
-          default = cfg.images.remote-agent.ref;
-          defaultText = literalExpression "config.scooter.images.remote-agent.ref";
+          default = cfg.images.remote-agent.ref.fullUrl;
+          defaultText = literalExpression "config.scooter.images.remote-agent.ref.fullUrl";
           description = "The ghcr container image the Settings one-liner tells users to `docker run` (REMOTE_AGENT_IMAGE).";
         };
         bridgeUrl = mkOption {

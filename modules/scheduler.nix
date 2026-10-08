@@ -24,8 +24,8 @@ in
     };
     image = mkOption {
       type = types.str;
-      default = cfg.images.agent-scheduler.ref;
-      defaultText = literalExpression "config.scooter.images.agent-scheduler.ref";
+      default = cfg.images.agent-scheduler.ref.fullUrl;
+      defaultText = literalExpression "config.scooter.images.agent-scheduler.ref.fullUrl";
       description = "OCI ref of the scheduler image.";
     };
     tickSeconds = mkOption {
