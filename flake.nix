@@ -226,6 +226,8 @@
           # UI OCI image
 
           # Render the platform manifests (namespace
+          # remote-agent is excluded: it bakes the unfree claude CLI, so its tag
+          # would force an allowUnfree check in every pure eval.
           imageModules = map (m: import m imageArgs) [
             ./pkgs/agent-host-image/image.nix
             ./pkgs/ui-image/image.nix
@@ -237,7 +239,6 @@
             ./pkgs/conversation-controller-image/image.nix
             ./pkgs/conversation-router-image/image.nix
             ./pkgs/warm-store-controller-image/image.nix
-            ./pkgs/remote-agent-image/image.nix
           ] ++ [ sandboxOsImage.module imagePackageConfig ];
 
           # Build inputs the image modules take as ordinary arguments.
@@ -281,28 +282,8 @@
             (_: { enable = true; });
 
           # E2E/cluster-test render (`nix build .#platform-manifests`)
-          mkTestPlatformConfig = prefix: {
-            registryPrefix = prefix;
-            agent.skills = scooterSkills; # ship the ./skills/*.md set
-            # TEST-ONLY overrides come from modules/testing.nix, which only mkTestPlatform imports.
-            testing.enable = true;
-            # RUN the migration Job in the cluster/e2e renders
-            dbMigrate.enable = true;
-            # Assets PVC on the single-node k3d hostPath escape hatch
-            conversationController.assets.hostPath = "/var/lib/scooter-e2e-assets";
-            # The cross-pod history mirror
-            conversationController.historyMirror = {
-              enable = true;
-              hostPath = "/var/lib/scooter-e2e-history";
-            };
-            broker = {
-              enable = true;
-              testProvider = true; # whoami provider for the credential e2e
-            };
-            # testWebhook comes from modules/testing.nix — not repeated here.
-            webhooks.enable = true;
-            # e2e configures no credentials; drop contribs needing one.
-            contribs = testContribs;
+          mkTestPlatformConfig = import ./.github/deployment/test-platform.nix {
+            inherit lib scooterSkills testContribs;
           };
           mkTestPlatformImages = prefix: mkTestPlatform (mkTestPlatformConfig prefix);
           # Side-loaded into k3s, so bare names on :latest
@@ -319,15 +300,9 @@
             conversationController.historyMirror.retainForMigration = true;
           });
 
-          # GHCR render (`nix build .#platform-manifests-ghcr`): the REAL production deploy
-          platformGhcr = mkPlatform {
-            agent.skills = scooterSkills; # ship the ./skills/*.md set
-            fakeAgent = false; # the real agent — this is a production deploy
-            broker.enable = true; # real deploys wire real credential providers
-            webhooks.enable = true; # no testWebhook — /webhooks/test is e2e-only
-            # Bare render: platform only, no integrations.
-            contribs = testContribs;
-          };
+          platformGhcr = mkPlatform (import ./.github/deployment/ghcr-platform.nix {
+            inherit scooterSkills testContribs;
+          });
 
           # attr -> k3d ref, for the push script
           k3dImageRefs = platformK3d.config.scooter.images;
@@ -570,13 +545,8 @@
 
             # `nix build .#example-manifests` -> the YAML the EXAMPLE config renders
             example-manifests =
-              (kubenix.evalModules.${system} {
-                module = { kubenix, ... }: {
-                  imports = [ ./modules/platform.nix ./examples/kubenix-config.nix ];
-                  kubenix.project = "agent-sandbox";
-                  kubernetes.version = "1.31";
-                };
-              }).config.kubernetes.resultYAML;
+              (evalPlatform { module = ./examples/kubenix-config.nix; })
+                .config.kubernetes.resultYAML;
 
             # nix build .#ghcr-image-refs -> JSON { <camelName> = "ghcr.io/…:<tag>" }
             ghcr-image-refs = pkgs.writeText "ghcr-image-refs.json" (builtins.toJSON ghcrRefs);

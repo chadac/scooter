@@ -1048,6 +1048,9 @@ in
   };
 
   config = {
+    # No package: the unfree claude CLI would force allowUnfree.
+    scooter.images.remote-agent = { };
+
     # The agent_host database: the tables agent-host OWNS (conversation_jobs). The
     # provisioning Job creates the db + an `agent_host` role that owns it, and writes the
     # password to `agent-pg-agent-host`.
