@@ -58,7 +58,7 @@ reading a renamed field as null.
 ### Variants
 
 @chadac: "we would substitute the ghcrImage ref based on whether
-broker.claude.enable is true or not."
+claude.enable is true or not."
 
 This is the case the file has to handle, and it breaks the one-ref-per-name
 assumption. `agent-host` publishes TWO images -- `agent-host` and
@@ -66,86 +66,47 @@ assumption. `agent-host` publishes TWO images -- `agent-host` and
 merely switch the local build. Today that is why server-config rebuilds the
 image itself and hand-computes `claudeTag`.
 
-So an entry carries its variants:
+@chadac: flat entries. So `agent-host-claude` is just another key, and the JSON
+schema stays trivial -- every entry is `{ image, tag }`, no nesting:
 
 ```json
-"agent-host": {
-  "image": "ghcr.io/chadac/scooter/agent-host",
-  "tag": "xm52p76ya54k",
-  "variants": {
-    "claude": { "image": "ghcr.io/chadac/scooter/agent-host-claude", "tag": "9f2bq1x7m4ck" }
-  }
-}
+"agent-host":        { "image": "ghcr.io/chadac/scooter/agent-host",        "tag": "xm52p76ya54k" },
+"agent-host-claude": { "image": "ghcr.io/chadac/scooter/agent-host-claude", "tag": "9f2bq1x7m4ck" }
 ```
 
-and the module picks:
+The flag-to-key pairing then has to live somewhere, and the right place is the
+image that already declares the flag. `pkgs/agent-host-image/image.nix` owns
+`claude.enable`, so it also says which published key that selects:
 
 ```nix
-scooter.images = mapAttrs (name: img:
-  let v = if (cfg.images.${name}.claude.enable or false) then img.variants.claude else img;
-  in { ref.image = mkDefault v.image; ref.tag = mkDefault v.tag; })
-  published.images;
-```
-
-Note this reads an option (`claude.enable`) to choose a definition for a
-sibling option on the same submodule. That is the fixed point working as
-intended -- no ordering concern -- but it does mean a variant flag must never
-be *defined* from the published data, or it self-references.
-
-Open question (5): `variants` as an open attrset keyed by flag name is general,
-but nothing else has a variant today. The alternative is a flat second entry
-(`"agent-host-claude": {...}`) plus the module knowing the name pairing. The
-nested form keeps the pairing in data; the flat form keeps the schema trivial.
-Leaning nested, since the flat form resurrects exactly the kind of implicit
-name mapping `refKey` was.
-
-### The module
-
-`modules/published-images.nix`:
-
-```nix
-scooter.useGhcrImages = mkEnableOption "pin every image to the last published ref";
-
-config = mkIf cfg.useGhcrImages {
-  scooter.images = mapAttrs (_: img: {
-    ref.image = mkDefault img.image;
-    ref.tag   = mkDefault img.tag;
-  }) (importJSON ./data/published-images.json).images;
+config.scooter.images.agent-host = {
+  imports = [{
+    options.claude.enable = lib.mkEnableOption "bake the unfree claude CLI";
+    # Which published entry claude.enable selects.
+    options.publishedAs = lib.mkOption { type = lib.types.str; };
+    config.publishedAs = lib.mkIf config.claude.enable "agent-host-claude";
+  }];
 };
 ```
 
-`mkDefault`, so an explicit per-image override still wins -- a deployer can pin
-ten images from the file and build the eleventh locally.
+The module then reads `publishedAs` (defaulting to the image's own name) rather
+than knowing anything about claude:
 
-Open question (1): should this live at `scooter.useGhcrImages`, or as
-`scooter.images.fromPublished = true`? The latter keeps image concerns under
-`images`, but reads oddly as a verb.
-
-### The PR check
-
-The whole design rests on the JSON matching what the flake would build, so it
-needs the `db-generate-check` treatment -- regenerate, diff, fail with
-instructions:
-
-```
-published-images-check:
-    scripts/published-images-generate.sh
-    @git diff --exit-code -- modules/data/published-images.json \
-      || (echo "❌ published-images.json drift: an image changed without regenerating. Run 'just published-images-generate' and commit." && exit 1)
+```nix
+scooter.images = mapAttrs (name: img: {
+  ref.image = mkDefault published.images.${img.publishedAs}.image;
+  ref.tag   = mkDefault published.images.${img.publishedAs}.tag;
+}) cfg.images;
 ```
 
-CAUTION, learned the hard way: `just db-generate-check` and `check-lockfiles`
-both *modify the working tree* as a side effect. Running this locally to
-"just check" will rewrite the JSON. The generate script must be pure
-(eval + write) with no network, so a dirty tree is the only failure mode.
+So no central list of variants, and a future variant on another image needs no
+change here -- it declares its own `publishedAs`. This keeps the pairing in the
+module system rather than in the JSON, which is the tradeoff flat buys: a
+trivial schema in exchange for one option.
 
-Open question (2): the check regenerates from the LOCAL eval, so it proves
-"the JSON matches what this tree would build" -- not "these tags exist in
-ghcr". Those differ on any PR that changes an image: the new tag is correct but
-unpublished until merge. So the check must compare against the eval, not the
-registry, and the JSON is understood as "what main's images hash to", refreshed
-by the publish workflow on merge. A PR that changes an image will show JSON
-churn, which is the intended signal.
+Note this reads an option to choose a definition for a sibling option on the
+same submodule. That is the fixed point working as intended -- but a variant
+flag must never be *defined* from the published data, or it self-references.
 
 ## Consequences
 
@@ -169,15 +130,20 @@ churn, which is the intended signal.
 
 Deleting in A breaks the odin deploy at eval time.
 
+## Decided
+
+- **`scooter.useGhcrImages`**, not `images.fromPublished`. @chadac: "former is
+  more readable."
+- **Flat entries**, not nested variants. @chadac: "flat agent-host-claude."
+  The flag-to-key pairing lives in the image's own `publishedAs` option.
+- `agent-host-claude` is already published (`publish-images.yml:70`, with
+  `unfree: true`), so the file can record it with no workflow change.
+
 ## Open questions
 
-1. `scooter.useGhcrImages` or `scooter.images.fromPublished`?
-2. Confirm the check compares eval-vs-JSON, never JSON-vs-registry (above).
-3. Does the file record the multi-arch manifest tag only, or the per-arch
+1. Confirm the check compares eval-vs-JSON, never JSON-vs-registry (above).
+   This is the one that decides whether the check is sound.
+2. Does the file record the multi-arch manifest tag only, or the per-arch
    `<tag>-<arch>` tags too? Deploys use the joined tag; nothing consumes the
    per-arch ones outside the workflow, so recording only the joined tag seems
    right -- but it means the file cannot be written until the `manifest` job.
-4. `agent-host-claude` is already published (`publish-images.yml:70`, with
-   `unfree: true`), so the file can record it today -- no workflow change for
-   the unfree gate. Confirmed, not open.
-5. `variants` nested vs. a flat second entry -- see Variants above.
