@@ -138,12 +138,56 @@ Deleting in A breaks the odin deploy at eval time.
   The flag-to-key pairing lives in the image's own `publishedAs` option.
 - `agent-host-claude` is already published (`publish-images.yml:70`, with
   `unfree: true`), so the file can record it with no workflow change.
+- **The PR check compares eval-vs-JSON; publish writes the file on merge.**
+  @chadac: "compares eval vs. json on PRs" / "and then publishes."
+
+### The lifecycle
+
+Two jobs, two different roles, and conflating them is the trap:
+
+| | compares | writes | when |
+|---|---|---|---|
+| PR check | eval vs. committed JSON | nothing | every PR |
+| publish | nothing | the JSON | on merge to main |
+
+**On a PR** the check regenerates from the local eval and diffs against the
+committed file. It never consults the registry. A PR that changes an image
+*should* show JSON churn -- the new tag is correct but not yet pushed, so a
+registry comparison would fail every such PR for being correct. The author
+commits the regenerated file along with the change.
+
+**On merge** `publish-images.yml` pushes the images and writes the file back
+with the tags it actually pushed, so main's JSON always describes real
+registry contents. That write is also the backstop: if a PR's committed JSON
+were somehow wrong, the publish run corrects it rather than leaving main
+describing images nobody can pull.
+
+Two consequences worth stating:
+
+- The publish job needs write access to main (a commit, or a PR it
+  auto-merges). A push to a protected main needs either a token that can
+  bypass the branch rules or a bot PR -- open question (1).
+- Eval and publish must compute the tag **identically**, and today they agree
+  only by coincidence. `publish-images.yml:128` is
+  `basename | cut -d- -f1 | cut -c1-12` (up to the first `-`, then 12 chars);
+  `scooter.imagesContentTag` is `substring 0 12` (12 chars outright). Verified
+  equal for agent-broker (`vjsngqa5hrdg` both ways), but they match only
+  because a store hash is 32 chars with no `-` inside the first 12 -- a name
+  whose hash portion were shorter would diverge.
+
+  So the generator must call `imagesContentTag` and the workflow must consume
+  the generator's output, rather than either reimplementing the slicing. Two
+  independent formulas that happen to agree is precisely how the PR check
+  starts passing on wrong data.
 
 ## Open questions
 
-1. Confirm the check compares eval-vs-JSON, never JSON-vs-registry (above).
-   This is the one that decides whether the check is sound.
+1. How does the publish job write to main -- a direct push with a token that
+   bypasses branch protection, or a bot PR that auto-merges? Affects nothing
+   about the design, but it is the one piece of plumbing with no obvious
+   default.
 2. Does the file record the multi-arch manifest tag only, or the per-arch
    `<tag>-<arch>` tags too? Deploys use the joined tag; nothing consumes the
    per-arch ones outside the workflow, so recording only the joined tag seems
-   right -- but it means the file cannot be written until the `manifest` job.
+   right -- but it means the file is written by the `manifest` job, not the
+   per-arch build jobs.
