@@ -23,6 +23,8 @@
 { pkgs, lib, n2c
 , name ? "agent-sandbox-os"
 , tag ? "latest"
+  # Which contribs to ship. Passed in: this tree is vended.
+, deploymentModules ? [ ]
 , extraModules ? [ ]   # extra NixOS config, BOOT ONLY: a self-modify drops it (see below)
   # Extra NixOS modules as REPO-RELATIVE files ("contrib/aws/sandbox.nix"). Imported
   # into the booted system AND baked into the re-converge list, so they survive a
@@ -69,7 +71,11 @@ let
   # re-derived this list in the pod on every self-modify; now the halves ride the
   # generic re-converge list below, like any other module layered into the image.
   # Why: PR #717.
-  contribSandbox = import ../../contrib/sandbox-modules.nix { inherit lib; };
+  # deploymentModules is passed in: this tree is vended.
+  contribSandbox = import ../../contrib/sandbox-modules.nix {
+    inherit lib;
+    extraModules = deploymentModules;
+  };
 
   nixos = pkgs.nixos ({ lib, ... }: {
     imports = [ ../../modules/sandbox-os ]

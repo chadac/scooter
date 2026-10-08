@@ -144,7 +144,7 @@ in
   options = {
     enable = mkOption {
       type = types.bool;
-      default = true;
+      default = false;
       description = ''
         Build this contrib and inject it into the images it targets. `false` means
         absent: no derivation, nothing in any image, and no skills. Its deployment
@@ -154,8 +154,10 @@ in
         shipped (#599). Setting this false alone is always legal — that is how a
         deployment trims the contrib set.
 
-        Build a disabled one with `withModules` (contrib/default.nix) rather than
-        weakening this.
+        OPT IN, not out. Defaulting true meant a deployment had to enumerate every
+        integration it did NOT want, and five of them declare a credential with no
+        default — so forgetting one failed the render instead of shipping nothing.
+        mkDefault, so a deployment may still set it either way without mkForce.
       '';
     };
 
