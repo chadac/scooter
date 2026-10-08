@@ -23,8 +23,8 @@ in
 
     image = mkOption {
       type = types.str;
-      default = "${cfg.registryPrefix}warm-store-controller:latest";
-      defaultText = literalExpression ''"''${registryPrefix}warm-store-controller:latest"'';
+      default = cfg.images.warm-store-controller.ref.fullUrl;
+      defaultText = literalExpression "config.scooter.images.warm-store-controller.ref.fullUrl";
       description = "OCI ref of the warm-store-controller image.";
     };
     replicas = mkOption {
@@ -97,7 +97,8 @@ in
     };
   };
 
-  config = lib.mkIf wcfg.enable {
+  config = lib.mkMerge [
+    (lib.mkIf wcfg.enable {
     kubernetes.resources = {
       # --- the pool StorageClass (Retain) ---------------------------------
       # WaitForFirstConsumer: the PV records the topology the predicate reads back.
@@ -207,5 +208,6 @@ in
         };
       };
     };
-  };
+  })
+  ];
 }

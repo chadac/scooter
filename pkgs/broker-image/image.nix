@@ -3,7 +3,7 @@
 # OCI image for the credential broker. Thin layered image: the broker Python
 # app (with its closure) + cacert, entrypoint = the agent-broker binary.
 
-{
+let
   image = n2c.buildImage {
     name = "agent-broker";
     tag = "latest";
@@ -20,5 +20,13 @@
       ];
       ExposedPorts = { "8080/tcp" = { }; };
     };
+  };
+in
+# A kubenix module: this image declares its own scooter.images entry.
+{
+  config.scooter.images.agent-broker = {
+    package = lib.mkDefault image;
+    attr = "broker-image";
+    refKey = "broker";
   };
 }

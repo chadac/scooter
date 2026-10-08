@@ -5,7 +5,7 @@
 # CA certs (for the Anthropic + wss TLS), and a minimal shell/coreutils (the SDK's `claude`
 # subprocess shells out). Exposes 1717 for the local Claude login server.
 
-{
+let
   image = n2c.buildImage {
     name = "scooter-remote-agent";
     tag = "latest";
@@ -33,4 +33,8 @@
       ExposedPorts = { "34579/tcp" = { }; };
     };
   };
+in
+# A kubenix module: this image declares its own scooter.images entry.
+{
+  config.scooter.images.remote-agent.package = lib.mkDefault image;
 }

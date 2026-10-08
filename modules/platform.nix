@@ -201,7 +201,7 @@ in
   # renders its own manifests, so adding an integration edits no platform file.
   # contrib/spec.nix comes with them, via all-modules.nix — it is the schema for the
   # `contribs.*` tree the skills above are read from. Why: #599, #711, #719.
-  imports = [ kubenix.modules.k8s ./db-spec.nix ./postgres.nix ./db-migrate.nix ./broker.nix ./sandbox-pod.nix ./webhooks.nix ./byoc.nix ./scheduler.nix ./conversation-controller.nix ./warm-store-controller.nix ./legacy-state-migration.nix ./event-backfill.nix ]
+  imports = [ kubenix.modules.k8s ./images.nix ./db-spec.nix ./postgres.nix ./db-migrate.nix ./broker.nix ./sandbox-pod.nix ./webhooks.nix ./byoc.nix ./scheduler.nix ./conversation-controller.nix ./warm-store-controller.nix ./legacy-state-migration.nix ./event-backfill.nix ]
     ++ contribModules;
 
   # Declared ONLY so a definition on the old root matches something and reaches
@@ -325,14 +325,14 @@ in
     };
     agentHostImage = mkOption {
       type = types.str;
-      default = "${cfg.registryPrefix}agent-host:latest";
-      defaultText = literalExpression ''"''${registryPrefix}agent-host:latest"'';
+      default = cfg.images.agent-host.ref.fullUrl;
+      defaultText = literalExpression "config.scooter.images.agent-host.ref.fullUrl";
       description = "OCI ref of the agent-host image.";
     };
     sandboxImage = mkOption {
       type = types.str;
-      default = "${cfg.registryPrefix}agent-sandbox-os:latest";
-      defaultText = literalExpression ''"''${registryPrefix}agent-sandbox-os:latest"'';
+      default = cfg.images.agent-sandbox-os.ref.fullUrl;
+      defaultText = literalExpression "config.scooter.images.agent-sandbox-os.ref.fullUrl";
       description = "OCI ref of the generic Nix sandbox image.";
     };
     sandboxRuntimeClass = mkOption {
@@ -539,8 +539,8 @@ in
     };
     uiImage = mkOption {
       type = types.str;
-      default = "${cfg.registryPrefix}agent-sandbox-ui:latest";
-      defaultText = literalExpression ''"''${registryPrefix}agent-sandbox-ui:latest"'';
+      default = cfg.images.agent-sandbox-ui.ref.fullUrl;
+      defaultText = literalExpression "config.scooter.images.agent-sandbox-ui.ref.fullUrl";
       description = "OCI ref of the UI image (nginx + static build + API proxy).";
     };
     ui.enable = mkOption {
@@ -714,10 +714,9 @@ in
         };
         image = mkOption {
           type = types.str;
-          # ghcr.io/<owner>/scooter/<image> is the path scheme publish-images.yml pushes;
-          # the old ghcr.io/chadac/scooter-remote-agent ref matched nothing that workflow
-          # could ever produce, so the Settings one-liner failed `docker pull` for everyone.
-          default = "ghcr.io/chadac/scooter/remote-agent:latest";
+          # Published as "remote-agent" (not the n2c name scooter-remote-agent).
+          default = cfg.images.remote-agent.ref.fullUrl;
+          defaultText = literalExpression "config.scooter.images.remote-agent.ref.fullUrl";
           description = "The ghcr container image the Settings one-liner tells users to `docker run` (REMOTE_AGENT_IMAGE).";
         };
         bridgeUrl = mkOption {
@@ -1049,6 +1048,9 @@ in
   };
 
   config = {
+    # No package: the unfree claude CLI would force allowUnfree.
+    scooter.images.remote-agent = { };
+
     # The agent_host database: the tables agent-host OWNS (conversation_jobs). The
     # provisioning Job creates the db + an `agent_host` role that owns it, and writes the
     # password to `agent-pg-agent-host`.

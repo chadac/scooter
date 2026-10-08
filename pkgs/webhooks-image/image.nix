@@ -2,7 +2,7 @@
 
 # OCI image for the webhooks service.
 
-{
+let
   image = n2c.buildImage {
     name = "agent-webhooks";
     tag = "latest";
@@ -19,5 +19,13 @@
       ];
       ExposedPorts = { "8080/tcp" = { }; };
     };
+  };
+in
+# A kubenix module: this image declares its own scooter.images entry.
+{
+  config.scooter.images.agent-webhooks = {
+    package = lib.mkDefault image;
+    attr = "webhooks-image";
+    refKey = "webhooks";
   };
 }

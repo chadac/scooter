@@ -36,8 +36,8 @@ in
     };
     image = mkOption {
       type = types.str;
-      default = "${cfg.registryPrefix}agent-broker:latest";
-      defaultText = literalExpression ''"''${registryPrefix}agent-broker:latest"'';
+      default = cfg.images.agent-broker.ref.fullUrl;
+      defaultText = literalExpression "config.scooter.images.agent-broker.ref.fullUrl";
       description = "OCI ref of the broker image.";
     };
     testProvider = mkOption {
@@ -202,6 +202,7 @@ in
   # while everything else stays gated on `enable`. The gated body keeps its own
   # indentation so this wrapper is the whole diff.
   config = lib.mkMerge [
+
   # The tables the `broker` database holds (scooter.db, #606). The OWNER is
   # declared here and the tables MERGE in from wherever the code that writes them
   # lives: permission_requests is contrib/aws/deployment.nix's now (stage 2 of #606).

@@ -318,10 +318,6 @@ let
     fi
     exec ${toplevel}/init "$@"
   '';
-in
-{
-  inherit toplevel nixos;
-
   # nix build .#sandbox-os-image  ->  a nix2container image booting systemd PID 1.
   image = n2c.buildImage {
     inherit name tag;
@@ -371,4 +367,13 @@ in
       WorkingDir = "/workspace";
     };
   };
+in
+# Not only an image: the contrib-sandbox check reads nixos too.
+{
+  inherit toplevel nixos image;
+  module = { config.scooter.images.agent-sandbox-os = {
+    package = lib.mkDefault image;
+    attr = "sandbox-os-image";
+    refKey = "sandboxOs";
+  }; };
 }

@@ -2,12 +2,7 @@
   description = "Nix-powered agent sandbox platform layered over the Kubernetes agent-sandbox controller";
 
   inputs = {
-    # The single nixpkgs the platform AND the sandbox build from. The sandbox's
-    # lazy-tool stubs + the runtime re-converge resolve against `path:${nixpkgs}`,
-    # the SAME source the image baked with — so a re-converge is a near-noop diff
-    # against the baked store (no toolchain re-fetch). (There used to be a separate
-    # `nixpkgs-pinned` input for the stubs; that drift was the cause of the slow
-    # first re-converge, so it's unified onto this one.)
+    # The single nixpkgs both the platform and sandbox build from.
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
     nix2container = {
@@ -18,19 +13,12 @@
       url = "github:hall/kubenix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    # Lazy package shims (compiled dispatcher): a tool is on PATH as a shim that
-    # realises its .drv on first use, then execs the real binary. Only the .drv is
-    # baked into the image (tiny) — the built package materializes into the writable
-    # store on first call, keeping rarely-used heavies (awscli2) out of the base
-    # image closure. Replaces the homegrown modules/sandbox-os/lazy-tools.nix.
+    # Lazy package shims (compiled dispatcher)
     nix-stubs = {
       url = "github:chadac/nix-stubs";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    # uv patched to work under Nix: wheels/interpreters are fixed up so Nix-supplied
-    # native libs (BLAS/LAPACK for numpy/scipy, etc.) resolve without manual
-    # LD_LIBRARY_PATH. Backs the in-pod marimo so `uv add matplotlib` / --sandbox
-    # science deps actually import. The `/bin` variant is a prebuilt binary (no compile).
+    # uv patched to work under Nix
     uv-nix = {
       url = "github:chadac/uv-nix/bin";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -39,18 +27,7 @@
 
   outputs = inputs@{ self, nixpkgs, flake-parts, nix2container, kubenix, nix-stubs, uv-nix }:
     let
-      # The PLATFORM's agent skills — the ones that document no contrib, so nothing
-      # gates them. A skill for a contrib lives in that contrib and is gated on it
-      # (contrib/<name>/contrib.nix -> modules/platform.nix), never passed through here.
-      #
-      # Every ./skills/*.md read into the
-      # `filename -> content` attrset the platform module's `agent.skills` option
-      # expects (rendered to the agent-skills ConfigMap, mounted at SKILLS_DIR,
-      # assembled into each conversation's .goosehints). The module default is `{}`
-      # (a kubenix module can't read a flake-relative dir), so a deploy that wants
-      # the shipped skills threads THESE in — the default `platform` render below
-      # does, and it's exposed as `lib.scooterSkills` for external deployers. System-
-      # independent (pure file reads), so defined once here on nixpkgs.lib.
+      # The PLATFORM's agent skills
       scooterSkills =
         let dir = ./skills; l = nixpkgs.lib;
         in l.mapAttrs' (name: _: {
@@ -59,98 +36,35 @@
         }) (l.filterAttrs (n: t: t == "regular" && l.hasSuffix ".md" n)
           (builtins.readDir dir));
 
-      # --- Content-tagged ghcr image refs (SYSTEM-INDEPENDENT) -------------------
-      # Hoisted to the top-level let (like scooterSkills) so BOTH the perSystem
-      # renders AND the system-independent kubenixModules can share one definition.
-      # The tag is the image's 12-char store hash; pinned to x86_64-linux (see the
-      # long note by ghcrImages) so the ref is a fixed string on any eval system and
-      # matches exactly what the x86_64 publish-images workflow pushes.
-      #
-      # unsafeDiscardStringContext is REQUIRED: interpolating `img.outPath` attaches
-      # the image derivation as string CONTEXT, and that context survives baseNameOf
-      # + substring — so without discarding it the tag string carries every image as
-      # a build dependency, and any derivation embedding these refs would REALISE all
-      # the images just to read their hashes. We only want the hash as TEXT.
-      ghcrContentTag = img:
-        builtins.unsafeDiscardStringContext
-          (builtins.substring 0 12 (builtins.baseNameOf img.outPath));
-      ghcrPrefix = "ghcr.io/chadac/scooter/";
-      ghcrImageRef = name: img: "${ghcrPrefix}${name}:${ghcrContentTag img}";
-      # CONTENT TAGS ARE PINNED TO x86_64-linux — deliberately, and it's what makes
-      # ghcrImages system-independent (a fixed string regardless of the eval system),
-      # so the bare kubenix module defaults (modules/platform.nix, via the exported
-      # kubenixModules.default) can embed them. It's also what's CORRECT: the
-      # publish-images workflow runs on ubuntu-latest (x86_64) and pushes `.#<attr>` =
-      # the x86_64 image under its x86_64 content tag. Per-system image derivations
-      # hash differently per arch, so computing the tag from the LOCAL (eval-system)
-      # image would, on aarch64, yield a tag that was NEVER pushed. Reading
-      # self.packages.x86_64-linux.<attr> pins to the arch we actually publish. The tag
-      # is a registry ref (pure TEXT), NOT an arch selector; the pushed image can be
-      # multi-arch under that same tag. `nix build .#<attr>` on aarch64 still builds an
-      # aarch64 image locally (unaffected); only the ghcr REF text is x86_64-pinned.
-      pubImages = self.packages.x86_64-linux;
-      # The content-tagged ghcr image refs (the kubenix DEFAULTS). A deploy that ships
-      # to another registry overrides these via scooter.*Image / registryPrefix
-      # (e.g. the odin localhost:5000 deploy). The FREE images are a PURE set (no flags
-      # needed). The claude variant bakes the UNFREE claude-code CLI, so its .outPath
-      # forces an allowUnfree check — split out, resolved only under --impure +
-      # NIXPKGS_ALLOW_UNFREE. Image NAMES match the canonical agent-* convention.
-      # ── k3d-registry refs for the E2E FULL cluster. The registry is created by
-      # k3d as `k3d-scooter-reg.localhost` (see ci.yml / cluster-up.sh): a
-      # `.localhost` name resolves to 127.0.0.1 on the HOST (so skopeo pushes to it
-      # straight from /nix/store — no docker-daemon load, no `k3d image import`
-      # tarball; unchanged layers are skipped by digest) and to the registry
-      # container via docker DNS INSIDE the cluster — one ref works on both sides.
-      # Content tags (not :latest) make pullPolicy IfNotPresent correct: a rebuilt
-      # image gets a new tag -> pull; an unchanged one is already present -> skip.
-      k3dRegistry = "k3d-scooter-reg.localhost:5800";
-      k3dImageRef = name: img: "${k3dRegistry}/${name}:${ghcrContentTag img}";
-      k3dImages = {
-        agentHost = k3dImageRef "agent-host" pubImages.agent-host-image;
-        ui = k3dImageRef "agent-sandbox-ui" pubImages.ui-image;
-        broker = k3dImageRef "agent-broker" pubImages.broker-image;
-        webhooks = k3dImageRef "agent-webhooks" pubImages.webhooks-image;
-        sandboxOs = k3dImageRef "agent-sandbox-os" pubImages.sandbox-os-image;
-        conversationController = k3dImageRef "conversation-controller" pubImages.conversation-controller-image;
-        conversationRouter = k3dImageRef "conversation-router" pubImages.conversation-router-image;
-        # The shared-DB migration Job image. Required in the k3d/e2e render: agent-host's
-        # metadata stores stopped self-creating tables (#425), so nothing creates the
-        # `conversations` schema unless this Job runs — without it agent-host crash-loops on
-        # `relation "conversations" does not exist` and every e2e-full spec fails.
-        dbMigrator = k3dImageRef "agent-db-migrator" pubImages.db-migrator-image;
-      };
-      # attr -> ref, for the push script: `nix build .#k3d-image-refs` + jq. Keyed by
-      # the FLAKE IMAGE ATTR whose `.copyTo` pushes it.
-      k3dImagePushMap = {
-        agent-host-image = k3dImages.agentHost;
-        ui-image = k3dImages.ui;
-        broker-image = k3dImages.broker;
-        webhooks-image = k3dImages.webhooks;
-        sandbox-os-image = k3dImages.sandboxOs;
-        conversation-controller-image = k3dImages.conversationController;
-        conversation-router-image = k3dImages.conversationRouter;
-        db-migrator-image = k3dImages.dbMigrator;
+      # name -> packages attr. Must be plain data: the tag pin runs in the
+      # top-level scope, and reaching the per-system image tree from here
+      # would route through `self` and recurse.
+      imageMeta = {
+        agent-host.attr = "agent-host-image";
+        agent-sandbox-ui.attr = "ui-image";
+        agent-broker.attr = "broker-image";
+        agent-scheduler.attr = "scheduler-image";
+        agent-webhooks.attr = "webhooks-image";
+        agent-sandbox-os.attr = "sandbox-os-image";
+        agent-db-migrator.attr = "db-migrator-image";
+        byoc-controller.attr = "byoc-controller-image";
+        conversation-controller.attr = "conversation-controller-image";
+        conversation-router.attr = "conversation-router-image";
+        warm-store-controller.attr = "warm-store-controller-image";
       };
 
-      ghcrImages = {
-        agentHost = ghcrImageRef "agent-host" pubImages.agent-host-image;
-        ui = ghcrImageRef "agent-sandbox-ui" pubImages.ui-image;
-        broker = ghcrImageRef "agent-broker" pubImages.broker-image;
-        scheduler = ghcrImageRef "agent-scheduler" pubImages.scheduler-image;
-        webhooks = ghcrImageRef "agent-webhooks" pubImages.webhooks-image;
-        sandboxOs = ghcrImageRef "agent-sandbox-os" pubImages.sandbox-os-image;
-        # The CONTROLLERS. Absent here, the production render left them on their module
-        # defaults — i.e. `:latest` — while every other image was pinned to a content tag.
-        # That defeats the point of content tagging (same content -> same tag -> no needless
-        # pod roll) and makes a "pinned" deploy manifest silently unreproducible for four of
-        # its components.
-        byocController = ghcrImageRef "byoc-controller" pubImages.byoc-controller-image;
-        conversationController = ghcrImageRef "conversation-controller" pubImages.conversation-controller-image;
-        conversationRouter = ghcrImageRef "conversation-router" pubImages.conversation-router-image;
-        warmStoreController = ghcrImageRef "warm-store-controller" pubImages.warm-store-controller-image;
-        dbMigrator = ghcrImageRef "agent-db-migrator" pubImages.db-migrator-image;
+      # Tags hash the x86_64 image; publish-images runs there.
+      pubImages = self.packages.x86_64-linux;
+      imagePackageConfig = { lib, config, ... }: {
+        config.scooter.images = lib.mapAttrs
+          (_: img: { ref.tag = lib.mkForce (config.scooter.imagesContentTag pubImages.${img.attr}); })
+          imageMeta;
       };
-      ghcrImageClaude = ghcrImageRef "agent-host-claude" pubImages.agent-host-image-claude;
+
+      # k3d's registry: `.localhost` resolves on host and in-cluster.
+      k3dRegistry = "k3d-scooter-reg.localhost:5800/";
+
+
     in
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
@@ -159,64 +73,34 @@
         let
           n2c = nix2container.packages.${system}.nix2container;
 
-          # The ACP agent the agent-host runs (first target: Goose).
-          # Runs OUTSIDE the sandbox. Provider-agnostic later; selected by attr.
-          #
+          # The ACP agent the agent-host runs (first target: Goose)
           agent = pkgs.goose-cli;
 
-          # agent-host (TypeScript): runs `goose acp` per conversation OUTSIDE the
-          # sandbox; ACP<->AG-UI bridge; exec serviced via the agent-sandbox API.
-          # See services/agent-host/. Pass the PATCHED `agent` (goose) so the wrapper's
-          # PATH goose is the SAME derivation the image's gooseLayer bakes — otherwise
-          # the closure ships goose twice (~455MB dup) and could run the unpatched one.
-          # The isolated Claude Agent SDK provider (zod v4, kept out of agent-host's
-          # tree). agent-host symlinks it into node_modules and imports its AcpClient.
+          # agent-host (TypeScript)
           claudeSdkProvider = pkgs.callPackage ./services/claude-sdk-provider { };
 
-          # The isolated marimo MCP server (notebook tools). Same isolation pattern:
-          # agent-host symlinks it into node_modules and mounts its tools.
+          # The isolated marimo MCP server (notebook tools)
           marimoMcp = pkgs.callPackage ./services/marimo-mcp { };
 
-          # The generated @scooter/schema package (Drizzle tables + ownership guard, from
-          # lib/sql via `just db-generate`). Same isolation pattern: agent-host symlinks it
-          # into node_modules and resourceMapping.ts imports its typed tables.
+          # The generated @scooter/schema package: Drizzle tables plus guards.
           scooterSchemaJs = pkgs.callPackage ./lib/ts/scooter-schema { };
 
           agentHost = pkgs.callPackage ./services/agent-host { inherit agent claudeSdkProvider marimoMcp scooterSchemaJs; };
 
-          # Bring-your-own-Claude container app: drives the user's LOCAL Claude via the SAME
-          # claudeSdkProvider, tunnels tool-exec to the cloud sandbox. Bakes the (unfree) claude CLI.
+          # Bring-your-own-Claude container app
           remoteAgent = pkgs.callPackage ./services/remote-agent {
             inherit claudeSdkProvider;
             claude-code = pkgs.claude-code;
           };
 
           # agent-host OCI image.
-          agentHostImageBuilder = import ./pkgs/agent-host-image {
-            inherit pkgs lib n2c agentHost agent; # agent (goose) for its own layer
-          };
 
-          # Variant that also bakes the `claude` CLI, for the goose claude-code
-          # provider (subscription auth). Built on demand: nix build .#agent-host-image-claude
-          agentHostImageClaudeBuilder = import ./pkgs/agent-host-image {
-            inherit pkgs lib n2c agentHost agent;
-            withClaudeCode = true;
-          };
 
-          # The service apps with NO contribs. These exist to break the cycle:
-          # the shipped broker/webhooks below depend on `contribs`, and a
-          # contrib's tests take the real service as a check input — so the
-          # thing they take must be the contrib-free build, not the shipped one.
+          # The contrib-free service builds, to break the cycle.
           brokerBase = pkgs.callPackage ./services/broker { inherit scooterSchema scooterLib scooterBrokerLib; };
           webhooksBase = pkgs.callPackage ./services/webhooks { inherit scooterSchema scooterLib scooterWebhooksLib; };
 
-          # Contrib modules: self-contained integration packages discovered via
-          # entry points (broker providers / webhooks handlers). Built once per
-          # target service and bucketed, so each service image gets only the
-          # contribs — and only the extension surface — it actually scans.
-          # See contrib/ + contrib/README.md.
-          # THE ONE PLACE that names .github/deployment: nothing under contrib/,
-          # pkgs/ or modules/ may, because those trees are vended.
+          # Contrib modules
           deploymentModules = [ ./.github/deployment/config.nix ];
           shippedContribs = (import ./.github/deployment/config.nix).contribs;
 
@@ -227,340 +111,191 @@
             inherit scooterBrokerLib scooterWebhooksLib;
           };
 
-          # The set CI tests: adds the contribs that ship nowhere, which are
-          # otherwise unbuilt. mkForce because they assert enable = false, and two
-          # plain definitions conflict. Why: PR #585.
+          # The set CI tests: adds the contribs shipping nowhere.
           contribsWithExamples = contribs.withModules [{
             contribs.echo.enable = pkgs.lib.mkForce true;
           }];
 
-          # Keyed <name>-<service>: both variants share a derivation name, so a
-          # name-keyed consumer would collapse them. Why: PR #573.
+          # Keyed <name>-<service>
           contribsAll = pkgs.linkFarm "contribs-all"
             (pkgs.lib.mapAttrsToList (name: path: { inherit name path; })
               contribsWithExamples.all);
 
-          # Credential broker (Python/FastAPI): extensible provider/transport
-          # modules, plus the contribs that target it. See services/broker/ +
-          # docs/BROKER.md.
+          # Credential broker (Python/FastAPI)
           broker = brokerBase.override { contribs = contribs.broker; };
 
-          # Webhooks (Python/FastAPI): spawn agent conversations from
-          # GitHub/GitLab/Jira/Slack threads. See services/webhooks/ + docs/WEBHOOKS.md.
+          # Webhooks (Python/FastAPI): spawn agent conversations from GitHub/GitLab/Jira/Slack threads
           webhooks = webhooksBase.override { contribs = contribs.webhooks; };
 
           # Webhooks OCI image.
-          webhooksImage = import ./pkgs/webhooks-image {
-            inherit pkgs lib n2c webhooks;
-          };
 
-          # Generated SQLAlchemy models for the shared databases (from lib/sql via
-          # `just db-generate`). Imported by the Python services; its nix build runs
-          # pytest + pythonImportsCheck (proves the generated models are valid).
+          # Generated SQLAlchemy models for the shared databases.
           scooterSchema = pkgs.callPackage ./lib/py/scooter-schema { };
 
-          # Shared Python libraries (the lib split). scooter_lib is service-agnostic;
-          # the two extension-surface libs hold exactly what a provider/handler
-          # composes, so a contrib build-depends on the lib instead of the service
-          # app (breaking the app<->contrib cycle). See lib/py/*/ + the PR boundary.
+          # Shared Python libraries (the lib split)
           scooterLib = pkgs.callPackage ./lib/py/scooter-lib { };
           scooterBrokerLib = pkgs.callPackage ./lib/py/scooter-broker-lib { inherit scooterLib; };
           scooterWebhooksLib = pkgs.callPackage ./lib/py/scooter-webhooks-lib { inherit scooterLib scooterSchema; };
 
-          # Scheduler (Python/FastAPI): fires scheduled tasks on a cron schedule,
-          # spawning a fresh conversation per run via the agent-host /agui. See
-          # services/scheduler/ + todo/SCHEDULED_TASKS.md.
+          # Scheduler (Python/FastAPI)
           scheduler = pkgs.callPackage ./services/scheduler { };
 
           # Scheduler OCI image.
-          schedulerImage = import ./pkgs/scheduler-image {
-            inherit pkgs lib n2c scheduler;
-          };
 
-          # Bring-your-own-Claude remote agent OCI image (ghcr). Bakes the UNFREE claude CLI (via
-          # remoteAgent), so like the claude image its .outPath needs allowUnfree.
-          remoteAgentImage = import ./pkgs/remote-agent-image {
-            inherit pkgs lib n2c remoteAgent;
-          };
+          # Bring-your-own-Claude remote agent OCI image (ghcr)
 
-          # Conversation CRD controller (Python): leader-elected reconcile loop that
-          # assigns each Conversation CR a hostPod (agent-host replica) + reassigns on
-          # pod death. Multi-replica agent-host, stage 3. See
-          # todo/docs/CONVERSATION_CRD_PR1.md.
+          # Conversation CRD controller (Python)
           conversationController = pkgs.callPackage ./services/conversation-controller { };
 
-          # Conversation router (Go): fronts the agent-host Service, reverse-proxies each
-          # request (HTTP/SSE/WS) to the pod owning the conversation. Multi-replica routing.
+          # Conversation router (Go)
           conversationRouter = pkgs.callPackage ./services/conversation-router { };
           byocController = pkgs.callPackage ./services/byoc-controller { inherit scooterSchemaJs; };
 
-          # Warm /nix/store PVC pool controller (Python): leader-elected reconcile loop that
-          # keeps a pool of overlay-upper PVCs warmed against the current sandbox image tag
-          # (top-up warm Jobs, GC retired tags, return-on-suspend, leak recovery). Runs
-          # alongside the upstream agent-sandbox controller. See
-          # todo/docs/WARM_STORE_PVC_MANAGER.md.
+          # Warm /nix/store PVC pool controller (Python)
           warmStoreController = pkgs.callPackage ./services/warm-store-controller { };
 
           # Conversation controller OCI image.
-          conversationControllerImage = import ./pkgs/conversation-controller-image {
-            inherit pkgs lib n2c conversationController;
-          };
 
           # Conversation router OCI image.
-          byocControllerImage = import ./pkgs/byoc-controller-image {
-            inherit pkgs lib n2c byocController;
-          };
-          conversationRouterImage = import ./pkgs/conversation-router-image {
-            inherit pkgs lib n2c conversationRouter;
-          };
 
           # Warm-store controller OCI image.
-          warmStoreControllerImage = import ./pkgs/warm-store-controller-image {
-            inherit pkgs lib n2c warmStoreController;
-          };
 
           # Broker OCI image.
-          brokerImage = import ./pkgs/broker-image {
-            inherit pkgs lib n2c broker;
-          };
 
-          # Shared-DB migration Job image: Atlas CLI + lib/sql migrations + a driver
-          # that `atlas migrate apply --baseline`s each per-service database. See
-          # modules/db-migrate.nix.
-          dbMigratorImage = import ./pkgs/db-migrator-image {
-            inherit pkgs lib n2c;
-          };
+          # Shared-DB migration Job image
 
-          # Broker tools (agent-broker / git-credential-broker),
-          # prebuilt — always needed, so baked into the sandbox image (the read-only
-          # lower of its overlay store). The sandbox-os config callPackages these
-          # directly (carry-over.nix), one source of truth (pkgs/broker-tools).
+          # Broker tools (agent-broker / git-credential-broker), prebuilt
           brokerTools = pkgs.callPackage ./pkgs/broker-tools { };
 
-          # Applied HERE, at pkgs construction, not through `nixpkgs.overlays`:
-          # pkgs/sandbox-os builds the system with `pkgs.nixos`, which sets
-          # `nixpkgs.pkgs` and conflicts with the overlays option. The in-pod
-          # re-converge is the mirror case (modules/sandbox-os/stub-set.nix).
+          # Applied HERE, at pkgs construction, not through `nixpkgs.overlays`
           stubOverlay = import ./modules/sandbox-os/stub-overlay.nix {
             lockLib = nix-stubs.lib;
             flakeLock = ./flake.lock;
             nix-stubs = nix-stubs.packages.${system}.nix-stubs;
           };
 
-          # A pkgs with the stubs applied, for the sandbox image ONLY. Scoped
-          # deliberately: overlaying the repo-wide pkgs would hand a shim to every
-          # other build here, and nothing outside the sandbox wants one.
+          # A pkgs with the stubs applied
           sandboxPkgs = import nixpkgs { inherit system; overlays = [ stubOverlay ]; };
 
-          # The uv-nix uv (patched for Nix) — backs the in-pod marimo so science deps
-          # install + import. Passed into the sandbox-os build for marimo.nix.
+          # The uv-nix uv (patched for Nix)
           uvNix = uv-nix.packages.${system}.default;
 
-          # The NixOS dev-environment sandbox image (systemd PID 1, lazy tools,
-          # services). Built from the shared modules/sandbox-os config. The local-overlay
-          # writable /nix/store is ALWAYS ON in this image (pkgs/sandbox-os sets
-          # programs.overlayStore.enable) — there is no longer a separate read-only-store
-          # variant; the writable store is required for runtime tool-install + re-converge.
-          sandboxOsImage = import ./pkgs/sandbox-os {
+          # The NixOS dev-environment sandbox image (systemd PID 1
+          sandboxOsImage = import ./pkgs/sandbox-os/image.nix {
                 inherit deploymentModules;
             inherit lib n2c uvNix;
             pkgs = sandboxPkgs;
-            # For the in-pod re-converge: it vendors these so a self-modify can
-            # rebuild the stub overlay instead of re-fattening every stubbed tool.
+            # For the in-pod re-converge
             nixStubs = {
               src = nix-stubs;
               package = nix-stubs.packages.${system}.nix-stubs;
             };
           };
 
-          # TypeScript UI (assistant-ui + AG-UI runtime). See ui/.
-          # The contrib set is NOT an input here: its manifest is a file nginx serves
-          # and the UI fetches, so changing that set relinks an image layer instead of
-          # re-running vite. See contrib/ui-manifest.nix.
+          # TypeScript UI (assistant-ui + AG-UI runtime)
           ui = pkgs.callPackage ./ui { };
 
-          # UI OCI image: nginx serving the static build + proxying the agent-host,
-          # plus the contribs' manifest at /contrib/manifest.json.
-          uiImage = import ./pkgs/ui-image {
-            inherit pkgs lib n2c ui;
+          # UI OCI image
+
+          # Render the platform manifests (namespace
+          # remote-agent is excluded: it bakes the unfree claude CLI, so its tag
+          # would force an allowUnfree check in every pure eval.
+          imageModules = map (m: import m imageArgs) [
+            ./pkgs/agent-host-image/image.nix
+            ./pkgs/ui-image/image.nix
+            ./pkgs/broker-image/image.nix
+            ./pkgs/scheduler-image/image.nix
+            ./pkgs/webhooks-image/image.nix
+            ./pkgs/db-migrator-image/image.nix
+            ./pkgs/byoc-controller-image/image.nix
+            ./pkgs/conversation-controller-image/image.nix
+            ./pkgs/conversation-router-image/image.nix
+            ./pkgs/warm-store-controller-image/image.nix
+          ] ++ [ sandboxOsImage.module imagePackageConfig ];
+
+          # Build inputs the image modules take as ordinary arguments.
+          imageArgs = {
+            inherit pkgs lib n2c agent agentHost broker webhooks scheduler ui
+              remoteAgent byocController conversationController conversationRouter
+              warmStoreController;
             contribManifest = contribs.uiManifest;
           };
 
-          # Render the platform manifests (namespace, agent-host Deployment + RBAC) with
-          # kubenix. `mkPlatform` takes the full `scooter` config for a render, so
-          # each flavor declares its own images AND agent config — the e2e flavor is a
-          # dummy agent with test hooks; the ghcr flavor is a real production deploy.
-          # `extraModules` is how a TEST render opts into test-only overrides (modules/testing.nix).
-          # A deploy render passes none, so it cannot enable a dummy agent or an unauthenticated
-          # test webhook even by setting a stray boolean — the options only exist with the module.
-          #
           # `contribs` is at the module root, not under `scooter`.
           mkPlatformWith = extraModules: full:
             let scooter = builtins.removeAttrs full [ "contribs" ];
             in kubenix.evalModules.${system} {
               module = { kubenix, ... }: {
-                imports = [ ./modules/platform.nix ] ++ extraModules;
+                imports = [ ./modules/platform.nix ] ++ imageModules ++ extraModules;
                 kubenix.project = "agent-sandbox";
                 kubernetes.version = "1.31";
                 contribs = full.contribs or { };
                 inherit scooter;
               };
             };
+          # THE VENDED ENTRY POINT
+          evalPlatform = { module }: kubenix.evalModules.${system} {
+            module = { kubenix, ... }: {
+              imports = [ ./modules/platform.nix module ] ++ imageModules;
+              kubenix.project = "agent-sandbox";
+              kubernetes.version = "1.31";
+            };
+          };
+
           mkPlatform = mkPlatformWith [ ];
+
+          # The derivations, read back out of the evaluated module tree.
+          builtImages = (mkPlatform { }).config.scooter.images;
           mkTestPlatform = mkPlatformWith [ ./modules/testing.nix ];
 
-          # What the test renders ship. `enable` defaults false, so this is the
-          # opt-in list; it names exactly what the opt-out list left on before.
+          # What the test renders ship
           testContribs = lib.genAttrs
             [ "aws" "jira" "kagi" "duckduckgo" ]
             (_: { enable = true; });
 
-          # E2E/cluster-test render (`nix build .#platform-manifests`): the DUMMY agent +
-          # test providers, and images SIDE-LOADED into k3s so it uses bare local names
-          # (registryPrefix "" overrides the module's ghcr default). This is NOT a deploy
-          # manifest — it's the config the Tier-2 cluster + Tier-3 e2e suites apply.
-          # Shared by the side-load render (`platform`, bare names) and the k3d-registry
-          # render (`platformK3d`, content-tagged refs) — ONE test config, two image
-          # sourcing strategies.
-          # The full test-platform config as data, so a variant (e.g. the event-backfill
-          # e2e render below) can `recursiveUpdate` it instead of duplicating every knob.
-          mkTestPlatformConfig = imgs: {
-            registryPrefix = "";
-            agentHostImage = imgs.agentHost;
-            sandboxImage = imgs.sandboxOs;
-            uiImage = imgs.ui;
-            conversationController.image = imgs.conversationController;
-            conversationController.routerImage = imgs.conversationRouter;
-            agent.skills = scooterSkills; # ship the ./skills/*.md set
-            # TEST-ONLY overrides come from modules/testing.nix, which only mkTestPlatform imports.
-            testing.enable = true;
-            # RUN the migration Job in the cluster/e2e renders. This USED to be disabled with
-            # the note "the services still self-create their tables, so migrations aren't
-            # needed for tests" — that stopped being true when agent-host's metadata stores
-            # dropped their inline DDL (#425). With no migrator, NOTHING creates the
-            # `conversations`/jobs/events/assets schema, so agent-host crash-loops at hydrate
-            # on `relation "conversations" does not exist`, agent-host never goes Ready, the
-            # router's /healthz proxy to it fails, and every e2e-full spec dies at
-            # `apply platform + smoke`. The migrator image is now in the side-load/k3d push
-            # sets (flake k3dImagePushMap + justfile + ci.yml) so this Job's image exists.
-            dbMigrate = {
-              enable = true;
-              image = imgs.dbMigrator;
-            };
-            # Assets PVC on the single-node k3d hostPath escape hatch. #471 made this PVC
-            # ReadWriteMany (all agent-host replicas write assets), but k3d's only provisioner
-            # (local-path) is RWO-only, so an RWX claim stays Pending forever and agent-host
-            # never schedules. Same fix as historyMirror.hostPath: a hostPath PV binds the RWX
-            # claim on the one node every pod shares.
-            conversationController.assets.hostPath = "/var/lib/scooter-e2e-assets";
-            # The cross-pod history mirror, backed by the single-node hostPath escape hatch
-            # (k3d's local-path provisioner has no RWX; a hostPath PV binds the RWX claim and
-            # every pod shares the one node's directory — the same mechanism odin uses).
-            #
-            # This USED to be disabled, with the note "a single-node e2e doesn't need
-            # cross-pod revival" — written before the CI job forced CONVERSATION_POD_CAP=1 +
-            # 3 replicas, which makes cross-pod reassignment CONSTANT. With no mirror, a
-            # conversation reassigned mid-run could never be revived on its new owner: the
-            # ownership fence truncated its log (by design) and the new pod had nothing to
-            # hydrate from, so the UI sat at "Working…" forever. Found by the Tier-2
-            # browser tests.
-            conversationController.historyMirror = {
-              enable = true;
-              hostPath = "/var/lib/scooter-e2e-history";
-            };
-            broker = {
-              enable = true;
-              image = imgs.broker;
-              testProvider = true; # whoami provider for the credential e2e
-            };
-            webhooks = {
-              enable = true;
-              image = imgs.webhooks;
-              # testWebhook comes from modules/testing.nix — not repeated here.
-            };
-            # e2e configures no credentials; drop contribs needing one.
-            contribs = testContribs;
+          # E2E/cluster-test render (`nix build .#platform-manifests`)
+          mkTestPlatformConfig = import ./.github/deployment/test-platform.nix {
+            inherit lib scooterSkills testContribs;
           };
-          mkTestPlatformImages = imgs: mkTestPlatform (mkTestPlatformConfig imgs);
-          platform = mkTestPlatformImages {
-            agentHost = "agent-host:latest";
-            sandboxOs = "agent-sandbox-os:latest";
-            ui = "agent-sandbox-ui:latest";
-            broker = "agent-broker:latest";
-            webhooks = "agent-webhooks:latest";
-            conversationController = "conversation-controller:latest";
-            conversationRouter = "conversation-router:latest";
-            dbMigrator = "agent-db-migrator:latest";
-          };
-          # `nix build .#platform-manifests-k3d`: the SAME test platform, images pulled
-          # from the k3d-attached registry by CONTENT TAG (see k3dImages). No side-load.
-          platformK3d = mkTestPlatformImages k3dImages;
+          mkTestPlatformImages = prefix: mkTestPlatform (mkTestPlatformConfig prefix);
+          # Side-loaded into k3s, so bare names on :latest
+          platform = mkTestPlatform (mkTestPlatformConfig "" // {
+            # Side-loaded: bare names on :latest, overriding the x86_64 tag pin.
+            images = builtins.mapAttrs (_: _: { ref.tag = lib.mkOverride 40 "latest"; }) builtImages;
+          });
+          # `nix build .#platform-manifests-k3d`
+          platformK3d = mkTestPlatformImages k3dRegistry;
 
-          # `nix build .#platform-manifests-k3d-backfill`: the k3d test platform with the
-          # one-shot event backfill turned ON (and the mirror PVC retained, which the module's
-          # assert requires). The Tier-2 event-backfill e2e reads the rendered Job out of this
-          # (real k3d image ref + agent_host DB wiring) and applies its own seeded instance —
-          # so the test exercises the ACTUAL module output, not a hand-built copy that could drift.
-          platformK3dBackfill = mkTestPlatform (lib.recursiveUpdate (mkTestPlatformConfig k3dImages) {
+          # `nix build .#platform-manifests-k3d-backfill`
+          platformK3dBackfill = mkTestPlatform (lib.recursiveUpdate (mkTestPlatformConfig k3dRegistry) {
             eventBackfill.enable = true;
             conversationController.historyMirror.retainForMigration = true;
           });
 
-          # GHCR render (`nix build .#platform-manifests-ghcr`): the REAL production deploy
-          # manifest — the actual agent (fakeAgent = false), NO test providers/webhooks,
-          # and every image pinned to its published CONTENT TAG (ghcrImages) so the manifest
-          # points at the exact tags the publish-images workflow pushed (same content → same
-          # tag → no needless pod roll). Crucially these refs are pure TEXT (contentTag
-          # discards the outPath string context), so threading them in does NOT drag the
-          # images into the manifest build — the render stays a cheap YAML writeText (proven:
-          # the built YAML has zero image references, and the .drv has empty inputDrvs for
-          # the image paths). registryPrefix stays the module default (ghcr.io/chadac/
-          # scooter/) but every image below is pinned explicitly, so the prefix only shows
-          # through for third-party images we don't own.
-          platformGhcr = mkPlatform {
-            agent.skills = scooterSkills; # ship the ./skills/*.md set
-            fakeAgent = false; # the real agent — this is a production deploy
-            agentHostImage = ghcrImages.agentHost;
-            sandboxImage = ghcrImages.sandboxOs;
-            uiImage = ghcrImages.ui;
-            broker = {
-              enable = true;
-              image = ghcrImages.broker;
-              # NO testProvider — real deploys wire real credential providers.
-            };
-            webhooks = {
-              enable = true;
-              image = ghcrImages.webhooks;
-              # NO testWebhook — the /webhooks/test spawn endpoint is e2e-only.
-            };
-            # The CONTROLLERS, pinned like everything else. Without these four the render
-            # fell back to their module defaults (`:latest`), so a manifest that advertises
-            # content-pinned images silently shipped four of its components unpinned — no
-            # reproducibility, and a pod roll on every deploy whether or not they changed.
-            conversationController.image = ghcrImages.conversationController;
-            conversationController.routerImage = ghcrImages.conversationRouter;
-            warmStore.image = ghcrImages.warmStoreController;
-            byoc.image = ghcrImages.byocController;
-            # This manifest carries no integration credentials — the secrets are
-            # Bare render: platform only, no integrations.
-            contribs = testContribs;
-          };
+          platformGhcr = mkPlatform (import ./.github/deployment/ghcr-platform.nix {
+            inherit scooterSkills testContribs;
+          });
 
-          # Tier-1-style config-correctness tests for the dev-environment sandbox:
-          # each boots the sandbox-os NixOS config in a QEMU VM with real systemd.
-          # Linux-only (nixosTest needs KVM). Exposed as checks so `nix flake
-          # check` runs them. See nixos-tests/ + docs/DEV_ENVIRONMENT*.
+          # attr -> k3d ref, for the push script
+          k3dImageRefs = platformK3d.config.scooter.images;
+          # Every image's k3d ref. k3d-platform-up.sh picks which to push --
+          # that list is e2e-only and stays in the script.
+          k3dPushRefs = lib.mapAttrs' (_: img: lib.nameValuePair img.attr img.ref.fullUrl)
+            (lib.filterAttrs (_: img: img.attr != null) k3dImageRefs);
+
+          # The camelCase refs server-config reads, from the ghcr render.
+          ghcrImageRefs = platformGhcr.config.scooter.images;
+          # Each image names its own camelCase key, or omits itself.
+          ghcrRefs = lib.mapAttrs' (_: img: lib.nameValuePair img.refKey img.ref.fullUrl)
+            (lib.filterAttrs (_: img: img.refKey != null) ghcrImageRefs);
+
+          # Tier-1-style config-correctness tests for the dev-environment sandbox
           devEnvTests =
             if pkgs.stdenv.isLinux
             then import ./nixos-tests { inherit pkgs lib stubOverlay deploymentModules; }
             else { };
 
-          # The contrib sandbox surface, without building an image. Three links, and
-          # the middle one is what fails silently if it breaks: a contrib whose module
-          # reached the image but not the in-pod rebuild is a `scooter-rebuild switch`
-          # that reports success and drops its tools. echo is the fixture — it ships
-          # nowhere, so it is the only contrib that can carry one until aws moves.
-          # See #599.
+          # The contrib sandbox surface, without building an image
           contribSandbox =
             let
               # What this repo ships first; a fixture layers on top.
@@ -568,17 +303,12 @@
                 inherit lib;
                 extraModules = deploymentModules ++ extraModules;
               };
-              # echo pins `enable = false` (it must never ship), so the fixture
-              # overrides rather than merges.
+              # echo pins `enable = false` (it must never ship)
               withEcho = derive [{ contribs.echo.enable = lib.mkForce true; }];
-              # Just the fixture: pkgs/sandbox-os already carries the contribs the
-              # repo enables, so passing the whole list would duplicate aws.
+              # Just the fixture
               echoOnly = lib.subtractLists (derive [ ]).treeRelative withEcho.treeRelative;
-              # Through `extraModuleFiles`, the arg a deployment layering its own
-              # modules into the image should use: imported AND carried into the
-              # re-converge list. Passing the fixture the other way (`extraModules`)
-              # would leave it out of that list, which is the bug #717 closed.
-              sandboxWithEcho = import ./pkgs/sandbox-os {
+              # Through `extraModuleFiles`
+              sandboxWithEcho = import ./pkgs/sandbox-os/image.nix {
                 inherit deploymentModules;
                 inherit lib n2c uvNix;
                 pkgs = sandboxPkgs;
@@ -588,15 +318,13 @@
                 };
                 extraModuleFiles = echoOnly;
               };
-              # Reached through the CONFIG, not re-derived here, so this fails if the
-              # image stops baking the tree the in-pod rebuild reads.
+              # Reached through the CONFIG
               tree = lib.head (lib.filter
                 (d: lib.hasSuffix "-sandbox-os-src" (toString d))
                 sandboxWithEcho.nixos.config.system.extraDependencies);
 
-              # The image as it actually SHIPS — no fixture layered on. aws's sandbox
-              # half is the only contrib in it.
-              shipped = import ./pkgs/sandbox-os {
+              # The image as it actually SHIPS
+              shipped = import ./pkgs/sandbox-os/image.nix {
                 inherit deploymentModules;
                 inherit lib n2c uvNix;
                 pkgs = sandboxPkgs;
@@ -605,40 +333,22 @@
                   package = nix-stubs.packages.${system}.nix-stubs;
                 };
               };
-              # The baked re-converge list, as the image renders it: resolved store
-              # paths under the vendored tree. Read through the CONFIG so this fails
-              # if the image stops rendering it at all.
+              # The baked re-converge list, as the image renders it
               listFile = sandboxWithEcho.nixos.config.environment.etc."scooter/reconverge-modules.json".source;
             in
-            # 1. A derived module is real sandbox config, not just a valid file.
+            # 1
             assert sandboxWithEcho.nixos.config.environment.etc ? "scooter/contrib-echo";
-            # 2. The fixture reached the image through `extraModuleFiles`, which is
-            # also what the re-converge replays — so it is exactly the disabled
-            # contrib and nothing else. (1) proves it landed; this proves HOW.
+            # 2
             assert echoOnly == [ "contrib/echo/sandbox.nix" ];
-            # 3. …and with no fixture, the carried list is EXACTLY what the deriver
-            # returns for this source. (1) + (2) + (3) is the whole chain: source ->
-            # list -> image -> the list a self-modify replays.
+            # 3
             assert shipped.nixos.config.programs.scooterModule.extraReconvergeModuleFiles
               == (derive [ ]).treeRelative;
-            # 4. The shipped image, with no fixture: aws's half must be in it, or the
-            # sandbox silently lost `~/.aws/config` and every `aws --profile` with it.
-            # Asserted on the UNIT rather than a marker file — that is the thing a
-            # deployment would miss. Covers what (1) cannot: (1) proves a derived
-            # module lands, this proves the one we actually ship does.
+            # 4
             assert shipped.nixos.config.systemd.services ? "scooter-aws-config";
             assert lib.any (p: (p.pname or p.name or "") == "scooter-aws")
               shipped.nixos.config.environment.systemPackages;
             pkgs.runCommand "contrib-sandbox-check" { } ''
-              # 5. The in-pod half. Every entry in the baked list must be a file that
-              # EXISTS, UNDER THE VENDORED TREE — the two ways this list fails in the
-              # pod and nowhere else:
-              #   a path that resolves nowhere is a module the first self-modify
-              #   silently drops (the sandbox loses a contrib's tools and nothing
-              #   says so);
-              #   a path outside the tree is a reference to the FLAKE SOURCE, which
-              #   drags the whole repo into the sandbox closure and re-tags every
-              #   image when any file in it moves (#614).
+              # 5
               echo "baked re-converge list:"
               ${pkgs.jq}/bin/jq -r '.[]' ${listFile}
               for p in $(${pkgs.jq}/bin/jq -r '.[]' ${listFile}); do
@@ -648,42 +358,28 @@
                 esac
                 test -f "$p" || { echo "FAIL: $p is in the list but is not a file" >&2; exit 1; }
               done
-              # Both halves are actually in there (jq over an empty list would pass
-              # the loop above vacuously).
+              # Both halves are actually in there (jq over an empty
               ${pkgs.jq}/bin/jq -e 'map(endswith("/contrib/aws/sandbox.nix")) | any' ${listFile} >/dev/null
               ${pkgs.jq}/bin/jq -e 'map(endswith("/contrib/echo/sandbox.nix")) | any' ${listFile} >/dev/null
-              # aws's sandbox half embeds the CLI source from its OWN tree, so the
-              # vendored copy needs both ends. This is the one the whole-repo vendoring
-              # (#614) bought: a curated subset would have shipped the module without
-              # its source.
+              # aws's sandbox half embeds the CLI source from its OWN
               test -f ${tree}/contrib/aws/scooter_contrib_aws/cli.py
               touch $out
             '';
 
-          # dev-env-* so CI's existing matrix enumerates it; Linux-only like
-          # devEnvTests, since it evaluates a NixOS system.
+          # dev-env-* so CI's existing matrix enumerates it; Linux-only like devEnvTests
           contribSandboxChecks = lib.optionalAttrs pkgs.stdenv.isLinux {
             dev-env-contrib-sandbox = contribSandbox;
           };
         in
         {
+          legacyPackages.evalPlatform = evalPlatform;
+          legacyPackages.imageModules = imageModules;
+
           packages = {
-            # The sandbox is the NixOS systemd-PID-1 dev image (the legacy generic
-            # pkgs/sandbox-image was retired).
+            # The sandbox is the NixOS systemd-PID-1 dev image (the legacy
             default = sandboxOsImage.image;
 
-            # `nix build .#options-doc` -> the scooter.* option reference as JSON,
-            # rendered FROM the module system (nixosOptionsDoc), so the published reference can
-            # never drift from the code. JSON rather than CommonMark on purpose: the docs build
-            # splits it into one page PER NAMESPACE (so mkdocs search scores each separately
-            # instead of returning one 4k-line document) and feeds the client-side filter table.
-            # See docs/gen_options.py.
-            # `contribs` is published alongside `scooter`: an integration's deployment
-            # options live under `contribs.<name>` now, beside the contrib's own
-            # declaration, so a reference of `scooter.*` alone would document the
-            # platform and none of the integrations. Rendered from a BARE render, so
-            # every contrib's options appear whether or not a deployment configures
-            # them. docs/gen_options.py pages these under their contrib's name.
+            # `nix build .#options-doc` -> the scooter.* option reference as JSON
             options-doc =
               (pkgs.nixosOptionsDoc {
                 options = {
@@ -704,19 +400,6 @@
               }).optionsJSON;
 
             # `nix build .#db-spec` -> the lib/sql artifacts RENDERED from the
-            # `scooter.db` module option (#606): the ownership manifest and atlas.hcl's
-            # per-database envs. `just db-generate` copies these into lib/sql and
-            # `just db-generate-check` fails CI on drift — so "which databases exist" and
-            # "who owns which table" have exactly one source. (The database LIST is not a
-            # third artifact: owners.toml's top-level sections are it.)
-            #
-            # Evaluated with an EMPTY scooter config: the in-tree declarations are
-            # unconditional, so the artifacts don't depend on a deployment's feature
-            # flags. (A contrib declaring tables inside `mkIf cfg.enable` — stage 2 of
-            # #606 — is what makes them deployment-shaped; that is the point at which
-            # an out-of-tree deployment regenerates its own.)
-            # contribs: the tables are a property of the SOURCE TREE, so this
-            # renders with what the repo ships, not with bare defaults (#637).
             db-spec =
               let spec = (mkPlatform { contribs = shippedContribs; }).config.scooter.dbSpec; in
               pkgs.runCommand "db-spec" {
@@ -731,10 +414,7 @@
 
             inherit agentHost ui broker webhooks scheduler;
 
-            # nix build .#contrib-echo / .#contrib-echo-webhooks -> the reference
-            # contrib, built once PER TARGET SERVICE so each variant carries only that
-            # service's extension surface (a single build would drag the webhooks
-            # surface into the broker image).
+            # nix build .#contrib-echo / .#contrib-echo-webhooks -> the reference contrib
             contrib-echo = contribsWithExamples.packages.echo.broker;
             contrib-echo-webhooks = contribsWithExamples.packages.echo.webhooks;
             contrib-airtable = contribs.packages.airtable.broker;
@@ -752,9 +432,7 @@
             contrib-slack = contribs.packages.slack.broker;
             contrib-slack-webhooks = contribs.packages.slack.webhooks;
 
-            # nix build .#contribs-all -> every variant of every contrib, so ONE CI
-            # target covers all of them and a new contrib is tested the moment it
-            # exists.
+            # nix build .#contribs-all -> every variant of every contrib
             contribs-all = contribsAll;
 
             conversation-controller = conversationController;
@@ -764,31 +442,28 @@
             inherit agent; # the ACP agent (goose), exposed for the agent-host
             inherit marimoMcp; # the isolated marimo MCP server (buildable/inspectable)
 
-            # nix build .#sandbox-os-image  ->  NixOS systemd-PID-1 dev sandbox with the
-            # writable local-overlay Nix store ALWAYS ON (the sole sandbox image now).
-            sandbox-os-image = sandboxOsImage.image;
+            # nix build .#sandbox-os-image -> NixOS systemd-PID-1 dev sandbox with the
+            sandbox-os-image = builtImages.agent-sandbox-os.package;
 
-            # The broker tools (agent-broker / git-credential-broker),
-            # prebuilt; baked into the sandbox-os image via the brokerTools overlay.
+            # The broker tools (agent-broker / git-credential-broker)
             broker-tools = brokerTools.agent-broker;
 
             # nix build .#broker-image  ->  broker OCI image
-            broker-image = brokerImage.image;
+            broker-image = builtImages.agent-broker.package;
 
             # nix build .#db-migrator-image  ->  shared-DB migration Job image
-            db-migrator-image = dbMigratorImage.image;
+            db-migrator-image = builtImages.agent-db-migrator.package;
 
             # nix build .#webhooks-image  ->  webhooks OCI image
-            webhooks-image = webhooksImage.image;
+            webhooks-image = builtImages.agent-webhooks.package;
 
             # nix build .#scheduler-image  ->  scheduler OCI image
-            scheduler-image = schedulerImage.image;
+            scheduler-image = builtImages.agent-scheduler.package;
 
             # nix build .#scooter-schema  ->  generated SQLAlchemy models (runs pytest)
             scooter-schema = scooterSchema;
 
-            # nix build .#scooter-lib / .#scooter-broker-lib / .#scooter-webhooks-lib
-            # -> the shared Python libraries (the lib split).
+            # nix build .#scooter-lib / .#scooter-broker-lib / .#scooter-webhooks-lib -> the shared
             scooter-lib = scooterLib;
             scooter-broker-lib = scooterBrokerLib;
             scooter-webhooks-lib = scooterWebhooksLib;
@@ -798,113 +473,76 @@
 
             # nix build .#remote-agent  ->  the BYO-Claude container app (bin)
             remote-agent = remoteAgent;
-            # nix build .#remote-agent-image  ->  BYO-Claude remote agent OCI image (ghcr; unfree claude)
-            remote-agent-image = remoteAgentImage.image;
+            # nix build .#remote-agent-image -> BYO-Claude remote agent OCI image (ghcr;
+            # Evaluated alone: the unfree claude CLI keeps it out of the shared tree.
+            remote-agent-image =
+              (evalPlatform {
+                module = import ./pkgs/remote-agent-image/image.nix imageArgs;
+              }).config.scooter.images.remote-agent.package;
 
             # nix build .#conversation-controller-image  ->  controller OCI image
-            conversation-controller-image = conversationControllerImage.image;
+            conversation-controller-image = builtImages.conversation-controller.package;
 
             # nix build .#conversation-router-image  ->  router OCI image
-            conversation-router-image = conversationRouterImage.image;
+            conversation-router-image = builtImages.conversation-router.package;
             # nix build .#byoc-controller-image  ->  BYOC controller OCI image
-            byoc-controller-image = byocControllerImage.image;
+            byoc-controller-image = builtImages.byoc-controller.package;
 
             # nix build .#warm-store-controller-image  ->  warm-store controller OCI image
-            warm-store-controller-image = warmStoreControllerImage.image;
+            warm-store-controller-image = builtImages.warm-store-controller.package;
 
             # nix build .#agent-host-image  ->  agent-host OCI image
-            agent-host-image = agentHostImageBuilder.image;
+            agent-host-image = builtImages.agent-host.package;
             # nix build .#agent-host-image-claude  ->  + the claude CLI (claude-code provider)
-            agent-host-image-claude = agentHostImageClaudeBuilder.image;
+            agent-host-image-claude =
+              (evalPlatform {
+                module = { config.scooter.images.agent-host.claude.enable = true; };
+              }).config.scooter.images.agent-host.package;
 
-            # nix build .#ui-image  ->  UI (nginx + static build) OCI image
-            ui-image = uiImage.image;
+            # nix build .#ui-image -> UI (nginx + static build) OCI
+            ui-image = builtImages.agent-sandbox-ui.package;
 
-            # nix build .#contrib-ui-manifest  ->  the contribs' UI metadata as one
-            # JSON document; the UI image serves it at /contrib/manifest.json.
+            # nix build .#contrib-ui-manifest -> the contribs' UI metadata as one
             contrib-ui-manifest = contribs.uiManifest;
 
-            # nix build .#platform-manifests  ->  multi-doc YAML for kubectl apply
-            # (e2e/local flavor: bare side-loaded image names).
+            # nix build .#platform-manifests -> multi-doc YAML for kubectl apply (e2e/local
             platform-manifests = platform.config.kubernetes.resultYAML;
 
-            # The k3d-registry render + the attr->ref push map for the CI/e2e-full flow.
+            # The k3d-registry render + the attr->ref push map for the
             platform-manifests-k3d = platformK3d.config.kubernetes.resultYAML;
-            # The k3d test platform + event backfill enabled — the Tier-2 e2e extracts the
-            # rendered agent-event-backfill Job from this YAML (see platformK3dBackfill).
+            # The k3d test platform + event backfill enabled
             platform-manifests-k3d-backfill = platformK3dBackfill.config.kubernetes.resultYAML;
-            k3d-image-refs = pkgs.writeText "k3d-image-refs.json" (builtins.toJSON k3dImagePushMap);
+            k3d-image-refs = pkgs.writeText "k3d-image-refs.json" (builtins.toJSON k3dPushRefs);
 
-            # ONE attr holding everything .github/scripts/k3d-platform-up.sh needs from
-            # this flake, so the script evaluates ONCE instead of three times.
-            #
-            # The script used to run `nix build .#k3d-image-refs`, then a `nix build`
-            # of the eight images, then `nix build .#platform-manifests-k3d`. Each is a
-            # separate evaluation, and in CI each one re-evaluates the sandbox-os NixOS
-            # system -- the expensive part. The tell is the `stdenv.isLinux is
-            # deprecated` warning, which fires from that evaluation: it appeared 55s
-            # into image-refs-eval and AGAIN 24.5s into image-manifest-build, the same
-            # work twice.
-            #
-            # That does not reproduce locally, where the ~6.4k derivations are already
-            # written and every "evaluation" is a lookup. It is a CI-only cost, so do
-            # not trust a local timing to tell you whether this helps.
-            #
-            # A plain runCommand, NOT symlinkJoin: these are JSON files and YAML, not
-            # bin/ trees, and the script reads each path by name anyway. All this needs
-            # to do is hold references so one realisation covers the lot.
+            # ONE attr holding everything .github/scripts/k3d-platform-up.sh needs from this flake
             k3d-ci-deps = pkgs.runCommand "scooter-k3d-ci-deps" { } ''
               mkdir -p $out
-              ln -s ${pkgs.writeText "k3d-image-refs.json" (builtins.toJSON k3dImagePushMap)} $out/image-refs.json
+              ln -s ${pkgs.writeText "k3d-image-refs.json" (builtins.toJSON k3dPushRefs)} $out/image-refs.json
               ln -s ${platformK3d.config.kubernetes.resultYAML} $out/platform-manifests-k3d.yaml
               ${lib.concatMapStrings (a: ''
                 ln -s ${pubImages.${a}} $out/${a}.json
                 ln -s ${pubImages.${a}.copyTo} $out/${a}.copyTo
-              '') (builtins.attrNames k3dImagePushMap)}
+              '') (builtins.attrNames k3dPushRefs)}
             '';
 
-            # nix build .#platform-manifests-ghcr  ->  the same manifests with every image
-            # pinned to its published ghcr CONTENT TAG (from ghcrImages). This is the
-            # reproducible deploy render — no `nix build .#ghcr-image-refs` + manual
-            # per-image override needed. The content tags are pure text (contentTag
-            # discards the outPath string context), so this render does NOT build any
-            # image — it's still just a YAML writeText.
+            # nix build .#platform-manifests-ghcr -> the same manifests with every image
             platform-manifests-ghcr = platformGhcr.config.kubernetes.resultYAML;
 
-            # `nix build .#example-manifests` -> the YAML the EXAMPLE config renders. The
-            # example is the maintained "every feature enabled" reference the docs point at,
-            # so CI applies THIS (server-side dry-run, real API validation) rather than only
-            # asserting it evaluates: a config that renders but is invalid Kubernetes — a bad
-            # field, a malformed probe, a resource the apiserver rejects — is exactly what a
-            # copy-pasting deployer would hit first.
+            # `nix build .#example-manifests` -> the YAML the EXAMPLE config renders
             example-manifests =
-              (kubenix.evalModules.${system} {
-                module = { kubenix, ... }: {
-                  imports = [ ./modules/platform.nix ./examples/kubenix-config.nix ];
-                  kubenix.project = "agent-sandbox";
-                  kubernetes.version = "1.31";
-                };
-              }).config.kubernetes.resultYAML;
+              (evalPlatform { module = ./examples/kubenix-config.nix; })
+                .config.kubernetes.resultYAML;
 
-            # nix build .#ghcr-image-refs  ->  JSON { <name> = "ghcr.io/…:<content-tag>" }
-            # The content-tagged ghcr refs for every published image, computed from
-            # the derivation outPath at EVAL time (no build). Identical to what the
-            # publish-images workflow pushes. A deploy config (or the ghcr platform
-            # module default) reads these so the manifest points at the exact pushed
-            # tag — same content → same tag → no needless pod roll.
-            ghcr-image-refs = pkgs.writeText "ghcr-image-refs.json" (builtins.toJSON ghcrImages);
+            # nix build .#ghcr-image-refs -> JSON { <camelName> = "ghcr.io/…:<tag>" }
+            ghcr-image-refs = pkgs.writeText "ghcr-image-refs.json" (builtins.toJSON ghcrRefs);
           };
 
-          # Dev shell: everything needed to build, test (Tier 1-3), and drive a
-          # local cluster. Defined in ./nix/devshell.nix; `nix develop` or
-          # `.envrc` (`use flake`) via direnv both use it.
+          # Dev shell
           devShells.default = import ./nix/devshell.nix { inherit pkgs conversationRouter; };
 
           checks = {
             inherit agentHost ui;
-            # Every contrib variant, each running its tests against the real broker +
-            # webhooks registries. The aggregate is what CI builds; the individual
-            # attrs stay for bisecting a failure to one variant.
+            # Every contrib variant
             contribs-all = contribsAll;
             contrib-echo = contribsWithExamples.packages.echo.broker;
             contrib-echo-webhooks = contribsWithExamples.packages.echo.webhooks;
@@ -928,49 +566,22 @@
         };
 
       flake = {
-        # The stub set, per system, for `nix-stubs gen` / `check`:
-        #   nix run github:chadac/nix-stubs#check -- --lock modules/sandbox-os/stubs.lock
-        # Read with a PLAIN nixpkgs (no stub overlay) — gen records what the real
-        # packages evaluate to, which is exactly what the overlay's `prev` sees.
+        # The stub set, per system, for `nix-stubs gen` / `check`
         stubs = nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ]
           (system: import ./modules/sandbox-os/stubs.nix {
             pkgs = nixpkgs.legacyPackages.${system};
           });
 
-        # The built-in agent skills as a `filename -> content` attrset, for a host
-        # flake to thread into `scooter.agent.skills` (so a custom deploy ships
-        # the same skills the default render does). e.g.
-        #   scooter.agent.skills = scooter.lib.scooterSkills;
+        # The built-in agent skills as a `filename -> content` attrset
         lib.scooterSkills = scooterSkills;
 
-        # kubenix modules: SandboxTemplate / SandboxWarmPool / Sandbox generators
-        # (+ gateway/broker/webhooks Deployments, post-PoC). See modules/.
+        # kubenix modules
         kubenixModules.scooter = ./modules;
-        # The bare platform module — image refs default to the floating
-        # `${registryPrefix}<name>:latest`. Import this if you want to pin images
-        # yourself. `platform` keeps the raw module; `default` (below) adds the
-        # content pins so the CONVENTIONAL entry point is reproducible by default.
+        # The bare platform module
         kubenixModules.platform = ./modules/platform.nix;
-        # The conventional entry point: the platform module WITH the published-image
-        # defaults set to their CONTENT TAGS (ghcrImages), not :latest. So a host
-        # flake that imports scooter.kubenixModules.default and renders gets a
-        # reproducible pin out of the box — same content → same tag → no needless pod
-        # roll — instead of a floating :latest. The tags are x86_64-pinned pure text
-        # (see ghcrImages), so this module stays system-independent. Override any
-        # scooter.*Image / registryPrefix to ship elsewhere.
-        kubenixModules.default = { lib, ... }: {
-          imports = [ ./modules/platform.nix ];
-          # Per-leaf mkDefault so a consumer's explicit override of any single image
-          # still wins (a set-level mkDefault would clobber sibling scooter config).
-          config.scooter = {
-            agentHostImage = lib.mkDefault ghcrImages.agentHost;
-            sandboxImage = lib.mkDefault ghcrImages.sandboxOs;
-            uiImage = lib.mkDefault ghcrImages.ui;
-            broker.image = lib.mkDefault ghcrImages.broker;
-            webhooks.image = lib.mkDefault ghcrImages.webhooks;
-            scheduler.image = lib.mkDefault ghcrImages.scheduler;
-            dbMigrate.image = lib.mkDefault ghcrImages.dbMigrator;
-          };
+        # The conventional entry point
+        kubenixModules.default = {
+          imports = [ ./modules/platform.nix imagePackageConfig ];
         };
       };
     };
