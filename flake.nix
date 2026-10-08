@@ -474,7 +474,11 @@
             # nix build .#remote-agent  ->  the BYO-Claude container app (bin)
             remote-agent = remoteAgent;
             # nix build .#remote-agent-image -> BYO-Claude remote agent OCI image (ghcr;
-            remote-agent-image = builtImages.remote-agent.package;
+            # Evaluated alone: the unfree claude CLI keeps it out of the shared tree.
+            remote-agent-image =
+              (evalPlatform {
+                module = import ./pkgs/remote-agent-image/image.nix imageArgs;
+              }).config.scooter.images.remote-agent.package;
 
             # nix build .#conversation-controller-image  ->  controller OCI image
             conversation-controller-image = builtImages.conversation-controller.package;
