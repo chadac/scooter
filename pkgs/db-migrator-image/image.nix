@@ -110,5 +110,10 @@ let
 in
 # A kubenix module: this image declares its own scooter.images entry.
 {
-  config.scooter.images.agent-db-migrator.package = lib.mkDefault image;
+  config.scooter.images.agent-db-migrator = {
+    package = lib.mkDefault image;
+    attr = "db-migrator-image";
+    refKey = "dbMigrator";
+    k3dPush = true;
+  };
 }

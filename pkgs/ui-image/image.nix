@@ -284,5 +284,10 @@ let
 in
 # A kubenix module: this image declares its own scooter.images entry.
 {
-  config.scooter.images.agent-sandbox-ui.package = lib.mkDefault image;
+  config.scooter.images.agent-sandbox-ui = {
+    package = lib.mkDefault image;
+    attr = "ui-image";
+    refKey = "ui";
+    k3dPush = true;
+  };
 }

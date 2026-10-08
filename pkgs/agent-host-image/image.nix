@@ -67,5 +67,10 @@ let
 in
 # A kubenix module: this image declares its own scooter.images entry.
 {
-  config.scooter.images.agent-host.package = lib.mkDefault image;
+  config.scooter.images.agent-host = {
+    package = lib.mkDefault image;
+    attr = "agent-host-image";
+    refKey = "agentHost";
+    k3dPush = true;
+  };
 }

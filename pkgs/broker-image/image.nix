@@ -24,5 +24,10 @@ let
 in
 # A kubenix module: this image declares its own scooter.images entry.
 {
-  config.scooter.images.agent-broker.package = lib.mkDefault image;
+  config.scooter.images.agent-broker = {
+    package = lib.mkDefault image;
+    attr = "broker-image";
+    refKey = "broker";
+    k3dPush = true;
+  };
 }

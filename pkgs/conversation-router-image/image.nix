@@ -20,5 +20,10 @@ let
 in
 # A kubenix module: this image declares its own scooter.images entry.
 {
-  config.scooter.images.conversation-router.package = lib.mkDefault image;
+  config.scooter.images.conversation-router = {
+    package = lib.mkDefault image;
+    attr = "conversation-router-image";
+    refKey = "conversationRouter";
+    k3dPush = true;
+  };
 }

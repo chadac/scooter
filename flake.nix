@@ -36,58 +36,35 @@
         }) (l.filterAttrs (n: t: t == "regular" && l.hasSuffix ".md" n)
           (builtins.readDir dir));
 
+      # name -> packages attr. Must be plain data: the tag pin runs in the
+      # top-level scope, and reaching the per-system image tree from here
+      # would route through `self` and recurse.
+      imageMeta = {
+        agent-host.attr = "agent-host-image";
+        agent-sandbox-ui.attr = "ui-image";
+        agent-broker.attr = "broker-image";
+        agent-scheduler.attr = "scheduler-image";
+        agent-webhooks.attr = "webhooks-image";
+        agent-sandbox-os.attr = "sandbox-os-image";
+        agent-db-migrator.attr = "db-migrator-image";
+        byoc-controller.attr = "byoc-controller-image";
+        conversation-controller.attr = "conversation-controller-image";
+        conversation-router.attr = "conversation-router-image";
+        warm-store-controller.attr = "warm-store-controller-image";
+      };
+
       # Tags hash the x86_64 image; publish-images runs there.
       pubImages = self.packages.x86_64-linux;
       imagePackageConfig = { lib, config, ... }: {
         config.scooter.images = lib.mapAttrs
-          (name: attr: { tag = lib.mkForce (config.scooter.imagesContentTag pubImages.${attr}); })
-          imageAttrs;
-      };
-
-      # image name -> the packages attr publish-images pushes.
-      imageAttrs = {
-        agent-host = "agent-host-image";
-        agent-sandbox-ui = "ui-image";
-        agent-broker = "broker-image";
-        agent-scheduler = "scheduler-image";
-        agent-webhooks = "webhooks-image";
-        agent-sandbox-os = "sandbox-os-image";
-        agent-db-migrator = "db-migrator-image";
-        byoc-controller = "byoc-controller-image";
-        conversation-controller = "conversation-controller-image";
-        conversation-router = "conversation-router-image";
-        warm-store-controller = "warm-store-controller-image";
+          (_: img: { tag = lib.mkForce (config.scooter.imagesContentTag pubImages.${img.attr}); })
+          imageMeta;
       };
 
       # k3d's registry: `.localhost` resolves on host and in-cluster.
       k3dRegistry = "k3d-scooter-reg.localhost:5800/";
 
-      # Images the k3d render pushes and pulls by content tag.
-      k3dPushAttrs = {
-        agent-host-image = "agent-host";
-        ui-image = "agent-sandbox-ui";
-        broker-image = "agent-broker";
-        webhooks-image = "agent-webhooks";
-        sandbox-os-image = "agent-sandbox-os";
-        conversation-controller-image = "conversation-controller";
-        conversation-router-image = "conversation-router";
-        db-migrator-image = "agent-db-migrator";
-      };
 
-      # ghcr-image-refs' camelCase keys; server-config reads them by name.
-      ghcrRefKeys = {
-        agentHost = "agent-host";
-        ui = "agent-sandbox-ui";
-        broker = "agent-broker";
-        scheduler = "agent-scheduler";
-        webhooks = "agent-webhooks";
-        sandboxOs = "agent-sandbox-os";
-        byocController = "byoc-controller";
-        conversationController = "conversation-controller";
-        conversationRouter = "conversation-router";
-        warmStoreController = "warm-store-controller";
-        dbMigrator = "agent-db-migrator";
-      };
     in
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
@@ -306,11 +283,15 @@
 
           # attr -> k3d ref, for the push script
           k3dImageRefs = platformK3d.config.scooter.images;
-          k3dPushRefs = builtins.mapAttrs (_: n: k3dImageRefs.${n}.ref) k3dPushAttrs;
+          # Each image says whether k3d pushes it.
+          k3dPushImages = lib.filterAttrs (_: img: img.k3dPush) k3dImageRefs;
+          k3dPushRefs = lib.mapAttrs' (_: img: lib.nameValuePair img.attr img.ref) k3dPushImages;
 
           # The camelCase refs server-config reads, from the ghcr render.
           ghcrImageRefs = platformGhcr.config.scooter.images;
-          ghcrRefs = builtins.mapAttrs (_: n: ghcrImageRefs.${n}.ref) ghcrRefKeys;
+          # Each image names its own camelCase key, or omits itself.
+          ghcrRefs = lib.mapAttrs' (_: img: lib.nameValuePair img.refKey img.ref)
+            (lib.filterAttrs (_: img: img.refKey != null) ghcrImageRefs);
 
           # Tier-1-style config-correctness tests for the dev-environment sandbox
           devEnvTests =
@@ -396,6 +377,7 @@
         in
         {
           legacyPackages.evalPlatform = evalPlatform;
+          legacyPackages.imageModules = imageModules;
 
           packages = {
             # The sandbox is the NixOS systemd-PID-1 dev image (the legacy
@@ -537,7 +519,7 @@
               ${lib.concatMapStrings (a: ''
                 ln -s ${pubImages.${a}} $out/${a}.json
                 ln -s ${pubImages.${a}.copyTo} $out/${a}.copyTo
-              '') (builtins.attrNames k3dPushAttrs)}
+              '') (builtins.attrNames k3dPushRefs)}
             '';
 
             # nix build .#platform-manifests-ghcr -> the same manifests with every image

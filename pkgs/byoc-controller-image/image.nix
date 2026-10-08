@@ -23,5 +23,9 @@ let
 in
 # A kubenix module: this image declares its own scooter.images entry.
 {
-  config.scooter.images.byoc-controller.package = lib.mkDefault image;
+  config.scooter.images.byoc-controller = {
+    package = lib.mkDefault image;
+    attr = "byoc-controller-image";
+    refKey = "byocController";
+  };
 }

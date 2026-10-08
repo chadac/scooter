@@ -19,5 +19,9 @@ let
 in
 # A kubenix module: this image declares its own scooter.images entry.
 {
-  config.scooter.images.warm-store-controller.package = lib.mkDefault image;
+  config.scooter.images.warm-store-controller = {
+    package = lib.mkDefault image;
+    attr = "warm-store-controller-image";
+    refKey = "warmStoreController";
+  };
 }

@@ -27,6 +27,24 @@ let
         description = "What a manifest names. Override to ship from another registry.";
       };
 
+      attr = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "The flake packages attr that builds this, for CI to push.";
+      };
+
+      refKey = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Its camelCase key in ghcr-image-refs; null to omit it.";
+      };
+
+      k3dPush = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Whether the k3d/e2e render pushes this to the local registry.";
+      };
+
       path = mkOption {
         type = types.nullOr types.str;
         default = if config.package == null then null else "${config.package}";
