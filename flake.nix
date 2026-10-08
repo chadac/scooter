@@ -215,7 +215,13 @@
           # target service and bucketed, so each service image gets only the
           # contribs — and only the extension surface — it actually scans.
           # See contrib/ + contrib/README.md.
+          # THE ONE PLACE that names .github/deployment: nothing under contrib/,
+          # pkgs/ or modules/ may, because those trees are vended.
+          deploymentModules = [ ./.github/deployment/config.nix ];
+          shippedContribs = (import ./.github/deployment/config.nix).contribs;
+
           contribs = pkgs.callPackage ./contrib {
+            inherit deploymentModules;
             broker = brokerBase;
             webhooks = webhooksBase;
             inherit scooterBrokerLib scooterWebhooksLib;
@@ -356,6 +362,7 @@
           # programs.overlayStore.enable) — there is no longer a separate read-only-store
           # variant; the writable store is required for runtime tool-install + re-converge.
           sandboxOsImage = import ./pkgs/sandbox-os {
+                inherit deploymentModules;
             inherit lib n2c uvNix;
             pkgs = sandboxPkgs;
             # For the in-pod re-converge: it vendors these so a self-modify can
@@ -402,10 +409,11 @@
           mkPlatform = mkPlatformWith [ ];
           mkTestPlatform = mkPlatformWith [ ./modules/testing.nix ];
 
-          # Drop the token proxies: no secret to configure here.
-          unconfiguredContribs = lib.genAttrs
-            [ "slack" "gitlab" "github" "airtable" "brave" "datadog" "grafana" ]
-            (_: { enable = false; });
+          # What the test renders ship. `enable` defaults false, so this is the
+          # opt-in list; it names exactly what the opt-out list left on before.
+          testContribs = lib.genAttrs
+            [ "aws" "jira" "kagi" "duckduckgo" ]
+            (_: { enable = true; });
 
           # E2E/cluster-test render (`nix build .#platform-manifests`): the DUMMY agent +
           # test providers, and images SIDE-LOADED into k3s so it uses bare local names
@@ -471,7 +479,7 @@
               # testWebhook comes from modules/testing.nix — not repeated here.
             };
             # e2e configures no credentials; drop contribs needing one.
-            contribs = unconfiguredContribs;
+            contribs = testContribs;
           };
           mkTestPlatformImages = imgs: mkTestPlatform (mkTestPlatformConfig imgs);
           platform = mkTestPlatformImages {
@@ -535,7 +543,7 @@
             byoc.image = ghcrImages.byocController;
             # This manifest carries no integration credentials — the secrets are
             # Bare render: platform only, no integrations.
-            contribs = unconfiguredContribs;
+            contribs = testContribs;
           };
 
           # Tier-1-style config-correctness tests for the dev-environment sandbox:
@@ -544,7 +552,7 @@
           # check` runs them. See nixos-tests/ + docs/DEV_ENVIRONMENT*.
           devEnvTests =
             if pkgs.stdenv.isLinux
-            then import ./nixos-tests { inherit pkgs lib stubOverlay; }
+            then import ./nixos-tests { inherit pkgs lib stubOverlay deploymentModules; }
             else { };
 
           # The contrib sandbox surface, without building an image. Three links, and
@@ -555,8 +563,10 @@
           # See #599.
           contribSandbox =
             let
+              # What this repo ships first; a fixture layers on top.
               derive = extraModules: import ./contrib/sandbox-modules.nix {
-                inherit lib extraModules;
+                inherit lib;
+                extraModules = deploymentModules ++ extraModules;
               };
               # echo pins `enable = false` (it must never ship), so the fixture
               # overrides rather than merges.
@@ -569,6 +579,7 @@
               # re-converge list. Passing the fixture the other way (`extraModules`)
               # would leave it out of that list, which is the bug #717 closed.
               sandboxWithEcho = import ./pkgs/sandbox-os {
+                inherit deploymentModules;
                 inherit lib n2c uvNix;
                 pkgs = sandboxPkgs;
                 nixStubs = {
@@ -586,6 +597,7 @@
               # The image as it actually SHIPS — no fixture layered on. aws's sandbox
               # half is the only contrib in it.
               shipped = import ./pkgs/sandbox-os {
+                inherit deploymentModules;
                 inherit lib n2c uvNix;
                 pkgs = sandboxPkgs;
                 nixStubs = {
@@ -703,8 +715,10 @@
             # flags. (A contrib declaring tables inside `mkIf cfg.enable` — stage 2 of
             # #606 — is what makes them deployment-shaped; that is the point at which
             # an out-of-tree deployment regenerates its own.)
+            # contribs: the tables are a property of the SOURCE TREE, so this
+            # renders with what the repo ships, not with bare defaults (#637).
             db-spec =
-              let spec = (mkPlatform { }).config.scooter.dbSpec; in
+              let spec = (mkPlatform { contribs = shippedContribs; }).config.scooter.dbSpec; in
               pkgs.runCommand "db-spec" {
                 ownersToml = spec.ownersToml;
                 atlasHcl = spec.atlasHcl;

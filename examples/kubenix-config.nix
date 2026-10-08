@@ -233,6 +233,19 @@
 
   # --- Contribs: each integration's own options ---
   contribs = {
+    # Opt in: `enable` defaults false, so a deployment names what it ships.
+    aws.enable = true;
+    airtable.enable = true;
+    brave.enable = true;
+    datadog.enable = true;
+    duckduckgo.enable = true;
+    github.enable = true;
+    gitlab.enable = true;
+    grafana.enable = true;
+    jira.enable = true;
+    kagi.enable = true;
+    slack.enable = true;
+
     # Datadog provider: proxies /datadog/* -> https://api.<site> with the two
     # keys injected, so the agent can query metrics/logs/monitors without
     # seeing them. Point the secrets at a Secret in the broker namespace.

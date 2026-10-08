@@ -1,4 +1,6 @@
-{ lib, writeText, python3Packages, broker, webhooks, scooterBrokerLib, scooterWebhooksLib, ... }:
+{ lib, writeText, python3Packages, broker, webhooks, scooterBrokerLib, scooterWebhooksLib
+, deploymentModules ? [ ]
+, ... }:
 
 # Contrib registry: evaluates all-modules.nix, builds it, and buckets it by service.
 #
@@ -15,9 +17,11 @@ let
     inherit lib python3Packages broker webhooks scooterBrokerLib scooterWebhooksLib;
   };
 
+  # deploymentModules says which contribs to ship. Passed IN -- this tree is
+  # vended, so it names no deployment of its own.
   evalWith = extraModules: lib.evalModules {
     specialArgs = { inherit lib; };
-    modules = [ ./all-modules.nix ] ++ extraModules;
+    modules = [ ./all-modules.nix ] ++ deploymentModules ++ extraModules;
   };
 
   mkOutputs = eval:

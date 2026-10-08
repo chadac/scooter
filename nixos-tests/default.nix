@@ -12,7 +12,7 @@
   # The stub overlay the image is built with (flake.nix). stub-tools.nix applies it
   # to its VM so the test asserts against the same shims production ships.
 , stubOverlay ? null
-}:
+, deploymentModules ? [ ] }:
 
 let
   # The NixOS module under test — imported by each test's node.
@@ -25,7 +25,7 @@ in
   # The stubbed tools are shims in a booted system, and the closure carries their
   # recipes but not their packages. Takes the overlay, so not a plain runTest.
   dev-env-stub-tools = import ./stub-tools.nix {
-    inherit pkgs lib sandboxModule stubOverlay;
+    inherit pkgs lib sandboxModule stubOverlay deploymentModules;
   };
   dev-env-service = runTest ./service.nix;
   # The webServices option: renders a proxyable unit + discovery manifest,

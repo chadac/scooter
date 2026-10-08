@@ -7,7 +7,7 @@
 #
 # Hermetic: the VM has no network, so the real `uv` output is pre-seeded.
 
-{ pkgs, lib, sandboxModule, stubOverlay }:
+{ pkgs, lib, sandboxModule, stubOverlay, deploymentModules ? [ ] }:
 
 let
   # The same overlay the image is built with (flake.nix). Applied through
@@ -25,7 +25,10 @@ let
   # this layer out of modules/sandbox-os into the image builder, and the `aws` stub
   # asserted below is declared by contrib/aws/sandbox.nix — so `sandboxModule` alone
   # leaves `aws` off PATH, and the closure assertion passes VACUOUSLY. Why: PR #718.
-  contribSandbox = import ../contrib/sandbox-modules.nix { inherit lib; };
+  contribSandbox = import ../contrib/sandbox-modules.nix {
+    inherit lib;
+    extraModules = deploymentModules;
+  };
 in
 pkgs.testers.runNixOSTest {
   name = "dev-env-stub-tools";
