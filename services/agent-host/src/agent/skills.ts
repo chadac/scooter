@@ -258,24 +258,45 @@ function skillDescription(name: string, md: string): string {
   const explicit = typeof fm.description === "string" ? fm.description : "";
   if (explicit) return explicit;
   const triggers = Array.isArray(fm.triggers) ? fm.triggers : [];
-  // Lead with the H1 if there is one, then the triggers: the heading says what
-  // the skill IS, the triggers say WHEN to reach for it, and the model needs
-  // the second half to choose it unprompted.
-  const heading = stripFrontmatter(md)
+  // Lead with the H1, then the skill's own opening prose. NOT a trigger dump:
+  // proven live on the same pod and body, only the description differing --
+  // "Use when the task involves: gh, gh cli, gh pr create, ..." gets
+  // `gh pr create`, while a prose sentence naming the CONSTRAINT gets
+  // `agent-broker`. A keyword list reads as a topic label; the model needs a
+  // statement of when the skill applies and what it changes.
+  const body = stripFrontmatter(md);
+  const heading = body
     .split("\n")
     .map((l) => l.trim())
     .find((l) => l.startsWith("# "))
     ?.replace(/^#\s*/, "");
-  if (triggers.length) {
-    const when = `Use when the task involves: ${triggers.join(", ")}.`;
-    return heading ? `${heading}. ${when}` : when;
+  // The first paragraph after the heading: skills open with "Applies when ..."
+  // or similar, which is exactly the when-to-use sentence we want.
+  const firstPara = body
+    .split(/\n\s*\n/)
+    .map((p) => p.replace(/\s+/g, " ").trim())
+    .find((p) => p && !p.startsWith("#") && !p.startsWith("```"));
+  if (heading && firstPara) return `${heading}. ${stripMarkdown(firstPara)}`;
+  if (heading && triggers.length) {
+    // No usable prose: fall back to triggers, but phrase them as a condition.
+    return `${heading}. Use this when the task involves ${triggers.slice(0, 6).join(", ")}.`;
   }
+  if (firstPara) return stripMarkdown(firstPara);
+  if (heading) return heading;
   const prose = stripFrontmatter(md)
     .split("\n")
     .map((l) => l.trim())
     // Skip headings, fences and blanks — the first SENTENCE is what we want.
     .find((l) => l && !l.startsWith("#") && !l.startsWith("```"));
   return prose || `The ${name} skill for this environment.`;
+}
+
+/** Strip markdown emphasis/links so a description reads as plain prose. */
+function stripMarkdown(t: string): string {
+  return t
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/`(.+?)`/g, "$1")
+    .replace(/\[(.+?)\]\([^)]*\)/g, "$1");
 }
 
 /** Drop a leading `---\n...\n---` YAML frontmatter block, keeping the body. */
