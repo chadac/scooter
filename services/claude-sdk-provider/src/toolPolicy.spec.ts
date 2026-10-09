@@ -78,3 +78,15 @@ describe("decideTool", () => {
     expect(d.allow === false && d.reason).toMatch(/edit/i);
   });
 });
+it("THE BUG: Skill is allowed — deny-by-default made every skill unreachable", () => {
+  // Observed live in the raw API bodies: the skill was discovered, listed with a
+  // good description, and the Skill tool was in the request's tool list -- but
+  // decideTool denied the call with "Skill is not available in this
+  // environment", so the model fell back to `gh pr create`.
+  expect(decideTool("Skill").allow).toBe(true);
+});
+
+it("an unknown built-in is still denied (deny-by-default intact)", () => {
+  expect(decideTool("NotARealTool").allow).toBe(false);
+});
+

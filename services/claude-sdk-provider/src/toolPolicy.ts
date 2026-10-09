@@ -25,7 +25,12 @@ export const ALIASED_BUILTINS = ["Bash", "Read", "Edit", "Write", "Glob", "Grep"
 /** Built-ins that are safe as-is: no sandbox access, no side effects we care about.
  *  ToolSearch is load-bearing: the scooter-env MCP tools are DEFERRED, so denying it
  *  leaves the model unable to enumerate the tools it was given. */
-export const ALLOWED_BUILTINS = ["TodoWrite", "ToolSearch"] as const;
+// Skill: the model invokes a discovered .claude/skills entry with it. WITHOUT it
+// here, decideTool's deny-by-default rejects the call and the model is told
+// "Skill is not available in this environment" -- so a correctly discovered,
+// correctly described skill is still unreachable. Observed live: the model tried
+// Skill, was denied, and fell back to `gh pr create`.
+export const ALLOWED_BUILTINS = ["TodoWrite", "ToolSearch", "Skill"] as const;
 
 /**
  * Built-ins we deliberately do not support, and what to use instead. The message is
