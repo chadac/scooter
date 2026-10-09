@@ -103,11 +103,13 @@ describe("frontmatter -> description", () => {
     expect(loadSkills(skillsDir)[0].description).toBe("the explicit one");
   });
 
-  it("falls back to triggers when description is absent", () => {
-    writeSkill("b", "name: b\ntriggers:\n- gh pr create\n- open a pull request", "body");
+  it("uses the skill's own prose over its triggers", () => {
+    // Triggers are a keyword list; prose states when the skill applies. The
+    // live test showed the model acts on the latter and ignores the former.
+    writeSkill("b", "name: b\ntriggers:\n- gh pr create\n- open a pull request", "# Topic\n\nApplies when doing a specific thing.");
     const d = loadSkills(skillsDir)[0].description;
-    expect(d).toContain("gh pr create");
-    expect(d).toContain("open a pull request");
+    expect(d).toContain("Applies when doing a specific thing");
+    expect(d).not.toContain("gh pr create");
   });
 
   it("falls back to the first prose line when both are absent", () => {
@@ -140,21 +142,36 @@ describe("writeSkillDir", () => {
     expect(readFileSync(p, "utf8")).toContain("BODY");
   });
 
-  it("THE BUG: triggers and NO description -> a WHEN-to-use description", () => {
-    // Every shipped skill is shaped like this. Proven live: with only the H1
-    // heading as its description the agent answers `gh pr create`; with the
-    // triggers in the description it answers `agent-broker`.
+  it("THE BUG: the description is PROSE, not a trigger keyword dump", () => {
+    // Proven live on one pod, same body, only the description differing:
+    //   "Use when the task involves: gh, gh cli, gh pr create, ..."  -> gh pr create
+    //   "Applies when you are trying to use the gh CLI ..."          -> agent-broker
+    // A keyword list reads as a topic label. The model needs a sentence saying
+    // when the skill applies, so prefer the skill's own opening paragraph.
     writeSkill(
       "scooter-github",
-      "name: scooter-github\ntype: knowledge\ntriggers:\n- gh pr create\n- open a pull request",
-      "# GitHub from a Scooter sandbox\n\nUse agent-broker.",
+      "name: scooter-github\ntriggers:\n- gh pr create\n- open a pull request",
+      "# GitHub from a Scooter sandbox\n\n**Applies when** you are trying to use the `gh` CLI. It is not relevant to ordinary git work.\n\n## Details\n\nUse agent-broker.",
     );
     writeSkillDir(cwd, skillsDir);
     const t = readFileSync(join(cwd, ".claude", "skills", "scooter-github", "SKILL.md"), "utf8");
-    expect(t).toContain("gh pr create");
-    expect(t).toContain("open a pull request");
-    expect(t).toContain("GitHub from a Scooter sandbox");
-    expect(t).toContain("Use agent-broker.");
+    const desc = t.split("\n").find((l) => l.startsWith("description:"))!;
+    expect(desc).toContain("GitHub from a Scooter sandbox");
+    // the skill's own when-to-use sentence, not the trigger list
+    expect(desc).toContain("Applies when");
+    expect(desc).not.toContain("task involves");
+    // markdown emphasis stripped: the description is YAML, not markdown
+    expect(desc).not.toContain("**");
+    expect(desc).not.toContain("`");
+  });
+
+  it("falls back to triggers only when the skill has no usable prose", () => {
+    writeSkill("x", "name: x\ntriggers:\n- alpha\n- beta", "# Heading Only");
+    writeSkillDir(cwd, skillsDir);
+    const t = readFileSync(join(cwd, ".claude", "skills", "x", "SKILL.md"), "utf8");
+    const desc = t.split("\n").find((l) => l.startsWith("description:"))!;
+    expect(desc).toContain("Heading Only");
+    expect(desc).toContain("alpha");
   });
 
   it("the description is ONE line — a stray newline breaks the YAML", () => {
@@ -173,19 +190,18 @@ describe("writeSkillDir", () => {
     expect(t).toContain("description:");
   });
 
-  it("REGRESSION: a source with triggers but NO description still gets one", () => {
-    // Every shipped skill looks like this — name/type/version/triggers, no
-    // description. Symlinking such a file gives the SDK nothing to match on,
-    // so it drops the skill silently.
-    writeSkill("scooter-github", "name: scooter-github\ntype: knowledge\ntriggers:\n- gh pr create\n- open a pull request", "GH BODY");
+  it("REGRESSION: a source with no description still gets a non-empty one", () => {
+    writeSkill(
+      "scooter-github",
+      "name: scooter-github\ntype: knowledge\ntriggers:\n- gh pr create",
+      "# GitHub from a Scooter sandbox\n\nApplies when you use the gh CLI.",
+    );
     writeSkillDir(cwd, skillsDir);
     const t = readFileSync(join(cwd, ".claude", "skills", "scooter-github", "SKILL.md"), "utf8");
-    expect(t).toContain("description:");
-    // and the description must carry the trigger phrases, which is what the
-    // model matches the task against
-    expect(t).toContain("gh pr create");
-    // the body must survive too
-    expect(t).toContain("GH BODY");
+    const desc = t.split("\n").find((l) => l.startsWith("description:"))!;
+    expect(desc).toContain("GitHub from a Scooter sandbox");
+    expect(desc).toContain("Applies when you use the gh CLI");
+    expect(t).toContain("Applies when you use the gh CLI.");
   });
 
   it("REGRESSION: an empty-frontmatter source still gets a description", () => {
