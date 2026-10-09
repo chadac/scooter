@@ -59,8 +59,14 @@ export interface SdkAcpClientDeps {
    *  local proxy per server, tunnelled to the cloud — because a conversation can offer MANY
    *  servers and their URLs are per-container, not a single fixed endpoint. */
   mcpServers?: Array<{ name: string; url: string }>;
-  /** Agent identity + skills, as the SDK systemPrompt (was goose .goosehints). */
+  /** Agent identity, as the SDK systemPrompt. Carries NO skill bodies: the SDK
+   *  discovers those from `<cwd>/.claude/skills` when settingSources allows. */
   systemPrompt: string;
+  /** Working dir the SDK scans for `.claude/skills` (and CLAUDE.md). */
+  cwd?: string;
+  /** Filesystem settings the SDK may load. MUST include "project" for skills:
+   *  with this unset the SDK loads none, so no skill list is ever sent. */
+  settingSources?: Array<"user" | "project" | "local">;
   /** Extra env for the claude subprocess (e.g. IS_SANDBOX if ever needed). */
   extraEnv?: Record<string, string>;
   /** Absolute path to a glibc `claude` CLI to use instead of the SDK's bundled
@@ -201,6 +207,8 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
   const baseOptions: Record<string, unknown> = {
     model: deps.model,
     systemPrompt: deps.systemPrompt,
+    ...(deps.cwd ? { cwd: deps.cwd } : {}),
+    ...(deps.settingSources ? { settingSources: deps.settingSources } : {}),
     // The SDK bundles its OWN `claude` binary (musl-linked) which fails to launch on
     // the glibc NixOS image. Point it at the glibc `claude` baked onto the image
     // (nixpkgs claude-code, on PATH as `claude`), overridable via CLAUDE_CODE_COMMAND.
@@ -238,6 +246,8 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
     allowedTools: [
       ...Object.values(toolAliases),
       ...(deps.mcpEndpointUrl ? ["mcp__scooter-env"] : []),
+      // Skill invocation. Without it the model sees the skill list and cannot act on it.
+      ...(deps.settingSources ? ["Skill"] : []),
     ],
     // THE enforcement point. canUseTool is a USER-INPUT callback — the SDK docs say it
     // "never fires for auto-approved tools", which is why the note below about it not

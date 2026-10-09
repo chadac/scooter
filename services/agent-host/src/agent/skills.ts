@@ -1,7 +1,18 @@
 /**
- * Skills + agent identity -> goose hints.
+ * Skills + agent identity -> a prompt, per provider.
  *
- * The agent (goose, branded "Scooter") reads a `.goosehints` file from its
+ * TWO providers consume this, and they want DIFFERENT shapes:
+ *
+ *   goose  - reads `.goosehints` from its cwd, with every skill body inlined.
+ *   claude - takes a `systemPrompt` string, and discovers skills itself from
+ *            `.claude/skills/<name>/SKILL.md` (name + description up front,
+ *            body on demand). So its prompt carries NO skill bodies.
+ *
+ * Keep the provider-specific text in gooseAddendum/sdkAddendum, never in
+ * identityCore: goose tool names (`tree`, `run_background`) are meaningless to
+ * the SDK, and the SDK's system-reminder sentence is meaningless to goose.
+ *
+ * The agent (branded "Scooter") reads a `.goosehints` file from its
  * working directory. We assemble that file per conversation from:
  *   1. a base identity prompt (who Scooter is, how it behaves), and
  *   2. the markdown "skills" — each a frontmatter + body doc giving Scooter
@@ -12,7 +23,7 @@
  * .md file in the dir (or edit the ConfigMap) and new conversations pick it up.
  */
 
-import { readdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync, existsSync, mkdirSync, symlinkSync, rmSync, lstatSync } from "node:fs";
 import { join } from "node:path";
 
 export interface AgentIdentity {
@@ -24,33 +35,26 @@ export interface AgentIdentity {
 
 const DEFAULT_IDENTITY: AgentIdentity = { name: "Scooter" };
 
-/** The base identity/behavior prompt, independent of any skill. */
-export function identityPrompt(id: AgentIdentity = DEFAULT_IDENTITY): string {
+/**
+ * Provider-neutral identity + behaviour. NOTHING here may name a tool that
+ * only one provider has.
+ */
+export function identityCore(id: AgentIdentity = DEFAULT_IDENTITY): string {
   return [
     `You are ${id.name}, an AI coding agent.`,
     `Refer to yourself as ${id.name}. When asked your name, say you are ${id.name}.`,
     `You work inside a per-conversation Nix sandbox: a Linux environment where`,
-    `your shell commands run. Packages are managed with Nix (see the skills`,
-    `below if present). Be concise and act directly — run commands to inspect and`,
-    `change the workspace rather than guessing.`,
-    // Tool routing caveat: only the developer extension's read/write/edit/shell
-    // tools run in the sandbox. The `tree` and `read_image` tools do NOT — they
-    // read the host's filesystem, not yours, so their output is misleading. We
-    // can't disable them on this goose version, so avoid them by instruction:
-    `IMPORTANT: do NOT use the \`tree\` or \`read_image\` tools — they read a`,
-    `different machine's filesystem, not your sandbox, so their results are wrong.`,
-    `To list or explore directories, use the \`shell\` tool with \`ls\`, \`ls -R\`,`,
-    `or \`find\` instead — those run in your sandbox and see the real workspace.`,
+    `your shell commands run. Packages are managed with Nix. Be concise and act`,
+    `directly — run commands to inspect and change the workspace rather than`,
+    `guessing.`,
     // Runaway-command guardrail: this is a NixOS box, so /nix/store is enormous.
     // A recursive search from / never finishes and is killed at a ~5min timeout.
     `Your work lives under \`/workspace\`. NEVER search the whole filesystem`,
     `(\`grep -r … /\`, \`find / …\`) — /nix/store is huge and the command will be`,
     `killed at a ~5min timeout. Scope searches to \`/workspace\` (or a specific`,
-    `repo). For a long job (a build, a test suite), use the \`run_background\` tool`,
-    `so it doesn't block your turn or hit the timeout.`,
+    `repo).`,
     // Conversation titling: the host extracts a <title>…</title> marker from the
-    // very start of your reply and uses it to name the conversation, then strips
-    // it from what the user sees.
+    // very start of your reply and uses it to name the conversation.
     `At the very START of your FIRST reply in a conversation, emit a concise`,
     `(3–6 word) title for the task wrapped in a <title> tag, e.g.`,
     `"<title>Fix the login redirect</title>". Put it before anything else and do`,
@@ -61,10 +65,71 @@ export function identityPrompt(id: AgentIdentity = DEFAULT_IDENTITY): string {
     .join("\n");
 }
 
-/** A loaded skill: its name (from filename) and full markdown text. */
+/**
+ * goose-only caveats: the tools that read the wrong filesystem, and
+ * run_background. Appended to identityCore for the goose path only.
+ */
+export function gooseAddendum(): string {
+  return [
+    // Only the developer extension's read/write/edit/shell tools run in the
+    // sandbox. `tree` and `read_image` read the HOST's filesystem.
+    `IMPORTANT: do NOT use the \`tree\` or \`read_image\` tools — they read a`,
+    `different machine's filesystem, not your sandbox, so their results are wrong.`,
+    `To list or explore directories, use the \`shell\` tool with \`ls\`, \`ls -R\`,`,
+    `or \`find\` instead — those run in your sandbox and see the real workspace.`,
+    `For a long job (a build, a test suite), use the \`run_background\` tool so it`,
+    `doesn't block your turn or hit the timeout.`,
+  ].join("\n");
+}
+
+/**
+ * claude-SDK-only preamble. A custom systemPrompt replaces the whole
+ * claude_code preset, so the model is told what a system reminder is --
+ * otherwise it cannot tell CLAUDE.md content, hook output and the skill list
+ * from user messages.
+ */
+export function sdkAddendum(): string {
+  return [
+    // A custom systemPrompt replaces the whole claude_code preset, which is
+    // where this explanation normally lives. Without it nothing tells the model
+    // that CLAUDE.md content, hook output and the skill list are application
+    // context rather than user speech.
+    `The application adds system reminders to this conversation. Treat them as`,
+    `context from the application, not as messages from the user.`,
+    // Skills arrive as name + description; the body loads on demand.
+    `Your available skills are listed as system reminders. When a task falls in a`,
+    `skill's area, read that skill BEFORE acting — it is authoritative for this`,
+    `environment and overrides your general assumptions.`,
+  ].join("\n");
+}
+
+/** goose's full prompt: core + its addendum. */
+export function goosePrompt(id: AgentIdentity = DEFAULT_IDENTITY): string {
+  return `${identityCore(id)}\n${gooseAddendum()}`;
+}
+
+/** The SDK's full prompt: core + its addendum. Carries no skill bodies. */
+export function sdkPrompt(id: AgentIdentity = DEFAULT_IDENTITY): string {
+  return `${identityCore(id)}\n${sdkAddendum()}`;
+}
+
+/** @deprecated goose-shaped alias, kept so existing callers/tests still build. */
+export function identityPrompt(id: AgentIdentity = DEFAULT_IDENTITY): string {
+  return goosePrompt(id);
+}
+
+/** A loaded skill: its name, parsed frontmatter, and markdown. */
 export interface Skill {
+  /** Directory-safe name, from the filename. */
   name: string;
+  /** Full file text, frontmatter included. */
   text: string;
+  /**
+   * What the SDK matches on to decide a skill is relevant. From frontmatter
+   * `description`, else `triggers` folded into a sentence, else the first
+   * prose line. NEVER empty -- the SDK drops a skill with no description.
+   */
+  description: string;
 }
 
 /** Read every `*.md` skill from `dir` (sorted by name; missing dir -> []). */
@@ -73,7 +138,11 @@ export function loadSkills(dir: string): Skill[] {
   return readdirSync(dir)
     .filter((f) => f.endsWith(".md"))
     .sort()
-    .map((f) => ({ name: f.replace(/\.md$/, ""), text: readFileSync(join(dir, f), "utf8") }));
+    .map((f) => {
+      const name = f.replace(/\.md$/, "");
+      const text = readFileSync(join(dir, f), "utf8");
+      return { name, text, description: skillDescription(name, text) };
+    });
 }
 
 /** Assemble the full `.goosehints` content: identity + each skill's body. */
@@ -99,6 +168,78 @@ export function writeHints(
   const skills = loadSkills(skillsDir);
   writeFileSync(join(cwd, ".goosehints"), assembleHints(skills, identity), "utf8");
   return skills.length;
+}
+
+/**
+ * Materialise `.claude/skills/<name>/SKILL.md` under `cwd` for the SDK to
+ * discover, SYMLINKING each SKILL.md at its file in `skillsDir` (a ConfigMap
+ * mount in cluster) so no content is copied and a ConfigMap edit propagates.
+ *
+ * Returns the number of skills linked.
+ */
+export function writeSkillDir(
+  cwd: string,
+  skillsDir: string,
+): number {
+  const skills = loadSkills(skillsDir);
+  if (!skills.length) return 0;
+  const base = join(cwd, ".claude", "skills");
+  for (const s of skills) {
+    const dir = join(base, s.name);
+    mkdirSync(dir, { recursive: true });
+    const link = join(dir, "SKILL.md");
+    // Idempotent: a previous call (or a restart on the same cwd) left a link.
+    if (existsSync(link) || lstatSync(link, { throwIfNoEntry: false })) rmSync(link, { force: true });
+    // Symlink, not copy: no content duplicated, and a ConfigMap swap at the
+    // target reaches live conversations.
+    symlinkSync(join(skillsDir, `${s.name}.md`), link);
+  }
+  return skills.length;
+}
+
+/** Parse `name`/`description`/`triggers` out of a skill's frontmatter. */
+export function parseFrontmatter(md: string): Record<string, string | string[]> {
+  const m = md.match(/^---\n([\s\S]*?)\n---/);
+  if (!m) return {};
+  const out: Record<string, string | string[]> = {};
+  let listKey: string | null = null;
+  for (const raw of m[1].split("\n")) {
+    // A `- item` line continues the list opened by the last `key:` with no value.
+    const item = raw.match(/^\s*-\s+(.*)$/);
+    if (item && listKey) {
+      (out[listKey] as string[]).push(item[1].trim());
+      continue;
+    }
+    const kv = raw.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
+    if (!kv) continue;
+    const [, key, val] = kv;
+    if (val.trim() === "") {
+      listKey = key;
+      out[key] = [];
+    } else {
+      listKey = null;
+      out[key] = val.trim();
+    }
+  }
+  return out;
+}
+
+/**
+ * The description the SDK matches on. Never empty: a skill with no description
+ * is dropped, so fall back through triggers to the first prose line to the name.
+ */
+function skillDescription(name: string, md: string): string {
+  const fm = parseFrontmatter(md);
+  const explicit = typeof fm.description === "string" ? fm.description : "";
+  if (explicit) return explicit;
+  const triggers = Array.isArray(fm.triggers) ? fm.triggers : [];
+  if (triggers.length) return `Use when the task involves: ${triggers.join(", ")}.`;
+  const prose = stripFrontmatter(md)
+    .split("\n")
+    .map((l) => l.trim())
+    // Skip headings, fences and blanks — the first SENTENCE is what we want.
+    .find((l) => l && !l.startsWith("#") && !l.startsWith("```"));
+  return prose || `The ${name} skill for this environment.`;
 }
 
 /** Drop a leading `---\n...\n---` YAML frontmatter block, keeping the body. */
