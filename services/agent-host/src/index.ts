@@ -55,7 +55,7 @@ import { resolvePodTarget } from "./exec/k8sExec.js";
 import { createWebServiceProxy } from "./proxy/webServiceProxy.js";
 import { createWebServiceRegistry } from "./proxy/webServiceRegistry.js";
 import { createModuleRegistry } from "./proxy/moduleRegistry.js";
-import { writeHints, loadSkills, assembleHints } from "./agent/skills.js";
+import { writeHints, writeSkillDir, sdkPrompt } from "./agent/skills.js";
 import { createSdkAcpClient } from "@scooter/claude-sdk-provider";
 import { ensureGooseConfig } from "./agent/gooseConfig.js";
 import { catalogFromEnv, availableIds, type ModelCatalog } from "./agent/models.js";
@@ -1835,9 +1835,19 @@ export async function main(
     // Inject the agent identity (Scooter) + skills as goose's .goosehints in its
     // cwd. Re-read on every conversation start, so editing the skills ConfigMap
     // takes effect for new conversations with no image rebuild.
-    const skillCount = writeHints(cwd, config.skillsDir, { name: config.agentName });
+    // Which provider this conversation runs on; decides the skills mechanism.
+    const usingClaude = process.env.GOOSE_PROVIDER === "claude-code" && !config.fakeSandbox;
+    // Provider-specific: goose reads .goosehints with every body inlined; the
+    // SDK discovers .claude/skills itself and gets no bodies in its prompt.
+    const skillCount = usingClaude
+      ? writeSkillDir(cwd, config.skillsDir)
+      : writeHints(cwd, config.skillsDir, { name: config.agentName });
     if (skillCount)
-      hostLog.info("wrote skills to .goosehints", { conversation_id: conversationId, skills: skillCount });
+      hostLog.info("wrote skills", {
+        conversation_id: conversationId,
+        skills: skillCount,
+        via: usingClaude ? ".claude/skills" : ".goosehints",
+      });
     const metricModel = resolved ?? cfg.model ?? "unknown";
     // Offer the agent the in-process MCP tools (background jobs / model selection /
     // agent-tools), scoped to THIS conversation via the URL's ?conv=<id>.
@@ -1868,7 +1878,6 @@ export async function main(
         : []),
     ];
     const mcpServers = offeredServers.length ? offeredServers : undefined;
-    const usingClaude = process.env.GOOSE_PROVIDER === "claude-code" && !config.fakeSandbox;
     // The FLOOR ACP client factory — the cloud brain (SDK-claude on Bedrock, or goose). This is
     // what a run uses when no personalized remote agent applies (a scheduled trigger, an offline
     // agent, or BYO not enabled). Extracted so the BYO remote provider can sit ABOVE it in the
@@ -1884,7 +1893,12 @@ export async function main(
               oauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? "",
               model: resolved ?? cfg.model ?? "claude-sonnet-4-5",
               exec,
-              systemPrompt: assembleHints(loadSkills(config.skillsDir), { name: config.agentName }),
+              // No skill bodies: the SDK loads them from .claude/skills on demand.
+              systemPrompt: sdkPrompt({ name: config.agentName }),
+              // cwd is where .claude/skills lives; settingSources makes the SDK
+              // read it. Without settingSources NO skill list is ever sent.
+              cwd,
+              settingSources: ["project"],
               // TRANSCRIPT: record the RAW SDK messages under this run (no-op off).
               recordRaw: (m) => bridge.recordRawInput(m),
               // Give the SDK agent the SAME platform MCP tools the goose path gets
