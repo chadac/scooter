@@ -67,6 +67,10 @@ export interface SdkAcpClientDeps {
   /** Filesystem settings the SDK may load. MUST include "project" for skills:
    *  with this unset the SDK loads none, so no skill list is ever sent. */
   settingSources?: Array<"user" | "project" | "local">;
+  /** Which discovered skills Claude may invoke: "all", or an exact-name list.
+   *  Setting it also puts the Skill tool in allowedTools automatically -- which
+   *  our explicit allowedTools otherwise suppresses. */
+  skills?: "all" | string[];
   /** Extra env for the claude subprocess (e.g. IS_SANDBOX if ever needed). */
   extraEnv?: Record<string, string>;
   /** Absolute path to a glibc `claude` CLI to use instead of the SDK's bundled
@@ -203,12 +207,15 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
   // interrupt: the interrupted session's transcript is intact, so the next turn
   // picks up where it left off instead of dead-starting.
   let sdkSessionId: string | undefined;
+  /** Init is logged once per client, not once per turn. */
+  let loggedInit = false;
 
   const baseOptions: Record<string, unknown> = {
     model: deps.model,
     systemPrompt: deps.systemPrompt,
     ...(deps.cwd ? { cwd: deps.cwd } : {}),
     ...(deps.settingSources ? { settingSources: deps.settingSources } : {}),
+    ...(deps.skills ? { skills: deps.skills } : {}),
     // The SDK bundles its OWN `claude` binary (musl-linked) which fails to launch on
     // the glibc NixOS image. Point it at the glibc `claude` baked onto the image
     // (nixpkgs claude-code, on PATH as `claude`), overridable via CLAUDE_CODE_COMMAND.
@@ -369,6 +376,19 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
       let stopReason = "end_turn";
       try {
         for await (const msg of q) {
+          // The SDK's init message carries the skills it discovered. Log it
+          // once: without this, "the agent cannot see its skills" is six
+          // rounds of inference instead of one line.
+          const m = msg as { type?: string; subtype?: string; skills?: unknown; slash_commands?: unknown };
+          if (m.type === "system" && m.subtype === "init" && !loggedInit) {
+            loggedInit = true;
+            noteDiagnostic(
+              `[sdk] init skills=${JSON.stringify(m.skills ?? null)} commands=${
+                Array.isArray(m.slash_commands) ? m.slash_commands.length : "?"
+              }`,
+            );
+            debug("[sdk] init: skills=%o", m.skills);
+          }
           // TRANSCRIPT: record the RAW SDK message before we normalize it — this is
           // the exact shape the fake query() must reproduce (no-op when unset).
           deps.recordRaw?.(msg);

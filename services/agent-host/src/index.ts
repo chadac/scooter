@@ -1899,6 +1899,9 @@ export async function main(
               // read it. Without settingSources NO skill list is ever sent.
               cwd,
               settingSources: ["project"],
+              // Required: without `skills` the SDK leaves the Skill tool out of
+              // our explicit allowedTools, so the model cannot invoke any.
+              skills: "all",
               // TRANSCRIPT: record the RAW SDK messages under this run (no-op off).
               recordRaw: (m) => bridge.recordRawInput(m),
               // Give the SDK agent the SAME platform MCP tools the goose path gets

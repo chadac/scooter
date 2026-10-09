@@ -187,14 +187,39 @@ export function writeSkillDir(
   for (const s of skills) {
     const dir = join(base, s.name);
     mkdirSync(dir, { recursive: true });
-    const link = join(dir, "SKILL.md");
-    // Idempotent: a previous call (or a restart on the same cwd) left a link.
-    if (existsSync(link) || lstatSync(link, { throwIfNoEntry: false })) rmSync(link, { force: true });
-    // Symlink, not copy: no content duplicated, and a ConfigMap swap at the
-    // target reaches live conversations.
-    symlinkSync(join(skillsDir, `${s.name}.md`), link);
+    const dest = join(dir, "SKILL.md");
+    rmSync(dest, { force: true });
+    // A WRITTEN file, not a symlink. The SDK parses frontmatter from the file
+    // it finds, and our skills carry `triggers:` but no `description:` -- so a
+    // symlink to the original leaves the SDK falling back to the H1 heading
+    // ("GitHub from a Scooter sandbox"), which says nothing about WHEN to use
+    // the skill. Proven live: with that heading the agent answers
+    // `gh pr create`; with a trigger-bearing description it answers
+    // `agent-broker`. So we must rewrite the frontmatter.
+    writeFileSync(dest, renderSkillFile(s), "utf8");
   }
   return skills.length;
+}
+
+/**
+ * The SKILL.md the SDK reads: our computed `description` (which carries the
+ * trigger phrases the model matches on) over the original body.
+ */
+export function renderSkillFile(s: Skill): string {
+  const body = stripFrontmatter(s.text).trim();
+  // Only name + description: the SDK needs those two, and the original
+  // `triggers:`/`type:`/`version:` fields mean nothing to it.
+  return [
+    "---",
+    `name: ${s.name}`,
+    // Single-line, quoted: a stray newline or colon would break the YAML and
+    // the SDK drops a skill whose frontmatter does not parse.
+    `description: ${JSON.stringify(s.description.replace(/\s+/g, " ").trim())}`,
+    "---",
+    "",
+    body,
+    "",
+  ].join("\n");
 }
 
 /** Parse `name`/`description`/`triggers` out of a skill's frontmatter. */
@@ -233,7 +258,18 @@ function skillDescription(name: string, md: string): string {
   const explicit = typeof fm.description === "string" ? fm.description : "";
   if (explicit) return explicit;
   const triggers = Array.isArray(fm.triggers) ? fm.triggers : [];
-  if (triggers.length) return `Use when the task involves: ${triggers.join(", ")}.`;
+  // Lead with the H1 if there is one, then the triggers: the heading says what
+  // the skill IS, the triggers say WHEN to reach for it, and the model needs
+  // the second half to choose it unprompted.
+  const heading = stripFrontmatter(md)
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => l.startsWith("# "))
+    ?.replace(/^#\s*/, "");
+  if (triggers.length) {
+    const when = `Use when the task involves: ${triggers.join(", ")}.`;
+    return heading ? `${heading}. ${when}` : when;
+  }
   const prose = stripFrontmatter(md)
     .split("\n")
     .map((l) => l.trim())
