@@ -170,6 +170,40 @@ export function writeHints(
   return skills.length;
 }
 
+/** A skill as it travels to a BYO container: name + the rendered SKILL.md. */
+export interface SkillPayload {
+  name: string;
+  /** The full SKILL.md text, frontmatter included. */
+  content: string;
+}
+
+/**
+ * The skills to SEND a BYO container, which has no access to this pod's
+ * filesystem. It writes them itself (writeSkillPayloads) and its own SDK then
+ * discovers them exactly as the in-pod one does.
+ */
+export function skillPayloads(skillsDir: string): SkillPayload[] {
+  return loadSkills(skillsDir).map((s) => ({ name: s.name, content: renderSkillFile(s) }));
+}
+
+/**
+ * Write received payloads as `.claude/skills/<name>/SKILL.md` under `cwd`.
+ * The container-side counterpart of writeSkillDir -- same layout, no shared
+ * filesystem. Returns the number written.
+ */
+export function writeSkillPayloads(cwd: string, skills: readonly SkillPayload[]): number {
+  if (!skills.length) return 0;
+  const base = join(cwd, ".claude", "skills");
+  for (const s of skills) {
+    // A hostile/garbled name must not escape the skills dir.
+    if (!/^[A-Za-z0-9._-]+$/.test(s.name) || s.name.startsWith(".")) continue;
+    const dir = join(base, s.name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "SKILL.md"), s.content, "utf8");
+  }
+  return skills.length;
+}
+
 /**
  * Materialise `.claude/skills/<name>/SKILL.md` under `cwd` for the SDK to
  * discover, SYMLINKING each SKILL.md at its file in `skillsDir` (a ConfigMap
