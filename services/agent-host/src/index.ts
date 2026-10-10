@@ -1902,6 +1902,17 @@ export async function main(
               // Required: without `skills` the SDK leaves the Skill tool out of
               // our explicit allowedTools, so the model cannot invoke any.
               skills: "all",
+              // One line naming what the session really discovered -- the
+              // diagnostic this whole investigation lacked.
+              onInit: (info) =>
+                hostLog.info("sdk session init", {
+                  conversation_id: conversationId,
+                  skills: info.skills.length,
+                  skill_names: info.skills
+                    .map((s) => (s as { name?: string })?.name)
+                    .filter(Boolean),
+                  commands: info.commands,
+                }),
               // TRANSCRIPT: record the RAW SDK messages under this run (no-op off).
               recordRaw: (m) => bridge.recordRawInput(m),
               // Give the SDK agent the SAME platform MCP tools the goose path gets
@@ -1910,6 +1921,24 @@ export async function main(
               // this the agent has only the sandbox tools and can't actually use those
               // capabilities.
               mcpEndpointUrl: mcpEndpoint?.urlFor(conversationId),
+              // scooter-broker carries the CONTRIB provider tools (github,
+              // gitlab, jira, slack). Only the goose path offered it, so both
+              // the SDK and BYO agents had the github SKILL telling them to
+              // call agent-broker and no github tool to call.
+              mcpServers:
+                brokerMcpProxy && mcpEndpoint
+                  ? [
+                      {
+                        name: "scooter-broker",
+                        url: brokerMcpProxy.url(),
+                        headers: Object.fromEntries(
+                          mcpEndpoint
+                            .headersFor(conversationId, owner)
+                            .map((h) => [h.name, h.value]),
+                        ),
+                      },
+                    ]
+                  : undefined,
               // The conversation token, as the SDK's per-server `headers`. The URL no
               // longer carries the scope. Why: issue #700.
               mcpEndpointHeaders: mcpEndpoint
@@ -1970,6 +1999,8 @@ export async function main(
             // Injected by the agent-host when it proxies a tunnel frame, so the user's
             // machine never holds a conversation token. Why: issue #700.
             mcpHeadersFor: mcpEndpoint ? (conv: string) => mcpEndpoint.headersFor(conv) : undefined,
+            // Offer a BYO agent the contrib provider tools too, not just scooter-env.
+            brokerMcpUrlFor: brokerMcpProxy ? () => brokerMcpProxy.url() : undefined,
           }),
           floorProvider,
         ]

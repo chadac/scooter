@@ -58,7 +58,7 @@ export interface SdkAcpClientDeps {
    *  pass mcpEndpointUrl (one server on loopback); a BYO container passes this instead — one
    *  local proxy per server, tunnelled to the cloud — because a conversation can offer MANY
    *  servers and their URLs are per-container, not a single fixed endpoint. */
-  mcpServers?: Array<{ name: string; url: string }>;
+  mcpServers?: Array<{ name: string; url: string; headers?: Record<string, string> }>;
   /** Agent identity, as the SDK systemPrompt. Carries NO skill bodies: the SDK
    *  discovers those from `<cwd>/.claude/skills` when settingSources allows. */
   systemPrompt: string;
@@ -67,6 +67,9 @@ export interface SdkAcpClientDeps {
   /** Filesystem settings the SDK may load. MUST include "project" for skills:
    *  with this unset the SDK loads none, so no skill list is ever sent. */
   settingSources?: Array<"user" | "project" | "local">;
+  /** Called once with the SDK's init report, so the caller can log what the
+   *  session actually discovered (skills, command count). */
+  onInit?: (info: { skills: unknown[]; commands: number }) => void;
   /** Which discovered skills Claude may invoke: "all", or an exact-name list.
    *  Setting it also puts the Skill tool in allowedTools automatically -- which
    *  our explicit allowedTools otherwise suppresses. */
@@ -237,7 +240,12 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
           }
         : {}),
       // Named servers (the BYOC tunnel supplies these; N per conversation).
-      ...Object.fromEntries((deps.mcpServers ?? []).map((m) => [m.name, { type: "http", url: m.url }])),
+      ...Object.fromEntries(
+        (deps.mcpServers ?? []).map((m) => [
+          m.name,
+          { type: "http", url: m.url, ...(m.headers ? { headers: m.headers } : {}) },
+        ]),
+      ),
     },
     toolAliases,
     disallowedTools,
@@ -253,8 +261,8 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
     allowedTools: [
       ...Object.values(toolAliases),
       ...(deps.mcpEndpointUrl ? ["mcp__scooter-env"] : []),
-      // Skill invocation. Without it the model sees the skill list and cannot act on it.
-      ...(deps.settingSources ? ["Skill"] : []),
+      ...(deps.mcpServers ?? []).map((m) => `mcp__${m.name}`),
+      ...(deps.mcpServers ?? []).map((m) => `mcp__${m.name}`),
     ],
     // THE enforcement point. canUseTool is a USER-INPUT callback — the SDK docs say it
     // "never fires for auto-approved tools", which is why the note below about it not
@@ -376,21 +384,18 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
       let stopReason = "end_turn";
       try {
         for await (const msg of q) {
-          // The SDK's init message carries the skills it discovered. Log it
-          // once: without this, "the agent cannot see its skills" is six
-          // rounds of inference instead of one line.
+          // The SDK's init message carries the skills it discovered. Surface it
+          // via onInit so the host can LOG it: the previous version wrote to an
+          // in-memory ring buffer nothing reads, so the one diagnostic added for
+          // "the agent cannot see its skills" was itself unreadable.
           const m = msg as { type?: string; subtype?: string; skills?: unknown; slash_commands?: unknown };
           if (m.type === "system" && m.subtype === "init" && !loggedInit) {
             loggedInit = true;
-            noteDiagnostic(
-              `[sdk] init skills=${JSON.stringify(m.skills ?? null)} commands=${
-                Array.isArray(m.slash_commands) ? m.slash_commands.length : "?"
-              }`,
-            );
-            debug("[sdk] init: skills=%o", m.skills);
+            deps.onInit?.({
+              skills: Array.isArray(m.skills) ? (m.skills as unknown[]) : [],
+              commands: Array.isArray(m.slash_commands) ? (m.slash_commands as unknown[]).length : 0,
+            });
           }
-          // TRANSCRIPT: record the RAW SDK message before we normalize it — this is
-          // the exact shape the fake query() must reproduce (no-op when unset).
           deps.recordRaw?.(msg);
           // Capture the SDK's session id from any message that carries it, so the
           // NEXT prompt resumes this same session. (The id is stable across a turn;

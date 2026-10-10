@@ -100,3 +100,55 @@ describe("tunnel target credentials", () => {
     expect(offered.every((o) => o.headers.length === 0)).toBe(true);
   });
 });
+describe("scooter-broker — the contrib provider tools", () => {
+  const withBroker = { ...deps, brokerMcpUrlFor: () => "http://127.0.0.1:8080/broker-mcp" };
+
+  it("THE BUG: a BYO agent is offered scooter-broker, not just scooter-env", () => {
+    // Without it the agent has the github SKILL telling it to call agent-broker
+    // and no github tool to call. Observed live on scooter.chadac.me.
+    const names = offeredTunnelServers("c1", withBroker).map((s) => s.name);
+    expect(names).toContain("scooter-env");
+    expect(names).toContain("scooter-broker");
+  });
+
+  it("resolves to the broker proxy URL, with the conversation token attached", () => {
+    const r = resolveTunnelTarget("scooter-broker", "c1", {
+      ...withBroker,
+      mcpHeadersFor: () => [{ name: "x-conv", value: "tok" }],
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.target.url).toBe("http://127.0.0.1:8080/broker-mcp");
+    expect(r.target.rule).toBe("scooter-broker");
+    // The container never sees the broker SA token; the proxy attaches it.
+    expect(r.target.headers).toEqual([{ name: "x-conv", value: "tok" }]);
+  });
+
+  it("is NOT offered when the broker is unconfigured", () => {
+    const names = offeredTunnelServers("c1", deps).map((s) => s.name);
+    expect(names).toEqual(["scooter-env"]);
+  });
+
+  it("refuses the name when the broker is unconfigured, rather than half-working", () => {
+    const r = resolveTunnelTarget("scooter-broker", "c1", deps);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toMatch(/not configured/);
+  });
+
+  it("the conversation id is still server-side — the URL is not container-chosen", () => {
+    // The broker URL takes no conversation id at all, so a container cannot name
+    // another conversation's broker scope through this target.
+    const a = resolveTunnelTarget("scooter-broker", "conv-a", withBroker);
+    const b = resolveTunnelTarget("scooter-broker", "conv-b", withBroker);
+    expect(a.ok && b.ok).toBe(true);
+    if (!a.ok || !b.ok) return;
+    expect(a.target.url).toBe(b.target.url);
+  });
+
+  it("an arbitrary host:port is still refused (names only)", () => {
+    const r = resolveTunnelTarget("http://10.0.0.1:8080", "c1", withBroker);
+    expect(r.ok).toBe(false);
+  });
+});
+
