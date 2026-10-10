@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  skillPayloads,
   identityCore,
   gooseAddendum,
   sdkAddendum,
@@ -223,3 +224,31 @@ describe("writeSkillDir", () => {
     expect(writeSkillDir(cwd, join(root, "nope"))).toBe(0);
   });
 });
+describe("skillPayloads — what a BYO container receives", () => {
+  it("carries the RENDERED SKILL.md, not a path into a pod it cannot read", () => {
+    writeSkill(
+      "scooter-github",
+      "name: scooter-github\ntriggers:\n- gh pr create",
+      "# GitHub from a Scooter sandbox\n\nApplies when you use the gh CLI.\n\nUse agent-broker.",
+    );
+    const [p] = skillPayloads(skillsDir);
+    expect(p.name).toBe("scooter-github");
+    // frontmatter the container's SDK will parse
+    expect(p.content).toMatch(/^---/);
+    expect(p.content).toContain("description:");
+    expect(p.content).toContain("Applies when you use the gh CLI");
+    // and the BODY, since the container has no other way to get it
+    expect(p.content).toContain("Use agent-broker.");
+  });
+
+  it("includes every skill in the dir", () => {
+    writeSkill("a", "name: a\ndescription: d", "A");
+    writeSkill("b", "name: b\ndescription: d", "B");
+    expect(skillPayloads(skillsDir).map((p) => p.name).sort()).toEqual(["a", "b"]);
+  });
+
+  it("an empty dir yields nothing to send", () => {
+    expect(skillPayloads(skillsDir)).toEqual([]);
+  });
+});
+

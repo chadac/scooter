@@ -52,6 +52,10 @@ export interface NewSessionParams {
    *  modelAllowedFor/defaultFor). Providers that fix their model elsewhere may ignore it; the
    *  BYO container honors it per session. */
   model?: string;
+  /** Skills as DATA, for a provider that cannot read this pod's filesystem (the
+   *  BYO container). It writes them as .claude/skills and its own SDK discovers
+   *  them. In-pod providers read the directory directly and ignore this. */
+  skills?: ReadonlyArray<{ name: string; content: string }>;
 }
 
 export interface PromptParams {

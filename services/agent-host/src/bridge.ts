@@ -10,6 +10,7 @@
  * the seam is in the right place.
  */
 
+import { skillPayloads } from "./agent/skills.js";
 import { randomUUID } from "node:crypto";
 
 import type {
@@ -1589,6 +1590,12 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         cwd: deps.config.cwd,
         mcpServers,
         model,
+        // A BYO container cannot read this pod's filesystem, so the skills travel
+        // as DATA and it writes its own .claude/skills. The in-pod providers read
+        // the directory directly and ignore this.
+        skills: provider.kind === "claude" && provider.id !== "sdk-claude"
+          ? skillPayloads(deps.config.skillsDir)
+          : undefined,
       });
       debug("[bridge] readyProvider(%s): newSession -> %s", provider.id, sid);
       // Subscribe ONCE per client and route updates to the current run (handleUpdate keys on

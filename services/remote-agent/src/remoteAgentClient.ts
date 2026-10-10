@@ -9,6 +9,7 @@
 
 import { WebSocket } from "ws";
 // The SDK-backed AcpClient — the same package the agent-host imports cloud-side.
+import { writeSkillPayloads } from "./skills.js";
 import { createSdkAcpClient } from "@scooter/claude-sdk-provider";
 
 import { REMOTE_PROTOCOL_VERSION, type WireFrame } from "./protocol.js";
@@ -103,7 +104,11 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
      *  and two conversations would each execute the other's tool calls in the wrong sandbox.
      *  The stamp is a mutable box because the session id only exists AFTER newSession returns;
      *  nothing tool-shaped flows before that. */
-    const buildClient = async (model?: string, mcpServers?: Array<{ name?: string }>) => {
+    const buildClient = async (
+      model?: string,
+      mcpServers?: Array<{ name?: string }>,
+      skills?: ReadonlyArray<{ name: string; content: string }>,
+    ) => {
       const stamp: { sid?: string } = {};
       const stampedSend = (f: WireFrame) => send(stamp.sid ? { ...f, sid: stamp.sid } : f);
       const exec = createTunnelExecBackend({
@@ -117,6 +122,18 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
       // loopback, which this laptop cannot reach — so start a local proxy per offered server
       // and hand the SDK ordinary http://127.0.0.1:<port>/ URLs. Without this a BYO agent has
       // sandbox tools only: no background jobs, model switch, scheduler, or resize.
+      // The cloud sends skills as DATA (this container cannot read the pod's
+      // filesystem). Write them locally so our SDK discovers them exactly as the
+      // in-pod one does -- name + description up front, body on demand.
+      let skillCwd: string | undefined;
+      if (skills?.length) {
+        const { mkdtempSync } = await import("node:fs");
+        const { tmpdir } = await import("node:os");
+        const { join } = await import("node:path");
+        skillCwd = mkdtempSync(join(tmpdir(), "scooter-skills-"));
+        const written = writeSkillPayloads(skillCwd, skills);
+        log(`skills: wrote ${written} to ${skillCwd}/.claude/skills`);
+      }
       const offered = (mcpServers ?? []).filter((m): m is { name: string } => typeof m?.name === "string");
       const mcp = offered.length
         ? await startMcpProxies(offered, {
@@ -139,6 +156,10 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
         exec, // the provider's OWN ExecBackend type — a contract drift is now a compile error
         systemPrompt: deps.systemPrompt ?? "You are Scooter, a helpful agent.",
         claudeCodePath: deps.claudeCodePath,
+        // Point the SDK at the skills we just wrote. Without settingSources it
+        // loads no filesystem settings, so no skill list is ever sent; without
+        // `skills` the Skill tool is left out of allowedTools.
+        ...(skillCwd ? { cwd: skillCwd, settingSources: ["project" as const], skills: "all" as const } : {}),
       });
       // Route the SDK's notifications UP the wire, stamped. session_update carries its session
       // in the payload too (that has been true since day one — the relay uses it as a fallback
@@ -207,8 +228,14 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
           case "new_session": {
             // ONE CLIENT PER SESSION (see buildClient): the returned session id becomes both the
             // routing key for later prompts and the sid stamped on this client's tool frames.
-            const params = (frame.payload as { params?: { model?: string; mcpServers?: Array<{ name?: string }> } })?.params;
-            const client = await buildClient(params?.model, params?.mcpServers);
+            const params = (frame.payload as {
+              params?: {
+                model?: string;
+                mcpServers?: Array<{ name?: string }>;
+                skills?: Array<{ name: string; content: string }>;
+              };
+            })?.params;
+            const client = await buildClient(params?.model, params?.mcpServers, params?.skills);
             const r = await client.sdk.newSession((frame.payload as { params: never }).params);
             const sid = (r as { sessionId?: string }).sessionId;
             if (sid) {
