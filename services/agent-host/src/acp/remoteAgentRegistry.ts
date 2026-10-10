@@ -107,6 +107,9 @@ export function createRemotePersonalizedProvider(deps: {
   /** The conversation-token headers for that endpoint (mcpEndpoint.headersFor). The agent-host
    *  injects these when it proxies, so the container never holds one. Why: issue #700. */
   mcpHeadersFor?: (conversationId: string) => Array<{ name: string; value: string }>;
+  /** The broker MCP proxy's URL, so a BYO agent is offered the contrib provider
+   *  tools (github, gitlab, jira, slack) and not only scooter-env. */
+  brokerMcpUrlFor?: () => string;
   /** The in-process MCP endpoint's URL for a conversation (mcpEndpoint.urlFor). Drives the
    *  tunnel OFFER: absent = no scooter-env is offered and the container starts no proxy,
    *  rather than one that dead-ends on every call. */
@@ -133,7 +136,11 @@ export function createRemotePersonalizedProvider(deps: {
     // the agent-host's own loopback URL, which a laptop cannot reach — that is why a BYO agent
     // had no scooter-env at all.
     mcpServersFor: (conversationId: string) =>
-      offeredTunnelServers(conversationId, { mcpUrlFor: deps.mcpUrlFor, mcpHeadersFor: deps.mcpHeadersFor }),
+      offeredTunnelServers(conversationId, {
+        mcpUrlFor: deps.mcpUrlFor,
+        mcpHeadersFor: deps.mcpHeadersFor,
+        brokerMcpUrlFor: deps.brokerMcpUrlFor,
+      }),
     kind: "claude",
     priority: deps.priority ?? 10,
     async eligible(ctx: RunContext): Promise<boolean> {

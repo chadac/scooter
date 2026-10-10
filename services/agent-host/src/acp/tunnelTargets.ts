@@ -17,6 +17,10 @@
 
 /** The one target every conversation gets: the agent-host's in-process MCP endpoint. */
 export const SCOOTER_ENV = "scooter-env";
+/** The broker's MCP endpoint, proxied: the CONTRIB provider tools (github, gitlab,
+ *  jira, slack). Offered separately from scooter-env because it is a different
+ *  upstream with its own auth -- the proxy attaches the rotating SA token. */
+export const SCOOTER_BROKER = "scooter-broker";
 /** Reserved prefix for sandbox-declared servers (not resolvable yet). */
 export const SANDBOX_PREFIX = "sandbox:";
 
@@ -25,7 +29,7 @@ export interface ResolvedTarget {
   /** The absolute URL the agent-host will call on the container's behalf. */
   url: string;
   /** For logs: which rule matched. */
-  rule: "scooter-env" | "sandbox";
+  rule: "scooter-env" | "scooter-broker" | "sandbox";
   /**
    * Headers the AGENT-HOST injects on the proxied request — the conversation token.
    *
@@ -45,6 +49,9 @@ export interface TunnelTargetDeps {
    *  empty, when no signing secret is configured — then the endpoint is unauthenticated and
    *  the tunnel behaves exactly as it did before. */
   mcpHeadersFor?: (conversationId: string) => Array<{ name: string; value: string }>;
+  /** The broker MCP proxy's URL (brokerMcpProxy.url). Absent when the broker is not
+   *  configured -- then scooter-broker simply is not offered. */
+  brokerMcpUrlFor?: () => string;
 }
 
 export type TunnelResolution =
@@ -75,6 +82,20 @@ export function resolveTunnelTarget(
       },
     };
   }
+  if (target === SCOOTER_BROKER) {
+    if (!deps.brokerMcpUrlFor)
+      return { ok: false, reason: "scooter-broker is not configured on this deployment" };
+    // Same conversation token as scooter-env: the proxy verifies it, then attaches
+    // the broker SA token itself. The container never sees either.
+    return {
+      ok: true,
+      target: {
+        url: deps.brokerMcpUrlFor(),
+        rule: "scooter-broker",
+        headers: deps.mcpHeadersFor?.(conversationId) ?? [],
+      },
+    };
+  }
   if (target.startsWith(SANDBOX_PREFIX)) {
     return {
       ok: false,
@@ -100,5 +121,12 @@ export function offeredTunnelServers(
   // The URL here is a PLACEHOLDER: the container replaces it with its own local proxy address.
   // What travels over the wire — and what the agent-host resolves — is the NAME.
   void conversationId;
-  return [{ type: "http", name: SCOOTER_ENV, url: `tunnel://${SCOOTER_ENV}`, headers: [] }];
+  return [
+    { type: "http", name: SCOOTER_ENV, url: `tunnel://${SCOOTER_ENV}`, headers: [] },
+    // The contrib provider tools. Without this a BYO agent has the github SKILL
+    // telling it to call agent-broker and no github tool to call.
+    ...(deps.brokerMcpUrlFor
+      ? [{ type: "http" as const, name: SCOOTER_BROKER, url: `tunnel://${SCOOTER_BROKER}`, headers: [] }]
+      : []),
+  ];
 }

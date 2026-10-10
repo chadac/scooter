@@ -371,3 +371,48 @@ describe("multimodal prompt (attached images reach the model)", () => {
     expect(rq.calls[0].prompt).toBe("just text");
   });
 });
+describe("named MCP servers reach the SDK — the contrib provider tools", () => {
+  it("THE BUG: scooter-broker is passed to the SDK, with its headers", async () => {
+    // Only the goose path offered scooter-broker (the github/gitlab/jira tools),
+    // so the SDK agent had the github SKILL telling it to call agent-broker and
+    // no github tool to call. Observed live on scooter.chadac.me.
+    const fq = fakeQuery();
+    const client = await createSdkAcpClient({
+      oauthToken: "t", model: "claude-x", exec: fakeExec, systemPrompt: "hi",
+      queryImpl: fq.queryImpl,
+      mcpServers: [
+        { name: "scooter-broker", url: "http://127.0.0.1:8080/broker-mcp", headers: { "x-conv": "tok" } },
+      ],
+    });
+    await client.newSession({ threadId: "c1" } as never);
+    await client.prompt({ prompt: [{ type: "text", text: "hi" }] } as never);
+
+    const servers = fq.calls[0].options.mcpServers as Record<string, { type: string; url: string; headers?: Record<string, string> }>;
+    expect(Object.keys(servers)).toContain("scooter-broker");
+    expect(servers["scooter-broker"].url).toBe("http://127.0.0.1:8080/broker-mcp");
+    // WITHOUT the header the proxy rejects the call, so the tool exists and fails.
+    expect(servers["scooter-broker"].headers).toEqual({ "x-conv": "tok" });
+  });
+
+  it("its tools are pre-approved, or permissionMode dontAsk denies them", async () => {
+    const fq = fakeQuery();
+    const client = await createSdkAcpClient({
+      oauthToken: "t", model: "claude-x", exec: fakeExec, systemPrompt: "hi",
+      queryImpl: fq.queryImpl,
+      mcpServers: [{ name: "scooter-broker", url: "http://x/mcp" }],
+    });
+    await client.newSession({ threadId: "c1" } as never);
+    await client.prompt({ prompt: [{ type: "text", text: "hi" }] } as never);
+    expect(fq.calls[0].options.allowedTools as string[]).toContain("mcp__scooter-broker");
+  });
+
+  it("no named servers -> the option is absent, not an empty map", async () => {
+    const fq = fakeQuery();
+    const client = await mkClient(fq.queryImpl);
+    await client.newSession({ threadId: "c1" } as never);
+    await client.prompt({ prompt: [{ type: "text", text: "hi" }] } as never);
+    const servers = fq.calls[0].options.mcpServers as Record<string, unknown>;
+    expect(Object.keys(servers)).not.toContain("scooter-broker");
+  });
+});
+
