@@ -19,6 +19,7 @@
     ./grafana/contrib.nix
     ./jira/contrib.nix
     ./kagi/contrib.nix
+    ./marimo/contrib.nix
     ./slack/contrib.nix
   ];
 }

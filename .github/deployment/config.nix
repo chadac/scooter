@@ -17,6 +17,7 @@
     grafana.enable = true;
     jira.enable = true;
     kagi.enable = true;
+    marimo.enable = true;
     slack.enable = true;
     # echo ships nowhere; CI builds it via withModules.
   };

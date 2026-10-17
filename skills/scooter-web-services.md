@@ -29,9 +29,11 @@ notebook, giving the user a live terminal, or a browser code editor.
 
 ## The two ways a service appears
 
-1. **Built-ins** — declared in the platform. `marimo` ships today. The user
-   enables/opens it from the **Services panel** in the conversation UI, OR you can
-   enable + start it (below). Prefer built-ins when one fits.
+1. **Shipped** — declared by the platform's contribs where this deployment enables
+   them: `marimo` (notebooks; see the scooter-marimo skill), `vscode` (browser VS
+   Code) and `files` (the workspace viewer), plus the built-in `terminal`. The user
+   starts/opens one from the **Services panel** in the conversation UI, OR you can
+   start it (below). Prefer a shipped one when it fits.
 2. **Your own** — any service you declare in a module under `/etc/scooter/modules/`
    (see the scooter-env skill) using the `webServices.<name>` option, then
    `scooter-rebuild switch`. The platform then proxies it and lists it in the
@@ -49,17 +51,17 @@ free until the service actually starts.
 
 ```nix
 { pkgs, ... }: {
-  webServices.marimo = {
+  webServices.notebooks = {
     enable = true;
-    port = 2718;                       # in-pod port (unique per service)
-    displayName = "marimo";
+    port = 2728;                       # in-pod port (unique per service)
+    displayName = "notebooks";
     user = "root";                     # writes notebooks to /workspace
     workingDirectory = "/workspace";
     # Serve UNDER the base path; --proxy makes absolute URLs correct.
     command = ''
       ${pkgs.bash}/bin/bash -c 'exec marimo edit \
-        --host 0.0.0.0 --port 2718 \
-        --base-url "/c/''${CONVERSATION_ID}/marimo" \
+        --host 0.0.0.0 --port 2728 \
+        --base-url "/c/''${CONVERSATION_ID}/notebooks" \
         --headless --no-token'
     '';
     # Escape hatch for extra systemd knobs (hardening, ordering, limits):
@@ -74,7 +76,7 @@ Key rules for the `command`:
   VS Code `--server-base-path`, etc.) — a service hardcoded to `/` breaks behind
   the proxy.
 - `--no-token` / disable the service's own auth: the platform proxy already gates
-  access; an in-pod token would just block the user (and marimo-pair, below).
+  access; an in-pod token would just block the user (and marimo-pair).
 
 **Who can open the link.** Any signed-in user, not just the owner, so links can be
 shared. Don't serve anything private. The caller's id arrives as `x-scooter-user`.
@@ -104,30 +106,11 @@ Check it's up: `scooter-service status <name>` (or `systemctl is-active
 webservice-<name>`) and `curl -fsS localhost:<port>/c/$CONVERSATION_ID/<name>/
 >/dev/null`.
 
-## marimo: pairing with the running notebook (marimo-pair)
-
-Once a marimo service is running with `--no-token`, you can **drive the notebook
-yourself** (add cells, run code, read outputs) while the user watches live —
-`marimo-pair` is the agent-side tool for this. It is NOT a web service; it's a
-skill you attach to the *running* marimo server.
-
-Prereqs: `bash`, `curl`, `jq` on PATH (add jq to a module if missing). Install +
-use per its README:
-
-```bash
-# install the marimo-pair skill (auto-discovers the --no-token server)
-npx skills add marimo-team/marimo-pair
-# then follow the skill's discover/execute scripts against the running notebook
-```
-
-Typical flow: enable + start `webServices.marimo`, tell the user to Open it, then
-use marimo-pair to build the notebook collaboratively. The user edits in their
-browser; you edit via marimo-pair; both see the same reactive notebook.
-
 ## Good candidates to offer
 
 - **marimo** — data exploration, a computed report, teaching a concept
-  interactively. The flagship; pairs with marimo-pair.
+  interactively. The flagship: you pair on it with marimo-pair (scooter-marimo
+  skill).
 - **a web terminal** (ttyd/wetty) — when the user wants to poke around the sandbox
   themselves.
 - **web VS Code** (code-server; the `vscode` service, when contrib/code-server is

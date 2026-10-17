@@ -1,9 +1,9 @@
-{ lib, buildNpmPackage, nodejs, makeWrapper, goose-cli, agent ? goose-cli, claudeSdkProvider ? null, marimoMcp ? null, scooterSchemaJs ? null, ... }:
+{ lib, buildNpmPackage, nodejs, makeWrapper, goose-cli, agent ? goose-cli, claudeSdkProvider ? null, scooterSchemaJs ? null, ... }:
 
 # Builds the agent-host TypeScript app (tsc -> dist/) into a node application with
 # the ACP agent wrapped onto PATH. `agent` must be the same goose derivation the
-# image's gooseLayer bakes, or the closure ships goose twice. `claudeSdkProvider`,
-# `marimoMcp` and `scooterSchemaJs` are isolated @scooter/* packages linked into
+# image's gooseLayer bakes, or the closure ships goose twice. `claudeSdkProvider`
+# and `scooterSchemaJs` are isolated @scooter/* packages linked into
 # node_modules so their imports resolve at tsc time and at runtime; each is optional.
 
 let
@@ -24,10 +24,6 @@ buildNpmPackage {
     mkdir -p node_modules/@scooter
     ln -s ${claudeSdkProvider}/lib/node_modules/@scooter/claude-sdk-provider \
       node_modules/@scooter/claude-sdk-provider
-  '' + lib.optionalString (marimoMcp != null) ''
-    mkdir -p node_modules/@scooter
-    ln -s ${marimoMcp}/lib/node_modules/@scooter/marimo-mcp \
-      node_modules/@scooter/marimo-mcp
   '' + lib.optionalString (scooterSchemaJs != null) ''
     # @scooter/schema is copied as a real dir, so its drizzle-orm type imports resolve to agent-host's own drizzle-orm and share one type identity.
     mkdir -p node_modules/@scooter/schema
@@ -39,7 +35,7 @@ buildNpmPackage {
   postInstall = ''
     wrapProgram $out/bin/agent-host \
       --prefix PATH : ${lib.makeBinPath [ agent nodejs ]}
-  '' + lib.optionalString (claudeSdkProvider != null || marimoMcp != null || scooterSchemaJs != null) ''
+  '' + lib.optionalString (claudeSdkProvider != null || scooterSchemaJs != null) ''
     # The runtime `import("@scooter/...")` must resolve from the installed app's own package dir.
     appdir="$out/lib/node_modules/${appName}"
     if [ ! -d "$appdir/dist" ]; then
@@ -51,10 +47,6 @@ buildNpmPackage {
     echo "linking claude-sdk-provider into $appdir/node_modules"
     ln -sf ${claudeSdkProvider}/lib/node_modules/@scooter/claude-sdk-provider \
       "$appdir/node_modules/@scooter/claude-sdk-provider"
-  '' + lib.optionalString (marimoMcp != null) ''
-    echo "linking marimo-mcp into $appdir/node_modules"
-    ln -sf ${marimoMcp}/lib/node_modules/@scooter/marimo-mcp \
-      "$appdir/node_modules/@scooter/marimo-mcp"
   '' + lib.optionalString (scooterSchemaJs != null) ''
     echo "copying scooter-schema into $appdir/node_modules (real dir; drizzle-orm resolves from agent-host)"
     mkdir -p "$appdir/node_modules/@scooter/schema"
