@@ -1,1 +1,10 @@
-{}
+{
+  "marimo/marimo-pair": {
+    "dir": "skills/marimo-pair",
+    "narHash": "sha256-8RvczH4eCr3eMgfy/NstKUmxDVJ7ad0Xp+l/l9W0r4U=",
+    "owner": "marimo-team",
+    "repo": "marimo-pair",
+    "rev": "2f1d7fffa50607dc9d8660cb931f4470707f8697",
+    "source": "github:marimo-team/marimo-pair"
+  }
+}

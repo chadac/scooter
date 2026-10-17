@@ -79,15 +79,12 @@
           # agent-host (TypeScript)
           claudeSdkProvider = pkgs.callPackage ./services/claude-sdk-provider { };
 
-          # The isolated marimo MCP server (notebook tools)
-          marimoMcp = pkgs.callPackage ./services/marimo-mcp { };
-
           # The generated @scooter/schema package: Drizzle tables plus guards.
           scooterSchemaJs = pkgs.callPackage ./lib/ts/scooter-schema { };
 
           # agent-host runs `goose acp` per conversation outside the sandbox; it takes the
           # same `agent` derivation the image's goose layer bakes so the closure ships goose once.
-          agentHost = pkgs.callPackage ./services/agent-host { inherit agent claudeSdkProvider marimoMcp scooterSchemaJs; };
+          agentHost = pkgs.callPackage ./services/agent-host { inherit agent claudeSdkProvider scooterSchemaJs; };
 
           # Bring-your-own-Claude container app
           remoteAgent = pkgs.callPackage ./services/remote-agent {
@@ -342,6 +339,7 @@
               };
               # The baked re-converge list, as the image renders it
               listFile = sandboxWithEcho.nixos.config.environment.etc."scooter/reconverge-modules.json".source;
+              shippedListFile = shipped.nixos.config.environment.etc."scooter/reconverge-modules.json".source;
 
               # echo enabled as a contrib (not just its module file), so its skill
               # DIRECTORY goes through contrib/skill-dirs.nix like a shipped one would.
@@ -363,7 +361,11 @@
             assert sandboxWithEcho.nixos.config.environment.etc ? "scooter/contrib-echo";
             assert echoOnly == [ "contrib/echo/sandbox.nix" ];
             assert shipped.nixos.config.programs.scooterModule.extraReconvergeModuleFiles
-              == (derive [ ]).treeRelative;
+              == (derive [ ]).treeRelative ++ [ "contrib-skills/module.nix" ];
+            # marimo ships as a contrib: its service, and marimo-pair's directory for the agent's shell.
+            assert builtins.elem "contrib/marimo/sandbox.nix" (derive [ ]).treeRelative;
+            assert shipped.nixos.config.webServices.marimo.enable;
+            assert shipped.nixos.config.environment.etc ? "scooter/skills/marimo-pair";
             assert shipped.nixos.config.systemd.services ? "scooter-aws-config";
             assert skillCfg.environment.etc ? "scooter/skills/echo-skill";
             assert builtins.elem "contrib-skills/module.nix"
@@ -380,6 +382,9 @@
                 esac
                 test -f "$p" || { echo "FAIL: $p is in the list but is not a file" >&2; exit 1; }
               done
+              # marimo-pair's scripts are baked into the tree the in-pod re-converge reads.
+              shippedTree=$(dirname "$(dirname "$(${pkgs.jq}/bin/jq -r 'map(select(endswith("/contrib-skills/module.nix")))[0]' ${shippedListFile})")")
+              test -f "$shippedTree/contrib-skills/marimo-pair/scripts/execute-code.sh"
               # Both halves are in the baked list.
               ${pkgs.jq}/bin/jq -e 'map(endswith("/contrib/aws/sandbox.nix")) | any' ${listFile} >/dev/null
               ${pkgs.jq}/bin/jq -e 'map(endswith("/contrib/echo/sandbox.nix")) | any' ${listFile} >/dev/null
@@ -477,7 +482,6 @@
             code-server-bin = pkgs.callPackage ./contrib/code-server/code-server-bin { };
             warm-store-controller = warmStoreController;
             inherit agent; # the ACP agent (goose)
-            inherit marimoMcp; # the isolated marimo MCP server
 
             # nix build .#sandbox-os-image -> the NixOS systemd-PID-1 dev sandbox image.
             sandbox-os-image = builtImages.agent-sandbox-os.package;

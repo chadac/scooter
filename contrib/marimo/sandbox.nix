@@ -1,8 +1,12 @@
-# webServices.marimo: a marimo notebook served under /c/<id>/marimo/, with
-# `--base-url` and `--proxy` read from the pod env at start. `pkgs.marimo` is a
-# nix-stubs shim that materializes on first start. This module only supplies
-# mkDefault values and must not gate on `cfg.enable` (infinite recursion); the
-# parent web-services.nix filters on `.enable` when it renders units.
+# marimo's sandbox half: a notebook served as webServices.marimo under
+# /c/<id>/marimo/, with `--base-url` and `--proxy` read from the pod env at start.
+# `pkgs.marimo` is a nix-stubs shim (modules/sandbox-os/stubs.nix) that materializes
+# on first start, so declaring the service costs a manifest entry and no running
+# process. curl and jq are here for marimo-pair's scripts
+# (/etc/scooter/skills/marimo-pair).
+#
+# Supplies mkDefault values only and must not gate on `cfg.enable` (infinite
+# recursion); web-services.nix filters on `.enable` when it renders units.
 
 { config, lib, pkgs, uvNix ? null, ... }:
 
@@ -10,10 +14,12 @@ let
   cfg = config.webServices.marimo;
 in
 {
-  # The marimo shim on PATH, so the agent can run it by hand.
-  environment.systemPackages = lib.mkIf cfg.enable [ pkgs.marimo ];
+  # The marimo shim on PATH, so the agent can run it by hand, and what marimo-pair's
+  # scripts call: they talk to the running server's HTTP API with curl and jq.
+  environment.systemPackages = lib.mkIf cfg.enable [ pkgs.marimo pkgs.curl pkgs.jq ];
 
   webServices.marimo = {
+    enable = lib.mkDefault true;
     port = lib.mkDefault 2718;
     displayName = lib.mkDefault "marimo";
     # Root, like the agent's own exec'd shell, so notebooks land on the /workspace PVC.

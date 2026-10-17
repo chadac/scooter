@@ -422,10 +422,9 @@ e2e-full-run *ARGS:
 
 typecheck:
     npm install
-    # agent-host imports @scooter/claude-sdk-provider, @scooter/marimo-mcp and
-    # @scooter/schema, so build them first for its NodeNext resolution.
+    # agent-host imports @scooter/claude-sdk-provider and @scooter/schema, so build
+    # them first for its NodeNext resolution.
     npm -w services/claude-sdk-provider run build
-    npm -w services/marimo-mcp run build
     npm -w @scooter/schema run build
     npm -w services/agent-host run typecheck
     npm -w ui run typecheck

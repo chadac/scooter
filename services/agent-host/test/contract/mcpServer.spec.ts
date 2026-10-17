@@ -124,26 +124,17 @@ describe("kill_background MCP tool handler", () => {
   });
 });
 
-// --- marimo tools wiring ------------------------------------------------------
-// buildServer registers the marimo notebook tools when a `marimo` wiring is given, driven here through the real McpServer over an in-memory client.
+// --- the tool set buildServer registers ---------------------------------------
+// Driven through the real McpServer over an in-memory client.
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { buildServer, type MarimoToolsWiring } from "../../src/agent/mcpServer.js";
-import type { MarimoClient } from "@scooter/marimo-mcp";
+import { buildServer } from "../../src/agent/mcpServer.js";
 
-function fakeMarimoClient(over: Partial<MarimoClient> = {}): MarimoClient {
-  return {
-    listSessions: over.listSessions ?? (async () => ({ s1: { path: "/w/n.py" } })),
-    resolveSession: over.resolveSession ?? (async () => "s1"),
-    execute: over.execute ?? (async () => ({ success: true, stdout: "hi\n", stderr: "", output: "42" })),
-  };
-}
-
-async function clientForServer(marimo?: MarimoToolsWiring): Promise<Client> {
-  // The jobs tools are always wired so the server advertises the `tools` capability even without marimo.
+async function clientForServer(): Promise<Client> {
+  // The jobs tools are wired so the server advertises the `tools` capability.
   const { jobs } = fakeJobs();
-  const server = await buildServer("conv-1", undefined, jobs, undefined, undefined, undefined, undefined, marimo);
+  const server = await buildServer("conv-1", undefined, jobs);
   const [clientT, serverT] = InMemoryTransport.createLinkedPair();
   await server.connect(serverT);
   const client = new Client({ name: "t", version: "0" });
@@ -151,43 +142,24 @@ async function clientForServer(marimo?: MarimoToolsWiring): Promise<Client> {
   return client;
 }
 
-describe("marimo tools wiring (buildServer)", () => {
-  it("registers the marimo tools when a marimo wiring is provided", async () => {
-    const client = await clientForServer({ clientFor: () => fakeMarimoClient() });
-    const names = (await client.listTools()).tools.map((t) => t.name);
-    for (const t of ["marimo_execute", "marimo_list_sessions", "marimo_create_cell", "marimo_run_cell", "marimo_list_cells", "marimo_install"]) {
-      expect(names).toContain(t);
-    }
-  });
-
-  it("does NOT register marimo tools when the wiring is absent (fake sandbox)", async () => {
-    const client = await clientForServer(undefined);
+describe("buildServer tool set", () => {
+  it("registers NO marimo_* tools — notebooks are contrib/marimo's, driven through marimo-pair", async () => {
+    const client = await clientForServer();
     const names = (await client.listTools()).tools.map((t) => t.name);
     expect(names.some((n) => n.startsWith("marimo_"))).toBe(false);
   });
 
   it("registers web_fetch even with NO agentTools/broker wiring", async () => {
     // web_fetch needs no broker and no credential, so it is registered without agentTools.
-    const client = await clientForServer(undefined);
+    const client = await clientForServer();
     const names = (await client.listTools()).tools.map((t) => t.name);
     expect(names).toContain("web_fetch");
   });
 
   it("does NOT register web_search — a search key makes it a CONTRIB's tool", async () => {
     // Search reaches the agent over the broker's /mcp, one tool per enabled search contrib.
-    const client = await clientForServer(undefined);
+    const client = await clientForServer();
     const names = (await client.listTools()).tools.map((t) => t.name);
     expect(names).not.toContain("web_search");
-  });
-
-  it("marimo_execute dispatches to the conversation's client", async () => {
-    let seenConv: string | undefined;
-    const client = await clientForServer({
-      clientFor: (id) => { seenConv = id; return fakeMarimoClient({ execute: async () => ({ success: true, stdout: "", stderr: "", output: "99" }) }); },
-    });
-    const res = await client.callTool({ name: "marimo_execute", arguments: { code: "1+1" } });
-    expect(seenConv).toBe("conv-1");
-    const text = (res.content as Array<{ type: string; text: string }>)[0].text;
-    expect(text).toContain("=> 99");
   });
 });

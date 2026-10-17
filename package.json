@@ -9,15 +9,14 @@
     "lib/ts/scooter-schema",
     "services/agent-host",
     "services/claude-sdk-provider",
-    "services/marimo-mcp",
     "services/remote-agent",
     "contrib/code-server/ahp",
     "ui"
   ],
   "scripts": {
-    "test": "vitest run --project agent-host --project claude-sdk-provider --project marimo-mcp --project ui --project remote-agent --project vscode-ahp --project byoc-controller --project integration --project scooter-schema --project ci-scripts --project cluster-support",
+    "test": "vitest run --project agent-host --project claude-sdk-provider --project ui --project remote-agent --project vscode-ahp --project byoc-controller --project integration --project scooter-schema --project ci-scripts --project cluster-support",
     "test:cluster": "vitest run --project cluster",
-    "pretest:e2e": "npm -w services/claude-sdk-provider run build && npm -w services/marimo-mcp run build && npm -w @scooter/schema run build && npm --prefix services/agent-host run build",
+    "pretest:e2e": "npm -w services/claude-sdk-provider run build && npm -w @scooter/schema run build && npm --prefix services/agent-host run build",
     "test:e2e": "playwright test"
   },
   "devDependencies": {

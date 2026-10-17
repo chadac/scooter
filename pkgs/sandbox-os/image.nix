@@ -15,7 +15,7 @@
   # into the booted system and baked into the re-converge list so they survive a
   # self-modify.
 , extraModuleFiles ? [ ]
-  # The uv-nix uv, exposed as the `uvNix` module arg for web-services/marimo.nix
+  # The uv-nix uv, exposed as the `uvNix` module arg for contrib/marimo/sandbox.nix
   # (null in nixosTests).
 , uvNix ? null
   # { src; package; } of nix-stubs, vendored so a self-modify can rebuild the stub
@@ -54,7 +54,7 @@ let
 
     scooter.skillDirs = lib.mapAttrs (_: d: d.src) contribSandbox.skillDirs;
 
-    # The uv-nix uv for web-services/marimo.nix (null in nixosTests).
+    # The uv-nix uv for contrib/marimo/sandbox.nix (null in nixosTests).
     _module.args.uvNix = uvNix;
     # The nix-stubs source and binary for runtime-converge.nix to vendor.
     _module.args.nixStubs = nixStubs;
@@ -87,7 +87,6 @@ let
 
     # The built-in web services are declared by default so they are startable on
     # demand, with mkDefault so a deployment can turn one off.
-    webServices.marimo.enable = lib.mkDefault true;
     webServices.terminal.enable = lib.mkDefault true;
   });
 

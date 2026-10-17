@@ -71,14 +71,6 @@ export default defineConfig({
         },
       },
       {
-        // The isolated marimo MCP server, tested against a fake marimo http.Server.
-        test: {
-          name: "marimo-mcp",
-          include: ["services/marimo-mcp/src/**/*.spec.ts"],
-          environment: "node",
-        },
-      },
-      {
         // Cross-service: agent-host, byoc-controller and the BYO container together.
         test: {
           name: "integration",

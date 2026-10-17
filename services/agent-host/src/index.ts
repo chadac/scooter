@@ -71,9 +71,8 @@ import { createJobManager, type JobStatus, type JobRegistry } from "./session/jo
 import { createPgJobStore } from "./session/jobStore.js";
 import { createPgUserSkillStore } from "./session/userSkillStore.js";
 import { mintConvToken } from "./auth/convToken.js";
-import { createMcpEndpoint, resolveConversation, type MarimoToolsWiring } from "./agent/mcpServer.js";
+import { createMcpEndpoint, resolveConversation } from "./agent/mcpServer.js";
 import { createBrokerMcpProxy } from "./agent/brokerMcpProxy.js";
-import { createMarimoClient } from "@scooter/marimo-mcp";
 import {
   lastAssistantText,
   subagentDoneNotice,
@@ -986,31 +985,6 @@ export async function main(
   }
   const subagentManager: SubagentManager = createSubagentManager(sessions, store, subagentCreator);
 
-  // marimo notebook tools target this conversation's in-pod marimo at podIP:2718, with the
-  // pod IP resolved fresh per call and the client baseUrl carrying marimo's
-  // `--base-url /c/<CONVERSATION_ID>/marimo` prefix (MARIMO_BASE_PATH overrides, "" disables).
-  const MARIMO_PORT = Number(process.env.MARIMO_PORT ?? 2718);
-  const marimoBasePath = (threadId: string) =>
-    process.env.MARIMO_BASE_PATH ?? `/c/${threadId}/marimo`;
-  const publicBase = (process.env.PUBLIC_URL || "").replace(/\/$/, "");
-  const marimoToolsWiring: MarimoToolsWiring | undefined = config.fakeSandbox
-    ? undefined
-    : {
-        clientFor: async (conversationId: string) => {
-          const conv = sessions.get(conversationId as SessionId);
-          if (!conv) throw new Error(`no conversation ${conversationId} for marimo`);
-          const target = await resolvePodTarget(conv.sandbox);
-          const base = marimoBasePath(conv.threadId).replace(/\/$/, "");
-          return createMarimoClient({ baseUrl: `http://${target.podIP}:${MARIMO_PORT}${base}` });
-        },
-        // The user-facing notebook URL, undefined when PUBLIC_URL is unset.
-        notebookUrlFor: (conversationId: string) => {
-          const conv = sessions.get(conversationId as SessionId);
-          if (!conv || !publicBase) return undefined;
-          return `${publicBase}${marimoBasePath(conv.threadId).replace(/\/$/, "")}/`;
-        },
-      };
-
   const convTokenSecret = process.env.CONV_TOKEN_SECRET ?? "";
   const brokerTokenPath = process.env.BROKER_TOKEN_PATH ?? "/var/run/secrets/broker/token";
   const mcpEndpoint =
@@ -1019,8 +993,7 @@ export async function main(
     modelToolsWiring !== undefined ||
     resourceToolsWiring !== undefined ||
     schedulerToolsWiring !== undefined ||
-    subagentManager !== undefined ||
-    marimoToolsWiring !== undefined
+    subagentManager !== undefined
       ? createMcpEndpoint({
           // The URL goose connects to; goose runs in this pod, so localhost reaches it.
           baseUrl: process.env.AGENT_SELF_MODIFY_MCP_URL ?? `http://127.0.0.1:${config.port}`,
@@ -1036,7 +1009,6 @@ export async function main(
           resources: resourceToolsWiring,
           scheduler: schedulerToolsWiring,
           subagents: subagentManager,
-          marimo: marimoToolsWiring,
           titles: titleToolsWiring,
         })
       : undefined;

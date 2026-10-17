@@ -1,7 +1,7 @@
 /**
  * The agent-facing MCP server: exposes the agent-host's in-process tools to the agent
  * (background jobs, subagents, model self-selection, sandbox sizing, scheduling,
- * marimo, renaming itself) over a stateless Streamable-HTTP endpoint. The conversation a request acts
+ * renaming itself) over a stateless Streamable-HTTP endpoint. The conversation a request acts
  * for comes only from the signed conversation token in its Authorization header.
  */
 
@@ -36,18 +36,11 @@ import {
   handleSetSandboxResources,
   type SandboxResourceToolsWiring,
 } from "./resourceTools.js";
-import { registerMarimoTools, type MarimoClient } from "@scooter/marimo-mcp";
 import { bearerFrom, mintConvToken, verifyConvToken } from "../auth/convToken.js";
 import { logger } from "../log.js";
 
 const log = logger("mcp-endpoint");
 
-/** How buildServer gets a marimo client targeting a conversation's pod, resolved fresh since the pod IP changes across suspend/resume. */
-export interface MarimoToolsWiring {
-  clientFor(conversationId: string): MarimoClient | Promise<MarimoClient>;
-  /** The URL the user must open to start a notebook session, or undefined when the public URL is unknown. */
-  notebookUrlFor?(conversationId: string): string | undefined;
-}
 
 /** An MCP tool result (the shape the SDK callback returns). */
 export interface ToolResult {
@@ -139,7 +132,6 @@ export async function buildServer(
   resources?: SandboxResourceToolsWiring,
   scheduler?: SchedulerToolsWiring,
   subagents?: SubagentManager,
-  marimo?: MarimoToolsWiring,
   titles?: TitleToolsWiring,
 ): Promise<McpServer> {
   const server = new McpServer({ name: "scooter-env", version: "1.0.0" });
@@ -162,14 +154,6 @@ export async function buildServer(
       },
       async (args) =>
         handleSetConversationTitle(titles, conversationId, args) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
-    );
-  }
-  if (marimo) {
-    // Notebook tools targeting this conversation's in-pod marimo.
-    registerMarimoTools(
-      server,
-      () => marimo.clientFor(conversationId),
-      () => ({ notebookUrl: marimo.notebookUrlFor?.(conversationId) }),
     );
   }
   if (jobs) {
@@ -432,8 +416,6 @@ export function createMcpEndpoint(deps: {
   scheduler?: SchedulerToolsWiring;
   /** When provided, exposes the subagent tools. */
   subagents?: SubagentManager;
-  /** When provided, exposes the marimo notebook tools. */
-  marimo?: MarimoToolsWiring;
   /** When provided, exposes set_conversation_title. */
   titles?: TitleToolsWiring;
 }): McpEndpoint {
@@ -470,7 +452,7 @@ export function createMcpEndpoint(deps: {
       }
       // Stateless transport with no session id.
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-      const server = await buildServer(conv, deps.agentTools, deps.jobs, deps.models, deps.resources, deps.scheduler, deps.subagents, deps.marimo, deps.titles);
+      const server = await buildServer(conv, deps.agentTools, deps.jobs, deps.models, deps.resources, deps.scheduler, deps.subagents, deps.titles);
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
     },
