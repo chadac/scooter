@@ -315,6 +315,54 @@ doesn't cover. Skills that document the *platform* (`scooter-github.md`,
 `sandbox-shell-safety.md`) stay in the top-level `skills/`: they document no
 contrib, and there is nothing to gate them on.
 
+### Contributing skill directories (`skillDirs`)
+
+Some skills are a directory, not a file: a `SKILL.md` with `scripts/` and
+`reference/` beside it, which is the shape `npx skills add` installs. marimo-pair
+is one. `skills` takes single files only, so a directory goes under `skillDirs`:
+
+```nix
+contribs.marimo = {
+  # Pinned in contrib/skills.lock by `just lock-skills`; never a rev here.
+  skillDirs.marimo-pair = {
+    source = "github:marimo-team/marimo-pair";
+    dir = "skills/marimo-pair";
+  };
+  # …or a directory in this contrib:
+  # skillDirs.my-skill.path = ./skills/my-skill;
+};
+```
+
+**The directory is split between the agent and the sandbox.** The agent gets
+`SKILL.md`, as `<name>.md` in the same ConfigMap as `skills`, with a note after
+its frontmatter. The note names `/etc/scooter/skills/<name>`, where the sandbox
+gets the whole directory. Such a skill resolves `scripts/…` against "the directory
+it was loaded from", which would otherwise be the agent-host's copy. The agent's
+shell can't run that copy, and its read tool can't see it.
+
+**A `source` is pinned in `contrib/skills.lock`, never in `contrib.nix`.** The
+declaration stays lib-only. The kubenix eval and the image build fetch the pinned
+commit (`builtins.fetchTree` with its `narHash`). The in-pod re-converge can't
+fetch, because it has no network, and pinned or not, `fetchTree` still goes to
+the network (Why: PR #827). So `reconverge-inputs.nix` bakes each directory into the
+vendored tree with a module (`contrib-skills/module.nix`) that re-declares it from
+there. The content and store path name are the same, so the store path is the
+same, and a self-modify neither fetches nor churns `/etc`.
+
+- `just lock-skills` pins any source that has no entry yet. `--update` re-pins
+  every source to its default branch's HEAD.
+- `just check-skill-lock` (part of `just ci`) fails on a missing, stale or
+  orphaned pin. A render with a missing pin throws and names the fix.
+- Every *declared* source is pinned, enabled or not, so shipping a contrib never
+  needs a lock change.
+- Names are global, like tool names. Two contribs declaring one name, or a name
+  that is both a `skills` file and a `skillDirs` entry, fails the eval.
+
+`contrib/echo/skills/echo-skill` is the fixture. `examples/check.nix` asserts the
+agent half (gated, frontmatter first, note present, unpinned source fails), and
+`dev-env-contrib-sandbox` asserts the sandbox half (installed whole, baked copy
+identical, re-declaring module present).
+
 ### Contributing agent tools (`mcp_tools.py`)
 
 A contrib owns the agent's typed tools for its integration. Declare them on your

@@ -278,6 +278,57 @@ in
       '';
     };
 
+    skillDirs = mkOption {
+      default = { };
+      example = literalExpression ''
+        {
+          marimo-pair = {
+            source = "github:marimo-team/marimo-pair";
+            dir = "skills/marimo-pair";
+          };
+        }
+      '';
+      description = ''
+        Agent skills that are DIRECTORIES (a SKILL.md with its scripts/ and
+        reference/ beside it, the `npx skills add` shape), keyed by the skill name
+        the agent sees. Gated on `enable`, like `skills`.
+
+        The whole directory goes into the sandbox at /etc/scooter/skills/<name>,
+        because the scripts run there and the agent reads the references there.
+        The agent gets only SKILL.md, with a note naming that directory added
+        after its frontmatter.
+
+        Set exactly one of `path` (a directory in this contrib) or `source` (a
+        GitHub repo, pinned in contrib/skills.lock by `just lock-skills`).
+      '';
+      type = types.attrsOf (types.submodule {
+        options = {
+          path = mkOption {
+            type = types.nullOr types.path;
+            default = null;
+            example = literalExpression "./skills/my-skill";
+            description = "A skill directory inside this contrib.";
+          };
+          source = mkOption {
+            type = types.nullOr (types.strMatching "github:[^/]+/[^/]+");
+            default = null;
+            example = "github:marimo-team/marimo-pair";
+            description = ''
+              The GitHub repo the skill comes from. The commit and hash are pinned in
+              contrib/skills.lock, never here, so this file stays lib-only and the
+              in-pod re-converge never fetches.
+            '';
+          };
+          dir = mkOption {
+            type = types.str;
+            default = "";
+            example = "skills/marimo-pair";
+            description = "The skill's directory inside `source`; empty means the repo root.";
+          };
+        };
+      });
+    };
+
     services = mkOption {
       default = { };
       description = "Which services this contrib plugs into. Fixed key set, so a typo is an eval error.";

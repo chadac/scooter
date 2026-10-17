@@ -16,7 +16,11 @@ let
 
   # The base-config entrypoint and vendored modules tree, shared with the nixosTest
   # so it pre-builds the re-converged toplevel from identical derivations.
-  inherit (import ./runtime-converge/reconverge-inputs.nix { inherit pkgs lib nixStubs; })
+  inherit (import ./runtime-converge/reconverge-inputs.nix {
+    inherit pkgs lib nixStubs;
+    # Only read at image build: in the pod the baked tree is used (effTree below).
+    skillDirs = config.scooter.skillDirs;
+  })
     baseConfig modulesTree modulesSrc;
 
   # At image build the tree and modules source are derived; at re-converge

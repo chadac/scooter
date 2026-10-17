@@ -21,6 +21,9 @@ in
 {
   modules = lib.mapAttrsToList (_: c: c.sandbox.module) enabled;
 
+  # The enabled contribs' skill directories: name -> { contrib; src; }.
+  skillDirs = import ./skill-dirs.nix { inherit lib; contribs = eval.config.contribs; };
+
   # Built from base names rather than `toString`, which would drag the whole repo into the image closure, and checked against this tree so a path that resolves nowhere throws at image build.
   treeRelative = lib.mapAttrsToList
     (name: c:

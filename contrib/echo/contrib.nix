@@ -4,6 +4,8 @@
     src = ./.;
     # The fixture for the sandbox surface's disabled-contrib path.
     sandbox.module = ./sandbox.nix;
+    # The fixture for skill DIRECTORIES: SKILL.md to the agent, the folder to the sandbox.
+    skillDirs.echo-skill.path = ./skills/echo-skill;
     services.broker.enable = true;
     services.webhooks.enable = true;
 

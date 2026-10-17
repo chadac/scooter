@@ -145,9 +145,34 @@ let
   # verbs; each contrib's deployment.nix sets its own row inside its own `mkIf`.
   approvalContribsJson =
     if cfg.approvals == { } then null else builtins.toJSON cfg.approvals;
-  builtins' = lib.optionalAttrs cfg.agent.builtinSkills
-    (lib.mapAttrs (_: file: builtins.readFile file)
-      (lib.concatMapAttrs (_: skills: skills) contribSkills));
+  # Skill DIRECTORIES ship SKILL.md to the agent as `<name>.md`, with a note naming
+  # the sandbox copy (modules/sandbox-os/contrib-skills.nix) after the frontmatter,
+  # since a skill resolves its scripts/ against "the directory it was loaded from"
+  # and the agent-host's copy is not the one the agent's shell can run.
+  contribSkillDirs = import ../contrib/skill-dirs.nix { inherit lib; contribs = config.contribs; };
+  withSandboxNote = name: text:
+    let
+      lines = lib.splitString "\n" text;
+      note = "> In Scooter this skill's directory is `/etc/scooter/skills/${name}`, in your sandbox. "
+        + "Resolve its `scripts/` and `reference/` paths against that directory and run them with your shell.";
+      # The index of the frontmatter's closing `---`, or null when there is none.
+      close = if lines != [ ] && lib.head lines == "---"
+        then lib.findFirst (i: lib.elemAt lines i == "---") null (lib.range 1 (lib.length lines - 1))
+        else null;
+    in
+    if close == null then note + "\n\n" + text
+    else lib.concatStringsSep "\n"
+      (lib.take (close + 1) lines ++ [ "" note ] ++ lib.drop (close + 1) lines);
+  dirSkills = lib.mapAttrs'
+    (name: d: lib.nameValuePair "${name}.md" (withSandboxNote name (builtins.readFile "${d.src}/SKILL.md")))
+    contribSkillDirs;
+
+  fileSkills = lib.mapAttrs (_: file: builtins.readFile file)
+    (lib.concatMapAttrs (_: skills: skills) contribSkills);
+  builtins' = lib.optionalAttrs cfg.agent.builtinSkills (
+    let clash = lib.intersectLists (lib.attrNames fileSkills) (lib.attrNames dirSkills); in
+    if clash != [ ] then throw "contrib skills: ${lib.concatStringsSep ", " clash} is both a skill file and a skill directory."
+    else fileSkills // dirSkills);
   allSkills = builtins' // cfg.agent.skills;
 in
 {

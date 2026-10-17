@@ -13,6 +13,7 @@
     ./injected-tools.nix
     ./sample-service.nix
     ./web-services.nix
+    ./contrib-skills.nix
     ./mcp-servers.nix
     ./carry-over.nix
     ./runtime-converge.nix

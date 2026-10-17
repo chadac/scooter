@@ -497,6 +497,14 @@ check-shell-syntax:
 check-contrib-coverage:
     @scripts/check-contrib-coverage.sh
 
+# Pin contrib skill-directory sources in contrib/skills.lock (`--update` re-pins to HEAD).
+lock-skills *args:
+    @scripts/lock-skills.sh {{args}}
+
+# Every declared skill-directory source is pinned, and nothing else is.
+check-skill-lock:
+    @scripts/lock-skills.sh --check
+
 # The conversation-token test vector is committed once per service, and the copies
 # must stay identical for the cross-language check to mean anything.
 check-conv-token-vector:
@@ -562,7 +570,7 @@ db-validate:
     done
 
 # Everything CI runs.
-ci: check-flake check-manifests check-stubs check-image-coverage check-contrib-coverage check-conv-token-vector check-lockfiles check-npm-hashes check-shell-syntax lint db-generate-check db-migrate-check test-unit
+ci: check-flake check-manifests check-stubs check-image-coverage check-contrib-coverage check-skill-lock check-conv-token-vector check-lockfiles check-npm-hashes check-shell-syntax lint db-generate-check db-migrate-check test-unit
     @echo "✅ ci (fast) passed — run 'just test' for cluster + e2e tiers"
 
 # Build + serve the docs site locally (mkdocs + the generated kubenix option pages).

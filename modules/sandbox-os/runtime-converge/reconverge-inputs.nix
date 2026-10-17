@@ -8,6 +8,9 @@
 { pkgs, lib
   # `{ src; package; }` of the nix-stubs flake input; null when there is no stub overlay to reconstruct.
 , nixStubs ? null
+  # name -> store path of each skill directory (scooter.skillDirs), copied into the
+  # tree with a module that re-declares them, so the in-pod eval never fetches.
+, skillDirs ? { }
 }:
 
 let
@@ -38,7 +41,25 @@ let
     cp -r ${nixStubs.src}/nix $out/nix-stubs
     # The binary as a bare store path, already in the image closure so the in-pod eval resolves it offline.
     printf '%s' ${lib.escapeShellArg "${nixStubs.package}"} > $out/nix-stubs-bin
+  '' + lib.optionalString (skillDirs != { }) ''
+    mkdir -p $out/contrib-skills
+    ${lib.concatStrings (lib.mapAttrsToList (name: src: ''
+      cp -r ${src} $out/contrib-skills/${name}
+    '') skillDirs)}
+    chmod -R u+w $out/contrib-skills
+    cp ${skillModule} $out/contrib-skills/module.nix
   '');
+
+  # Same content and same name as at image build, so the store paths match and a
+  # self-modify does not churn /etc.
+  skillModule = pkgs.writeText "contrib-skills-module.nix" ''
+    {
+      scooter.skillDirs = {
+    ${lib.concatStrings (lib.mapAttrsToList (name: _: ''
+        ${builtins.toJSON name} = builtins.path { path = ./${name}; name = ${builtins.toJSON "skill-${name}"}; };
+    '') skillDirs)}  };
+    }
+  '';
   modulesSrc = "${modulesTree}/modules/sandbox-os";
 in
 { inherit baseConfig modulesTree modulesSrc; }

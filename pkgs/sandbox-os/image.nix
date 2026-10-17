@@ -48,7 +48,11 @@ let
     # The same files repo-relative, so the re-converge replays them from the vendored
     # tree (a module imported above but missing here is dropped by the first self-modify).
     programs.scooterModule.extraReconvergeModuleFiles =
-      contribSandbox.treeRelative ++ extraModuleFiles;
+      contribSandbox.treeRelative ++ extraModuleFiles
+      # The skill directories, as reconverge-inputs.nix baked them into the tree.
+      ++ lib.optional (contribSandbox.skillDirs != { }) "contrib-skills/module.nix";
+
+    scooter.skillDirs = lib.mapAttrs (_: d: d.src) contribSandbox.skillDirs;
 
     # The uv-nix uv for web-services/marimo.nix (null in nixosTests).
     _module.args.uvNix = uvNix;

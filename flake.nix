@@ -342,12 +342,32 @@
               };
               # The baked re-converge list, as the image renders it
               listFile = sandboxWithEcho.nixos.config.environment.etc."scooter/reconverge-modules.json".source;
+
+              # echo enabled as a contrib (not just its module file), so its skill
+              # DIRECTORY goes through contrib/skill-dirs.nix like a shipped one would.
+              withEchoSkills = import ./pkgs/sandbox-os/image.nix {
+                deploymentModules = deploymentModules ++ [{ contribs.echo.enable = lib.mkForce true; }];
+                inherit lib n2c uvNix;
+                pkgs = sandboxPkgs;
+                nixStubs = {
+                  src = nix-stubs;
+                  package = nix-stubs.packages.${system}.nix-stubs;
+                };
+              };
+              skillCfg = withEchoSkills.nixos.config;
+              skillSrc = skillCfg.scooter.skillDirs.echo-skill;
+              skillTree = lib.head (lib.filter
+                (d: lib.hasSuffix "-sandbox-os-src" (toString d))
+                skillCfg.system.extraDependencies);
             in
             assert sandboxWithEcho.nixos.config.environment.etc ? "scooter/contrib-echo";
             assert echoOnly == [ "contrib/echo/sandbox.nix" ];
             assert shipped.nixos.config.programs.scooterModule.extraReconvergeModuleFiles
               == (derive [ ]).treeRelative;
             assert shipped.nixos.config.systemd.services ? "scooter-aws-config";
+            assert skillCfg.environment.etc ? "scooter/skills/echo-skill";
+            assert builtins.elem "contrib-skills/module.nix"
+              skillCfg.programs.scooterModule.extraReconvergeModuleFiles;
             assert lib.any (p: (p.pname or p.name or "") == "scooter-aws")
               shipped.nixos.config.environment.systemPackages;
             pkgs.runCommand "contrib-sandbox-check" { } ''
@@ -365,6 +385,14 @@
               ${pkgs.jq}/bin/jq -e 'map(endswith("/contrib/echo/sandbox.nix")) | any' ${listFile} >/dev/null
               # aws's sandbox half embeds the CLI source from its own tree.
               test -f ${tree}/contrib/aws/scooter_contrib_aws/cli.py
+
+              # A skill directory is installed whole, and baked into the tree with the
+              # module the in-pod re-converge reads instead of re-resolving it.
+              test -x ${skillSrc}/scripts/hello.sh
+              case "${skillSrc}" in */*-skill-echo-skill) ;; *) echo "FAIL: ${skillSrc} is not named skill-echo-skill" >&2; exit 1 ;; esac
+              diff -r ${skillSrc} ${skillTree}/contrib-skills/echo-skill
+              grep -F 'builtins.path { path = ./echo-skill; name = "skill-echo-skill"; }' \
+                ${skillTree}/contrib-skills/module.nix
               touch $out
             '';
 
