@@ -512,8 +512,11 @@ know contribs exist. The contrib keeps its own row model, and a
 **Moving an existing table out of a core database.** Set
 `db.tables.<t>.copyFrom = "<old db>"`. After migrating, the migrator copies the old
 rows in once, matched on the primary key so rows written during the rollout do not
-block it. Leave the old table declared for one release, then drop it and
-`copyFrom` together.
+block it. Each deployment then drops the old table by setting
+`scooter.dbMigrate.retireCopiedTables = true`: the migrator checks that every old
+primary key is in the new database, drops the old table, and fails the job instead
+if any row is missing. Once every deployment has set it, remove the old table
+declaration and `copyFrom` together.
 
 **Another contrib's data.** Go through the owning contrib's Python store (a
 `pythonDeps` dependency, as below), never its SQL. There are no foreign keys

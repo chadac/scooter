@@ -33,7 +33,9 @@
       ui.source = { label = "Files"; icon = ./icon.svg; };
 
       # Its own database (contrib_files), so its Atlas history in ./sql is its own.
-      # copyFrom moves the rows out of `broker` once; it goes with the broker drop.
+      # copyFrom moves the rows out of `broker` once. A deployment with
+      # scooter.dbMigrate.retireCopiedTables then drops the broker table; copyFrom
+      # goes once every deployment has.
       db = {
         enable = true;
         tables.annotations.copyFrom = "broker";
