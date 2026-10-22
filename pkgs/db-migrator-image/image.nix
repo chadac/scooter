@@ -50,9 +50,11 @@ let
       # Rows the new service wrote before this ran do not block the copy; the INSERT
       # skips conflicts instead.
       copy_table() {
-        local db="$1" table="$2" from="$3" user="$4" pw="$5" cols pk
+        local db="$1" table="$2" from="$3" user="$4" pw="$5" cols pk src
         export PGHOST="$DB_HOST" PGPORT="$DB_PORT" PGUSER="$user" PGPASSWORD="$pw" PGSSLMODE="$SSL"
-        if [ "$(psql -d "$from" -tAc "SELECT to_regclass('public.\"$table\"') IS NOT NULL")" != "t" ]; then
+        # Fail on an unreachable database rather than read it as "no table".
+        src="$(psql -d "$from" -v ON_ERROR_STOP=1 -tAc "SELECT to_regclass('public.\"$table\"') IS NOT NULL")" || return 1
+        if [ "$src" != "t" ]; then
           echo "[$db.$table] no $from.$table — nothing to copy"
           return 0
         fi
@@ -76,6 +78,40 @@ let
                     END IF;
                   END \$\$"
         echo "[$db.$table] copy from $from done"
+      }
+
+      # Retiring a copied table (DB_RETIRE_COPIED=1, scooter.dbMigrate.retireCopiedTables):
+      # drop the copy's source table once every one of its primary keys is in the
+      # target. A missing row fails the job instead, so nothing is lost silently.
+      # Nothing writes the source after release N, so the check cannot race a writer.
+      retire_table() {
+        local db="$1" table="$2" from="$3" user="$4" pw="$5" pk join missing src
+        export PGHOST="$DB_HOST" PGPORT="$DB_PORT" PGUSER="$user" PGPASSWORD="$pw" PGSSLMODE="$SSL"
+        # Fail on an unreachable database rather than read it as "no table".
+        src="$(psql -d "$from" -v ON_ERROR_STOP=1 -tAc "SELECT to_regclass('public.\"$table\"') IS NOT NULL")" || return 1
+        if [ "$src" != "t" ]; then
+          echo "[$from.$table] already retired"
+          return 0
+        fi
+        pk="$(psql -d "$db" -tAc "SELECT string_agg(quote_ident(a.attname), ',') FROM pg_index i JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) WHERE i.indrelid = 'public.\"$table\"'::regclass AND i.indisprimary")"
+        if [ -z "$pk" ]; then
+          echo "[$db.$table] has no primary key — refusing to retire $from.$table" >&2
+          return 1
+        fi
+        # Match on every key column: t.a = s.a AND t.b = s.b ...
+        join="$(printf '%s' "$pk" | tr ',' '\n' | while read -r c; do printf 't.%s = s.%s AND ' "$c" "$c"; done)"
+        join="''${join% AND }"
+        missing="$(psql -d "$from" -v ON_ERROR_STOP=1 -c "\\copy (SELECT $pk FROM public.\"$table\") TO STDOUT" \
+          | psql -d "$db" -v ON_ERROR_STOP=1 -qtA \
+              -c "CREATE TEMP TABLE _src AS SELECT $pk FROM public.\"$table\" WITH NO DATA" \
+              -c "\\copy _src ($pk) FROM PSTDIN" \
+              -c "SELECT count(*) FROM _src s WHERE NOT EXISTS (SELECT 1 FROM public.\"$table\" t WHERE $join)")" || return 1
+        if [ "$missing" != "0" ]; then
+          echo "[$from.$table] $missing row(s) are not in $db.$table — refusing to drop it" >&2
+          return 1
+        fi
+        psql -d "$from" -v ON_ERROR_STOP=1 -qc "DROP TABLE IF EXISTS public.\"$table\""
+        echo "[$from.$table] every row is in $db.$table — dropped"
       }
 
       # Each token is <db>[:<role>]; the role defaults to the db's own name (a core
@@ -126,6 +162,9 @@ let
         cuser="''${role_of[$cdb]:?$cdb is not in DB_ENVS}"
         pwvar="$(printf '%s' "$cuser" | tr '[:lower:]-' '[:upper:]_')_DB_PASSWORD"
         copy_table "$cdb" "$ctable" "$cfrom" "$cuser" "''${!pwvar}"
+        if [ "''${DB_RETIRE_COPIED:-}" = 1 ]; then
+          retire_table "$cdb" "$ctable" "$cfrom" "$cuser" "''${!pwvar}"
+        fi
       done
       echo "all migrations applied"
     '';

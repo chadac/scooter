@@ -15,8 +15,8 @@ in
   config = lib.mkMerge [
     (lib.mkIf ccfg.enable {
       # LEGACY: the table now lives in contrib_aws (contrib.nix `db`). The broker copy
-      # stays declared only as the migrator's copy source, until the drop that
-      # removes this row and `copyFrom` together.
+      # stays declared while any deployment still has it (until every one has set
+      # scooter.dbMigrate.retireCopiedTables); then this row and `copyFrom` go together.
       scooter.db.broker.tables.permission_requests = { writers = [ "broker" ]; };
     })
 

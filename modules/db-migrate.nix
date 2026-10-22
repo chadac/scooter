@@ -109,6 +109,7 @@ let
           ]
           ++ lib.optional (pcfg.sslmode != null) { name = "DB_SSLMODE"; value = pcfg.sslmode; }
           ++ lib.optional (copies != [ ]) { name = "DB_COPIES"; value = lib.concatMapStringsSep " " (c: "${c.db}:${c.table}:${c.from}") copies; }
+          ++ lib.optional (copies != [ ] && mcfg.retireCopiedTables) { name = "DB_RETIRE_COPIED"; value = "1"; }
           # The var name derives from the db name and the Secret from the consumer key.
           ++ pwEnv;
         };
@@ -129,6 +130,18 @@ in
         Run the shared-database migration Job on deploy (applies lib/sql migrations
         via Atlas). Only databases with an Atlas schema that are also provisioned
         (a postgres consumer) are migrated; with none, no Job is rendered.
+      '';
+    };
+    retireCopiedTables = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        Drop the source table of every `copyFrom` copy (today broker's `annotations`
+        and `permission_requests`) after the copy runs. The migrator first checks
+        that every source primary key is in the new database, and fails the Job
+        instead of dropping if any row is missing. Set it per deployment once release
+        N's copy has run and the moved data checks out. Temporary: it is removed,
+        with the tables, once every deployment has set it.
       '';
     };
     image = mkOption {
