@@ -865,7 +865,29 @@ let
     ++ (if tabsThrow (nixpkgsLib.recursiveUpdate (echoOn [ (echoTab // { api = true; }) ]) { contribs.echo.services.broker.enable = nixpkgsLib.mkForce false; }) then [ ]
         else [ "a settings tab with api = true rendered for a contrib without a broker half — its relay would 404 at the broker" ]);
 
-  allProblems = disabledContribProblems ++ settingsTabProblems ++ contribApiProblems ++ dirSkillProblems ++ legacyRootProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ contribCoverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ approvalProblems ++ stage2Problems ++ contribDbProblems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems ++ selfAccessProblems ++ sandboxOriginProblems;
+
+  # The UI pod serves the DEPLOYMENT's contrib manifest, mounted from a ConfigMap, so a
+  # contrib left off here shows no settings tab even though the image's built-in
+  # manifest (built from the repo's list) has one.
+  uiManifestOf = extra:
+    let
+      e = evalPlatform {
+        module = { ... }: {
+          imports = [ ./kubenix-config.nix ];
+          config = extra;
+        };
+      };
+      r = e.config.kubernetes.resources;
+      mounted = builtins.any (c: builtins.any (m: m.mountPath == "/etc/scooter-ui/contrib") (c.volumeMounts or [ ]))
+        (builtins.attrValues r.deployments.ui.spec.template.spec.containers);
+    in if mounted then builtins.fromJSON r.configMaps.ui-contrib-manifest.data."manifest.json" else null;
+  uiManifestProblems =
+    let off = uiManifestOf { }; on = uiManifestOf { contribs.echo.enable = nixpkgsLib.mkForce true; };
+    in if off == null then [ "the UI pod does not mount the deployment's contrib manifest at /etc/scooter-ui/contrib" ]
+    else (if off.settingsTabs ? echo then [ "the UI manifest has the echo settings tab while echo is disabled" ] else [ ])
+      ++ (if on.settingsTabs ? echo then [ ] else [ "enabling echo did not put its settings tab in the UI's mounted manifest" ]);
+
+  allProblems = disabledContribProblems ++ settingsTabProblems ++ uiManifestProblems ++ contribApiProblems ++ dirSkillProblems ++ legacyRootProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ atProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ contribCoverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ approvalProblems ++ stage2Problems ++ contribDbProblems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems ++ selfAccessProblems ++ sandboxOriginProblems;
 in
 if allProblems == [ ]
 then "ok: deployments = ${haveDeps}; datadog + airtable + brave + kagi + duckduckgo (three search providers, each with its own tool) + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every scooter.* namespace and every shipped contrib's own options; skills gated on the contrib being built; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; the renamed root (agentSandbox.*) fails the render; contribs reach the platform eval and configuring an unshipped one fails the render; deploy-time Jobs are spec-hash named\n"
