@@ -8,6 +8,11 @@
 # one falls through to the SPA handler (GET returns index.html, writes 405).
 
 let
+  # The image's own manifest, served when the deployment mounts none.
+  builtinManifest = if contribManifest == null
+    then pkgs.writeText "contrib-manifest.json" "{}"
+    else contribManifest;
+
   # nginx.conf with the upstream placeholders substituted at start.
   confTemplate = pkgs.writeText "nginx.conf.template" ''
     worker_processes auto;
@@ -87,12 +92,11 @@ let
         }
 
         # The enabled contribs' UI metadata, fetched at load; the exact match beats
-        # the SPA handler.
+        # the SPA handler. The file is the deployment's own when it mounts one, else
+        # the image's built-in list (render picks).
         location = /contrib/manifest.json {
           default_type application/json;
-          ${if contribManifest == null
-            then "return 200 '{}';"
-            else "alias ${contribManifest};"}
+          alias ''${CONTRIB_MANIFEST};
         }
 
         # `Connection ""` clears the hop-by-hop `close` so the upstream{} pool can
@@ -198,7 +202,15 @@ let
       CHAT_FRAME_ANCESTORS="'self'"
     fi
     export CHAT_FRAME_ANCESTORS
-    ${pkgs.gettext}/bin/envsubst '$AGENT_HOST_SERVER $AGENT_HOST_PROXY $BROKER_URL $OTEL_COLLECTOR_URL $TELEMETRY_ENABLED $TELEMETRY_SAMPLE_RATIO $CHAT_FRAME_ANCESTORS' \
+    # The deployment's contrib manifest (modules/platform.nix mounts it) wins over the
+    # image's, so a contrib the deployment left off shows no settings tab or tool card.
+    if [ -f "''${CONTRIB_MANIFEST_FILE:=/etc/scooter-ui/contrib/manifest.json}" ]; then
+      CONTRIB_MANIFEST="$CONTRIB_MANIFEST_FILE"
+    else
+      CONTRIB_MANIFEST=${builtinManifest}
+    fi
+    export CONTRIB_MANIFEST
+    ${pkgs.gettext}/bin/envsubst '$AGENT_HOST_SERVER $AGENT_HOST_PROXY $BROKER_URL $OTEL_COLLECTOR_URL $TELEMETRY_ENABLED $TELEMETRY_SAMPLE_RATIO $CHAT_FRAME_ANCESTORS $CONTRIB_MANIFEST' \
       < ${confTemplate} > "$1"
   '';
 in

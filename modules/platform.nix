@@ -166,6 +166,13 @@ let
   approvalContribsJson =
     if cfg.approvals == { } then null else builtins.toJSON cfg.approvals;
 
+  # The UI's contrib manifest from THIS deployment's enabled contribs, mounted over
+  # the image's built-in one (pkgs/ui-image/nginx.nix). The image is built with its
+  # repo's contrib list, so without this a contrib the deployment left off would still
+  # show its settings tab, tool cards and source rows, and its tab would 404.
+  uiContribManifest = builtins.toJSON (import ../contrib/ui-manifest-data.nix { inherit lib; }
+    (lib.filterAttrs (_: c: c.enable) config.contribs));
+
   # The contribs whose settings tab opened the /contrib-api relay (`api = true`), and
   # where the agent-host reaches their broker routes. Read off the declarations, so a
   # disabled contrib contributes no row and its relay answers 404.
@@ -1749,6 +1756,9 @@ in
           selector.matchLabels.app = "ui";
           template = {
             metadata.labels.app = "ui";
+            # Rolls the pods when the contrib set changes; nginx reads the file at start.
+            metadata.annotations."checksum/contrib-manifest" =
+              builtins.hashString "sha256" uiContribManifest;
             spec.containers.ui = {
               name = "ui";
               image = cfg.uiImage;
@@ -1781,10 +1791,17 @@ in
                     value = cfg.observability.browserTelemetry.collectorUrl;
                   })
               ];
+              volumeMounts = [{ name = "contrib-manifest"; mountPath = "/etc/scooter-ui/contrib"; readOnly = true; }];
               readinessProbe.httpGet = { path = "/"; port = "http"; };
             };
+            spec.volumes = [{ name = "contrib-manifest"; configMap.name = "ui-contrib-manifest"; }];
           };
         };
+      };
+
+      configMaps.ui-contrib-manifest = {
+        metadata = { name = "ui-contrib-manifest"; namespace = cfg.namespace; };
+        data."manifest.json" = uiContribManifest;
       };
 
       services.ui = {

@@ -20,11 +20,11 @@ pkgs.runCommand "ui-nginx-frame-ancestors"
   fail=0
 
   # Render as the container would, then point the writable paths at $TMPDIR.
-  serve() { # serve <name> <port> [SANDBOX_DOMAIN]
+  serve() { # serve <name> <port> [SANDBOX_DOMAIN] [CONTRIB_MANIFEST_FILE]
     local dir=$TMPDIR/$1
     mkdir -p $dir
     env -i PATH="$PATH" AGENT_HOST_URL=http://127.0.0.1:1 BROKER_URL=http://127.0.0.1:1 \
-      ''${3:+SANDBOX_DOMAIN=$3} ${conf.render} $dir/rendered.conf
+      ''${3:+SANDBOX_DOMAIN=$3} ''${4:+CONTRIB_MANIFEST_FILE=$4} ${conf.render} $dir/rendered.conf
     sed -e "s|pid /var/run/nginx.pid;|pid $dir/nginx.pid;|" \
         -e "s|listen 8080;|listen 127.0.0.1:$2;|" \
         -e "s|access_log /dev/stdout;|access_log off;|" \
@@ -45,7 +45,11 @@ pkgs.runCommand "ui-nginx-frame-ancestors"
     if [ "$got" = "$3" ]; then echo "ok   $2 -> $got"; else echo "FAIL $2 -> $got (want $3)"; fail=1; fi
   }
 
-  serve sandbox 18081 sbx.example.com
+  # The deployment's contrib manifest, as modules/platform.nix mounts it.
+  # nginx's workers run as nobody, so the file must be readable the way a ConfigMap's is.
+  mkdir -p $TMPDIR/mount && chmod 755 $TMPDIR $TMPDIR/mount
+  echo '{"settingsTabs":{"mounted":{}}}' > $TMPDIR/mount/manifest.json && chmod 644 $TMPDIR/mount/manifest.json
+  serve sandbox 18081 sbx.example.com $TMPDIR/mount/manifest.json
   # The subpage: framed by its own sandbox origin only, however the path is spelled.
   expect 18081 "/chat/${id}" "https://5a515e73.sbx.example.com"
   expect 18081 "/chat/${id}/" "https://5a515e73.sbx.example.com"
@@ -68,6 +72,17 @@ pkgs.runCommand "ui-nginx-frame-ancestors"
   # Without a sandbox domain, services share the UI's origin.
   expect 18082 "/chat/${id}" "'self'"
   expect 18082 "/" "'none'"
+
+  # /contrib/manifest.json: the mounted file when the deployment provides one (so its
+  # disabled contribs show no tab), else the image's built-in one ({} here).
+  manifest() { # manifest <port> <want body>
+    local got; got=$(curl -sf "http://127.0.0.1:$1/contrib/manifest.json" || echo "<error>")
+    if [ "$got" = "$2" ]; then echo "ok   manifest :$1 -> $got"; else echo "FAIL manifest :$1 -> $got (want $2)"; fail=1; fi
+  }
+  manifest 18081 '{"settingsTabs":{"mounted":{}}}'
+  manifest 18082 '{}'
+  curl -s -D - -o /dev/null http://127.0.0.1:18082/contrib/manifest.json | grep -qi "^content-type: application/json" \
+    || { echo "FAIL /contrib/manifest.json is not served as JSON"; fail=1; }
 
   kill $(cat $TMPDIR/sandbox/nginx.pid) $(cat $TMPDIR/shared/nginx.pid) || true
   [ $fail = 0 ] || exit 1
