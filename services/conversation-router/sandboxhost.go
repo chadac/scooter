@@ -170,6 +170,10 @@ func newSandboxHandler(shutdownCtx context.Context, cfg config, resolver ownerRe
 			http.NotFound(w, r)
 			return
 		}
+		if crossOriginWebSocket(r) {
+			http.Error(w, "cross-origin WebSocket refused", http.StatusForbidden)
+			return
+		}
 		browserPath := r.URL.EscapedPath()
 		if !rewriteSandboxRequest(w, r, label, labels) {
 			return
@@ -196,4 +200,17 @@ func newSandboxHandler(shutdownCtx context.Context, cfg config, resolver ownerRe
 		}
 		viaAgentHost(w, r)
 	})
+}
+
+// crossOriginWebSocket reports a browser WebSocket upgrade from another origin.
+func crossOriginWebSocket(r *http.Request) bool {
+	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		return false
+	}
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return false // Only browsers send Origin; tunnels and CLIs don't.
+	}
+	u, err := url.Parse(origin)
+	return err != nil || !strings.EqualFold(u.Host, r.Host)
 }
