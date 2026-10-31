@@ -641,6 +641,7 @@ let
       # mkForce the attr so the config goes with it.
       contribs.aws = lib.mkForce { enable = false; };
       contribs.shares = lib.mkForce { enable = false; };
+      contribs.ssh = lib.mkForce { enable = false; };
     };
   };
   awsOffBrokerEnv =
@@ -716,7 +717,13 @@ let
     ++ (if contribPodSpec != null && builtins.any (v: v.name == "forge-ca" && (v.configMap.optional or false)) (contribPodSpec.volumes or [ ]) then [ ]
         else [ "sandboxPod.extraVolumes forge-ca (optional ConfigMap scooter-forge-ca) missing — no sandbox trusts the forge CA" ])
     ++ (if contribCtr != null && hasName (contribCtr.env or [ ]) "HTTPS_PROXY" && hasName (contribCtr.env or [ ]) "FORGE_PROXY_ADDR" then [ ]
-        else [ "sandboxPod.extraEnv HTTPS_PROXY / FORGE_PROXY_ADDR missing — sandbox git/gh/glab bypass the forge proxy" ]);
+        else [ "sandboxPod.extraEnv HTTPS_PROXY / FORGE_PROXY_ADDR missing — sandbox git/gh/glab bypass the forge proxy" ])
+    ++ (if contribCtr != null && hasName (contribCtr.env or [ ]) "SSH_AUTH_SOCK" then [ ]
+        else [ "sandboxPod.extraEnv SSH_AUTH_SOCK missing with ssh on — sandbox ssh never reaches the broker-backed agent" ])
+    ++ (let off = contribOverlayOf awsOffPlatform;
+            ctrs = if off == null then [ ] else builtins.filter (c: c.name == "sandbox") off.containers;
+        in if !(builtins.any (c: hasName (c.env or [ ]) "SSH_AUTH_SOCK") ctrs) then [ ]
+        else [ "ssh-off: sandboxPod.extraEnv still sets SSH_AUTH_SOCK — contrib/ssh/deployment.nix is not gated on the contrib" ]);
 
   # scooter.sandbox.volumes reaches the provisioner as SANDBOX_VOLUME_CLAIMS: defaults keep the
   # overlay claim on the warm pool, an override and the renamed workspaceStorageClass land on

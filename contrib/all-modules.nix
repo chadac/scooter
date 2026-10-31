@@ -25,5 +25,6 @@
     ./personalization/contrib.nix
     ./shares/contrib.nix
     ./slack/contrib.nix
+    ./ssh/contrib.nix
   ];
 }

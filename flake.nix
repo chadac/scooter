@@ -362,6 +362,7 @@
             contrib-files = contribs.packages.files.broker;
             contrib-personalization = contribs.packages.personalization.broker;
             contrib-shares = contribs.packages.shares.broker;
+            contrib-ssh = contribs.packages.ssh.broker;
 
             # nix build .#contribs-all -> every variant of every contrib
             contribs-all = contribsAll;
@@ -514,6 +515,7 @@
             contrib-files = contribs.packages.files.broker;
             contrib-personalization = contribs.packages.personalization.broker;
             contrib-shares = contribs.packages.shares.broker;
+            contrib-ssh = contribs.packages.ssh.broker;
             # Every shipped handler and provider imports in its service's runtime env.
             webhooks-entrypoints = import ./nix/check-entrypoints.nix {
               inherit pkgs; name = "webhooks-entrypoints"; package = p.scooter-webhooks; bin = "agent-webhooks"; group = "scooter_webhooks.handlers";

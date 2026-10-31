@@ -23,6 +23,7 @@
     personalization.enable = true;
     shares.enable = true;
     slack.enable = true;
+    ssh.enable = true;
     # echo ships nowhere; CI builds it via withModules.
   };
 }

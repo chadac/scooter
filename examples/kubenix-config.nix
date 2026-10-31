@@ -217,6 +217,8 @@
     # Static shares: agents publish bundles the broker serves at /s/<uuid>/.
     shares.enable = true;
     slack.enable = true;
+    # Per-user SSH key: a broker-backed ssh-agent in each sandbox, a Settings tab.
+    ssh.enable = true;
 
     # Datadog provider: proxies /datadog/* -> https://api.<site> with the two keys
     # injected from a Secret in the broker namespace.
