@@ -1,8 +1,9 @@
 """What the broker hands a provider: the deployment-level substrate a provider must not build itself.
 
 The `authorizer` is the enforcement point and the `store_config` is the shared
-`broker` database's DSN; the app builds both once and passes them to any factory
-that declares a parameter. A contrib that owns tables reaches its OWN database
+`broker` database's DSN. `owners` says whose personal credentials a request may
+use and `user_secrets` encrypts them at rest. The app builds all of them once and
+passes them to any factory that declares a parameter. A contrib that owns tables reaches its OWN database
 through `contrib_store_config`, with the same credentials.
 """
 
@@ -12,7 +13,9 @@ import os
 from dataclasses import dataclass
 
 from .authz import Authorizer
+from .owner import OwnerResolver
 from .store import StoreConfig
+from .user_secrets import SecretBox
 
 
 def contrib_db_name(contrib: str) -> str:
@@ -27,6 +30,9 @@ class BrokerContext:
 
     authorizer: Authorizer
     store_config: StoreConfig
+    # None only in a test context built without them.
+    owners: OwnerResolver | None = None
+    user_secrets: SecretBox | None = None
 
     def contrib_store_config(self, contrib: str) -> StoreConfig:
         """`store_config` pointed at `contrib`'s own database.

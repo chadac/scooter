@@ -331,6 +331,25 @@ in
         roleRef = { apiGroup = "rbac.authorization.k8s.io"; kind = "Role"; name = "agent-broker-forge-ca"; };
         subjects = [{ kind = "ServiceAccount"; name = "agent-broker"; namespace = cfg.namespace; }];
       };
+
+      # The keyring sealing per-user secrets, created on first use; never mounted anywhere.
+      roles.agent-broker-user-secrets = {
+        metadata = { name = "agent-broker-user-secrets"; namespace = cfg.namespace; };
+        rules = [
+          { apiGroups = [ "" ]; resources = [ "secrets" ]; verbs = [ "create" ]; }
+          {
+            apiGroups = [ "" ];
+            resources = [ "secrets" ];
+            resourceNames = [ "scooter-user-secrets-key" ];
+            verbs = [ "get" ];
+          }
+        ];
+      };
+      roleBindings.agent-broker-user-secrets = {
+        metadata = { name = "agent-broker-user-secrets"; namespace = cfg.namespace; };
+        roleRef = { apiGroup = "rbac.authorization.k8s.io"; kind = "Role"; name = "agent-broker-user-secrets"; };
+        subjects = [{ kind = "ServiceAccount"; name = "agent-broker"; namespace = cfg.namespace; }];
+      };
     }
     (lib.mkIf bcfg.fga.enable {
       # OpenFGA server backed by its own `openfga` database in the shared Postgres;

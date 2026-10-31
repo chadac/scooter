@@ -14,11 +14,28 @@ from .db_unavailable import install_db_unavailable_handler
 from ..config import refresh_settings, settings
 from scooter_broker_lib.autolink import Link, create_link, list_links
 from scooter_broker_lib.context import BrokerContext
+from scooter_broker_lib.owner import OwnerResolver, agent_host_fetcher
+from scooter_broker_lib.user_secrets import KeyRing, SecretBox
 from scooter_broker_lib.registry import discover_providers
 from scooter_broker_lib.types import Identity
 from scooter_lib.logging_config import configure_logging
 
 logger = logging.getLogger(__name__)
+
+
+async def _load_keyring() -> KeyRing:
+    """The deployment keyring from its Secret, read on the first seal or open."""
+    import asyncio
+
+    from kubernetes import client, config
+
+    from .user_secrets_key import load_or_create_keyring
+
+    try:
+        config.load_incluster_config()
+    except config.ConfigException:
+        config.load_kube_config()
+    return await asyncio.to_thread(load_or_create_keyring, client.CoreV1Api(), settings.sandbox_namespace)
 
 
 def create_app() -> FastAPI:
@@ -32,6 +49,8 @@ def create_app() -> FastAPI:
     context = BrokerContext(
         authorizer=authorizer_from_settings(settings),
         store_config=settings.store_config(),
+        owners=OwnerResolver(agent_host_fetcher(settings.agent_host_url)),
+        user_secrets=SecretBox(_load_keyring),
     )
     providers = list(discover_providers([builtin_providers], context=context))
 

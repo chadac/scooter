@@ -18,6 +18,7 @@ python3Packages.buildPythonPackage {
     fastapi
     httpx
     sqlalchemy
+    cryptography
     # A contrib declaring MCP tools imports fastmcp directly.
     fastmcp
   ];
@@ -44,6 +45,9 @@ python3Packages.buildPythonPackage {
     "scooter_broker_lib.store"
     "scooter_broker_lib.authz"
     "scooter_broker_lib.context"
+    "scooter_broker_lib.owner"
+    "scooter_broker_lib.user_secrets"
+    "scooter_broker_lib.sources.user_first"
     "scooter_broker_lib.testing"
   ];
 
