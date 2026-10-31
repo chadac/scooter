@@ -135,3 +135,6 @@ export interface InterruptRendererProps {
   /** Dismiss without answering; the agent is told the user did not answer. */
   dismiss(): void;
 }
+
+/** A settings tab for linking the user's forge account (scooter_broker_lib.user_auth). */
+export { LinkedAccountTab, type LinkedAccountTabProps } from "./LinkedAccountTab.js";

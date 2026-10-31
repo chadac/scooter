@@ -22,7 +22,7 @@ dependencies = [
 # hatchling auto-detects the `scooter_broker_lib` package.
 
 [dependency-groups]
-dev = ["pytest", "pytest-asyncio"]
+dev = ["pytest", "pytest-asyncio", "aiosqlite"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

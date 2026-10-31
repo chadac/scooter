@@ -9,9 +9,10 @@ from scooter_broker_lib import ssh_keys
 
 @pytest.fixture(autouse=True)
 def _clean():
-    saved = list(ssh_keys._listeners)
+    saved = dict(ssh_keys._listeners)
     yield
-    ssh_keys._listeners[:] = saved
+    ssh_keys._listeners.clear()
+    ssh_keys._listeners.update(saved)
     ssh_keys.provide_lookup(None)
 
 

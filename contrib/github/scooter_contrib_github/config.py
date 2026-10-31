@@ -21,6 +21,13 @@ class GitHubSettings(ScooterBaseSettings):
     # A `module:attr` ForgePolicy (scooter_broker_lib.forge) checked on every request the broker makes to GitHub; empty allows all.
     github_forge_policy: str = ""
 
+    # Acting as the user (the App's user-to-server OAuth flow, or a pasted PAT); off unless enabled.
+    github_user_auth_enabled: bool = False
+    github_app_client_id: str = ""
+    github_app_client_secret: str = ""
+    # Where GitHub sends the browser back: <public url>/contrib-api/github/callback.
+    github_oauth_redirect_url: str = ""
+
     github_enabled: bool = False
     github_webhook_secret: str = ""
 

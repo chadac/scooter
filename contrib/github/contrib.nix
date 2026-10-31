@@ -65,6 +65,31 @@ in
         description = "Enable webhooks.";
       };
 
+      userAuth = {
+        enable = lib.mkEnableOption ''
+          acting as the user on GitHub in their private conversations. Each user links
+          their account on Settings → GitHub, through the App's user authorization
+          (OAuth) or a fine-grained PAT. In the App's settings, turn on "Expire user
+          authorization tokens" and set the callback URL to
+          `https://<ingress host>/contrib-api/github/callback`. To have Scooter add each
+          user's SSH key to their account, grant the "Git SSH keys" account permission
+        '';
+
+        clientId = lib.mkOption {
+          type = lib.types.str;
+          default = "";
+          example = "Iv23liAbCdEf";
+          description = "The GitHub App's client ID. Empty leaves only the PAT option.";
+        };
+
+        clientSecretSecret = clib.mkSecretOption {
+          key = "client-secret";
+          holds = "the GitHub App client secret";
+          nullable = true;
+          description = "Secret holding the GitHub App's client secret, in the broker namespace.";
+        };
+      };
+
       privateKeySecret = clib.mkSecretOption {
         key = "private-key";
         holds = "the PEM";
@@ -86,10 +111,26 @@ in
       ui.tools.github_comment = { argKey = "body"; action = "commented on GitHub"; };
 
       # pyjwt+cryptography sign the RS256 App JWT that both halves mint.
+      # Its own database (contrib_github) for linked user accounts.
+      db = lib.mkIf config.userAuth.enable {
+        enable = true;
+        tables.github_user_tokens = { };
+      };
+
+      ui.settingsTabs = lib.mkIf config.userAuth.enable [{
+        label = "GitHub";
+        order = 55;
+        entry = "ui/SettingsTab.tsx";
+        api = true;
+      }];
+
       services.broker = {
         enable = true;
-        pythonDeps = ps: [ ps.pyjwt ps.cryptography ];
+        pythonDeps = ps: [ ps.pyjwt ps.cryptography ps.aiosqlite ];
         env = {
+          GITHUB_USER_AUTH_ENABLED = lib.boolToString config.userAuth.enable;
+          GITHUB_APP_CLIENT_ID = lib.mkIf (config.userAuth.clientId != "") config.userAuth.clientId;
+          GITHUB_APP_CLIENT_SECRET = lib.mkIf (config.userAuth.clientSecretSecret != null) config.userAuth.clientSecretSecret;
           GITHUB_HOST = config.host;
           GITHUB_APP_ID = config.appId;
           # Empty would fail the broker's int parse.

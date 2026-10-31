@@ -26,6 +26,8 @@ python3Packages.buildPythonPackage {
   nativeCheckInputs = with python3Packages; [
     pytestCheckHook
     pytest-asyncio
+    # sqlite_config() in tests; deployments use Postgres.
+    aiosqlite
   ];
   # Every sub-package, so a broken import fails this build rather than a provider
   # quietly missing at broker startup.
@@ -49,6 +51,7 @@ python3Packages.buildPythonPackage {
     "scooter_broker_lib.user_secrets"
     "scooter_broker_lib.sources.user_first"
     "scooter_broker_lib.ssh_keys"
+    "scooter_broker_lib.user_auth"
     "scooter_broker_lib.commit_identity"
     "scooter_broker_lib.testing"
   ];

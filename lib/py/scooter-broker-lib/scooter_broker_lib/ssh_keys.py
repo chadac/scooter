@@ -29,19 +29,20 @@ class SshKeyChange:
 Listener = Callable[[SshKeyChange], Awaitable[None]]
 Lookup = Callable[[str], Awaitable["str | None"]]
 
-_listeners: list[Listener] = []
+# Keyed by qualified name, so a factory built twice replaces its listener.
+_listeners: dict[str, Listener] = {}
 _lookup: Lookup | None = None
 
 
 def on_ssh_key_change(listener: Listener) -> Listener:
-    """Register `listener` for every key change; usable as a decorator."""
-    _listeners.append(listener)
+    """Register `listener` for every key change, replacing one of the same name; usable as a decorator."""
+    _listeners[f"{listener.__module__}.{listener.__qualname__}"] = listener
     return listener
 
 
 async def announce(change: SshKeyChange) -> None:
     """Tell every listener; one failing does not stop the rest."""
-    for listener in list(_listeners):
+    for listener in list(_listeners.values()):
         try:
             await listener(change)
         except Exception as e:  # noqa: BLE001 - a forge outage must not fail a rotate

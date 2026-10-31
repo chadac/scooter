@@ -55,7 +55,7 @@ def changes():
 
     ssh_keys.on_ssh_key_change(listen)
     yield seen
-    ssh_keys._listeners.remove(listen)
+    ssh_keys._listeners.pop(f"{listen.__module__}.{listen.__qualname__}")
 
 
 def client(app, *, user: str | None = None, conv: str = "") -> AsyncClient:
