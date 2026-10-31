@@ -13,6 +13,7 @@ from .authz import authorizer_from_settings
 from .db_unavailable import install_db_unavailable_handler
 from ..config import refresh_settings, settings
 from scooter_broker_lib.autolink import Link, create_link, list_links
+from scooter_broker_lib.commit_identity import resolve as resolve_commit_identity
 from scooter_broker_lib.context import BrokerContext
 from scooter_broker_lib.owner import OwnerResolver, agent_host_fetcher
 from scooter_broker_lib.user_secrets import KeyRing, SecretBox
@@ -140,6 +141,12 @@ def create_app() -> FastAPI:
         except httpx.HTTPError as e:
             raise HTTPException(status_code=502, detail=f"agent-host list-links failed: {e}") from e
         return {"links": links}
+
+    # Who this sandbox's commits are by; the sandbox polls it into its git config.
+    @app.get("/git/identity")
+    async def git_identity(identity: Identity = Depends(authenticate)) -> dict:
+        acting = await context.owners.acting_user(identity) if context.owners else None
+        return (await resolve_commit_identity(acting)).payload()
 
     for provider in providers:
         for transport in provider.transports:

@@ -49,6 +49,7 @@ python3Packages.buildPythonPackage {
     "scooter_broker_lib.user_secrets"
     "scooter_broker_lib.sources.user_first"
     "scooter_broker_lib.ssh_keys"
+    "scooter_broker_lib.commit_identity"
     "scooter_broker_lib.testing"
   ];
 

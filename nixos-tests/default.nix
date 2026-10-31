@@ -28,6 +28,8 @@ in
     inherit pkgs lib sandboxModule stubOverlay deploymentModules;
   };
   dev-env-service = runTest ./service.nix;
+  # Commit author and Co-authored-by trailer follow the broker; repo hooks still run.
+  dev-env-git-identity = runTest ./git-identity.nix;
   # The webServices option: a proxyable unit, a discovery manifest, explicit start and sub-path serving.
   dev-env-web-services = runTest ./web-services.nix;
   # contrib/files' sandbox half: the unit, the manifest entry and the base path the

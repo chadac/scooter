@@ -18,6 +18,7 @@
     ./mcp-servers.nix
     ./carry-over.nix
     ./forge-proxy.nix
+    ./git-identity.nix
     ./runtime-converge.nix
     ./broker-modules.nix
     ./local-modules.nix
