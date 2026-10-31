@@ -8,7 +8,7 @@ import { describe, it, expect, vi } from "vitest";
 import { PassThrough } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import { createManagementApi, raiseApprovalInterrupt, fetchPendingApprovals } from "../../src/api/management.js";
+import { createManagementApi, SANDBOX_SOURCE, raiseApprovalInterrupt, fetchPendingApprovals } from "../../src/api/management.js";
 import { UserSkillError, type UserSkillStore } from "../../src/session/userSkillStore.js";
 import { createMemoryUserHookSettingsStore, type UserHookSettingsStore } from "../../src/hooks/userHookSettingsStore.js";
 import type { HookDef } from "../../src/hooks/types.js";
@@ -563,6 +563,21 @@ describe("management API", () => {
     const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
     const { status } = await call(api, "POST", "/conversations/c1/messages", { text: "a remark", source: "files" });
     expect(status).toBe(202);
+    expect(sessions.enqueueByThread).toHaveBeenCalledWith("c1", "a remark", "files", PRIORITY_INTERRUPT);
+  });
+
+  it("POST /conversations/:id/messages from a sandbox gets the sandbox source", async () => {
+    const sessions = fakeSessions();
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const { status } = await call(api, "POST", "/conversations/c1/messages", { text: "go on" }, { "x-scooter-caller": "sandbox" });
+    expect(status).toBe(202);
+    expect(sessions.enqueueByThread).toHaveBeenCalledWith("c1", "go on", SANDBOX_SOURCE, PRIORITY_INTERRUPT);
+  });
+
+  it("POST /conversations/:id/messages from a sandbox keeps its own source", async () => {
+    const sessions = fakeSessions();
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    await call(api, "POST", "/conversations/c1/messages", { text: "a remark", source: "files" }, { "x-scooter-caller": "sandbox" });
     expect(sessions.enqueueByThread).toHaveBeenCalledWith("c1", "a remark", "files", PRIORITY_INTERRUPT);
   });
 
