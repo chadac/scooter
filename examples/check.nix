@@ -643,6 +643,7 @@ let
       contribs.shares = lib.mkForce { enable = false; };
       contribs.ssh = lib.mkForce { enable = false; };
       contribs.github.userAuth.enable = lib.mkForce false;
+      contribs.gitlab.userAuth.enable = lib.mkForce false;
     };
   };
   awsOffBrokerEnv =
@@ -683,6 +684,10 @@ let
         else [ "broker.env.GITHUB_OAUTH_REDIRECT_URL missing with github.userAuth on — GitHub has nowhere to send users back" ])
     ++ (if countNamed awsOffBrokerEnv "GITHUB_OAUTH_REDIRECT_URL" == 0 then [ ]
         else [ "github.userAuth off: broker.env.GITHUB_OAUTH_REDIRECT_URL still set — contrib/github/deployment.nix is not gated on userAuth" ])
+    ++ (if countNamed brokerEnv "GITLAB_OAUTH_REDIRECT_URL" == 1 then [ ]
+        else [ "broker.env.GITLAB_OAUTH_REDIRECT_URL missing with gitlab.userAuth on — GitLab has nowhere to send users back" ])
+    ++ (if countNamed awsOffBrokerEnv "GITLAB_OAUTH_REDIRECT_URL" == 0 then [ ]
+        else [ "gitlab.userAuth off: broker.env.GITLAB_OAUTH_REDIRECT_URL still set — contrib/gitlab/deployment.nix is not gated on userAuth" ])
     ++ (if builtins.all (c: countNamed (c.env or [ ]) "AWS_ENABLED" == 0) awsOffCtrs then [ ]
         else [ "aws-off: broker.env.AWS_ENABLED present — contrib env is not gated on the contrib's own enable" ]);
 

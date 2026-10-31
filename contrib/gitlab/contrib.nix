@@ -34,6 +34,28 @@ in
       description = "Enable webhooks.";
     };
 
+    options.userAuth = {
+      enable = lib.mkEnableOption ''
+        acting as the user on GitLab in their private conversations. Each user links
+        their account on Settings → GitLab, through an OAuth application (scope `api`)
+        or a personal access token. Register the application with the redirect URI
+        `https://<ingress host>/contrib-api/gitlab/callback`
+      '';
+
+      clientId = lib.mkOption {
+        type = lib.types.str;
+        default = "";
+        description = "The GitLab OAuth application's ID. Empty leaves only the PAT option.";
+      };
+
+      clientSecretSecret = clib.mkSecretOption {
+        key = "client-secret";
+        holds = "the GitLab OAuth application secret";
+        nullable = true;
+        description = "Secret holding the GitLab OAuth application's secret, in the broker namespace.";
+      };
+    };
+
     options.tokenSecret = clib.mkSecretOption {
       key = "GITLAB_TOKEN";
       holds = "the GitLab token";
@@ -54,15 +76,32 @@ in
       # The UI row: the GitLab chip, icon and card.
       ui = {
         source = { label = "GitLab"; icon = ./icon.svg; color = "#FC6D26"; linkProvider = true; };
+        settingsTabs = lib.mkIf config.userAuth.enable [{
+          label = "GitLab";
+          order = 56;
+          entry = "ui/SettingsTab.tsx";
+          api = true;
+        }];
         tools.gitlab_comment = {
           argKey = "body";
           action = "commented on GitLab";
           titles = [ "Comment on the GitLab MR" ];
         };
       };
+
+      # Its own database (contrib_gitlab) for linked user accounts.
+      db = lib.mkIf config.userAuth.enable {
+        enable = true;
+        tables.gitlab_user_tokens = { };
+      };
+
       services.broker = {
         enable = true;
+        pythonDeps = ps: [ ps.aiosqlite ];
         env = {
+          GITLAB_USER_AUTH_ENABLED = lib.boolToString config.userAuth.enable;
+          GITLAB_OAUTH_CLIENT_ID = lib.mkIf (config.userAuth.clientId != "") config.userAuth.clientId;
+          GITLAB_OAUTH_CLIENT_SECRET = lib.mkIf (config.userAuth.clientSecretSecret != null) config.userAuth.clientSecretSecret;
           GITLAB_HOST = config.host;
           GITLAB_TOKEN = config.tokenSecret;
           GITLAB_FORGE_POLICY = lib.mkIf (config.forgePolicy != "") config.forgePolicy;

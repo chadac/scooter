@@ -268,6 +268,12 @@
     # Token proxies: `name` has no default, so configure or drop.
     slack.botTokenSecret = { name = "slack-bot-token"; key = "SLACK_BOT_TOKEN"; };
     gitlab.tokenSecret = { name = "gitlab-token"; key = "GITLAB_TOKEN"; };
+    # Users link their own GitLab account on Settings → GitLab.
+    gitlab.userAuth = {
+      enable = true;
+      clientId = "0123456789abcdef";
+      clientSecretSecret = { name = "gitlab-token"; key = "client-secret"; };
+    };
     github = {
       appId = "123456";
       installationId = "7890123";
