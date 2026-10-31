@@ -28,6 +28,7 @@ import {
 } from "@zed-industries/agent-client-protocol";
 
 import { ACP_INTERRUPT_META, ACP_INTERRUPT_RESULT_META } from "./acp/client.js";
+import { fakeMediaImages } from "./fakeMedia.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -211,6 +212,39 @@ class FakeAgent implements Agent {
         await u({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: word + " " } });
         await sleep(10);
       }
+      return { stopReason: "end_turn" };
+    }
+
+    // A "~media" message is a test directive for inline media: a tool call whose result
+    // carries two images, an image sent inline in the agent's message, and markdown with a
+    // data: image (loads), a remote image (click to load) and an SVG (never loads).
+    if (userText.startsWith("~media")) {
+      const img = fakeMediaImages();
+      const toolCallId = this.nextToolCallId();
+      await u({ sessionUpdate: "tool_call", toolCallId, title: "screenshot", kind: "other", status: "pending", rawInput: { url: "http://localhost:3000" } } as never);
+      await sleep(150);
+      await u({
+        sessionUpdate: "tool_call_update",
+        toolCallId,
+        status: "completed",
+        content: [
+          { type: "content", content: { type: "text", text: "Captured 2 screenshots." } },
+          { type: "content", content: { type: "image", mimeType: "image/png", data: img.toolA } },
+          { type: "content", content: { type: "image", mimeType: "image/png", data: img.toolB } },
+        ],
+      } as never);
+      await sleep(150);
+      await u({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Here is the rendered page:\n\n" } });
+      await u({ sessionUpdate: "agent_message_chunk", content: { type: "image", mimeType: "image/png", data: img.inline } } as never);
+      const md = [
+        "",
+        "A data: image (loads): ![tiny](data:image/png;base64," + img.tiny + ")",
+        "",
+        "A remote image (click to load): ![remote](https://upload.wikimedia.org/wikipedia/commons/4/47/PNG_transparency_demonstration_1.png)",
+        "",
+        "An SVG (never loads): ![svg](https://upload.wikimedia.org/wikipedia/commons/0/02/SVG_logo.svg)",
+      ].join("\n");
+      await u({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: md } });
       return { stopReason: "end_turn" };
     }
 

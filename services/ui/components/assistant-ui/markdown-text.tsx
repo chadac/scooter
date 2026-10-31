@@ -11,7 +11,10 @@ import {
 import remarkGfm from "remark-gfm";
 import remarkDropHtmlComments from "@/src/remarkDropHtmlComments";
 import { type FC, memo, useState } from "react";
-import { CheckIcon, CopyIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, ImageOffIcon } from "lucide-react";
+
+import { MediaImage } from "@/components/assistant-ui/media-gallery";
+import { classifyImageSrc, markdownUrlTransform, remoteImageConsent, useRemoteImageAllowed } from "@/src/markdownImagePolicy";
 
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { cn } from "@/lib/utils";
@@ -34,6 +37,7 @@ const MarkdownTextImpl = () => {
   return (
     <MarkdownTextPrimitive
       remarkPlugins={[remarkGfm, remarkDropHtmlComments]}
+      urlTransform={markdownUrlTransform}
       preprocess={contribFences().preprocess}
       className="aui-md text-[15px] desk:text-base"
       components={defaultComponents}
@@ -93,7 +97,54 @@ const useCopyToClipboard = ({
   return { isCopied, copyToClipboard };
 };
 
+/** The agent-host API base the assets route is served under ("" in prod). */
+const ASSET_BASE_URL = (import.meta.env.VITE_AGENT_HOST_URL ?? "").replace(/\/$/, "");
+
+/**
+ * A markdown image. Only the conversation's own assets and inline raster data load by
+ * default; a remote image waits for the reader to load it, and a sandbox path says where
+ * the file is (see markdownImagePolicy).
+ */
+const MarkdownImage: FC<{ src?: string | Blob; alt?: string }> = ({ src, alt }) => {
+  const verdict = classifyImageSrc(typeof src === "string" ? src : undefined, ASSET_BASE_URL);
+  const remoteSrc = verdict.kind === "remote" ? verdict.src : "";
+  const allowedRemote = useRemoteImageAllowed(remoteSrc);
+  const label = alt?.trim() || "image";
+
+  if (verdict.kind === "allow") return <MediaImage src={verdict.src} alt={alt ?? ""} />;
+  if (verdict.kind === "remote" && allowedRemote) return <MediaImage src={verdict.src} alt={alt ?? ""} />;
+
+  const chip = "aui-md-img-blocked bg-muted text-muted-foreground my-1 inline-flex max-w-full items-center gap-1.5 rounded-md px-2 py-1 align-middle text-xs";
+  if (verdict.kind === "remote") {
+    return (
+      <span data-slot="md-image-blocked" className={chip}>
+        <ImageOffIcon className="size-3.5 shrink-0" />
+        <span className="truncate">
+          {label} · {verdict.host}
+        </span>
+        <button
+          type="button"
+          className="text-primary hover:text-primary/80 shrink-0 font-medium underline underline-offset-2"
+          onClick={() => remoteImageConsent.allow(verdict.src)}
+        >
+          Load image
+        </button>
+      </span>
+    );
+  }
+  return (
+    <span data-slot="md-image-unavailable" className={chip} title={verdict.kind === "local" ? verdict.path : undefined}>
+      <ImageOffIcon className="size-3.5 shrink-0" />
+      <span className="truncate">
+        {label}
+        {verdict.kind === "local" ? ` (${verdict.path})` : ""}
+      </span>
+    </span>
+  );
+};
+
 const defaultComponents = memoizeMarkdownComponents({
+  img: MarkdownImage,
   h1: ({ className, ...props }) => (
     <h1
       className={cn(

@@ -48,7 +48,7 @@ import { createPgLinkStore } from "./session/linkStore.js";
 import { parseLinkTypeAliases } from "./session/linkTypeAliases.js";
 import { createPgMetaStore } from "./session/metaStore.js";
 import { createPgAwaitingInputStore } from "./session/awaitingInputStore.js";
-import { createPvcAssetStore } from "./session/assetStore.js";
+import { createPvcAssetStore, withStaging } from "./session/assetStore.js";
 import { createHybridAssetStore } from "./session/hybridAssetStore.js";
 import { createSessionBridge, PRIORITY_INTERRUPT, type AguiEvent, type ApproverIdentity } from "./bridge.js";
 import { createAcpClient, type BlockingTool } from "./acp/client.js";
@@ -705,16 +705,14 @@ export async function main(
   // Image/media assets: metadata in Postgres and bytes on the assets PVC (ASSETS_PATH, else
   // LOCAL_STATE_PATH), or PVC-only without a DSN.
   const assetsPath = process.env.ASSETS_PATH ?? config.localStatePath;
-  const assets = agentHostResourceDsn()
-    ? createHybridAssetStore({
-        dsn: agentHostResourceDsn(),
-        bytesRoot: assetsPath,
-        maxBytes: Number(process.env.ASSET_MAX_BYTES) || undefined,
-      })
-    : createPvcAssetStore({
-        root: assetsPath,
-        maxBytes: Number(process.env.ASSET_MAX_BYTES) || undefined,
-      });
+  const assetMaxBytes = Number(process.env.ASSET_MAX_BYTES) || undefined;
+  // withStaging lets the bridge reference an agent-produced image before its write lands.
+  const assets = withStaging(
+    agentHostResourceDsn()
+      ? createHybridAssetStore({ dsn: agentHostResourceDsn(), bytesRoot: assetsPath, maxBytes: assetMaxBytes })
+      : createPvcAssetStore({ root: assetsPath, maxBytes: assetMaxBytes }),
+    { maxBytes: assetMaxBytes },
+  );
   hostLog.info("asset store", {
     backend: agentHostResourceDsn() ? "hybrid (pg+pvc)" : "pvc-only",
     path: assetsPath,
@@ -2056,6 +2054,8 @@ export async function main(
       },
       // Resolve an attached image's bytes so the run builds the ACP image block.
       readAsset: (assetId) => assets.read(conversationId as SessionId, assetId),
+      // Store an image the agent or a tool produced, so the log carries a ref, not base64.
+      stageAsset: (bytes) => assets.stage(conversationId as SessionId, bytes),
       hooks: hookRunner,
       maxStopBlocks: config.maxStopBlocks,
       parentId: () => sessions.get(conversationId as SessionId)?.parentId,

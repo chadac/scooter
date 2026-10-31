@@ -452,5 +452,7 @@ function normalizeUpdate(params: schema.SessionNotification): SessionUpdate | un
 
 function toContentBlock(content: schema.ContentBlock): ContentBlock {
   if (content.type === "text") return { type: "text", text: content.text };
+  // An inline image reaches the bridge intact; it stores the bytes and logs a reference.
+  if (content.type === "image") return { type: "image", data: content.data, mimeType: content.mimeType };
   return { type: "text", text: "" };
 }

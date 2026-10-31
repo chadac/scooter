@@ -31,6 +31,7 @@ import { fingerprintOffered, type OfferedMcpServer } from "./agent/mcpServerRegi
 
 import { formatError, logger } from "./log.js";
 import type { HookEvent, HookOutcome, HookRunner } from "./hooks/types.js";
+import { inlineImage, replaceInlineImages, toImageRef, type StageAsset } from "./session/mediaRefs.js";
 
 const log = logger("bridge");
 
@@ -126,8 +127,8 @@ type AguiEventBase =
   // A latest-wins snapshot of the run queue's pending items, persisted and broadcast
   // so queued messages survive a refresh.
   | { type: "QUEUE_UPDATED"; items: Array<{ id: string; text: string; priority: number; interrupt?: InterruptPolicy; source?: string }> }
-  // Image references (assetId + url, never bytes) attached to a user message, keyed to
-  // the messageId they follow.
+  // Image references (assetId + url, never bytes) attached to a user or assistant message,
+  // keyed to the messageId they follow. Several events for one messageId accumulate.
   | {
       type: "MESSAGE_IMAGES";
       messageId: string;
@@ -403,6 +404,10 @@ export interface BridgeDeps {
   /** Resolve an attached image's bytes from the AssetStore, or null for an unknown asset;
    *  absent, image parts are ignored. */
   readAsset?: (assetId: string) => Promise<{ data: Buffer; mimeType: string } | null>;
+
+  /** Store an image the agent or a tool produced and return its reference, so events carry
+   *  an assetId and url instead of base64; absent, such images are dropped to a marker. */
+  stageAsset?: StageAsset;
 
   /** How long (ms) a queued priority prompt waits while a run is active before the running
    *  turn is cancelled (0, the default, disables it). */
@@ -774,6 +779,23 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       case "agent_message_chunk": {
         // Reasoning and text are distinct streams; close reasoning first.
         closeOpenReasoning(st);
+        // An image the agent sent inline is stored and attached to the open assistant message
+        // as a reference, the same event a user message's images ride.
+        const img = inlineImage(u.content);
+        if (img) {
+          if (!st.openText) {
+            st.openText = nextId("msg");
+            emit({ type: "TEXT_MESSAGE_START", messageId: st.openText, role: "assistant" });
+          }
+          const ref = toImageRef(img, deps.stageAsset);
+          if ("url" in ref) {
+            emit({ type: "MESSAGE_IMAGES", messageId: st.openText, images: [{ assetId: ref.assetId, mimeType: ref.mimeType, url: ref.url }] });
+          } else {
+            const delta = `\n\n_[${ref.mimeType} image not shown: ${ref.omitted}]_\n\n`;
+            emit({ type: "TEXT_MESSAGE_CONTENT", messageId: st.openText, delta });
+          }
+          break;
+        }
         // Pull an agent-emitted <title>…</title> marker out of the chunk and strip it from
         // the displayed text.
         const { text, title } = titleExtractor.push(blockText(u.content));
@@ -871,11 +893,14 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           }
         }
         const messageId = st.toolMessage.get(u.toolCallId) ?? nextId("msg");
+        // Images in the result move to the asset store; the logged result keeps refs the
+        // UI's tool card renders inline.
+        const logged = typeof resultContent === "string" ? resultContent : replaceInlineImages(resultContent, deps.stageAsset).value;
         emit({
           type: "TOOL_CALL_RESULT",
           toolCallId: u.toolCallId,
           messageId,
-          content: typeof resultContent === "string" ? resultContent : JSON.stringify(resultContent ?? ""),
+          content: typeof logged === "string" ? logged : JSON.stringify(logged ?? ""),
         });
         // The SDK fires its own PostToolUse; goose needs ours.
         if (deps.hooks && currentProviderKind === "goose" && info) {

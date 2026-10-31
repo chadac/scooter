@@ -12,6 +12,7 @@ import {
   ReasoningTrigger,
 } from "@/components/assistant-ui/reasoning";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
+import { MediaGallery, MediaImage } from "@/components/assistant-ui/media-gallery";
 import { MessageTimestamp, useTimestampToggle } from "@/components/assistant-ui/message-timestamp";
 import { SystemEventMessage } from "@/components/assistant-ui/system-event-message";
 import {
@@ -342,6 +343,8 @@ const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
           </ThreadPrimitive.ViewportFooter>
         </div>
       </ThreadPrimitive.Viewport>
+      {/* One lightbox for the whole conversation, paging through every image in it. */}
+      <MediaGallery />
     </ThreadPrimitive.Root>
   );
 };
@@ -617,6 +620,12 @@ const AssistantMessage: FC = () => {
               }
               case "text":
                 return <MarkdownText />;
+              case "image":
+                return <MediaImage src={part.image} alt={part.filename ?? ""} />;
+              case "file":
+                // An image the agent sent (MESSAGE_IMAGES on an assistant message, see
+                // attachAssistantImages); other files have no inline view.
+                return part.mimeType.startsWith("image/") ? <MediaImage src={part.data} alt="" /> : null;
               case "reasoning":
                 return <Reasoning {...part} />;
               case "tool-call":

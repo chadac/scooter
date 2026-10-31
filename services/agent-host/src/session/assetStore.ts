@@ -65,8 +65,14 @@ export interface PvcAssetStoreOpts {
 }
 
 /** File extension for a stored blob, from its MIME. */
-function extFor(mime: string): string {
+export function extFor(mime: string): string {
   return ({ "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" })[mime] ?? "bin";
+}
+
+/** The content-addressed assetId both stores mint for these bytes (sha256 prefix + ext), so a
+ *  caller can know an asset's id before its put() has finished. */
+export function assetIdFor(data: Buffer, mimeType: string): string {
+  return `${createHash("sha256").update(data).digest("hex").slice(0, 32)}.${extFor(mimeType)}`;
 }
 
 export function createPvcAssetStore(opts: PvcAssetStoreOpts): AssetStore {
@@ -91,8 +97,7 @@ export function createPvcAssetStore(opts: PvcAssetStoreOpts): AssetStore {
         throw new AssetError("too-large", `image is ${data.length} bytes (max ${maxBytes})`);
       }
       // Content-addressed id, so identical uploads dedupe.
-      const hash = createHash("sha256").update(data).digest("hex").slice(0, 32);
-      const assetId = `${hash}.${extFor(mimeType)}`;
+      const assetId = assetIdFor(data, mimeType);
       await mkdir(dir(conversationId), { recursive: true });
       await writeFile(fileFor(conversationId, assetId), data);
       return { assetId, mimeType, url: urlFor(conversationId, assetId) };
@@ -113,6 +118,62 @@ export function createPvcAssetStore(opts: PvcAssetStoreOpts): AssetStore {
 
     async clear(conversationId) {
       await rm(dir(conversationId), { recursive: true, force: true }).catch(() => {});
+    },
+  };
+}
+
+/** An AssetStore that can also stage an asset: validate it and mint its reference
+ *  synchronously, write it in the background, and have read() wait for that write. */
+export interface StagingAssetStore extends AssetStore {
+  /** Validate the bytes and start storing them, returning the reference at once, or the reason
+   *  they were refused. The bridge maps ACP updates to events synchronously, so this is how it
+   *  emits an event pointing at an asset whose write is still in flight. */
+  stage(conversationId: SessionId, bytes: AssetBytes): StoredAsset | { rejected: AssetReject };
+}
+
+export interface StagingOpts {
+  /** Per-asset byte cap; default DEFAULT_ASSET_MAX_BYTES. Match the wrapped store's cap. */
+  maxBytes?: number;
+  /** Allowed MIME types; default ALLOWED_IMAGE_MIME. Match the wrapped store's list. */
+  allowedMime?: Set<string>;
+}
+
+/**
+ * Wrap a store with stage(). A read() of an asset whose staged write has not finished waits
+ * for that write, so the UI never 404s on an image it learned about from the live stream.
+ */
+export function withStaging(store: AssetStore, opts: StagingOpts = {}): StagingAssetStore {
+  const maxBytes = opts.maxBytes ?? DEFAULT_ASSET_MAX_BYTES;
+  const allowed = opts.allowedMime ?? ALLOWED_IMAGE_MIME;
+  const pending = new Map<string, Promise<unknown>>();
+  const key = (id: SessionId, assetId: string) => `${id}/${assetId}`;
+
+  return {
+    urlFor: (id, assetId) => store.urlFor(id, assetId),
+    put: (id, bytes) => store.put(id, bytes),
+    clear: (id) => store.clear(id),
+
+    stage(conversationId, bytes) {
+      if (!bytes.data || bytes.data.length === 0) return { rejected: "empty" };
+      if (!allowed.has(bytes.mimeType)) return { rejected: "unsupported-type" };
+      if (bytes.data.length > maxBytes) return { rejected: "too-large" };
+      const assetId = assetIdFor(bytes.data, bytes.mimeType);
+      const k = key(conversationId, assetId);
+      if (!pending.has(k)) {
+        // A failed write surfaces as the asset's 404, the same as any unknown asset.
+        const write = store
+          .put(conversationId, bytes)
+          .catch(() => {})
+          .finally(() => pending.delete(k));
+        pending.set(k, write);
+      }
+      return { assetId, mimeType: bytes.mimeType, url: store.urlFor(conversationId, assetId) };
+    },
+
+    async read(conversationId, assetId) {
+      const inFlight = pending.get(key(conversationId, assetId));
+      if (inFlight) await inFlight;
+      return store.read(conversationId, assetId);
     },
   };
 }

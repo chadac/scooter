@@ -24,8 +24,12 @@ import {
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { MediaStrip } from "@/components/assistant-ui/media-gallery";
+import { splitResultImages } from "@/src/mediaRefs";
 
 const ANIMATION_DURATION = 200;
+/** The agent-host API base the assets route is served under ("" in prod). */
+const ASSET_BASE_URL = (import.meta.env.VITE_AGENT_HOST_URL ?? "").replace(/\/$/, "");
 
 const pressable = "active:scale-[0.98]";
 
@@ -257,6 +261,8 @@ function ToolFallbackResult({
   result?: unknown;
 }) {
   if (result === undefined) return null;
+  // Images the agent-host stored out of the result render inline; the rest stays text.
+  const { images, omitted, rest } = splitResultImages(result, ASSET_BASE_URL);
 
   return (
     <div
@@ -267,9 +273,17 @@ function ToolFallbackResult({
       <p className="aui-tool-fallback-result-header text-muted-foreground text-xs font-medium">
         Result:
       </p>
-      <pre className="aui-tool-fallback-result-content bg-muted/50 text-foreground/90 mt-1 rounded-md p-2.5 text-xs whitespace-pre-wrap">
-        {typeof result === "string" ? result : JSON.stringify(result, null, 2)}
-      </pre>
+      <MediaStrip images={images.map((i) => ({ src: i.src, alt: "" }))} className="mt-1" />
+      {omitted.length > 0 && (
+        <p data-slot="tool-fallback-result-omitted" className="text-muted-foreground mt-1 text-xs italic">
+          {omitted.length === 1 ? "1 image" : `${omitted.length} images`} not shown ({[...new Set(omitted)].join(", ")})
+        </p>
+      )}
+      {rest !== undefined && (
+        <pre className="aui-tool-fallback-result-content bg-muted/50 text-foreground/90 mt-1 rounded-md p-2.5 text-xs whitespace-pre-wrap">
+          {typeof rest === "string" ? rest : JSON.stringify(rest, null, 2)}
+        </pre>
+      )}
     </div>
   );
 }

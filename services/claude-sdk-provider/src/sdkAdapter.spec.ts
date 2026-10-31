@@ -71,7 +71,7 @@ describe("sdkMessageToUpdates", () => {
     ]);
   });
 
-  it("keeps an image tool_result's base64 out of rawOutput", () => {
+  it("normalizes an image tool_result to the MCP image shape (the bridge stores the bytes)", () => {
     const data = "A".repeat(4096); // 3 KB decoded
     const msg: SdkMessage = {
       type: "user",
@@ -85,8 +85,7 @@ describe("sdkMessageToUpdates", () => {
     };
     const [u] = sdkMessageToUpdates(msg);
     expect(u).toMatchObject({ sessionUpdate: "tool_call_update", toolCallId: "tu_img", status: "completed" });
-    expect((u as { rawOutput: unknown }).rawOutput).toEqual([{ type: "text", text: "[image/png image, 3 KB]" }, { type: "text", text: "note" }]);
-    expect(JSON.stringify(u)).not.toContain(data);
+    expect((u as { rawOutput: unknown }).rawOutput).toEqual([{ type: "image", data, mimeType: "image/png" }, { type: "text", text: "note" }]);
   });
 
   it("maps an errored tool_result to a failed tool_call_update", () => {

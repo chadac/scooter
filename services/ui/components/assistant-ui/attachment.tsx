@@ -10,6 +10,7 @@ import {
   useAui,
 } from "@assistant-ui/react";
 import { useShallow } from "zustand/shallow";
+import { GalleryItem } from "@/components/assistant-ui/media-gallery";
 import {
   Tooltip,
   TooltipContent,
@@ -87,8 +88,18 @@ const AttachmentPreview: FC<AttachmentPreviewProps> = ({ src }) => {
 
 const AttachmentPreviewDialog: FC<PropsWithChildren> = ({ children }) => {
   const src = useAttachmentSrc();
+  const aui = useAui();
+  const name = useAuiState((s) => s.attachment.name);
 
   if (!src) return children;
+  // A sent message's image joins the conversation-wide gallery; the composer keeps its own preview.
+  if (aui.attachment.source === "message") {
+    return (
+      <GalleryItem src={src} alt={name ?? ""}>
+        {children}
+      </GalleryItem>
+    );
+  }
 
   return (
     <Dialog>

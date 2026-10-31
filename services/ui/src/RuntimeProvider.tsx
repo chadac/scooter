@@ -425,7 +425,12 @@ function ConversationRuntime({
       const enriched = enrichMessagesWithImages(folded, (id) => agent.getMessageImages(id), BASE_URL);
       const withSystem = spliceSystemMessages(enriched, agent.getSystemMessages());
       // A new snapshot with stable inner ids lets the core reconcile per message.
-      setRepoSnapshot(toRepositorySnapshot(withSystem, (id) => agent.getMessageTime(id)));
+      setRepoSnapshot(
+        toRepositorySnapshot(withSystem, (id) => agent.getMessageTime(id), {
+          get: (id) => agent.getMessageImages(id),
+          baseUrl: BASE_URL,
+        }),
+      );
       // Advance the error-boundary reset key so a transient runtime crash recovers on the next push.
       setRenderTick((n) => n + 1);
     };
