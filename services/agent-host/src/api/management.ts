@@ -48,6 +48,11 @@ const remoteAgentLog = logger("remote-agent");
 /** Sources POST /messages refuses, so a sandbox cannot pose as human. */
 const RESERVED_SOURCES: ReadonlySet<string> = new Set([...HUMAN_TRIGGER_SOURCES, ...DERIVED_SOURCES]);
 
+/** Set by the router's sandbox self-access listener. */
+const SANDBOX_CALLER_HEADER = "x-scooter-caller";
+/** The source given to a sandbox's message that names none. */
+export const SANDBOX_SOURCE = "sandbox";
+
 /** Whether a POST /messages caller may tag its message with this system source. */
 export function isPostableSource(source: unknown): source is string {
   return typeof source === "string" && /^[a-z][a-z0-9_-]{0,31}$/.test(source) && !RESERVED_SOURCES.has(source);
@@ -569,7 +574,10 @@ export function createManagementApi(deps: ManagementDeps): Router {
     // Interrupts at the next tool-call boundary: queued until the run ends, it would land out of order.
     // 202 once queued, not once the run ends: a caller that gave up waiting on a long turn
     // would resend a message the agent already has.
-    await sessions.enqueueByThread(ctx.params.id, body.text, body.source || undefined, PRIORITY_INTERRUPT);
+    // A sandbox's message always carries a non-human source.
+    const fromSandbox = ctx.req.headers[SANDBOX_CALLER_HEADER] === "sandbox";
+    const source = body.source || (fromSandbox ? SANDBOX_SOURCE : undefined);
+    await sessions.enqueueByThread(ctx.params.id, body.text, source, PRIORITY_INTERRUPT);
     return { status: 202, json: { ok: true } };
   });
 
