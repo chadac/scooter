@@ -3,7 +3,7 @@
  * with the icon showing the current mode. Persists via themeStore; "system" follows
  * the OS live (see theme.ts).
  */
-import { Sun, Moon, Monitor } from "lucide-react";
+import { Sun, Moon, Monitor } from "@/icons";
 
 import { Button } from "@/components/ui/button";
 import { themeStore, useTheme, type ThemeMode } from "./theme.js";

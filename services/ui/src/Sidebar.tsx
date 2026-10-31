@@ -7,6 +7,7 @@
  */
 
 import { memo, useEffect, useState, type ReactNode } from "react";
+import { Bot, ChevronRight, CornerDownRight, Lock, Plus, StarFilled } from "@/icons";
 
 import {
   sessionStore,
@@ -145,7 +146,7 @@ const SessionRow = memo(function SessionRow({
         className={cn("min-w-0 flex-1 justify-start truncate", active && "font-medium")}
         title={s.title}
       >
-        {depth > 0 && <span className="me-1 text-muted-foreground" aria-hidden>↳</span>}
+        {depth > 0 && <CornerDownRight className="me-1 size-3.5 shrink-0 text-muted-foreground" aria-hidden />}
         <span data-testid="session-title">{sessionLabel(s, labelMode)}</span>
         {s.visibility === "private" && (
           <span
@@ -154,12 +155,12 @@ const SessionRow = memo(function SessionRow({
             title="Private: only you can see it"
             aria-label="Private"
           >
-            🔒
+            <Lock className="size-3" aria-hidden />
           </span>
         )}
         {childCount > 0 && (
           <span data-testid="subagent-count" className="ms-1.5 text-xs text-muted-foreground">
-            ▸ {childCount} subagent{childCount === 1 ? "" : "s"}
+            <Bot className="me-0.5 inline size-3" aria-hidden />{childCount} subagent{childCount === 1 ? "" : "s"}
           </span>
         )}
       </Button>
@@ -224,7 +225,7 @@ export const Sidebar = memo(function Sidebar() {
           onClick={() => sessionStore.startFresh()}
           className="w-full justify-center gap-1.5"
         >
-          <span aria-hidden>＋</span> New conversation
+          <Plus className="size-4" aria-hidden /> New conversation
         </Button>
       </div>
       {/* Keyword search over the title + linked-resource names. */}
@@ -252,7 +253,7 @@ export const Sidebar = memo(function Sidebar() {
           onClick={() => setFiltersOpen((o) => !o)}
           className="w-full justify-start gap-1.5 px-1 text-muted-foreground"
         >
-          <span className={"transition-transform " + (filtersOpen ? "rotate-90" : "")}>›</span>
+          <ChevronRight aria-hidden className={"size-3.5 transition-transform " + (filtersOpen ? "rotate-90" : "")} />
           <span className="font-medium">Advanced</span>
           {activeFilters > 0 && (
             <span
@@ -375,7 +376,7 @@ export const Sidebar = memo(function Sidebar() {
         {starredRows.length > 0 && (
           <SectionHeader
             label="Starred"
-            icon={<span className="text-[10px] text-warning">★</span>}
+            icon={<StarFilled className="size-3 text-warning" />}
           />
         )}
         {starredRows.map(({ session: s, depth, childCount }) => (

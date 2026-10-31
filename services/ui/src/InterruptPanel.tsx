@@ -15,6 +15,7 @@
  */
 
 import { useEffect, useState } from "react";
+import { ArrowLeft, ChevronLeft, ChevronRight } from "@/icons";
 import { createPortal } from "react-dom";
 import { hasId, type MaybeConversationId } from "./conversation.js";
 
@@ -334,7 +335,7 @@ export function InterruptList() {
                 className="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
                 onClick={() => (open ? approvalFocus.close() : approvalFocus.open(intr.id))}
               >
-                {open ? "Close details" : "Details ↗"}
+                {open ? "Close details" : <>Details <ChevronRight className="inline size-3" aria-hidden /></>}
               </button>
             </div>
           </div>
@@ -385,7 +386,7 @@ export function ApprovalDetail() {
     >
       <div className="flex h-11 shrink-0 items-center justify-between gap-2 border-b px-4">
         <Button variant="outline" size="sm" data-testid="approval-detail-back" onClick={() => approvalFocus.close()}>
-          ← Back to conversation
+          <ArrowLeft className="size-4" aria-hidden /> Back to conversation
         </Button>
         {pending.length > 1 && (
           <div className="flex items-center gap-1 text-sm text-muted-foreground">
@@ -393,10 +394,10 @@ export function ApprovalDetail() {
               Approval {index + 1} of {pending.length}
             </span>
             <Button variant="outline" size="icon-sm" aria-label="Previous request" onClick={() => step(-1)}>
-              ‹
+              <ChevronLeft />
             </Button>
             <Button variant="outline" size="icon-sm" aria-label="Next request" onClick={() => step(1)}>
-              ›
+              <ChevronRight />
             </Button>
           </div>
         )}

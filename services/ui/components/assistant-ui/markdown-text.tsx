@@ -11,7 +11,7 @@ import {
 import remarkGfm from "remark-gfm";
 import remarkDropHtmlComments from "@/src/remarkDropHtmlComments";
 import { type FC, memo, useState } from "react";
-import { CheckIcon, CopyIcon } from "lucide-react";
+import { CheckIcon, CopyIcon } from "@/icons";
 
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { cn } from "@/lib/utils";

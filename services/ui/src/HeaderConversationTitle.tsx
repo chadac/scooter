@@ -5,6 +5,7 @@
  */
 
 import { useState } from "react";
+import { Lock, LockOpen, Pencil, Star, StarFilled, Trash2 } from "@/icons";
 import { flushSync } from "react-dom";
 
 import { displayTitle } from "./pageTitle.js";
@@ -88,7 +89,7 @@ function Actions({ session: s }: { session: Session }) {
           onClick={() => void toggleStar(s)}
           className={cn(s.starred ? "text-warning" : "text-muted-foreground hover:text-warning")}
         >
-          {s.starred ? "★" : "☆"}
+          {s.starred ? <StarFilled /> : <Star />}
         </Button>
       )}
       {/* Only the owner of a top-level conversation; subagents follow their parent. */}
@@ -107,7 +108,7 @@ function Actions({ session: s }: { session: Session }) {
           onClick={() => void toggleVisibility(s)}
           className="text-muted-foreground"
         >
-          {isPrivate ? "🔒" : "🔓"}
+          {isPrivate ? <Lock /> : <LockOpen />}
         </Button>
       )}
       <Button
@@ -119,7 +120,7 @@ function Actions({ session: s }: { session: Session }) {
         onClick={openRename}
         className="text-muted-foreground"
       >
-        ✎
+        <Pencil />
       </Button>
       <Button
         variant="ghost"
@@ -130,7 +131,7 @@ function Actions({ session: s }: { session: Session }) {
         onClick={remove}
         className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
       >
-        🗑
+        <Trash2 />
       </Button>
     </div>
   );

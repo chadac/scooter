@@ -8,6 +8,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import { X } from "@/icons";
 
 import { mobileNav, useDrawer } from "./mobileNav.js";
 import { InterruptList } from "./InterruptPanel.js";
@@ -133,7 +134,7 @@ export function RightPanel() {
           onClick={() => mobileNav.close()}
           className="flex w-9 shrink-0 items-center justify-center border-r text-muted-foreground hover:text-foreground desk:hidden"
         >
-          ✕
+          <X className="size-4" aria-hidden />
         </button>
         <TabButton
           active={active === "sandbox"}

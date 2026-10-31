@@ -8,6 +8,7 @@
  */
 
 import { useEffect, useState } from "react";
+import { ChevronDown, ChevronRight } from "@/icons";
 
 import { loadLinks, type ConversationLink } from "./client.js";
 import { useSessions, currentConversation } from "./sessions.js";
@@ -43,7 +44,7 @@ export function LinkedResourcesPanel({ links }: { links: ConversationLink[] }) {
         aria-expanded={isOpen}
       >
         <span>Linked ({links.length})</span>
-        <span aria-hidden>{isOpen ? "▾" : "▸"}</span>
+        {isOpen ? <ChevronDown aria-hidden className="size-3.5" /> : <ChevronRight aria-hidden className="size-3.5" />}
       </Button>
       {isOpen && (
         <ul className="px-2 pb-2">

@@ -4,15 +4,18 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
+  cacheDir: process.env.VITE_CACHE_DIR ?? "node_modules/.vite",
   plugins: [react(), tailwindcss()],
   // Define VITE_TELEMETRY_CONSOLE from the environment so it reaches import.meta.env when passed through playwright's webServer.env.
   define: {
     "import.meta.env.VITE_TELEMETRY_CONSOLE": JSON.stringify(process.env.VITE_TELEMETRY_CONSOLE),
   },
   resolve: {
-    alias: {
-      "@": fileURLToPath(new URL("./", import.meta.url)),
-    },
+    alias: [
+      // One icon module; VITE_ICON_SET picks the set for the mockups.
+      { find: /^@\/icons$/, replacement: fileURLToPath(new URL(`./src/icons/${process.env.VITE_ICON_SET ?? "lucide"}.tsx`, import.meta.url)) },
+      { find: "@", replacement: fileURLToPath(new URL("./", import.meta.url)) },
+    ],
   },
   server: {
     port: 5173,

@@ -9,6 +9,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState, type FC } from "react";
+import { ArrowLeft, Check, ChevronRight } from "@/icons";
 
 import { agentHostConfig } from "./config.js";
 import { loadDevices, deregisterDevice, formatLastSeen, type ByocDevice } from "./byocDevices.js";
@@ -955,7 +956,7 @@ function ClaudeAgentSection() {
               data-testid="claude-agent-copy"
               onClick={copy}
             >
-              {copied ? "Copied ✓" : "Copy command"}
+              {copied ? <><Check className="size-3.5" aria-hidden /> Copied</> : "Copy command"}
             </Button>
             <Button
               variant="outline"
@@ -1133,7 +1134,7 @@ export function SettingsPage() {
           data-testid="settings-back"
           onClick={() => viewStore.set("chat")}
         >
-          ← Back
+          <ArrowLeft className="size-4" aria-hidden /> Back
         </Button>
         <h1 className="text-lg font-semibold">Settings</h1>
       </div>
@@ -1153,9 +1154,7 @@ export function SettingsPage() {
             className="w-full justify-between desk:hidden"
           >
             <span className="font-medium">{activeLabel}</span>
-            <span className={"transition-transform " + (menuOpen ? "rotate-90" : "")} aria-hidden>
-              ›
-            </span>
+            <ChevronRight aria-hidden className={"size-4 transition-transform " + (menuOpen ? "rotate-90" : "")} />
           </Button>
           {/* Always in the DOM so the desk: variant can force it open with pure CSS. */}
           <nav

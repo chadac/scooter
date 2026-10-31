@@ -7,7 +7,7 @@ import {
   ChevronDownIcon,
   LoaderIcon,
   XCircleIcon,
-} from "lucide-react";
+} from "@/icons";
 import {
   useScrollLock,
   useToolCallElapsed,

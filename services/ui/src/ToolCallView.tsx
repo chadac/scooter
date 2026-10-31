@@ -7,7 +7,7 @@
  * Wired in App.tsx: <Thread components={{ ToolFallback: ToolCallView }} />.
  */
 
-import { Loader2Icon } from "lucide-react";
+import { Loader2Icon } from "@/icons";
 import type { ToolCallMessagePartComponent, ToolCallMessagePartProps } from "@assistant-ui/react";
 
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";

@@ -1,0 +1,20 @@
+// The Tabler option: one family on a 24px/2px stroke grid, brands included.
+export {
+  IconAlarm as AlarmClockIcon, IconAlertCircle as AlertCircleIcon, IconAppWindow as AppWindow,
+  IconArrowDown as ArrowDownIcon, IconArrowLeft as ArrowLeft, IconArrowUp as ArrowUpIcon, IconRobot as Bot,
+  IconRobot as BotIcon, IconBrain as BrainIcon, IconCheck as Check, IconCheck as CheckIcon,
+  IconChevronDown as ChevronDown, IconChevronDown as ChevronDownIcon, IconChevronLeft as ChevronLeftIcon, IconChevronLeft as ChevronLeft,
+  IconChevronRight as ChevronRight, IconChevronRight as ChevronRightIcon, IconChevronUp as ChevronUp,
+  IconCode as Code, IconSettings2 as CogIcon, IconCopy as CopyIcon, IconCornerDownRight as CornerDownRight,
+  IconDownload as DownloadIcon, IconExternalLink as ExternalLink, IconFileText as FileText,
+  IconBrandGithub as GithubMark, IconKey as KeyRoundIcon, IconLink as Link, IconLoader2 as Loader2Icon,
+  IconLoader2 as LoaderIcon, IconLock as Lock, IconLockOpen as LockOpen, IconMenu2 as Menu,
+  IconMicrophone as MicIcon, IconDeviceDesktop as Monitor, IconMoon as Moon, IconDots as MoreHorizontalIcon,
+  IconNotebook as Notebook, IconLayoutSidebarRight as PanelRight, IconPencil as Pencil, IconPencil as PencilIcon,
+  IconPictureInPicture as PictureInPicture2, IconPlus as Plus, IconPlus as PlusIcon, IconPower as Power,
+  IconRefresh as RefreshCwIcon, IconRotateClockwise as RotateCw, IconScooter as ScooterMark,
+  IconSettings as Settings, IconShieldCheck as ShieldCheckIcon, IconBrandSlack as SlackMark,
+  IconSquare as SquareIcon, IconTerminal2 as SquareTerminal, IconStar as Star, IconStarFilled as StarFilled,
+  IconSun as Sun, IconTrash as Trash2, IconAlertTriangle as TriangleAlert, IconUser as User, IconX as X,
+  IconCircleX as XCircleIcon, IconX as XIcon, IconBolt as Zap,
+} from "@tabler/icons-react";

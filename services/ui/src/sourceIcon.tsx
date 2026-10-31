@@ -9,13 +9,10 @@
  */
 
 import type { ComponentType, ReactNode } from "react";
-import { SiGithub } from "react-icons/si";
-// Simple Icons dropped the Slack mark (trademark); FontAwesome still ships it.
-import { FaSlack, FaTerminal } from "react-icons/fa";
-// The Scooter mark for the "show the conversation title" option.
-import { SCOOTER_MARK } from "./brandMark.js";
+import { GithubMark, Link, SlackMark, SquareTerminal } from "@/icons";
+import { ScooterMark } from "@/icons";
 // Platform event sources have no brand, so they take a neutral glyph.
-import { AlarmClockIcon, BotIcon, CogIcon, KeyRoundIcon, ShieldCheckIcon } from "lucide-react";
+import { AlarmClockIcon, BotIcon, CogIcon, KeyRoundIcon, ShieldCheckIcon } from "@/icons";
 import type { ContribIcon } from "./contribTypes.js";
 import { contribSources } from "./contribManifest.js";
 
@@ -37,11 +34,11 @@ interface SourceRow {
 /** The app's own sources, as opposed to contribs. */
 const BUILTIN_SOURCES: Record<string, SourceRow> = {
   // GitHub's brand black is invisible in dark mode -> inherit the theme color.
-  github: { label: "GitHub", mark: SiGithub, color: "currentColor" },
+  github: { label: "GitHub", mark: GithubMark, color: "currentColor" },
   // Slack's deep aubergine disappears in dark mode -> use a brighter brand accent.
-  slack: { label: "Slack", mark: FaSlack, color: "#E01E5A" },
+  slack: { label: "Slack", mark: SlackMark, color: "#E01E5A" },
   // Not a linked-resource provider — the shell/command tool card (ToolCallView).
-  shell: { label: "Shell", mark: FaTerminal, color: "currentColor" },
+  shell: { label: "Shell", mark: SquareTerminal, color: "currentColor" },
   // Platform sources of system events (SystemEventMessage), not linked-resource providers.
   scheduler: { label: "Scheduler", mark: AlarmClockIcon, color: "currentColor" },
   "background job": { label: "Background job", mark: CogIcon, color: "currentColor" },
@@ -75,7 +72,7 @@ function BrandMark({
   size: number;
   color: string;
 }) {
-  if (typeof mark === "function") {
+  if (!("path" in mark)) {
     const Icon = mark;
     return <Icon size={size} color={color} />;
   }
@@ -101,10 +98,8 @@ export function TitleBadge({ size = 15 }: { size?: number }) {
       title="Conversation title"
       aria-label="Conversation title"
       className="inline-flex items-center justify-center leading-none"
-      // The emoji sits in the same box as the brand icons beside it.
-      style={{ width: size, height: size, fontSize: size * 0.9 }}
     >
-      <span aria-hidden>{SCOOTER_MARK}</span>
+      <ScooterMark style={{ width: size, height: size }} aria-hidden />
     </span>
   );
 }
@@ -113,7 +108,7 @@ export function TitleBadge({ size = 15 }: { size?: number }) {
 export function SourceBadge({
   source,
   size = 14,
-  fallback = "🔗",
+  fallback = <Link className="size-3.5" aria-hidden />,
 }: {
   source: string;
   size?: number;

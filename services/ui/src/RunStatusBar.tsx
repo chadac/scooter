@@ -7,6 +7,7 @@
  */
 
 import { useEffect, useState } from "react";
+import { RotateCw, TriangleAlert, X } from "@/icons";
 import { hasId } from "./conversation.js";
 
 import { useConversationInterrupts } from "./RuntimeProvider.js";
@@ -104,7 +105,7 @@ function SendErrorBanner() {
       role="alert"
       className="mx-auto flex w-full max-w-(--thread-max-width) items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
     >
-      <span aria-hidden className="mt-0.5 font-semibold">⚠</span>
+      <TriangleAlert aria-hidden className="mt-0.5 size-4 shrink-0" />
       <span data-testid="send-error-message" className="flex-1">{sendError}</span>
       <button
         type="button"
@@ -113,7 +114,7 @@ function SendErrorBanner() {
         onClick={() => clearSendError?.()}
         className="shrink-0 leading-none opacity-70 hover:opacity-100"
       >
-        ×
+        <X className="size-4" aria-hidden />
       </button>
     </div>
   );
@@ -141,7 +142,7 @@ function RunStatus() {
         role="alert"
         className="mx-auto flex w-full max-w-(--thread-max-width) items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
       >
-        <span aria-hidden className="mt-0.5 font-semibold">⚠</span>
+        <TriangleAlert aria-hidden className="mt-0.5 size-4 shrink-0" />
         <span data-testid="stream-auth-error-message">
           Your session expired — reconnecting. If this persists, reload the page to sign in again.
         </span>
@@ -158,7 +159,7 @@ function RunStatus() {
         role="status"
         className="mx-auto flex w-full max-w-(--thread-max-width) items-center gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning"
       >
-        <span aria-hidden className="animate-spin">↻</span>
+        <RotateCw aria-hidden className="size-4 shrink-0 animate-spin" />
         <span data-testid="run-retrying-message">
           The agent stopped unexpectedly — retrying ({runRetrying.attempt}/{runRetrying.max})…
         </span>
@@ -175,7 +176,7 @@ function RunStatus() {
         role="alert"
         className="mx-auto flex w-full max-w-(--thread-max-width) items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive"
       >
-        <span aria-hidden className="mt-0.5 font-semibold">⚠</span>
+        <TriangleAlert aria-hidden className="mt-0.5 size-4 shrink-0" />
         <span data-testid="run-error-message">{runError}</span>
       </div>
     );

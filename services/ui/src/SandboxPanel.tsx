@@ -5,7 +5,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { RotateCw } from "lucide-react";
+import { RotateCw } from "@/icons";
 
 import {
   resumeConversation,
@@ -563,7 +563,7 @@ export function SandboxPanelView({
               >
                 Web services are declared inside the sandbox — ask Scooter
                 to add one (e.g. a terminal or VS Code) with <span className="font-mono">scooter-rebuild</span>.
-                {onRescanServices ? " Use the ↻ button above to re-scan once it's added." : ""}
+                {onRescanServices ? <> Use the <RotateCw className="inline size-3" aria-label="rescan" /> button above to re-scan once it&apos;s added.</> : ""}
               </p>
             ) : null}
           </section>

@@ -7,7 +7,7 @@
  */
 
 import { useState, type FC, type ReactNode } from "react";
-import { CogIcon, Loader2Icon } from "lucide-react";
+import { ChevronDown, ChevronUp, CogIcon, Loader2Icon } from "@/icons";
 import { SourceBadge, sourceLabel } from "@/src/sourceIcon";
 
 export const SystemEventMessage: FC<{
@@ -49,7 +49,7 @@ export const SystemEventMessage: FC<{
           </span>
         )}
         <span aria-hidden className={(pending ? "" : "ml-auto ") + "shrink-0 text-[10px] opacity-60"}>
-          {open ? "▲" : "▼"}
+          {open ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
         </span>
       </button>
       {open && (

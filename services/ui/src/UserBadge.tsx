@@ -4,7 +4,7 @@
  * appears when there is a real identity to show.
  */
 
-import { FiUser } from "react-icons/fi";
+import { User } from "@/icons";
 
 import { useCurrentUser } from "./sessions.js";
 
@@ -24,7 +24,7 @@ export function UserBadgeView({ user }: Readonly<{ user: UserIdentity }>) {
       className="flex items-center gap-1.5 rounded-full border bg-background px-2.5 py-1 text-xs text-muted-foreground"
       title={user.email ? `${user.email} (${user.id})` : user.id}
     >
-      <FiUser className="shrink-0" aria-hidden />
+      <User className="size-3.5 shrink-0" aria-hidden />
       <span className="max-w-[16rem] truncate">{label}</span>
     </span>
   );

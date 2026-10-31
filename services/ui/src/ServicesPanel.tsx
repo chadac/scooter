@@ -5,7 +5,7 @@
  * into the pod) and Stop. `onAdd` renders a trailing dashed "add" card when provided.
  */
 
-import { Notebook, SquareTerminal, Code, AppWindow, Power, ExternalLink, Plus, TriangleAlert } from "lucide-react";
+import { Notebook, SquareTerminal, Code, AppWindow, Power, ExternalLink, Plus, TriangleAlert } from "@/icons";
 
 import type { WebService } from "./client.js";
 import { Button } from "@/components/ui/button";

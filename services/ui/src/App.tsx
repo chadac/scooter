@@ -5,6 +5,7 @@
  */
 
 import { RuntimeProvider, useConversationInterrupts } from "./RuntimeProvider.js";
+import { Menu, PanelRight, PictureInPicture2, ScooterMark, Settings } from "@/icons";
 import { Sidebar } from "./Sidebar.js";
 import { RightPanel } from "./RightPanel.js";
 import { ApprovalDetail } from "./InterruptPanel.js";
@@ -24,7 +25,6 @@ import { useSandboxStatus, LABEL as SANDBOX_LABEL, DOT as SANDBOX_DOT } from "./
 import { Thread } from "@/components/assistant-ui/thread";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { SCOOTER_MARK } from "./brandMark.js";
 
 /** The Thread in an error boundary keyed to the render tick, so a transient runtime crash recovers on the next frame. */
 export function GuardedThread() {
@@ -79,7 +79,7 @@ function PopOutChatButton() {
       onClick={() => window.open(chatPath(id), `scooter-chat-${id}`, "popup,width=480,height=820")}
       className="text-muted-foreground"
     >
-      ⧉
+      <PictureInPicture2 />
     </Button>
   );
 }
@@ -119,10 +119,10 @@ export function App() {
                 onClick={() => mobileNav.toggle("sessions")}
                 className="-ml-1 text-muted-foreground desk:hidden"
               >
-                ☰
+                <Menu />
               </Button>
             )}
-            <span className="text-[15px] leading-none" aria-hidden>{SCOOTER_MARK}</span>
+            <ScooterMark className="size-4 text-primary" aria-hidden />
             {/* The wordmark gives way below sm, so the title and its actions fit a phone header. */}
             <span className="hidden text-[13.5px] font-semibold tracking-tight sm:inline">scooter</span>
             {view !== "settings" && <HeaderConversationTitle actions />}
@@ -144,7 +144,7 @@ export function App() {
                 onClick={() => mobileNav.toggle("panel")}
                 className="text-muted-foreground desk:hidden"
               >
-                ⚑
+                <PanelRight />
               </Button>
             )}
             {view !== "settings" && <PopOutChatButton />}
@@ -164,7 +164,7 @@ export function App() {
               }}
               className={cn("text-muted-foreground", view === "settings" && "bg-accent text-foreground")}
             >
-              ⚙
+              <Settings />
             </Button>
             {/* Signed-in user, hidden when anonymous and desktop-only. */}
             <span className="hidden desk:flex">
