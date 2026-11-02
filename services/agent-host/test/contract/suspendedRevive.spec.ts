@@ -15,6 +15,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import {
   createSessionManager,
+  shortId,
   type SandboxProvisioner,
   type SessionManager,
 } from "../../src/session/manager.js";
@@ -271,41 +272,80 @@ describe("post-revive interrupt durability (reload survival)", () => {
 });
 
 describe("broker-shaped AWS request against a recovered conversation", () => {
-  // The broker addresses a conversation only by the short id in its sandbox SA name, so the host must resolve it even after a suspend.
-  const shortIdOf = (threadId: string): string => {
-    let h = 0;
-    for (let i = 0; i < threadId.length; i++) h = (h * 31 + threadId.charCodeAt(i)) | 0;
-    return Math.abs(h).toString(36);
-  };
+  // The broker addresses a conversation only by the key in its sandbox SA name, so the host must resolve it even after a suspend.
+  // An older conversation, recorded with the short-hash Sandbox it was created in.
+  const legacyMeta = (id: string) => ({
+    id: id as SessionId, threadId: id as never, title: "t", createdAt: 1, lastActivityAt: 1,
+    sandboxRef: `conv-${shortId(id)}`,
+  });
 
-  it("getByShortId still resolves a SUSPENDED conversation (the broker's only handle)", async () => {
-    const root = mkdtempSync(join(tmpdir(), "susp-shortid-"));
+  it("getBySandboxKey still resolves a SUSPENDED conversation (the broker's only handle)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "susp-key-"));
     try {
       const { sessions } = harness(root);
       const conv = await sessions.start("thread-broker-1");
       await sessions.suspend(conv.id);
 
-      const found = await sessions.getByShortId(shortIdOf("thread-broker-1"));
+      const found = await sessions.getBySandboxKey("thread-broker-1");
       expect(
         found?.id,
-        "the broker addresses the conversation ONLY by short id — a suspend must not orphan it",
+        "the broker addresses the conversation ONLY by its sandbox key — a suspend must not orphan it",
       ).toBe(conv.id);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  it("getByShortId resolves after a REVIVE too (the id-space must not shift)", async () => {
-    const root = mkdtempSync(join(tmpdir(), "susp-shortid-2-"));
+  it("getBySandboxKey resolves after a REVIVE too (the id-space must not shift)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "susp-key-2-"));
     try {
       const { sessions } = harness(root);
       const conv = await sessions.start("thread-broker-2");
       await sessions.suspend(conv.id);
       await sessions.revive(conv.id);
 
-      const found = await sessions.getByShortId(shortIdOf("thread-broker-2"));
+      const found = await sessions.getBySandboxKey("thread-broker-2");
       expect(found?.id).toBe(conv.id);
       expect(found?.status, "a revived conversation must present as running").toBe("running");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("an older conversation still resolves by its legacy short hash", async () => {
+    const root = mkdtempSync(join(tmpdir(), "susp-key-legacy-"));
+    try {
+      const { store, sessions } = harness(root);
+      await store.saveMeta!(legacyMeta("legacy-1"));
+
+      const found = await sessions.getBySandboxKey(shortId("legacy-1"));
+      expect(found?.id).toBe("legacy-1");
+      expect(found?.sandbox.name).toBe(`conv-${shortId("legacy-1")}`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a legacy short hash two conversations share @proves", async () => {
+    const root = mkdtempSync(join(tmpdir(), "susp-key-collide-"));
+    try {
+      const { store, sessions } = harness(root);
+      // "Aa" and "BB" hash alike, so these two share a short id.
+      expect(shortId("legacy-Aa")).toBe(shortId("legacy-BB"));
+      await store.saveMeta!(legacyMeta("legacy-Aa"));
+      await store.saveMeta!(legacyMeta("legacy-BB"));
+
+      expect(await sessions.getBySandboxKey(shortId("legacy-Aa"))).toBeUndefined();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to start a conversation whose id cannot name a sandbox", async () => {
+    const root = mkdtempSync(join(tmpdir(), "susp-key-bad-"));
+    try {
+      const { sessions } = harness(root);
+      await expect(sessions.start("Not_A_Name")).rejects.toThrow(/cannot name a sandbox/);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

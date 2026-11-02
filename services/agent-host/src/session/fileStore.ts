@@ -319,6 +319,7 @@ export function createFileConversationStore(root: string): ConversationStore {
           // Carried through because hydrate rebuilds the Entry from this object, so dropping it
           // would lose the queued message across a restart.
           pendingQueue: meta.pendingQueue,
+          ...(meta.sandboxRef ? { sandboxRef: meta.sandboxRef } : {}),
         });
       }
       return out;

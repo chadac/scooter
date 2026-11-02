@@ -405,7 +405,7 @@ export function createWebServiceProxy(deps: WebServiceProxyDeps): WebServiceProx
   // The URL id may be the full threadId or the short hash; a full id this pod has not loaded is
   // hydrated (read-only) so a deep link to a cold conversation does not 404.
   async function lookup(urlId: string) {
-    const known = sessions.get(urlId) ?? (await sessions.getByShortId(urlId));
+    const known = sessions.get(urlId) ?? (await sessions.getBySandboxKey(urlId));
     if (known) return known;
     if (!(await sessions.ensureReadable(urlId as never).catch(() => false))) return undefined;
     return sessions.get(urlId);

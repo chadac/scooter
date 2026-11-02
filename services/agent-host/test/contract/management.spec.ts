@@ -63,7 +63,7 @@ function fakeSessions(): SessionManager {
     }),
     get: (id) => store.get(id),
     // Resolve by the short DNS-safe hash of the threadId the broker sends.
-    getByShortId: vi.fn(async (shortHash) =>
+    getBySandboxKey: vi.fn(async (shortHash) =>
       [...store.values()].find((c) => shortHash === shortIdOf(c.threadId)),
     ),
     list: () => [...store.values()],
@@ -927,7 +927,7 @@ describe("management API", () => {
       const sessions = {
         ...fakeSessions(),
         get: (id: string) => map.get(id),
-        getByShortId: vi.fn(async (h: string) =>
+        getBySandboxKey: vi.fn(async (h: string) =>
           [...map.values()].find((cc) => shortIdOf(cc.threadId) === h),
         ),
         revive: vi.fn(async (id: string) => {
@@ -998,7 +998,7 @@ describe("management API", () => {
       const sessions = {
         ...fakeSessions(),
         get: (id: string) => (id === UUID ? c : undefined),
-        getByShortId: vi.fn(async (h: string) => (h === SHORT ? c : undefined)),
+        getBySandboxKey: vi.fn(async (h: string) => (h === SHORT ? c : undefined)),
       } as unknown as SessionManager;
       const store = fakeStore(events);
       const appended: AguiEvent[] = [];
@@ -1658,11 +1658,11 @@ describe("management API", () => {
       expect(res.status).toBe(503);
     });
 
-    it("forwards a conversation call to <brokerPrefix>/conversation/<shortId>/<rest>", async () => {
+    it("forwards a conversation call to <brokerPrefix>/conversation/<sandboxKey>/<rest>", async () => {
       const { api, seen } = mk({ reply: { items: [] } });
       const res = await call(api, "GET", "/conversations/c1/contrib-api/echo/list?x=1", undefined, { "x-auth-user": "alice" });
       expect(res).toEqual({ status: 200, json: { items: [] } });
-      expect(seen[0].url).toBe(`http://broker:8080/echo/conversation/${shortId("c1")}/list?x=1`);
+      expect(seen[0].url).toBe(`http://broker:8080/echo/conversation/c1/list?x=1`);
       expect(seen[0].headers["X-Scooter-User"]).toBe("alice");
     });
 

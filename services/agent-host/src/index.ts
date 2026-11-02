@@ -24,7 +24,7 @@ import {
   fetchPendingApprovals,
   type ApprovalContrib,
 } from "./api/management.js";
-import { createSessionManager, isPlaceholderTitle, shortId } from "./session/manager.js";
+import { createSessionManager, isPlaceholderTitle, sandboxKey } from "./session/manager.js";
 import { createRemoteAgentRegistry, createRemotePersonalizedProvider } from "./acp/remoteAgentRegistry.js";
 import { createRemoteAgentUi } from "./acp/remoteAgentOneliner.js";
 import { createPgRemoteAgentStore } from "./acp/remoteAgentStore.js";
@@ -882,6 +882,11 @@ export async function main(
       return false;
     },
   });
+  /** The broker's key for a conversation; subagents share their root's. */
+  const keyOf = (id: string): string => {
+    const name = sessions.get(id as SessionId)?.sandbox.name;
+    return name ? sandboxKey(name) : id;
+  };
 
   // Settlement on ownership gain: the row feed always fires when a conversation moves to
   // this pod, so a stranded run gets terminated or resume-nudged there.
@@ -932,10 +937,9 @@ export async function main(
     const headers = await brokerAuthHeaders();
     for (const [contrib, cfg] of Object.entries(approvalContribs)) {
       if (!cfg.pendingPath) continue;
-      // The broker keys requests by the sandbox short id, not the full thread UUID, while the
-      // interrupt is raised on the real conversation id.
+      // The broker keys requests by sandbox key, not conversation id.
       const pending = await fetchPendingApprovals(
-        brokerUrl, cfg.pendingPath, shortId(id), headers,
+        brokerUrl, cfg.pendingPath, keyOf(id), headers,
         (status) => hostLog.warn("broker pending-approvals returned a non-2xx", { conversation_id: id, contrib, status }),
       ).catch((err) => {
         // One contrib's broker being unreachable must not stop the others' re-raises.
@@ -1174,14 +1178,13 @@ export async function main(
     setTitle: (id: string, title: string) => sessions.setTitle(id, title, { force: true }),
   };
 
-  // Sandbox right-sizing tools, absent only for a fake sandbox; the CR is named for the
-  // short id, so map through shortId(), with the full id passed for the cold-create path.
+  // Sandbox right-sizing tools; absent for a fake sandbox.
   const resourceToolsWiring = k8sProvisioner
     ? {
         currentResources: async (id: string): Promise<SandboxResources> =>
-          (await k8sProvisioner.getSize(shortId(id))) ?? {},
+          (await k8sProvisioner.getSize(keyOf(id))) ?? {},
         setResources: async (id: string, r: SandboxResources | { size: string }): Promise<boolean> => {
-          await k8sProvisioner.setSize(shortId(id), r, id);
+          await k8sProvisioner.setSize(keyOf(id), r, id);
           return true; // recorded — it applies on the next sandbox restart
         },
         availableSizes: async () => k8sProvisioner.getSizes(),
@@ -1524,17 +1527,16 @@ export async function main(
       // Read fresh rather than cached: the ConfigMap is editable without a restart, so a
       // cached list would warn about a shadow that no longer exists.
       builtinSkillNames: () => loadSkills(config.skillsDir).map((s) => s.name),
-      // The current sandbox size for the Sandbox tab, read off the CR by shortId.
+      // The current sandbox size for the Sandbox tab, read off the CR.
       sandboxResources: k8sProvisioner
-        ? (id: string) => k8sProvisioner.getSize(shortId(id))
+        ? (id: string) => k8sProvisioner.getSize(keyOf(id))
         : undefined,
       // The named sandbox size presets and the default, for the UI dropdown and the agent's
       // size discovery.
       sandboxSizes: k8sProvisioner ? () => Promise.resolve(k8sProvisioner.getSizes()) : undefined,
-      // The Sandbox tab's size dropdown, keyed by shortId with the full id passed for the
-      // cold-create path.
+      // The Sandbox tab's size dropdown.
       setSandboxSize: k8sProvisioner
-        ? (id: string, size: string) => k8sProvisioner.setSize(shortId(id), { size }, id)
+        ? (id: string, size: string) => k8sProvisioner.setSize(keyOf(id), { size }, id)
         : undefined,
       // Sandbox file I/O for contribs; needs real pod exec, so off in fake mode.
       writeSandboxFile: config.fakeSandbox

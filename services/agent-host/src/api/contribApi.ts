@@ -4,7 +4,7 @@
  *
  *   browser ── /contrib-api/<name>/<rest> ──▶ agent-host ── <brokerPrefix>/user/<rest> ──▶ broker
  *   browser ── /conversations/<id>/contrib-api/<name>/<rest>
- *           ──▶ agent-host ── <brokerPrefix>/conversation/<shortId>/<rest> ──▶ broker
+ *           ──▶ agent-host ── <brokerPrefix>/conversation/<sandboxKey>/<rest> ──▶ broker
  *
  * The conversation form sits under /conversations/:id, so the management API's access
  * guard has already refused a caller who may not see that conversation.
@@ -39,7 +39,7 @@ export interface ContribApiDeps {
   brokerUrl: string;
   /** The agent-host's own broker auth headers (its SA token). */
   authHeaders: () => Promise<Record<string, string>>;
-  /** A conversation id or short id -> the broker's key for it; null when unknown. */
+  /** A conversation id or sandbox key -> the broker's key for it; null when unknown. */
   conversationKey?: (id: string) => Promise<string | null>;
   /** Injected for tests. */
   fetch?: typeof fetch;

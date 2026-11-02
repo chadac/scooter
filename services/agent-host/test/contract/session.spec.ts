@@ -64,12 +64,12 @@ describe("SessionManager", () => {
     const conv = await sessions.start("thread-1");
 
     expect(provisioner.create).toHaveBeenCalledOnce();
-    // create(shortDnsSafeId, fullThreadId): the first arg names k8s resources and the second is the conversation id the shareable CONVERSATION_URL must use.
+    // A new sandbox is named by the full id, which the broker reads back off its ServiceAccount.
     const [nameId, urlThread] = (provisioner.create as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(urlThread).toBe("thread-1");
-    expect(nameId).not.toBe("thread-1"); // the name id is the short hash, not the full id
+    expect(nameId).toBe("thread-1");
     expect(conv.status).toBe("running");
-    expect(conv.sandbox.name).toMatch(/^conv-/);
+    expect(conv.sandbox.name).toBe("conv-thread-1");
   });
 
   it("registers the conversation BEFORE the (slow) sandbox provisioning finishes", async () => {

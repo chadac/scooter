@@ -259,7 +259,7 @@ describe("web-service proxy", () => {
       return createWebServiceProxy({
         sessions: {
           get: (id: string) => (id === ID ? { id: ID, threadId: ID } : undefined),
-          getByShortId: async () => undefined,
+          getBySandboxKey: async () => undefined,
           ensureReadable: async () => false,
           touchById: () => {},
         } as never,
@@ -662,7 +662,7 @@ describe("web-service proxy", () => {
     const proxy = createWebServiceProxy({
       sessions: {
         get: () => (loaded ? { id: "conv-1", threadId: "conv-1" } : undefined),
-        getByShortId: async () => undefined,
+        getBySandboxKey: async () => undefined,
         ensureReadable: async () => { loaded = true; return true; },
         touchById: () => {},
       } as never,

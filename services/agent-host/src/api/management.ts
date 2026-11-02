@@ -12,7 +12,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { createRouter, type JsonResult, type Router, type ResolveUser } from "../http/router.js";
 import type { SessionManager, Conversation } from "../session/manager.js";
 import type { ConversationStore, ChecksummedEvent, ConversationLink } from "../session/manager.js";
-import { shortId } from "../session/manager.js";
+import { sandboxKey } from "../session/manager.js";
 import type { SessionId } from "../types.js";
 import { tailByRuns } from "../session/eventWindow.js";
 import { trimToBoundary } from "../session/eventStore.js";
@@ -219,8 +219,7 @@ export const DEFAULT_APPROVAL_OPTIONS: ReadonlyArray<{ optionId: string; name: s
   { optionId: "deny", name: "Deny", kind: "reject_once" },
 ];
 
-/** Query the broker for a conversation's still-pending approval requests, keyed by the
- *  sandbox short-id (`shortId(threadId)`) rather than the thread UUID; returns [] on any error. */
+/** A conversation's pending broker approvals, by sandbox key; [] on error. */
 export async function fetchPendingApprovals(
   brokerUrl: string,
   pendingPath: string,
@@ -308,7 +307,13 @@ export function createManagementApi(deps: ManagementDeps): Router {
       const id = ctx.params.id;
       if (!id || !(ctx.req.url ?? "").startsWith("/conversations/")) return undefined;
       try {
-        return (await check(id, ctx.req, ctx.user)) === "deny" ? { status: 404, json: { error: "not found" } } : undefined;
+        let verdict = await check(id, ctx.req, ctx.user);
+        // The broker addresses conversations by their sandbox key.
+        if (verdict === "unknown") {
+          const conv = await sessions.getBySandboxKey(id);
+          if (conv) verdict = await check(conv.id, ctx.req, ctx.user);
+        }
+        return verdict === "deny" ? { status: 404, json: { error: "not found" } } : undefined;
       } catch (err) {
         log.errorWith("visibility check failed; refusing", err, { conversation_id: id });
         return { status: 503, json: { error: "could not check access" } };
@@ -460,6 +465,8 @@ export function createManagementApi(deps: ManagementDeps): Router {
     // Hydrate-if-absent (read-only) so a reconnect after a pod move resolves instead of 404ing.
     let conv = sessions.get(ctx.params.id);
     if (!conv && (await sessions.ensureReadable(ctx.params.id))) conv = sessions.get(ctx.params.id);
+    // The broker's OwnerResolver asks by the sandbox key.
+    conv ??= await sessions.getBySandboxKey(ctx.params.id);
     if (!conv) return { status: 404, json: { error: "not found" } };
     // Star, title and visibility may be written elsewhere; serve the durable values.
     await sessions.refreshRouterMeta(conv.id).catch(() => {});
@@ -854,10 +861,9 @@ export function createManagementApi(deps: ManagementDeps): Router {
   // External resource links (the GitHub PR / Slack thread a conversation came from): the
   // webhooks service POSTs them on create and the UI GETs them.
 
-  // Resolve an id that may be the broker's short DNS hash (`sandbox-{shortId}`) rather than
-  // the full threadId the store keys by.
+  // Accepts a conversation id or the broker's sandbox key.
   const resolveConvId = async (id: string): Promise<string | null> => {
-    const conv = sessions.get(id) ?? (await sessions.getByShortId(id));
+    const conv = sessions.get(id) ?? (await sessions.getBySandboxKey(id));
     return conv?.id ?? null;
   };
   // resolveConvId plus a refresh of a hydrated entry's Sandbox ref, for the routes that exec into
@@ -1070,11 +1076,9 @@ export function createManagementApi(deps: ManagementDeps): Router {
       options?: Array<{ optionId: string; name: string; kind: string }>;
     }>();
     if (!body.request_id) return { status: 400, json: { error: "request_id required" } };
-    // The broker identifies the conversation by the short DNS-safe hash from the sandbox
-    // SA name rather than the full threadId, so fall back to short-id resolution (which
-    // also hydrates an evicted conversation).
+    // The broker sends the sandbox key, not always the id.
     const conv =
-      sessions.get(ctx.params.id) ?? (await sessions.getByShortId(ctx.params.id));
+      sessions.get(ctx.params.id) ?? (await sessions.getBySandboxKey(ctx.params.id));
     if (!conv) {
       return { status: 404, json: { error: "unknown conversation" } };
     }
@@ -1101,7 +1105,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
 
   // Withdraws a card another approval superseded.
   r.del("/conversations/:id/approvals/:contrib/:requestId", async (ctx) => {
-    const conv = sessions.get(ctx.params.id) ?? (await sessions.getByShortId(ctx.params.id));
+    const conv = sessions.get(ctx.params.id) ?? (await sessions.getBySandboxKey(ctx.params.id));
     if (!conv) return { status: 404, json: { error: "unknown conversation" } };
     const requestId = ctx.params.requestId;
     if (sessions.get(conv.id)?.bridge?.withdrawInterrupt(requestId)) return { json: { withdrawn: true } };
@@ -1282,12 +1286,12 @@ export function createManagementApi(deps: ManagementDeps): Router {
   });
 
   // --- Contrib settings-tab API -------------------------------------------------
-  // The broker keys a conversation by its short id.
+  // The broker keys a conversation by its sandbox key.
   if (deps.contribApi) {
     mountContribApi(r, {
       conversationKey: async (id) => {
-        const convId = await resolveConvId(id);
-        return convId ? shortId(convId) : null;
+        const conv = sessions.get(id) ?? (await sessions.getBySandboxKey(id));
+        return conv ? sandboxKey(conv.sandbox.name) : null;
       },
       ...deps.contribApi,
     });

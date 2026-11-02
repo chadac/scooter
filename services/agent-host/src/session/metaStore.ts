@@ -65,6 +65,7 @@ type MetaRow = {
   userTitled: boolean | null;
   starred: boolean | null;
   visibility?: string | null;
+  sandboxRef?: string | null;
   pendingQueue: unknown;
 };
 
@@ -87,6 +88,7 @@ export function createPgMetaStore(config: PgMetaStoreConfig): MetaStore {
     ...(row.userTitled == null ? {} : { userTitled: row.userTitled }),
     ...(row.starred == null ? {} : { starred: row.starred }),
     ...(row.visibility === "private" ? { visibility: "private" as const } : {}),
+    ...(row.sandboxRef == null ? {} : { sandboxRef: row.sandboxRef }),
     ...(row.pendingQueue == null
       ? {}
       : {

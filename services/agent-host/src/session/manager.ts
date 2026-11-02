@@ -12,7 +12,7 @@ import type { JobRecord } from "./jobManager.js";
 import type { SessionBridge, AguiEvent, InterruptPolicy, PromptImage, PromptFile, MessageSender } from "../bridge.js";
 import { danglingRunInfo, orphanRuns } from "./danglingRun.js";
 import { allowAllGuard, type OwnershipGuard } from "./ownershipGuard.js";
-import { noopRegistry, type ConversationRegistry } from "./conversationRegistry.js";
+import { noopRegistry, type ConversationRecord, type ConversationRegistry } from "./conversationRegistry.js";
 import { formatError, logger } from "../log.js";
 import { DERIVED_SOURCES, humanTriggerFromLog } from "../acp/remoteAgentRegistry.js";
 import type { AccessFacts, Visibility } from "./visibility.js";
@@ -129,6 +129,8 @@ export interface ConversationMeta {
   /** Messages still queued in the bridge when the conversation was suspended; revive() re-enqueues
    *  them and clears the field. */
   pendingQueue?: Array<{ text: string; priority: number; source?: string; sender?: MessageSender; humanInitiated?: boolean }>;
+  /** The Sandbox a top-level conversation runs in; absent on older records. */
+  sandboxRef?: string;
 }
 
 /** An external resource a conversation is linked to (GitHub PR/issue, GitLab MR, Slack thread, Jira
@@ -329,9 +331,8 @@ export interface SessionManager {
   get(id: SessionId): Conversation | undefined;
   /** Whether end() tore this conversation down on this pod, so nothing may provision for it again. */
   isEnded?(id: SessionId): boolean;
-  /** Resolve a conversation by the short DNS-safe hash of its threadId (how the broker identifies
-   *  it), hydrating a persisted one on demand. */
-  getByShortId(shortHash: string): Promise<Conversation | undefined>;
+  /** A top-level conversation by the broker's sandbox key; undefined if ambiguous. */
+  getBySandboxKey(key: string): Promise<Conversation | undefined>;
   /** Mark a conversation active now so the idle sweep does not suspend it, for non-agent activity
    *  such as web-service proxy traffic. Recorded in the shared store too, because a long-lived
    *  proxied WebSocket stays on the replica it connected through while the owner (the one that
@@ -440,12 +441,36 @@ async function collectEvents(it: AsyncIterable<AguiEvent>): Promise<AguiEvent[]>
   return out;
 }
 
-/** Short, DNS-1123-safe id derived from a thread id; the key that sandboxes and broker-side
- *  per-conversation state share. */
+/** Older sandboxes' 32-bit name hash; it collides, so retired. */
 export function shortId(threadId: string): string {
   let h = 0;
   for (let i = 0; i < threadId.length; i++) h = (h * 31 + threadId.charCodeAt(i)) | 0;
   return Math.abs(h).toString(36);
+}
+
+/** An id short and safe enough for every derived k8s name. */
+const SANDBOX_ID = /^[a-z0-9]([a-z0-9-]{0,48}[a-z0-9])?$/;
+
+/** The Sandbox a new top-level conversation runs in. */
+export function sandboxNameFor(id: string): string {
+  if (!SANDBOX_ID.test(id)) throw new Error(`conversation id ${JSON.stringify(id)} cannot name a sandbox`);
+  return `conv-${id}`;
+}
+
+/** The broker's conversation key, from the Sandbox name. */
+export function sandboxKey(sandboxName: string): string {
+  return sandboxName.replace(/^conv-/, "");
+}
+
+/** Recorded Sandbox, else an existing legacy one, else conv-<id>. */
+export function rootSandboxName(
+  m: { threadId: ThreadId; sandboxRef?: string },
+  onCluster?: (name: string) => boolean,
+): string {
+  if (m.sandboxRef) return m.sandboxRef;
+  const legacy = `conv-${shortId(m.threadId)}`;
+  if (!onCluster || onCluster(legacy) || !SANDBOX_ID.test(m.threadId)) return legacy;
+  return `conv-${m.threadId}`;
 }
 
 export function createSessionManager(deps: SessionManagerDeps): SessionManager {
@@ -491,9 +516,11 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
   };
 
   /** The Sandbox name a conversation runs in: its root ancestor's, since subagents share it. */
+  type Lineage = { threadId: ThreadId; parentId?: SessionId; sandboxRef?: string; sandbox?: SandboxRef };
   const sandboxNameOf = (
-    m: { threadId: ThreadId; parentId?: SessionId },
-    lookup: (id: SessionId) => { threadId: ThreadId; parentId?: SessionId } | undefined,
+    m: Lineage,
+    lookup: (id: SessionId) => Lineage | undefined,
+    onCluster?: (name: string) => boolean,
   ): string => {
     let cur = m;
     for (let depth = 0; cur.parentId && depth < 32; depth++) {
@@ -502,15 +529,15 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       if (!up) break;
       cur = up;
     }
-    return `conv-${shortId(cur.threadId)}`;
+    return cur.sandbox?.name ?? rootSandboxName(cur, onCluster);
   };
 
   // Build an in-memory Entry from a persisted meta, with no bridge; `onCluster` is the reconcile
   // result for its Sandbox.
   const hydrateEntry = (
     m: ConversationMeta,
-    onCluster?: { ref: SandboxRef; running: boolean },
-    name = `conv-${shortId(m.threadId)}`,
+    onCluster: { ref: SandboxRef; running: boolean } | undefined,
+    name: string,
   ): Entry => {
     const entry: Entry = {
       id: m.id,
@@ -551,6 +578,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     }
     let m = metas.find((x) => x.threadId === threadId);
     const fromStore = m !== undefined;
+    let unrecorded: ConversationRecord | undefined;
     if (!m) {
       // The registry is authoritative for existence, so adopt from it when the store list missed it
       // (a row inserted after the list was read).
@@ -566,31 +594,34 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         owner: c.spec.owner,
         parentId: c.spec.parentId,
         visibility: c.spec.visibility,
+        ...(c.spec.sandboxRef ? { sandboxRef: c.spec.sandboxRef } : {}),
       };
-      // Publish sandboxRef now so the router can derive the routing short-id before the sandbox
-      // finishes booting.
-      if (!c.spec.sandboxRef) {
-        void conversationRegistry.register(c.id, {
-          model: c.spec.model,
-          owner: c.spec.owner,
-          parentId: c.spec.parentId,
-          sandboxRef: `conv-${shortId(c.id)}`,
-          creatorPod: deps.selfPod, // placement hint for the controller
-        });
-      }
+      if (!c.spec.sandboxRef) unrecorded = c;
     }
     if (entries.has(m.id)) return entries.get(m.id);
     // Never re-adopt a conversation end() destroyed.
     if (endedIds.has(m.id)) return undefined;
     // Reconcile this conversation's Sandbox so a still-running pod is tracked; on failure revive()
     // recreates from the placeholder.
-    let onCluster: { ref: SandboxRef; running: boolean } | undefined;
-    const metaById = new Map(metas.map((x) => [x.id, x]));
-    const name = sandboxNameOf(m, (pid) => metaById.get(pid));
+    let sandboxes: Array<{ ref: SandboxRef; running: boolean }> | undefined;
     try {
-      onCluster = (await provisioner.reconcile?.())?.find((s) => s.ref.name === name);
+      sandboxes = (await provisioner.reconcile?.()) ?? [];
     } catch {
       /* treat as suspended */
+    }
+    const metaById = new Map(metas.map((x) => [x.id, x]));
+    const has = sandboxes && ((n: string) => sandboxes.some((x) => x.ref.name === n));
+    const name = sandboxNameOf(m, (pid) => metaById.get(pid), has);
+    const onCluster = sandboxes?.find((x) => x.ref.name === name);
+    // Publish sandboxRef early so the router can route by it.
+    if (unrecorded) {
+      void conversationRegistry.register(unrecorded.id, {
+        model: unrecorded.spec.model,
+        owner: unrecorded.spec.owner,
+        parentId: unrecorded.spec.parentId,
+        sandboxRef: name,
+        creatorPod: deps.selfPod, // placement hint for the controller
+      });
     }
     // Re-check after the awaits: concurrent first requests for one conversation (the prompt, its
     // history read, the event stream) all pass the check above, and a later one would otherwise
@@ -654,6 +685,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           starred: e.starred,
           visibility: e.visibility,
           pendingQueue: e.pendingQueue,
+          ...(e.parentId ? {} : { sandboxRef: e.sandbox.name }),
         }) ?? Promise.resolve();
 
   // The router and other replicas write these without telling this one.
@@ -891,16 +923,23 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     }
   };
 
+  // Answering a colliding legacy hash could leak another conversation.
+  const ambiguous = (key: string, n: number): undefined => {
+    log.warn("sandbox key matches several conversations; refusing", { sandbox_key: key, conversations: n });
+    return undefined;
+  };
+
   const api: SessionManager = {
     async start(threadId, model, owner, opts) {
       const visibility = opts?.visibility ?? "shared";
       if (visibility === "private" && !owner) throw new Error("a private conversation needs an owner");
-      // The conversation id is the thread id; the k8s name is a short hash of it.
+      // The conversation id is the thread id, and names its Sandbox.
       const id: SessionId = threadId;
+      const name = sandboxNameFor(id);
       // Register the entry before the slow provisioning so the UI's immediate events.integrity GET
       // does not 404.
       const entry: Entry = {
-        id, threadId, sandbox: { name: `conv-${shortId(threadId)}`, namespace: "" },
+        id, threadId, sandbox: { name, namespace: "" },
         bridge: undefined, status: "running",
         title: PLACEHOLDER_TITLE, createdAt: nowMs(), lastActivityAt: nowMs(), model, owner,
         ...(visibility === "private" ? { visibility } : {}),
@@ -916,7 +955,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       await conversationRegistry.register(id, { model, owner, sandboxRef: entry.sandbox.name, creatorPod: deps.selfPod });
 
       // Provision the sandbox and attach the bridge.
-      entry.sandbox = await provisioner.create(shortId(threadId), threadId);
+      entry.sandbox = await provisioner.create(sandboxKey(name), threadId);
       entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model, owner: entry.owner });
       wireEventLog(entry); // after the bridge exists
       // Re-persist with the real sandbox ref so a crash mid-provision leaves a resumable entry.
@@ -1008,7 +1047,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           // resume.
           entry.sandbox = entry.sandbox.namespace
             ? await provisioner.resume(entry.sandbox, entry.threadId)
-            : await provisioner.create(shortId(entry.threadId), entry.threadId);
+            : await provisioner.create(sandboxKey(entry.sandbox.name), entry.threadId);
         }
         // end() may have landed during provisioning; destroy the pod just made before any side effect
         // republishes the conversation.
@@ -1468,23 +1507,29 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       }
     },
 
-    async getByShortId(shortHash) {
+    async getBySandboxKey(key) {
+      const name = `conv-${key}`;
       // In-memory first.
-      const live = [...entries.values()].find((e) => shortId(e.threadId) === shortHash);
-      if (live) return toConversation(live);
+      const live = [...entries.values()].filter((e) => !e.parentId && e.sandbox.name === name);
+      if (live.length > 1) return ambiguous(key, live.length);
+      if (live.length === 1) return toConversation(live[0]);
       // Not in memory: scan the persisted conversations and hydrate the match on demand.
       let metas: ConversationMeta[];
       try {
         metas = (await store.listConversations?.()) ?? [];
       } catch (err) {
         // eslint-disable-next-line no-console
-        log.errorWith("getByShortId store lookup failed", err, { short_id: shortHash });
+        log.errorWith("getBySandboxKey store lookup failed", err, { sandbox_key: key });
         return undefined;
       }
-      const m = metas.find((x) => shortId(x.threadId) === shortHash);
-      if (!m) return undefined;
-      const entry = (await hydrateByThread(m.threadId)) ?? entries.get(m.id);
-      return entry ? toConversation(entry) : undefined;
+      // An unrecorded conversation could have either name.
+      const matches = metas.filter(
+        (x) => !x.parentId && (x.sandboxRef ? x.sandboxRef === name : x.id === key || shortId(x.threadId) === key),
+      );
+      if (matches.length > 1) return ambiguous(key, matches.length);
+      if (matches.length === 0) return undefined;
+      const entry = (await hydrateByThread(matches[0].threadId)) ?? entries.get(matches[0].id);
+      return entry?.sandbox.name === name ? toConversation(entry) : undefined;
     },
 
     list() {
@@ -1558,7 +1603,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // Ancestry from meta, else the record, so adoption order does not matter.
       const lineage = (pid: SessionId) => {
         const rec = crById.get(pid);
-        return metaById.get(pid) ?? (rec && { threadId: pid as ThreadId, parentId: rec.spec.parentId as SessionId | undefined });
+        return metaById.get(pid) ?? (rec && { threadId: pid as ThreadId, parentId: rec.spec.parentId as SessionId | undefined, sandboxRef: rec.spec.sandboxRef });
       };
 
       // Reconcile which conv-* Sandboxes exist and whether each pod runs, with retry and backoff to
@@ -1596,11 +1641,12 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           }
         }
       }
-      void reconciled; // the fallback path already logged
+      // Without a cluster view, keep the legacy name.
+      const has = reconciled ? (n: string) => live.has(n) : undefined;
 
       for (const m of metas) {
         if (entries.has(m.id)) continue; // a live one already exists
-        const name = sandboxNameOf(m, lineage);
+        const name = sandboxNameOf(m, lineage, has);
         const entry = hydrateEntry(m, live.get(name), name);
         // Re-publish Suspended so a phase that never landed self-heals here, the one place a pod
         // re-observes a suspended conversation; owner-fenced.
@@ -1626,6 +1672,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           owner: c.spec.owner,
           parentId: c.spec.parentId,
           visibility: c.spec.visibility,
+          ...(c.spec.sandboxRef ? { sandboxRef: c.spec.sandboxRef } : {}),
         };
         // The record is authoritative over a possibly stale meta.
         if (c.spec.owner) synthesized.owner = c.spec.owner;
@@ -1634,7 +1681,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         // Key the reconcile result by the record's sandboxRef when it has one.
         const sandboxName = synthesized.parentId
           ? sandboxNameOf(synthesized, lineage)
-          : (c.spec.sandboxRef ?? `conv-${shortId(synthesized.threadId)}`);
+          : (c.spec.sandboxRef ?? rootSandboxName(synthesized, has));
         const entry = hydrateEntry(synthesized, live.get(sandboxName), sandboxName);
         entries.set(c.id, entry);
       }
