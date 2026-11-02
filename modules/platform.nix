@@ -1084,19 +1084,19 @@ in
       };
       enforce = mkOption {
         type = types.bool;
-        # TODO: default to true once enforcement is confirmed stable.
-        default = false;
+        default = true;
         description = ''
-          Make the router refuse every request it cannot attribute to a signed-in
+          The router refuses every request it cannot attribute to a signed-in
           browser session or an allowed service token (401, or 403 for a token
-          from a service not on the allowlist), and replace `userHeader` and
+          from a service not on the allowlist), and replaces `userHeader` and
           `emailHeader` with the proven caller's before forwarding. Agent-host then
           stops treating a caller with no identity as the single user, so it cannot
           change another user's conversation. Requires
-          `sessionCheckUrl` in header mode, or `albRegion` in alb-oidc mode. Off,
-          the router only logs what it would refuse; check those logs
-          ("auth would reject", "auth identity mismatch") are quiet before turning
-          this on.
+          `sessionCheckUrl` in header mode, or `albRegion` in alb-oidc mode; the
+          render fails without one. Setting it to `false` trusts the identity
+          header as sent, so any client that reaches the router can claim to be
+          any user; the router then only logs what it would refuse ("auth would
+          reject", "auth identity mismatch").
         '';
       };
       sandboxSessionCheckUrl = mkOption {

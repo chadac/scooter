@@ -560,6 +560,7 @@ let
     module = { lib, ... }: {
       imports = [ ./kubenix-config.nix ];
       scooter.auth.mode = lib.mkForce "alb-oidc";
+      scooter.auth.albRegion = "us-east-1";
     };
   };
   albRouterEnv =
@@ -602,36 +603,39 @@ let
         else [ "alb-oidc: router.env.AUTH_MODE (the router reads x-auth-user, which an ALB never sets — every caller looks anonymous and sees every conversation)" ]);
 
   # Enforcement needs a session check, else every browser request is refused.
-  enforcePlatform = evalPlatform {
+  emailPlatform = evalPlatform {
     module = { ... }: {
       imports = [ ./kubenix-config.nix ];
-      scooter.auth = {
-        enforce = true;
-        sessionCheckUrl = "http://oauth2-proxy.example.svc.cluster.local/oauth2/auth";
-        emailHeader = "x-forwarded-email";
-      };
+      scooter.auth.emailHeader = "x-forwarded-email";
     };
   };
-  enforceRouterEnv =
-    let ctrs = builtins.attrValues (enforcePlatform.config.kubernetes.resources.deployments.conversation-router.spec.template.spec.containers or { });
+  emailRouterEnv =
+    let ctrs = builtins.attrValues (emailPlatform.config.kubernetes.resources.deployments.conversation-router.spec.template.spec.containers or { });
     in builtins.concatMap (c: c.env or [ ]) ctrs;
-  enforceHostEnv =
-    let ctrs = builtins.attrValues (enforcePlatform.config.kubernetes.resources.deployments.agent-host.spec.template.spec.containers or { });
+  optOutPlatform = evalPlatform {
+    module = { lib, ... }: {
+      imports = [ ./kubenix-config.nix ];
+      scooter.auth = { enforce = false; sessionCheckUrl = lib.mkForce null; };
+    };
+  };
+  optOutEnv = name:
+    let ctrs = builtins.attrValues (optOutPlatform.config.kubernetes.resources.deployments.${name}.spec.template.spec.containers or { });
     in builtins.concatMap (c: c.env or [ ]) ctrs;
   enforceProblems =
-    (if renders { scooter.auth.enforce = true; }
-     then [ "auth.enforce rendered without sessionCheckUrl: the router would refuse every browser request" ]
+    (if renders { scooter.auth.sessionCheckUrl = nixpkgsLib.mkForce null; }
+     then [ "auth.enforce (the default) rendered without sessionCheckUrl: the router would refuse every browser request" ]
      else [ ])
-    ++ (if builtins.elem { name = "AUTH_ENFORCE"; value = "true"; } enforceRouterEnv then [ ]
-        else [ "auth.enforce did not reach router.env.AUTH_ENFORCE" ])
-    ++ (if builtins.elem { name = "AUTH_ENFORCE"; value = "true"; } enforceHostEnv then [ ]
-        else [ "auth.enforce did not reach agent-host.env.AUTH_ENFORCE: anonymous callers could change any conversation" ])
-    ++ (if builtins.any (e: e.name == "AUTH_ENFORCE") hostEnv
-        then [ "the example tells agent-host to enforce auth without opting in" ] else [ ])
-    ++ (if builtins.elem { name = "AUTH_EMAIL_HEADER"; value = "x-forwarded-email"; } enforceRouterEnv then [ ]
-        else [ "router.env.AUTH_EMAIL_HEADER missing: an enforcing router would leave a client-sent email header in place" ])
-    ++ (if builtins.any (e: e.name == "AUTH_ENFORCE") routerEnv
-        then [ "the example enforces auth without opting in" ] else [ ]);
+    ++ (if renders { scooter.auth.mode = nixpkgsLib.mkForce "alb-oidc"; }
+        then [ "auth.enforce (the default) rendered in alb-oidc mode without albRegion" ]
+        else [ ])
+    ++ (if builtins.elem { name = "AUTH_ENFORCE"; value = "true"; } routerEnv then [ ]
+        else [ "auth.enforce is on by default but did not reach router.env.AUTH_ENFORCE" ])
+    ++ (if builtins.elem { name = "AUTH_ENFORCE"; value = "true"; } hostEnv then [ ]
+        else [ "auth.enforce is on by default but did not reach agent-host.env.AUTH_ENFORCE: anonymous callers could change any conversation" ])
+    ++ (if builtins.any (e: e.name == "AUTH_ENFORCE") (optOutEnv "conversation-router" ++ optOutEnv "agent-host")
+        then [ "auth.enforce = false still sets AUTH_ENFORCE" ] else [ ])
+    ++ (if builtins.elem { name = "AUTH_EMAIL_HEADER"; value = "x-forwarded-email"; } emailRouterEnv then [ ]
+        else [ "router.env.AUTH_EMAIL_HEADER missing: an enforcing router would leave a client-sent email header in place" ]);
 
   # The shared broker database reaches the broker regardless of which feature wants
   # it: present with aws off, and never declared twice with aws on.

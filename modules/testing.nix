@@ -47,6 +47,8 @@ in
     scooter = {
       fakeAgent = lib.mkForce tcfg.fakeAgent;
       webhooks.testWebhook = lib.mkForce tcfg.testWebhook;
+      # e2e signs in with a bare x-auth-user header.
+      auth.enforce = lib.mkForce false;
       # Requests must stay something the node can honour, or the scheduler admits every
       # sandbox a leaking suite creates and the admitted pods starve instead of queueing.
       # Limits stay real because a tiny memory limit would OOM-kill the systemd pod at boot.

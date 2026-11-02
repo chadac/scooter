@@ -117,6 +117,9 @@
       tlsSecretName = "chat-tls";
     };
 
+    # The router confirms each browser session with the same auth service.
+    auth.sessionCheckUrl = "https://auth.example.com/verify";
+
     # Pre-warms overlay-upper PVCs so a fresh conversation finds common tools built.
     warmStore = {
       enable = true;

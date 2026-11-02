@@ -120,15 +120,20 @@ deployments touch.
 
 ### Authentication
 
-The agent-host trusts an identity header set by the proxy in front of it, and treats a
-request without one as `anonymous`. **Only expose Scooter through a proxy that sets
-these headers and strips any copies the client sends**, or identities can be spoofed.
+Scooter reads the user from an identity header set by the proxy in front of it, and
+confirms each browser session with that proxy's forward-auth endpoint, refusing any
+request it can't attribute to a signed-in user. Any proxy with such an endpoint works
+(oauth2-proxy, Authelia, Pomerium, …), as long as it returns the user in
+`X-Auth-Request-User`. The example below uses oauth2-proxy. **Only expose Scooter through a proxy
+that sets these headers and strips any copies the client sends.**
 
 ```nix
 scooter.auth = {
-  mode = "header";                  # or "alb-oidc" behind an AWS ALB
-  userHeader = "x-forwarded-user";  # what oauth2-proxy sends in reverse-proxy mode
+  mode = "header";                  # or "alb-oidc" behind an AWS ALB (then set albRegion)
+  userHeader = "x-forwarded-user";  # the header your proxy sets
   emailHeader = "x-forwarded-email";
+  # Your proxy's forward-auth endpoint (oauth2-proxy: set_xauthrequest = true).
+  sessionCheckUrl = "http://oauth2-proxy.scooter.svc.cluster.local/oauth2/auth";
 };
 ```
 
