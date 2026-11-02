@@ -18,6 +18,7 @@ import json
 import mimetypes
 import os
 import posixpath
+import re
 import threading
 import urllib.parse
 from dataclasses import dataclass
@@ -98,6 +99,8 @@ class Config:
     self_url: str = ""
     self_token_path: str = ""
     conversation_id: str = ""
+    # This conversation's chat page, linked from the header.
+    conversation_url: str = ""
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Config:
@@ -118,6 +121,7 @@ class Config:
             self_url=env.get("SCOOTER_SELF_URL", ""),
             self_token_path=env.get("SCOOTER_SELF_TOKEN_PATH", ""),
             conversation_id=env.get("CONVERSATION_ID", ""),
+            conversation_url=env.get("CONVERSATION_URL", ""),
         )
 
 
@@ -474,6 +478,11 @@ class Handler(BaseHTTPRequestHandler):
         # The page is served under the proxy prefix, so it cannot know its own base
         # at build time; inject it rather than guessing from location.pathname.
         html = html.replace("{{BASE}}", self.cfg.base)
+        # Injected into a JS string, so only plain http(s) URLs.
+        url = self.cfg.conversation_url
+        if not re.fullmatch(r"https?://[^\s\"'<>\\]+", url):
+            url = ""
+        html = html.replace("{{CONVERSATION_URL}}", url)
         self.send_body(HTTPStatus.OK, html.encode(), "text/html; charset=utf-8")
 
     def serve_static(self, name: str) -> None:

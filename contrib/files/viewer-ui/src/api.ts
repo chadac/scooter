@@ -3,12 +3,17 @@
 declare global {
   interface Window {
     __BASE__?: string;
+    __CONVERSATION_URL__?: string;
   }
 }
 
 // "{{BASE}}" survives only when the page is served by `vite dev`, not the server.
 const raw = window.__BASE__ ?? "";
 export const BASE = raw.startsWith("{{") ? "" : raw;
+
+// The owning conversation's chat page, or empty if unknown.
+const conv = window.__CONVERSATION_URL__ ?? "";
+export const CONVERSATION_URL = conv.startsWith("{{") ? "" : conv;
 
 export type Entry = { name: string; kind: "dir" | "file"; size: number; skip: boolean; repo: boolean };
 export type Listing = { path: string; entries: Entry[] };

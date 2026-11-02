@@ -45,7 +45,7 @@ in
       # which of the two a viewer is serving.
       export SCOOTER_FILES_STATIC="${frontend}"
       # Units inherit no pod env, so read these from PID 1.
-      for var in BROKER_URL SCOOTER_SELF_URL SCOOTER_SELF_TOKEN_PATH CONVERSATION_ID; do
+      for var in BROKER_URL SCOOTER_SELF_URL SCOOTER_SELF_TOKEN_PATH CONVERSATION_ID CONVERSATION_URL; do
         if [ -z "''${!var:-}" ]; then
           value=$(${pkgs.coreutils}/bin/tr '\0' '\n' < /proc/1/environ \
             | ${pkgs.gnused}/bin/sed -n "s/^$var=//p" | ${pkgs.coreutils}/bin/head -1 || true)

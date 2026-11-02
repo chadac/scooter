@@ -48,7 +48,8 @@ def static(tmp_path_factory) -> Path:
     """A built frontend as `npm run build` lays it out: index.html beside its assets."""
     dist = tmp_path_factory.mktemp("dist")
     (dist / "index.html").write_text(
-        '<script>window.__BASE__ = "{{BASE}}";</script>'
+        '<script>window.__BASE__ = "{{BASE}}";'
+        ' window.__CONVERSATION_URL__ = "{{CONVERSATION_URL}}";</script>'
         '<script type="module" src="{{BASE}}/static/index-abc123.js"></script>'
     )
     (dist / "index-abc123.js").write_text("/* app */\n")
@@ -157,6 +158,23 @@ def test_index_is_served_at_the_base_root_with_its_base_injected(client, cfg) ->
     text = body.decode()
     assert "{{BASE}}" not in text, "the page must not ship its placeholder"
     assert cfg.base in text, "the page cannot know its own prefix; it must be injected"
+
+
+@pytest.mark.parametrize(
+    ("url", "shown"),
+    [
+        ("https://scooter.example.com/?thread=abc", "https://scooter.example.com/?thread=abc"),
+        ("", ""),
+        ("javascript:alert(1)", ""),
+        ('https://x/"</script><script>alert(1)//', ""),
+        ("https://x/\\u0022", ""),
+    ],
+)
+def test_index_links_back_to_its_conversation(workspace: Path, static: Path, url: str, shown: str) -> None:
+    cfg = server.Config(root=workspace, base="/c/abc/files", port=0, static=static, conversation_url=url)
+    with running(cfg) as get:
+        _, body = get("/")
+    assert f'window.__CONVERSATION_URL__ = "{shown}";' in body.decode()
 
 
 def test_unknown_route_is_a_404(client) -> None:
@@ -365,9 +383,11 @@ def test_config_reads_the_environment_the_unit_sets(workspace: Path) -> None:
             "SCOOTER_FILES_ROOT": str(workspace),
             "SCOOTER_FILES_BASE": "/c/abc/files/",
             "SCOOTER_FILES_PORT": "7801",
+            "CONVERSATION_URL": "https://scooter.example.com/?thread=abc",
         }
     )
     assert cfg.root == workspace
+    assert cfg.conversation_url == "https://scooter.example.com/?thread=abc"
     assert cfg.base == "/c/abc/files", "a trailing slash would double up in every route"
     assert cfg.port == 7801
 

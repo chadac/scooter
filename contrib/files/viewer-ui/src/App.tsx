@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRight, CircleHelp, Code2, Eye, FileSearch, MessageSquare, Moon, PanelLeft, RefreshCw, Sun } from "lucide-react";
+import { ArrowLeft, ChevronRight, CircleHelp, Code2, Eye, FileSearch, MessageSquare, Moon, PanelLeft, RefreshCw, Sun } from "lucide-react";
 import clsx from "clsx";
-import { api, threadsOf, type Annotation, type FileView, type Question } from "./api";
+import { api, CONVERSATION_URL, threadsOf, type Annotation, type FileView, type Question } from "./api";
 import { Tree } from "./Tree";
 import { CodePane } from "./CodePane";
 import { MarkdownPane } from "./MarkdownPane";
@@ -180,6 +180,15 @@ export function App() {
   return (
     <div className="flex h-dvh flex-col bg-background text-foreground">
       <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border bg-header px-2 font-sans text-sm md:px-3">
+        {CONVERSATION_URL && (
+          <>
+            <a className="icon-btn gap-1 md:w-auto md:px-2" href={CONVERSATION_URL} title="Back to the conversation">
+              <ArrowLeft className="size-4" />
+              <span className="max-md:sr-only">Conversation</span>
+            </a>
+            <span aria-hidden className="mx-0.5 h-5 w-px bg-border" />
+          </>
+        )}
         <button className="icon-btn" onClick={() => setTree(!tree)} title="Toggle file tree">
           <PanelLeft className="size-4" />
         </button>
