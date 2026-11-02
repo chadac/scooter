@@ -462,15 +462,16 @@ export function sandboxKey(sandboxName: string): string {
   return sandboxName.replace(/^conv-/, "");
 }
 
-/** Recorded Sandbox, else an existing legacy one, else conv-<id>. */
+/** Recorded Sandbox, else conv-<id> if on cluster, else legacy. */
 export function rootSandboxName(
   m: { threadId: ThreadId; sandboxRef?: string },
   onCluster?: (name: string) => boolean,
 ): string {
   if (m.sandboxRef) return m.sandboxRef;
-  const legacy = `conv-${shortId(m.threadId)}`;
-  if (!onCluster || onCluster(legacy) || !SANDBOX_ID.test(m.threadId)) return legacy;
-  return `conv-${m.threadId}`;
+  const full = `conv-${m.threadId}`;
+  // Unrecorded means pre-rename; its workspace PVC keeps the legacy name.
+  if (onCluster?.(full) && SANDBOX_ID.test(m.threadId)) return full;
+  return `conv-${shortId(m.threadId)}`;
 }
 
 export function createSessionManager(deps: SessionManagerDeps): SessionManager {
