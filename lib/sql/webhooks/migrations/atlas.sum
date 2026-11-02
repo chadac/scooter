@@ -1,4 +1,4 @@
-h1:MiDF+5+uzjg3vhQAZES0cEeYAH4Mfc6wdBcJ1OctNFU=
+h1:F3kvHI3dZ5NQj6534oTYCdte9+gznZClRx2ycHU/+WQ=
 20260827201645_baseline.sql h1:zNw15JekMclwgYbNG/qmgGf760GMymUkklSk9EKk56k=
 20260831175021_drop_credential_scopes.sql h1:iFGcXYyzpgn50++ZOnqD3dyMPPfCqG+NrbV97aKDFoI=
 20260831181922_drop_webhooks_remote_agents.sql h1:hhnZm5bjmu7udPrmr9u6mhequIn0zjg0UnhkHSTCz04=
@@ -6,3 +6,4 @@ h1:MiDF+5+uzjg3vhQAZES0cEeYAH4Mfc6wdBcJ1OctNFU=
 20260921211500_backfill_resource_link_shapes.sql h1:+l643pWmy6X49nacRF9YGtsOezl0YkKjArsL+Hync/8=
 20260921233000_drop_jira_tickets.sql h1:FBau5olJI71QjzlKEcsw25T+HS3snPmRgwZyAOw/3mA=
 20261015170000_notify_resource_links.sql h1:L9m6vaW8fs9U6v+m1uFlDTGxzbdG1HKGwHLbNWbTsa4=
+20261102032850_add_outsider_replies.sql h1:MrTw74PO46oi6RDL/IUvXqmTAcjvlffN9D0F8ut7PwM=

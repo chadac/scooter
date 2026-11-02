@@ -78,3 +78,12 @@ CREATE TABLE "user_identity" (
   PRIMARY KEY ("id")
 );
 CREATE INDEX "user_identity_email_lower" ON "user_identity" ((lower(email)));
+
+-- Resources already given the outsider-decline reply.
+CREATE TABLE "outsider_replies" (
+  "source"        character varying NOT NULL,
+  "resource_type" character varying NOT NULL,
+  "resource_id"   character varying NOT NULL,
+  "created_at"    timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY ("source", "resource_type", "resource_id")
+);

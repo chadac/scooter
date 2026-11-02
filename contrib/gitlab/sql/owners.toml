@@ -8,4 +8,4 @@
 owner = "broker"
 
 [contrib_gitlab.tables]
-gitlab_user_tokens = { writers = ["broker", "webhooks"], readers = [] }
+gitlab_user_tokens = { writers = ["broker"], readers = ["webhooks"] }

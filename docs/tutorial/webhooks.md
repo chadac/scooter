@@ -26,6 +26,27 @@ The agent replies through the matching contrib's tools (`github_comment`,
 `gitlab_comment`, `slack_respond`, `jira_comment`), so **each webhook needs its contrib
 set up too**. See [Setting up contribs](contribs.md).
 
+### Comments from outsiders
+
+On GitHub and GitLab, only trusted authors steer the agent directly. An author is
+trusted if they have standing on the repo (a GitHub owner, member or collaborator; a
+GitLab member at `trustedAccessLevel`, Developer by default), have linked that forge
+account to Scooter in Settings, or are listed in `trustedUsers`. In a private
+conversation, only its owner and the authors they allowed are trusted.
+
+Anyone else's comment, review or line comment is **held**: the agent doesn't see it,
+and the Approvals tab shows a card with the full text and three choices: allow this
+message, allow this author in this conversation, or deny. An outsider's mention where
+no conversation exists starts nothing, and Scooter replies once asking for a maintainer.
+
+Trust bots and outside collaborators by login, or turn the gate off for repos where
+every commenter is trusted:
+
+```nix
+contribs.github.trustedUsers = [ "renovate[bot]" ];
+contribs.gitlab.requireApproval = false;
+```
+
 ## 1. Turn on the service
 
 The webhooks receiver needs its own **unauthenticated** hostname. Providers can't log

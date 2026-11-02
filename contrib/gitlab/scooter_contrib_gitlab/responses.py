@@ -1,6 +1,7 @@
-"""Post and update comments on GitLab issues and MRs."""
+"""GitLab comments on issues and MRs, and project membership."""
 
 import logging
+import time
 
 import httpx
 
@@ -80,3 +81,35 @@ async def update_gitlab_comment(
                 "error": format_error(e),
             },
         )
+
+
+# (project_id, user_id) -> (fetched at, access level).
+_access_cache: dict[tuple[int, int], tuple[float, int]] = {}
+_ACCESS_TTL_SECONDS = 300
+
+
+async def project_access_level(project_id: int | None, user_id: int | None) -> int:
+    """The user's project access level, inherited included; 0 if unknown."""
+    if not project_id or not user_id or not settings.gitlab_token:
+        return 0
+    key = (project_id, user_id)
+    cached = _access_cache.get(key)
+    if cached and time.monotonic() - cached[0] < _ACCESS_TTL_SECONDS:
+        return cached[1]
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{GITLAB_API}/projects/{project_id}/members/all/{user_id}",
+                headers={"PRIVATE-TOKEN": settings.gitlab_token},
+            )
+        if resp.status_code == 404:
+            level = 0
+        else:
+            resp.raise_for_status()
+            level = int(resp.json().get("access_level") or 0)
+    except (httpx.HTTPError, ValueError) as e:
+        # Uncached, so the next comment retries.
+        logger.warning("project membership lookup failed", extra={**_C, "project_id": project_id, "error": format_error(e)})
+        return 0
+    _access_cache[key] = (time.monotonic(), level)
+    return level

@@ -57,6 +57,20 @@ export const userSkills = pgTable("user_skills", {
 	uniqueIndex("user_skills_owner_name").using("btree", table.owner.asc().nullsLast().op("text_ops"), table.name.asc().nullsLast().op("text_ops")),
 ]);
 
+export const heldMessages = pgTable("held_messages", {
+	id: text().primaryKey().notNull(),
+	conversationId: text("conversation_id").notNull(),
+	source: text().notNull(),
+	author: text().notNull(),
+	url: text().notNull(),
+	prompt: text().notNull(),
+	text: text().notNull(),
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	createdAt: bigint("created_at", { mode: "number" }).notNull(),
+}, (table) => [
+	index("held_messages_by_conv").using("btree", table.conversationId.asc().nullsLast().op("int8_ops"), table.createdAt.asc().nullsLast().op("int8_ops")),
+]);
+
 export const userHookSettings = pgTable("user_hook_settings", {
 	owner: text().notNull(),
 	hookId: text("hook_id").notNull(),
@@ -78,6 +92,17 @@ export const conversationJobs = pgTable("conversation_jobs", {
 }, (table) => [
 	index("conversation_jobs_by_conv").using("btree", table.conversationId.asc().nullsLast().op("int8_ops"), table.startedAt.desc().nullsFirst().op("int8_ops")),
 	primaryKey({ columns: [table.jobId, table.conversationId], name: "conversation_jobs_pkey"}),
+]);
+
+export const conversationTrustedAuthors = pgTable("conversation_trusted_authors", {
+	conversationId: text("conversation_id").notNull(),
+	source: text().notNull(),
+	author: text().notNull(),
+	allowedBy: text("allowed_by").notNull(),
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	createdAt: bigint("created_at", { mode: "number" }).notNull(),
+}, (table) => [
+	primaryKey({ columns: [table.source, table.conversationId, table.author], name: "conversation_trusted_authors_pkey"}),
 ]);
 
 export const conversationEvents = pgTable("conversation_events", {

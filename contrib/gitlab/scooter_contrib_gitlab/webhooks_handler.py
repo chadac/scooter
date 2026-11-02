@@ -16,13 +16,13 @@ from scooter_webhooks_lib.store import PENDING_CONVERSATION_ID, is_pending
 
 from .config import settings
 from scooter_webhooks_lib.agent_host_client import (
-    SendOutcome, conversation_url, create_conversation, deliver_message, push_link, send_message,
+    Screen, SendOutcome, conversation_url, create_conversation, deliver_message, push_link, send_message,
 )
 from scooter_contrib_jira.issue_keys import extract_issue_keys
-from scooter_webhooks_lib import policy
+from scooter_webhooks_lib import policy, trust
 from scooter_webhooks_lib.identity import resolve_owner
 from scooter_webhooks_lib.reply_workflow import reply_workflow
-from .responses import post_gitlab_comment
+from .responses import post_gitlab_comment, project_access_level
 
 logger = logging.getLogger(__name__)
 _C = {"component": "handlers.gitlab"}
@@ -239,7 +239,23 @@ async def _handle_note(payload: dict):
     diff_context = _format_diff_context(note)
     comment_body = f"{diff_context}\n\n@{user} commented:\n\n{message_text}" if diff_context else f"@{user} commented:\n\n{message_text}"
 
+    level = await project_access_level(project_id, payload.get("user", {}).get("id"))
+    who = await trust.classify(
+        "gitlab", user,
+        repo_standing=level >= settings.gitlab_trusted_access_level,
+        trusted_users=settings.gitlab_trusted_users,
+    )
+    gated = settings.gitlab_require_approval and not who.standing
+    ref = f"{repo}!{noteable_iid}" if noteable_type == "MergeRequest" else f"{repo}#{noteable_iid}"
+
     if is_pending(existing):
+        if gated:
+            # No card possible yet, and the buffer flushes unscreened.
+            logger.info(
+                "dropped an outsider's comment on a conversation still starting",
+                extra={**_C, "source": "gitlab", "resource_type": res_type, "resource_id": res_id},
+            )
+            return
         discussion_id = note.get("discussion_id")
         forward_msg = _format_forwarded_message(
             comment_body, project_id, note_api_type, noteable_iid,
@@ -254,7 +270,22 @@ async def _handle_note(payload: dict):
             comment_body, project_id, note_api_type, noteable_iid,
             discussion_id=discussion_id, has_mention=has_mention, note_id=note.get("id"),
         )
-        outcome = await deliver_message(existing, forward_msg, source="gitlab")
+        verdict = await trust.screen(
+            existing, who, message=forward_msg,
+            prompt=trust.card_prompt(who, ref, note_body), url=note.get("url", ""),
+            require_approval=settings.gitlab_require_approval,
+        )
+        if verdict is Screen.HELD:
+            logger.info(
+                "held an outsider's comment for approval",
+                extra={**_C, "conversation_id": existing, "source": "gitlab"},
+            )
+        if verdict in (Screen.HELD, Screen.FAILED):
+            return
+        outcome = (
+            SendOutcome.NOT_FOUND if verdict is Screen.NOT_FOUND
+            else await deliver_message(existing, forward_msg, source="gitlab")
+        )
         if outcome is not SendOutcome.NOT_FOUND:
             # The conversation still exists, so a failed run keeps its mapping (issue #802).
             if outcome is not SendOutcome.DELIVERED:
@@ -280,6 +311,13 @@ async def _handle_note(payload: dict):
                 "resource_id": res_id,
             },
         )
+
+    if gated:
+        await trust.decline_mention(
+            who, res_type, res_id, repo,
+            lambda body: post_gitlab_comment(project_id, note_api_type, noteable_iid, body),
+        )
+        return
 
     await db.store_conversation("gitlab", res_type, res_id, PENDING_CONVERSATION_ID)
 

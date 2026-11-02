@@ -56,6 +56,19 @@ class ConversationJobs(Base):
     notified_at: Mapped[Optional[int]] = mapped_column(BigInteger)
 
 
+class ConversationTrustedAuthors(Base):
+    __tablename__ = 'conversation_trusted_authors'
+    __table_args__ = (
+        PrimaryKeyConstraint('conversation_id', 'source', 'author', name='conversation_trusted_authors_pkey'),
+    )
+
+    conversation_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    source: Mapped[str] = mapped_column(Text, primary_key=True)
+    author: Mapped[str] = mapped_column(Text, primary_key=True)
+    allowed_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
 class Conversations(Base):
     __tablename__ = 'conversations'
     __table_args__ = (
@@ -88,6 +101,23 @@ class Conversations(Base):
     phase: Mapped[Optional[str]] = mapped_column(Text)
     sandbox_ref: Mapped[Optional[str]] = mapped_column(Text)
     creator_pod: Mapped[Optional[str]] = mapped_column(Text)
+
+
+class HeldMessages(Base):
+    __tablename__ = 'held_messages'
+    __table_args__ = (
+        PrimaryKeyConstraint('id', name='held_messages_pkey'),
+        Index('held_messages_by_conv', 'conversation_id', 'created_at')
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    author: Mapped[str] = mapped_column(Text, nullable=False)
+    url: Mapped[str] = mapped_column(Text, nullable=False)
+    prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    text_: Mapped[str] = mapped_column('text', Text, nullable=False)
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
 class UserHookSettings(Base):

@@ -21,6 +21,10 @@ class GitlabSettings(ScooterBaseSettings):
     gitlab_oauth_redirect_url: str = ""
 
     gitlab_enabled: bool = True
+    # Hold outsiders' comments behind an approval card.
+    gitlab_require_approval: bool = True
+    gitlab_trusted_users: str = ""  # comma-separated usernames trusted without membership
+    gitlab_trusted_access_level: int = 30  # Developer
     gitlab_webhook_secret: str = ""
     default_gitlab_repo: str = ""
 

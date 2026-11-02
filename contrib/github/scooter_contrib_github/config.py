@@ -29,6 +29,9 @@ class GitHubSettings(ScooterBaseSettings):
     github_oauth_redirect_url: str = ""
 
     github_enabled: bool = False
+    # Hold outsiders' comments behind an approval card.
+    github_require_approval: bool = True
+    github_trusted_users: str = ""  # comma-separated logins trusted without repo standing
     github_webhook_secret: str = ""
 
     @property

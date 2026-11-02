@@ -8,4 +8,4 @@
 owner = "broker"
 
 [contrib_github.tables]
-github_user_tokens = { writers = ["broker", "webhooks"], readers = [] }
+github_user_tokens = { writers = ["broker"], readers = ["webhooks"] }

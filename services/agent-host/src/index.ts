@@ -48,6 +48,8 @@ import { createPgLinkStore } from "./session/linkStore.js";
 import { parseLinkTypeAliases } from "./session/linkTypeAliases.js";
 import { createPgMetaStore } from "./session/metaStore.js";
 import { createPgAwaitingInputStore } from "./session/awaitingInputStore.js";
+import { createMemoryHeldMessageStore, createPgHeldMessageStore } from "./session/heldMessageStore.js";
+import { createHeldMessages } from "./api/heldMessages.js";
 import { createPvcAssetStore } from "./session/assetStore.js";
 import { createHybridAssetStore } from "./session/hybridAssetStore.js";
 import {
@@ -645,6 +647,8 @@ export async function main(
   const awaitingDsn = awaitingInputDsnFromEnv();
   const awaitingInput = awaitingDsn ? createPgAwaitingInputStore({ dsn: awaitingDsn }) : undefined;
   hostLog.info("awaiting-input store selected", { backend: awaitingInput ? "postgres" : "none" });
+  // Held forge comments; in memory without the agent_host database.
+  const heldStore = agentHostDsn ? createPgHeldMessageStore({ dsn: agentHostDsn }) : createMemoryHeldMessageStore();
 
   // Decorate rather than replace the file store, delegating everything else through the
   // original since several of its methods call siblings via `this`; saveMeta writes both
@@ -676,6 +680,7 @@ export async function main(
             await linkStore?.deleteByConversation(id);
             // No foreign key reaches the awaiting-input database, so its row goes here.
             await awaitingInput?.set(id, null);
+            await heldStore.removeConversation(id);
           },
         }
       : {}),
@@ -917,13 +922,41 @@ export async function main(
     }
   })();
 
-  /** On revive, ask each approval contrib with a `pendingPath` for this conversation's
-   *  pending requests and re-raise an interrupt for each (idempotent by request id). */
+  const authEnforced = process.env.AUTH_ENFORCE === "true";
+  const heldMessages = createHeldMessages({
+    store: heldStore,
+    deliver: (id, text, source) => sessions.enqueueByThread(id, text, source, PRIORITY_INTERRUPT),
+    bridge: (id) => sessions.get(id as SessionId)?.bridge,
+    authEnforced,
+    ownerOf: async (id) => ((await store.readAccess?.(id as SessionId)) ?? sessions.get(id as SessionId))?.owner ?? undefined,
+    persistInterrupt: (id, intr) =>
+      store.appendEvent(id as SessionId, {
+        type: "RUN_FINISHED",
+        threadId: id,
+        runId: `ext-${intr.id}`,
+        outcome: {
+          type: "interrupt",
+          interrupts: [{ id: intr.id, reason: "confirmation", message: intr.message, metadata: { ...intr.metadata, options: intr.options } }],
+        },
+      }),
+    withdraw: async (id, interruptId) => {
+      if (sessions.get(id as SessionId)?.bridge?.withdrawInterrupt(interruptId)) return;
+      const events = await collectEventsSafe(store.readEvents(id as SessionId));
+      if (isUnansweredInterrupt(events, interruptId)) {
+        await store.appendEvent(id as SessionId, { type: "PERMISSION_RESOLVED", toolCallId: interruptId, optionId: null });
+      }
+    },
+  });
+
+  /** On revive, re-raise held comments and contribs' pending approvals. */
   const reRaisePendingApprovals = async (id: string): Promise<void> => {
-    const brokerUrl = (process.env.BROKER_URL ?? "").replace(/\/$/, "");
-    if (!brokerUrl) return; // no broker (local/dev) — nothing to re-raise
     const bridge = sessions.get(id as SessionId)?.bridge;
     if (!bridge) return;
+    await heldMessages.reRaise(bridge, id).catch((err) =>
+      hostLog.warn("re-raise held comments failed", { conversation_id: id, error: formatError(err) }),
+    );
+    const brokerUrl = (process.env.BROKER_URL ?? "").replace(/\/$/, "");
+    if (!brokerUrl) return; // no broker (local/dev) — nothing to re-raise
     const headers = await brokerAuthHeaders();
     for (const [contrib, cfg] of Object.entries(approvalContribs)) {
       if (!cfg.pendingPath) continue;
@@ -1476,7 +1509,7 @@ export async function main(
     createManagementApi({
     uploadLimits,
     accessCheck,
-    authEnforced: process.env.AUTH_ENFORCE === "true",
+    authEnforced,
     // Live appends only reach the owner's local store, so the integrity stream reports
     // whether this pod owns the conversation.
     streamOwnership: conversationRegistry && podName
@@ -1490,6 +1523,7 @@ export async function main(
       store,
       server,
       ownerVerifier,
+      heldMessages,
       webServices,
       sandboxOrigins,
       identityStore,

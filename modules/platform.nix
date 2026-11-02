@@ -1404,6 +1404,16 @@ in
             Per-user opt-outs from deployment hooks marked `userCanDisable`, set in the settings
             page and read when a conversation's bridge is built.'';
         };
+        held_messages = {
+          writers = [ "agent-host" ];
+          note = ''
+            Forge comments from authors with no standing, held behind an approval card until
+            someone allows or denies them. Comment text from outsiders, so no readers.'';
+        };
+        conversation_trusted_authors = {
+          writers = [ "agent-host" ];
+          note = "Forge authors allowed for one conversation from a held comment's card.";
+        };
       };
     };
 

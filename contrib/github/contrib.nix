@@ -58,6 +58,26 @@ in
         '';
       };
 
+      requireApproval = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Hold comments, line comments and reviews from authors with no standing behind an
+          approval card in the conversation, and decline their mentions where no conversation
+          exists yet. Turn it off only when every commenter on the watched repos is trusted.
+        '';
+      };
+
+      trustedUsers = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        default = [ ];
+        example = [ "renovate[bot]" "outside-collaborator" ];
+        description = ''
+          GitHub logins trusted like a repo member even without standing on the repo, for
+          outside collaborators and bots. Private conversations still trust only their owner.
+        '';
+      };
+
       webhooksEnabled = lib.mkOption {
         type = lib.types.bool;
         default = config.enable;
@@ -114,7 +134,8 @@ in
       # Its own database (contrib_github) for linked user accounts.
       db = lib.mkIf config.userAuth.enable {
         enable = true;
-        tables.github_user_tokens = { };
+        # Webhooks reads linked logins; the tokens stay sealed.
+        tables.github_user_tokens = { writers = [ "broker" ]; readers = [ "webhooks" ]; };
       };
 
       ui.settingsTabs = lib.mkIf config.userAuth.enable [{
@@ -147,6 +168,8 @@ in
         env = {
           GITHUB_HOST = config.host;
           GITHUB_ENABLED = lib.boolToString config.webhooksEnabled;
+          GITHUB_REQUIRE_APPROVAL = lib.boolToString config.requireApproval;
+          GITHUB_TRUSTED_USERS = lib.concatStringsSep "," config.trustedUsers;
           GITHUB_APP_ID = config.appId;
           GITHUB_APP_OWNERS = lib.concatStringsSep "," config.owners;
           GITHUB_APP_PRIVATE_KEY = config.privateKeySecret;

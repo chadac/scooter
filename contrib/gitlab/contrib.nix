@@ -27,6 +27,36 @@ in
       '';
     };
 
+    options.requireApproval = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Hold comments, line comments and reviews from authors with no standing behind an
+        approval card in the conversation, and decline their mentions where no conversation
+        exists yet. Turn it off only when every commenter on the watched repos is trusted.
+      '';
+    };
+
+    options.trustedUsers = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [ "renovate[bot]" "outside-collaborator" ];
+      description = ''
+        GitLab logins trusted like a repo member even without standing on the repo, for
+        outside collaborators and bots. Private conversations still trust only their owner.
+      '';
+    };
+
+    options.trustedAccessLevel = lib.mkOption {
+      type = lib.types.enum [ 10 20 30 40 50 ];
+      default = 30;
+      description = ''
+        The lowest project access level whose comments go to the agent without approval:
+        10 Guest, 20 Reporter, 30 Developer, 40 Maintainer, 50 Owner. Developer is the
+        closest match to a GitHub collaborator.
+      '';
+    };
+
     options.webhooksEnabled = lib.mkOption {
       type = lib.types.bool;
       default = config.enable;
@@ -92,7 +122,8 @@ in
       # Its own database (contrib_gitlab) for linked user accounts.
       db = lib.mkIf config.userAuth.enable {
         enable = true;
-        tables.gitlab_user_tokens = { };
+        # Webhooks reads linked logins; the tokens stay sealed.
+        tables.gitlab_user_tokens = { writers = [ "broker" ]; readers = [ "webhooks" ]; };
       };
 
       services.broker = {
@@ -112,6 +143,9 @@ in
         env = {
           GITLAB_HOST = config.host;
           GITLAB_ENABLED = lib.boolToString config.webhooksEnabled;
+          GITLAB_REQUIRE_APPROVAL = lib.boolToString config.requireApproval;
+          GITLAB_TRUSTED_USERS = lib.concatStringsSep "," config.trustedUsers;
+          GITLAB_TRUSTED_ACCESS_LEVEL = toString config.trustedAccessLevel;
         };
         # Only this half reads Jira keys, and the grammar is jira's.
         pythonDeps = ps: [ ps.scooterContrib.jira ];

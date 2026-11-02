@@ -186,6 +186,10 @@ in
             conversation-router READS it (SELECT-only) to enrich the conversation list with link badges.'';
         };
         pending_messages = { writers = [ "webhooks" ]; };
+        outsider_replies = {
+          writers = [ "webhooks" ];
+          note = "Where an outsider's mention was already declined with a reply, so it is posted once.";
+        };
         user_identity = { writers = [ "agent-host" ]; readers = [ "webhooks" ]; };
       };
     };

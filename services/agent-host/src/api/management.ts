@@ -43,6 +43,7 @@ import { EMPTY_CHECKSUM, chainAll } from "../agui/integrity.js";
 import { DERIVED_SOURCES, HUMAN_TRIGGER_SOURCES } from "../acp/remoteAgentRegistry.js";
 import type { HookDef } from "../hooks/types.js";
 import type { UserHookSettingsStore } from "../hooks/userHookSettingsStore.js";
+import type { HeldMessages, ScreenRequest } from "./heldMessages.js";
 
 const log = logger("agent-host");
 
@@ -177,6 +178,8 @@ export interface ManagementDeps {
   writeSandboxFile?: (conversationId: string, file: { dir: string; name: string; data: string }) => Promise<string>;
   /** Read a sandbox file as base64; absent in fake mode. */
   readSandboxFile?: (conversationId: string, path: string) => Promise<{ data: string } | { error: string }>;
+  /** Outsider comment gate; absent delivers every comment. */
+  heldMessages?: HeldMessages;
   /** Bring-your-own-Claude support for the Settings "Connect your Claude agent" section; absent when REMOTE_AGENT_JOIN_SECRET is unset, so the UI hides it. */
   remoteAgent?: {
     /** Mint a fresh owner-bound join token plus the docker one-liner; async because the session is minted on the controller. */
@@ -1097,6 +1100,37 @@ export function createManagementApi(deps: ManagementDeps): Router {
 
     raiseApprovalInterrupt(bridge, conv.id, ctx.params.contrib, body as ApprovalRequest, deps.resolveApproval);
     return { status: 202, json: { ok: true } };
+  });
+
+  // Webhooks asks before forwarding; held:false means forward it.
+  r.post("/conversations/:id/held-messages", async (ctx) => {
+    // The agent must never word its own input's gate.
+    if (ctx.req.headers[SANDBOX_CALLER_HEADER] === "sandbox") return { status: 403, json: { error: "forbidden" } };
+    const body = await ctx.body<Partial<ScreenRequest>>();
+    if (body.source !== "github" && body.source !== "gitlab") return { status: 400, json: { error: "source must be github or gitlab" } };
+    if (typeof body.author !== "string" || !body.author.trim()) return { status: 400, json: { error: "author required" } };
+    if (typeof body.text !== "string" || !body.text) return { status: 400, json: { error: "text required" } };
+    if (typeof body.prompt !== "string" || !body.prompt) return { status: 400, json: { error: "prompt required" } };
+    if (!deps.heldMessages) return { json: { held: false } };
+    let conv = sessions.get(ctx.params.id);
+    if (!conv && (await sessions.ensureReadable(ctx.params.id))) conv = sessions.get(ctx.params.id);
+    if (!conv) return { status: 404, json: { error: "not found" } };
+    // Durable read: the owner may have just gone private.
+    const access = (await store.readAccess?.(conv.id as SessionId)) ?? { owner: conv.owner, visibility: conv.visibility };
+    const userIds = Array.isArray(body.authorUserIds) ? body.authorUserIds.filter((u) => typeof u === "string") : [];
+    const result = await deps.heldMessages.screen(
+      { id: conv.id, owner: access.owner, visibility: access.visibility },
+      {
+        source: body.source,
+        author: body.author.trim(),
+        standing: body.standing === true,
+        authorUserIds: userIds,
+        url: typeof body.url === "string" ? body.url : "",
+        prompt: body.prompt,
+        text: body.text,
+      },
+    );
+    return { json: result };
   });
 
   // Withdraws a card another approval superseded.

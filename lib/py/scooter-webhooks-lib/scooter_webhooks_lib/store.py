@@ -13,13 +13,15 @@ from datetime import datetime, timezone
 from typing import AsyncGenerator, Protocol, runtime_checkable
 
 from sqlalchemy import select, delete, update
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from . import resources
 
 # The ORM classes are generated from lib/sql/webhooks/schema.sql; the generator pluralizes names, aliased back to singular here.
 from scooter_schema.webhooks import (
     ConversationMap,
+    OutsiderReplies as OutsiderReply,
     PendingMessages as PendingMessage,
     ResourceLinks as ResourceLink,
 )
@@ -40,6 +42,8 @@ _PENDING_TIMEOUT_SECONDS = 120
 
 _engine = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
+# Engines on sibling databases, keyed by database name.
+_other_engines: dict[str, AsyncEngine] = {}
 
 
 async def init_db(settings: DatabaseConfig) -> None:
@@ -61,6 +65,9 @@ async def close_db() -> None:
     global _engine, _session_factory
     if _engine:
         await _engine.dispose()
+    for other in _other_engines.values():
+        await other.dispose()
+    _other_engines.clear()
     _engine = None
     _session_factory = None
 
@@ -376,3 +383,29 @@ async def clear_conversation(
             "resource_id": resource_id,
         },
     )
+
+
+async def claim_outsider_reply(source: str, resource_type: str, resource_id: str) -> bool:
+    """Record a declined outsider mention; True only the first time."""
+    try:
+        async with get_session() as session:
+            if await session.get(OutsiderReply, (source, resource_type, resource_id)):
+                return False
+            session.add(OutsiderReply(source=source, resource_type=resource_type, resource_id=resource_id))
+    except IntegrityError:
+        # Another replica claimed it first.
+        return False
+    return True
+
+
+def engine_for(db_name: str) -> AsyncEngine | None:
+    """An engine on a sibling Postgres database; None off Postgres."""
+    if _engine is None or _engine.url.get_backend_name() != "postgresql":
+        return None
+    engine = _other_engines.get(db_name)
+    if engine is None:
+        engine = create_async_engine(
+            _engine.url.set(database=db_name), echo=False, pool_pre_ping=True, pool_recycle=1800,
+        )
+        _other_engines[db_name] = engine
+    return engine

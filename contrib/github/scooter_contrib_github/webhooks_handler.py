@@ -19,9 +19,9 @@ from scooter_webhooks_lib.store import PENDING_CONVERSATION_ID, is_pending
 
 from .config import settings
 from scooter_webhooks_lib.agent_host_client import (
-    SendOutcome, conversation_url, create_conversation, deliver_message, push_link, send_message,
+    Screen, SendOutcome, conversation_url, create_conversation, deliver_message, push_link, send_message,
 )
-from scooter_webhooks_lib import policy
+from scooter_webhooks_lib import policy, trust
 from scooter_webhooks_lib.identity import resolve_owner
 from scooter_webhooks_lib.reply_workflow import reply_workflow
 from .responses import get_app_login, post_github_comment
@@ -134,6 +134,29 @@ def _format_forwarded_message(
     return f"{preamble}\n\n---\n\n{comment_body}\n\n---\n\n{reply_instruction}"
 
 
+# author_association values granting standing on the repo.
+_STANDING = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+
+
+async def _author(login: str, association: str | None) -> trust.Author:
+    return await trust.classify(
+        "github", login,
+        repo_standing=(association or "").upper() in _STANDING,
+        trusted_users=settings.github_trusted_users,
+    )
+
+
+async def _screen(conv_id: str, author: trust.Author, message: str, where: str, body: str, url: str) -> Screen:
+    """DELIVER means send it now; anything else means don't."""
+    verdict = await trust.screen(
+        conv_id, author, message=message, prompt=trust.card_prompt(author, where, body), url=url,
+        require_approval=settings.github_require_approval,
+    )
+    if verdict is Screen.HELD:
+        logger.info("held an outsider's comment for approval", extra={**_C, "conversation_id": conv_id, "source": "github"})
+    return verdict
+
+
 def _event_owner(payload: dict) -> str:
     """The lowercased account an event belongs to."""
     repo_owner = ((payload.get("repository") or {}).get("owner") or {}).get("login")
@@ -219,8 +242,17 @@ async def _handle_comment(payload: dict):
     comment_text = f"@{user} commented:\n\n{message_text}"
 
     comment_id = comment.get("id")
+    who = await _author(user, comment.get("author_association"))
+    gated = settings.github_require_approval and not who.standing
 
     if is_pending(existing):
+        if gated:
+            # No card possible yet, and the buffer flushes unscreened.
+            logger.info(
+                "dropped an outsider's comment on a conversation still starting",
+                extra={**_C, "source": "github", "resource_type": res_type, "resource_id": res_id},
+            )
+            return
         forward_msg = _format_forwarded_message(
             comment_text, owner, repo, issue_number, is_pr, has_mention, comment_id,
         )
@@ -231,7 +263,15 @@ async def _handle_comment(payload: dict):
         forward_msg = _format_forwarded_message(
             comment_text, owner, repo, issue_number, is_pr, has_mention, comment_id,
         )
-        outcome = await deliver_message(existing, forward_msg, source="github")
+        verdict = await _screen(
+            existing, who, forward_msg, f"{owner}/{repo}#{issue_number}", comment_body, comment.get("html_url", ""),
+        )
+        if verdict in (Screen.HELD, Screen.FAILED):
+            return
+        outcome = (
+            SendOutcome.NOT_FOUND if verdict is Screen.NOT_FOUND
+            else await deliver_message(existing, forward_msg, source="github")
+        )
         if outcome is not SendOutcome.NOT_FOUND:
             # The conversation still exists, so a failed run keeps its mapping (issue #802).
             if outcome is not SendOutcome.DELIVERED:
@@ -258,6 +298,13 @@ async def _handle_comment(payload: dict):
             },
         )
 
+    if gated:
+        await trust.decline_mention(
+            who, res_type, res_id, f"{owner}/{repo}",
+            lambda body: post_github_comment(owner=owner, repo=repo, issue_number=issue_number, body=body),
+        )
+        return
+
     await db.store_conversation("github", res_type, res_id, PENDING_CONVERSATION_ID)
 
     kind = "PR" if is_pr else "Issue"
@@ -278,10 +325,14 @@ async def _handle_comment(payload: dict):
     )
 
 
-async def _forward_or_ignore(res_id: str, message: str) -> None:
-    """Forward at interrupt priority to the conversation linked to this PR, or do nothing; a PR the agent does not own is not ours to act on."""
+async def _forward_or_ignore(
+    res_id: str, message: str, author: trust.Author | None = None, *, where: str = "", body: str = "", url: str = "",
+) -> None:
+    """Interrupt this PR's conversation, if any; author None means GitHub vouches."""
     existing = await _resolve_conversation("pull_request", res_id)
     if not existing or is_pending(existing):
+        return
+    if author and await _screen(existing, author, message, where, body, url) is not Screen.DELIVER:
         return
     await send_message(existing, message, priority=True, source="github")
 
@@ -331,7 +382,10 @@ async def _handle_review_comment(payload: dict):
         f"address it."
         + _comment_ref(comment_id)
     )
-    await _forward_or_ignore(_resource_id(owner, repo, number), message)
+    await _forward_or_ignore(
+        _resource_id(owner, repo, number), message, await _author(user, comment.get("author_association")),
+        where=f"{where} in {owner}/{repo}#{number}", body=body, url=comment.get("html_url", ""),
+    )
 
 
 async def _handle_review(payload: dict):
@@ -368,7 +422,11 @@ async def _handle_review(payload: dict):
         tail = "Respond with `github_comment` if it asks for something."
 
     message = f"{head}\n\n" + (f"{body}\n\n" if body else "") + f"---\n\n{tail}"
-    await _forward_or_ignore(_resource_id(owner, repo, number), message)
+    await _forward_or_ignore(
+        _resource_id(owner, repo, number), message, await _author(user, review.get("author_association")),
+        where=f"a review ({state or 'commented'}) of {owner}/{repo}#{number}", body=body,
+        url=review.get("html_url", ""),
+    )
 
 
 async def _previous_run_failed(owner: str, repo: str, workflow_id, branch: str, before_id: int) -> bool:

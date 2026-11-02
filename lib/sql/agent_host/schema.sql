@@ -201,3 +201,29 @@ CREATE TABLE "user_hook_settings" (
   "updated_at" bigint NOT NULL,
   PRIMARY KEY ("owner", "hook_id")
 );
+
+-- Outsiders' forge comments awaiting an approval card's answer.
+CREATE TABLE "held_messages" (
+  "id"              text NOT NULL,
+  "conversation_id" text NOT NULL,
+  "source"          text NOT NULL,
+  "author"          text NOT NULL,
+  "url"             text NOT NULL,
+  "prompt"          text NOT NULL,
+  "text"            text NOT NULL,
+  "created_at"      bigint NOT NULL,
+  PRIMARY KEY ("id")
+);
+
+-- Revive re-raises a conversation's cards oldest-first.
+CREATE INDEX "held_messages_by_conv" ON "held_messages" ("conversation_id", "created_at");
+
+-- Forge authors allowed per conversation; `author` is lowercased.
+CREATE TABLE "conversation_trusted_authors" (
+  "conversation_id" text NOT NULL,
+  "source"          text NOT NULL,
+  "author"          text NOT NULL,
+  "allowed_by"      text NOT NULL,
+  "created_at"      bigint NOT NULL,
+  PRIMARY KEY ("conversation_id", "source", "author")
+);

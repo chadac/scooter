@@ -34,6 +34,18 @@ class ConversationMap(Base):
     slack_ts: Mapped[Optional[str]] = mapped_column(String)
 
 
+class OutsiderReplies(Base):
+    __tablename__ = 'outsider_replies'
+    __table_args__ = (
+        PrimaryKeyConstraint('source', 'resource_type', 'resource_id', name='outsider_replies_pkey'),
+    )
+
+    source: Mapped[str] = mapped_column(String, primary_key=True)
+    resource_type: Mapped[str] = mapped_column(String, primary_key=True)
+    resource_id: Mapped[str] = mapped_column(String, primary_key=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime(True), nullable=False, server_default=text('now()'))
+
+
 class PendingMessages(Base):
     __tablename__ = 'pending_messages'
     __table_args__ = (

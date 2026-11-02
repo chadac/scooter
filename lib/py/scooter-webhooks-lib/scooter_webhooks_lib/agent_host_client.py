@@ -235,6 +235,60 @@ async def deliver_message(
     return SendOutcome.UNREACHABLE  # not reached: the last delay is None
 
 
+class Screen(enum.Enum):
+    """The agent-host gate's verdict on one comment."""
+
+    # Trusted here: forward it as usual.
+    DELIVER = "deliver"
+    # Behind a card; the agent-host delivers it if allowed.
+    HELD = "held"
+    NOT_FOUND = "not_found"
+    # No answer; drop it rather than deliver unscreened.
+    FAILED = "failed"
+
+
+async def screen_message(
+    conversation_id: str,
+    *,
+    source: str,
+    author: str,
+    standing: bool,
+    author_user_ids: list[str],
+    text: str,
+    prompt: str,
+    url: str = "",
+) -> Screen:
+    """Ask the agent-host to deliver-or-hold this comment."""
+    headers = {"content-type": "application/json"}
+    token = _sa_token()
+    if token:
+        headers["authorization"] = f"Bearer {token}"
+    body = {
+        "source": source,
+        "author": author,
+        "standing": standing,
+        "authorUserIds": author_user_ids,
+        "text": text,
+        "prompt": prompt,
+        "url": url,
+    }
+    log_extra = {**_C, "conversation_id": conversation_id, "source": source}
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{_conversations_url()}/{conversation_id}/held-messages", json=body, headers=headers,
+            )
+        if resp.status_code == 404:
+            return Screen.NOT_FOUND
+        if resp.status_code >= 300:
+            logger.error("held-message screen returned an error status", extra={**log_extra, "status": resp.status_code})
+            return Screen.FAILED
+        return Screen.HELD if resp.json().get("held") else Screen.DELIVER
+    except (httpx.HTTPError, ValueError) as e:
+        logger.error("held-message screen failed", extra={**log_extra, "error": format_error(e)})
+        return Screen.FAILED
+
+
 async def send_message(
     conversation_id: str,
     message: str,
