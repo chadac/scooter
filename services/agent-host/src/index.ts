@@ -97,6 +97,7 @@ import {
 import { createSubagentManager, DEFAULT_SUBAGENT_LIMITS } from "./session/subagentManager.js";
 import { createRouterSubagentCreator } from "./session/routerSubagents.js";
 import { isUnansweredInterrupt, lastRunCompleted } from "./session/danglingRun.js";
+import { orphanedAnswerPrompt } from "./session/orphanedAnswer.js";
 import { randomUUID } from "node:crypto";
 import { createHttpSchedulerClient } from "./agent/schedulerClient.js";
 import type { ConversationOwnerLookup, SchedulerToolsWiring } from "./agent/schedulerTools.js";
@@ -1419,20 +1420,28 @@ export async function main(
     });
     if (answer()) return { ok: true };
 
-    // 3) A dismissed interrupt with no live run: settle it.
-    if (entry.status === "cancelled") {
+    // 3) No live run holds it: settle a dismissal, or prompt with a question's answers.
+    const orphanedPrompt = entry.status === "cancelled" ? undefined : orphanedAnswerPrompt(result);
+    if (entry.status === "cancelled" || orphanedPrompt) {
       const events = await collectEventsSafe(store.readEvents(sessionId as SessionId));
       if (isUnansweredInterrupt(events, entry.interruptId)) {
-        hostLog.info("resume: settling a dismissed interrupt with no live run", {
-          conversation_id: sessionId,
-          interrupt_id: entry.interruptId,
-        });
+        hostLog.info(
+          orphanedPrompt
+            ? "resume: answering an orphaned question with a new prompt"
+            : "resume: settling a dismissed interrupt with no live run",
+          { conversation_id: sessionId, interrupt_id: entry.interruptId },
+        );
         await store.appendEvent(sessionId as SessionId, {
           type: "PERMISSION_RESOLVED",
           toolCallId: entry.interruptId,
-          optionId: null,
+          optionId: optionId || null,
         });
-        return { ok: true, settled: true };
+        if (!orphanedPrompt) return { ok: true, settled: true };
+        // Not awaited: the new run streams back over this resume's SSE.
+        void sessions.prompt(sessionId as SessionId, orphanedPrompt).catch((err) =>
+          hostLog.errorWith("resume: prompting with an orphaned answer failed", err, { conversation_id: sessionId }),
+        );
+        return { ok: true };
       }
     }
 

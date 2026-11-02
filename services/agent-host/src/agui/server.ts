@@ -395,6 +395,7 @@ export function createAguiServer(): AguiServer {
         );
         const failed = outcomes.find((o) => o && !o.ok);
         if (failed) {
+          log.warn("resume could not be applied", { conversation_id: sessionId, reason: failed.reason });
           try {
             write(res, {
               type: "RUN_ERROR",
