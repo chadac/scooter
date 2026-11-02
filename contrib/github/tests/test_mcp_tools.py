@@ -76,16 +76,16 @@ async def test_the_gate_OPENS_on_a_URL_ONLY_link():
 async def test_an_INCOMPLETE_ref_falls_back_to_the_url_of_the_SAME_link():
     """A ref missing `number` is abandoned whole and the same link's URL is parsed whole."""
     ctx = _ctx(links=[_link(ref={"owner": "wrong", "repo": "wrong"}, url="https://github.com/right/repo/pull/9")])
-    t = await tools.github_target(ctx)
+    t = (await tools.github_targets(ctx))[0]
     assert (t.owner, t.repo, t.number) == ("right", "repo", 9)
 
 
-async def test_the_OLDEST_github_link_wins():
+async def test_targets_are_listed_OLDEST_first():
     ctx = _ctx(links=[
         _link(ref={"owner": "o", "repo": "first", "number": 1}),
         _link(ref={"owner": "o", "repo": "second", "number": 2}),
     ])
-    assert (await tools.github_target(ctx)).repo == "first"
+    assert [t.repo for t in await tools.github_targets(ctx)] == ["first", "second"]
 
 
 # --- the comment ------------------------------------------------------------------
@@ -114,6 +114,10 @@ async def test_comment_with_no_target_is_an_error_not_a_guess():
 
 # --- the review-thread guard ------------------------------------------------------
 
+def _review_comment(owner="o", repo="r", number=7, comment_id=55):
+    return httpx.Response(200, json={"html_url": f"https://github.com/{owner}/{repo}/pull/{number}#discussion_r{comment_id}"})
+
+
 def _graphql(resolved: bool, comment_id: int = 55):
     return httpx.Response(200, json={"data": {"repository": {"pullRequest": {"reviewThreads": {
         "nodes": [{"isResolved": resolved, "comments": {"nodes": [{"databaseId": comment_id}]}}]}}}}})
@@ -122,7 +126,7 @@ def _graphql(resolved: bool, comment_id: int = 55):
 async def test_a_reply_to_a_RESOLVED_thread_is_refused():
     """GitHub sends no webhook when a human resolves a thread, so a late reply could land on a closed one."""
     ctx = _ctx(links=[_link(ref={"owner": "o", "repo": "r", "number": 7})],
-               responses=[_graphql(True), httpx.Response(201, json={})])
+               responses=[_review_comment(), _graphql(True), httpx.Response(201, json={})])
     res = await tools.github_comment(body="hi", in_reply_to=55, ctx=ctx)
     assert res.is_error is True
     assert "RESOLVED" in res.text
@@ -131,7 +135,7 @@ async def test_a_reply_to_a_RESOLVED_thread_is_refused():
 
 async def test_a_reply_to_an_UNRESOLVED_thread_posts_to_the_replies_endpoint():
     ctx = _ctx(links=[_link(ref={"owner": "o", "repo": "r", "number": 7})],
-               responses=[_graphql(False), httpx.Response(201, json={})])
+               responses=[_review_comment(), _graphql(False), httpx.Response(201, json={})])
     res = await tools.github_comment(body="hi", in_reply_to=55, ctx=ctx)
     assert res.is_error is False
     assert ctx.upstream.calls[-1]["path"] == "repos/o/r/pulls/7/comments/55/replies"
@@ -140,14 +144,14 @@ async def test_a_reply_to_an_UNRESOLVED_thread_posts_to_the_replies_endpoint():
 async def test_the_guard_FAILS_OPEN_on_a_non_2xx_graphql_response():
     """A missed reply is worse than a stale one."""
     ctx = _ctx(links=[_link(ref={"owner": "o", "repo": "r", "number": 7})],
-               responses=[httpx.Response(500, text="boom"), httpx.Response(201, json={})])
+               responses=[_review_comment(), httpx.Response(500, text="boom"), httpx.Response(201, json={})])
     res = await tools.github_comment(body="hi", in_reply_to=55, ctx=ctx)
     assert res.is_error is False
 
 
 async def test_the_guard_FAILS_OPEN_when_the_thread_is_not_found():
     ctx = _ctx(links=[_link(ref={"owner": "o", "repo": "r", "number": 7})],
-               responses=[_graphql(True, comment_id=999), httpx.Response(201, json={})])
+               responses=[_review_comment(), _graphql(True, comment_id=999), httpx.Response(201, json={})])
     res = await tools.github_comment(body="hi", in_reply_to=55, ctx=ctx)
     assert res.is_error is False
 
@@ -169,10 +173,83 @@ async def test_ctx_is_not_exposed_to_the_model():
 async def test_a_SHORT_FORM_mapping_row_resolves():
     """The broker appends conversation_map rows as links carrying the raw resource_id in `url`."""
     ctx = _ctx(links=[_link(url="o/r#7")])
-    t = await tools.github_target(ctx)
+    t = (await tools.github_targets(ctx))[0]
     assert (t.owner, t.repo, t.number) == ("o", "r", 7)
 
 
-async def test_a_real_link_WINS_over_the_appended_mapping_row():
+async def test_a_real_link_comes_BEFORE_the_appended_mapping_row():
     ctx = _ctx(links=[_link(ref={"owner": "o", "repo": "real", "number": 1}), _link(url="o/fallback#2")])
-    assert (await tools.github_target(ctx)).repo == "real"
+    assert [t.repo for t in await tools.github_targets(ctx)] == ["real", "fallback"]
+
+
+# --- choosing among several links -------------------------------------------------
+
+_ISSUE = _link(ref={"owner": "o", "repo": "r", "number": 1077}, rtype="issue")
+_PR = _link(ref={"owner": "o", "repo": "r", "number": 1078})
+
+
+async def test_several_links_and_no_target_is_an_error_not_the_oldest():
+    """Defaulting to the oldest link posted a PR answer on the issue."""
+    ctx = _ctx(links=[_ISSUE, _PR])
+    res = await tools.github_comment(body="hi", ctx=ctx)
+    assert res.is_error is True
+    assert "o/r#1077" in res.text and "o/r#1078" in res.text
+    assert ctx.upstream.calls == []
+
+
+async def test_target_picks_the_linked_pr():
+    ctx = _ctx(links=[_ISSUE, _PR])
+    res = await tools.github_comment(body="hi", target="o/r#1078", ctx=ctx)
+    assert res.is_error is False
+    assert ctx.upstream.calls[0]["path"] == "repos/o/r/issues/1078/comments"
+
+
+async def test_target_accepts_a_url():
+    ctx = _ctx(links=[_ISSUE, _PR])
+    await tools.github_comment(body="hi", target="https://github.com/o/r/pull/1078", ctx=ctx)
+    assert ctx.upstream.calls[0]["path"] == "repos/o/r/issues/1078/comments"
+
+
+async def test_an_UNLINKED_target_is_refused():
+    ctx = _ctx(links=[_ISSUE, _PR])
+    res = await tools.github_comment(body="hi", target="someone/else#5", ctx=ctx)
+    assert res.is_error is True
+    assert "not linked" in res.text
+    assert ctx.upstream.calls == []
+
+
+async def test_a_duplicate_mapping_row_is_not_a_second_link():
+    ctx = _ctx(links=[_PR, _link(url="o/r#1078")])
+    res = await tools.github_comment(body="hi", ctx=ctx)
+    assert res.is_error is False
+
+
+async def test_a_reply_goes_to_the_PR_owning_the_review_comment():
+    """The oldest link is an issue, which has no review threads."""
+    ctx = _ctx(links=[_ISSUE, _PR],
+               responses=[_review_comment(number=1078), _graphql(False), httpx.Response(201, json={})])
+    res = await tools.github_comment(body="hi", in_reply_to=55, ctx=ctx)
+    assert res.is_error is False
+    assert ctx.upstream.calls[0]["path"] == "repos/o/r/pulls/comments/55"
+    assert ctx.upstream.calls[-1]["path"] == "repos/o/r/pulls/1078/comments/55/replies"
+
+
+async def test_a_reply_to_an_UNKNOWN_review_comment_is_refused():
+    ctx = _ctx(links=[_ISSUE, _PR], responses=[httpx.Response(404, json={"message": "Not Found"})])
+    res = await tools.github_comment(body="hi", in_reply_to=55, ctx=ctx)
+    assert res.is_error is True
+    assert all(c["method"] == "GET" for c in ctx.upstream.calls)
+
+
+async def test_a_reply_on_an_UNLINKED_pr_is_refused():
+    ctx = _ctx(links=[_ISSUE], responses=[_review_comment(number=9)])
+    res = await tools.github_comment(body="hi", in_reply_to=55, ctx=ctx)
+    assert res.is_error is True
+    assert "o/r#9" in res.text
+
+
+async def test_success_names_where_the_comment_landed():
+    url = "https://github.com/o/r/pull/1078#issuecomment-1"
+    ctx = _ctx(links=[_PR], responses=[httpx.Response(201, json={"html_url": url})])
+    res = await tools.github_comment(body="hi", ctx=ctx)
+    assert "o/r#1078" in res.text and url in res.text

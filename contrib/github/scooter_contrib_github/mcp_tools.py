@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import logging
 
+import httpx
 from fastmcp import FastMCP
 
-from scooter_broker_lib.links import first_target, ref_of, resource_type_is
+from scooter_broker_lib.links import first_target, links_for, ref_of, resource_type_is
 from scooter_broker_lib.mcp import ToolContext, ToolContextDep, ToolResult, gate
-from scooter_broker_lib.refs import GithubTarget, parse_github_resource_id
+from scooter_broker_lib.refs import GithubTarget, parse_github_resource_id, parse_github_url
 
 from .pr_summary import fetch_pr_summary
 
@@ -28,13 +29,88 @@ def _target_from_link(link: dict) -> GithubTarget | None:
     return parse_github_resource_id(link.get("url") or "")
 
 
-async def github_target(ctx: ToolContext) -> GithubTarget | None:
-    """The PR/issue this conversation is attached to, or None; shared by the gate and the handler."""
-    return first_target(await ctx.links.list(), SOURCE, _target_from_link)
+async def github_targets(ctx: ToolContext) -> list[GithubTarget]:
+    """Every distinct PR/issue this conversation is attached to, oldest first."""
+    targets: list[GithubTarget] = []
+    for link in links_for(await ctx.links.list(), SOURCE):
+        target = _target_from_link(link)
+        if target is not None and target not in targets:
+            targets.append(target)
+    return targets
+
+
+def _name(target: GithubTarget) -> str:
+    return f"{target.owner}/{target.repo}#{target.number}"
+
+
+async def _review_comment_pr(
+    ctx: ToolContext, targets: list[GithubTarget], comment_id: int
+) -> GithubTarget | None:
+    """The PR owning review comment `comment_id`, looked up in each linked repo."""
+    for owner, repo in dict.fromkeys((t.owner, t.repo) for t in targets):
+        response = await ctx.upstream.request(
+            "GET", f"repos/{owner}/{repo}/pulls/comments/{comment_id}"
+        )
+        if not 200 <= response.status_code < 300:
+            continue
+        found = parse_github_url((response.json() or {}).get("html_url"))
+        if found is not None:
+            return found
+    return None
+
+
+async def _comment_target(
+    ctx: ToolContext, target: str | None, in_reply_to: int | None
+) -> GithubTarget | str:
+    """The linked PR/issue to post on, or why none could be chosen."""
+    linked = await github_targets(ctx)
+    if not linked:
+        return (
+            "Could not determine the GitHub PR/issue for this conversation — it has no "
+            "github link with owner/repo/number. Use the broker's /github proxy with an "
+            "explicit owner/repo/number instead."
+        )
+    listing = ", ".join(_name(t) for t in linked)
+    if target:
+        chosen = parse_github_resource_id(target.strip())
+        if chosen is None:
+            return f"Could not parse target {target!r}. Pass `owner/repo#123` or a PR/issue URL."
+        if chosen not in linked:
+            return f"{_name(chosen)} is not linked to this conversation. Linked: {listing}."
+        return chosen
+    if in_reply_to is not None:
+        pr = await _review_comment_pr(ctx, linked, in_reply_to)
+        if pr is None:
+            return (
+                f"Review comment {in_reply_to} was not found in the linked repos "
+                f"({listing}). `github_pr_summary` lists each thread's comment_id."
+            )
+        if pr not in linked:
+            return (
+                f"Review comment {in_reply_to} is on {_name(pr)}, which is not "
+                f"linked to this conversation. Linked: {listing}."
+            )
+        return pr
+    if len(linked) > 1:
+        return (
+            f"This conversation is linked to several GitHub PRs/issues: {listing}. "
+            "Nothing was posted. Pass `target` naming the one to comment on, usually "
+            "the one the comment you are answering was left on."
+        )
+    return linked[0]
+
+
+def _posted_text(target: GithubTarget, response: httpx.Response) -> str:
+    """Where the comment landed, so a misroute is visible."""
+    try:
+        url = (response.json() or {}).get("html_url")
+    except ValueError:
+        url = None
+    return f"Commented on {_name(target)}" + (f": {url}" if url else ".")
 
 
 async def _github_attached(ctx: ToolContext) -> bool:
-    return await github_target(ctx) is not None
+    return bool(await github_targets(ctx))
 
 
 async def _thread_is_resolved(
@@ -91,37 +167,37 @@ async def _thread_is_resolved(
 async def github_comment(
     body: str,
     in_reply_to: int | None = None,
+    target: str | None = None,
     ctx: ToolContext = ToolContextDep,
 ) -> ToolResult:
-    """Post a comment on THIS conversation's GitHub PR/issue.
+    """Post a comment on one of THIS conversation's GitHub PRs/issues.
 
-    owner/repo/number are inferred. Pass `in_reply_to` (a review-comment id) to reply
-    within a PR review thread; omit it for a PR-level comment. Returns the real result.
+    `target` (`owner/repo#123` or a PR/issue URL) names which linked PR/issue to post
+    on. It is required when the conversation has several, and should be the one the
+    comment you are answering was left on. Pass `in_reply_to` (a review-comment id) to
+    reply within a PR review thread; its PR is found from the id. Omit it for a
+    PR-level comment. Returns the real result and the posted comment's URL.
     """
-    target = await github_target(ctx)
-    if target is None:
-        return ToolResult.error(
-            "Could not determine the GitHub PR/issue for this conversation — it has no "
-            "github link with owner/repo/number. Use the broker's /github proxy with an "
-            "explicit owner/repo/number instead."
-        )
+    resolved = await _comment_target(ctx, target, in_reply_to)
+    if isinstance(resolved, str):
+        return ToolResult.error(resolved)
     if in_reply_to is not None:
         # GitHub sends no webhook when a human resolves a review thread, so a late reply could land on a closed one.
-        if await _thread_is_resolved(ctx, target, in_reply_to):
+        if await _thread_is_resolved(ctx, resolved, in_reply_to):
             return ToolResult.error(
                 f"That review thread (comment {in_reply_to}) has been RESOLVED, so the "
                 "reply was not posted — it would be noise on a closed conversation. If "
                 "you still need to say something, post it as a PR-level comment "
                 "(github_comment without in_reply_to)."
             )
-    base = f"repos/{target.owner}/{target.repo}"
+    base = f"repos/{resolved.owner}/{resolved.repo}"
     path = (
-        f"{base}/pulls/{target.number}/comments/{in_reply_to}/replies"
-        if in_reply_to
-        else f"{base}/issues/{target.number}/comments"
+        f"{base}/pulls/{resolved.number}/comments/{in_reply_to}/replies"
+        if in_reply_to is not None
+        else f"{base}/issues/{resolved.number}/comments"
     )
     response = await ctx.upstream.request("POST", path, json={"body": body})
-    return ToolResult.from_upstream(response, success_text="Commented on the GitHub PR/issue.")
+    return ToolResult.from_upstream(response, success_text=_posted_text(resolved, response))
 
 
 _PR_TYPES = ("pr", "pull", "pulls", "pull_request", "pull_requests")

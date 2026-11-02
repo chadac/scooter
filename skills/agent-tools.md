@@ -87,6 +87,8 @@ this (by purpose — find them in your tool list):
   know), but use it when you need the raw ids — e.g. to build a permalink.
 - **Comment on the GitHub PR/issue** — comment on the PR/issue this conversation
   came from. (Optional reply-to a review-comment id to reply inside a review thread.)
+  When the conversation is linked to more than one PR/issue, pass `target`
+  (`owner/repo#N`) naming the one the comment you're answering was left on.
   There is **no** github-react tool: GitHub reactions go through the broker
   (`agent-broker github/repos/O/R/issues/comments/<id>/reactions -X POST -d
   '{"content":"eyes"}'`). React 👀 the moment a comment reaches you — the same

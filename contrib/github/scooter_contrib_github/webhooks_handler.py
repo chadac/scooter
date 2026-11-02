@@ -101,8 +101,9 @@ def _response_instructions(
     return (
         f"\n\n---\n"
         f"{_reply_steps(comment_id)}\n\n"
-        f"To respond on GitHub {kind} #{number}, use the `github_comment` tool with your comment `body` — "
-        f"the target ({owner}/{repo} #{number}) is already known."
+        f"To respond on GitHub {kind} #{number}, use "
+        f'`github_comment(body, target="{owner}/{repo}#{number}")`. '
+        f"Name the target: this conversation may be linked to more than one PR/issue."
         + _comment_ref(comment_id)
     )
 
@@ -128,8 +129,9 @@ def _format_forwarded_message(
 
     reply_instruction = (
         f"{_reply_steps(comment_id)}\n\n"
-        "To respond, use the `github_comment` tool (this PR/issue is already known — "
-        "you just provide the comment body). It reports the real result."
+        f'To respond, use `github_comment(body, target="{owner}/{repo}#{number}")`. '
+        "Name the target: this conversation may be linked to more than one PR/issue. "
+        "It reports the real result and where the comment landed."
     )
     reply_instruction += _comment_ref(comment_id)
 
@@ -328,7 +330,7 @@ async def _handle_review_comment(payload: dict):
         f"{_reply_steps(comment_id)}\n\n"
         f"This is a LINE comment, so reply IN THE THREAD: "
         f"`github_comment(body, in_reply_to={comment_id})`. That puts your answer next to "
-        f"the code being discussed. Use a plain `github_comment(body)` only for something "
+        f"the code being discussed. Use `github_comment(body, target=\"{owner}/{repo}#{number}\")` only for something "
         f"about the PR as a whole.\n\n"
         f"If the comment asks for a change, make it and push — a reply alone does not "
         f"address it."
@@ -369,7 +371,10 @@ async def _handle_review(payload: dict):
         )
     else:
         head = f"@{user} reviewed PR #{number} in {owner}/{repo}."
-        tail = "Respond with `github_comment` if it asks for something."
+        tail = (
+            f'Respond with `github_comment(body, target="{owner}/{repo}#{number}")` '
+            "if it asks for something."
+        )
 
     message = f"{head}\n\n" + (f"{body}\n\n" if body else "") + f"---\n\n{tail}"
     sender = sender_from(author, review.get("author_association"))
