@@ -17,6 +17,15 @@ JWT_BEARER = "urn:ietf:params:oauth:grant-type:jwt-bearer"
 ASSERTION_TTL = 3600
 
 
+class GoogleCredential(Credential):
+    """A bearer token that strips any `key=` API key; Google rejects a token sent with one."""
+
+    def inject(self, req: httpx.Request) -> None:
+        # gsutil adds its own API key when it thinks it has no credential.
+        req.url = req.url.copy_remove_param("key")
+        super().inject(req)
+
+
 @dataclass
 class ServiceAccountSource(CredentialSource):
     info: dict
@@ -44,7 +53,7 @@ class ServiceAccountSource(CredentialSource):
         # One identity for every caller, so one cached token.
         async with self._lock:
             if self._cached and time.time() < self._cached[1] - 60:
-                return Credential(kind="bearer", value=self._cached[0], expires_at=self._cached[1])
+                return GoogleCredential(kind="bearer", value=self._cached[0], expires_at=self._cached[1])
 
             now = int(time.time())
             async with httpx.AsyncClient(timeout=15) as client:
@@ -58,4 +67,4 @@ class ServiceAccountSource(CredentialSource):
             token = data["access_token"]
             expires_at = now + int(data.get("expires_in", ASSERTION_TTL))
             self._cached = (token, expires_at)
-            return Credential(kind="bearer", value=token, expires_at=expires_at)
+            return GoogleCredential(kind="bearer", value=token, expires_at=expires_at)

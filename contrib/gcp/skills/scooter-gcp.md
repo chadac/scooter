@@ -90,3 +90,7 @@ Prefer `--dry-run` / `terraform plan` first where the tool has one.
 - **Client libraries** don't read the placeholder on their own. In Python, pass
   `google.oauth2.credentials.Credentials("scooter-forge-proxy")`.
 - `gcloud auth print-access-token` prints the placeholder, not a real token.
+- `gcloud auth list` shows no credentialed accounts. That's expected; ignore
+  its advice to log in.
+- A 401 whose reason is `CREDENTIALS_MISSING` means the host wasn't
+  intercepted (see the first point), not that access is broken.

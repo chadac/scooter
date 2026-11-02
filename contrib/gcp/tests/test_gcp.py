@@ -206,6 +206,14 @@ async def test_placeholder_is_replaced_by_the_service_account_token(proxied):
     assert [req.headers["authorization"] for req in seen] == ["Bearer ya29.tok1"]
 
 
+async def test_gsutils_api_key_is_dropped(proxied):
+    client, seen = proxied
+    r = await client.get("https://storage.googleapis.com/storage/v1/b?project=p&key=AIzaX&alt=json")
+    assert r.status_code == 200
+    assert seen[0].url.params.multi_items() == [("project", "p"), ("alt", "json")]
+    assert seen[0].headers["authorization"] == "Bearer ya29.tok1"
+
+
 async def test_the_policy_runs_before_any_upstream_call(proxied):
     client, seen = proxied
     r = await client.delete("https://compute.googleapis.com/compute/v1/projects/p/zones/z/instances/vm")
