@@ -45,17 +45,19 @@ function imageBlock(b: Extract<SdkContentBlock, { type: "image" }>): ContentBloc
   return null;
 }
 
-/** Swap image blocks in a tool result for a short text marker, keeping base64 out of the UI's tool card and history. */
-export function elideResultImages(content: unknown): unknown {
+/** Normalize image blocks in a tool result to the ACP/MCP `{type:"image", data, mimeType}` shape. The
+ *  bridge moves the bytes into the conversation's asset store and keeps only a reference in the log,
+ *  so the UI's tool card can show the image without carrying base64 in history. */
+export function normalizeResultImages(content: unknown): unknown {
   if (!Array.isArray(content)) return content;
   return content.map((b) => {
     if (!b || typeof b !== "object" || (b as { type?: unknown }).type !== "image") return b;
     // Accept both the Messages-API shape (source.data) and the MCP shape (data/mimeType).
     const img = b as { data?: string; mimeType?: string; source?: { data?: string; media_type?: string } };
-    const data = img.source?.data ?? img.data ?? "";
-    const mime = img.source?.media_type ?? img.mimeType ?? "image";
-    const kb = Math.round((data.length * 3) / 4 / 1024);
-    return { type: "text", text: `[${mime} image, ${kb} KB]` };
+    const data = img.source?.data ?? img.data;
+    const mimeType = img.source?.media_type ?? img.mimeType;
+    if (typeof data !== "string" || typeof mimeType !== "string") return { type: "text", text: "[image]" };
+    return { type: "image", data, mimeType };
   });
 }
 
@@ -81,7 +83,7 @@ function blocksToUpdates(content: SdkContentBlock[], partialsEnabled: boolean): 
           sessionUpdate: "tool_call_update",
           toolCallId: block.tool_use_id,
           status: block.is_error ? "failed" : "completed",
-          rawOutput: elideResultImages(block.content),
+          rawOutput: normalizeResultImages(block.content),
         });
         break;
       }

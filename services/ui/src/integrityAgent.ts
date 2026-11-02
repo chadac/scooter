@@ -286,11 +286,17 @@ export class IntegrityAgent extends AbstractAgent {
     return this.messageImages.get(messageId);
   }
 
-  /** Record a MESSAGE_IMAGES event's refs keyed by messageId; returns true if it added anything. */
+  /** Record a MESSAGE_IMAGES event's refs keyed by messageId; returns true if it added anything.
+   *  An assistant message can carry several events (one per image the agent sent), so refs
+   *  accumulate, deduped by assetId, which also keeps a replayed event idempotent. */
   private trackImages(e: BaseEvent): boolean {
     const ev = e as unknown as { type?: string; messageId?: string; images?: Array<{ assetId: string; mimeType: string; url: string }> };
     if (ev.type !== "MESSAGE_IMAGES" || !ev.messageId || !ev.images?.length) return false;
-    this.messageImages.set(ev.messageId, ev.images);
+    const cur = this.messageImages.get(ev.messageId) ?? [];
+    const seen = new Set(cur.map((i) => i.assetId));
+    const added = ev.images.filter((i) => !seen.has(i.assetId));
+    if (!added.length) return false;
+    this.messageImages.set(ev.messageId, [...cur, ...added]);
     return true;
   }
 

@@ -17,15 +17,11 @@ import { createPgPool } from "../db/pgPool.js";
 import { logger } from "../log.js";
 import type { SessionId } from "../types.js";
 import type { AssetStore, AssetBytes, StoredAsset, AssetReject } from "./assetStore.js";
-import { AssetError, ALLOWED_IMAGE_MIME, DEFAULT_ASSET_MAX_BYTES } from "./assetStore.js";
+import { AssetError, ALLOWED_IMAGE_MIME, DEFAULT_ASSET_MAX_BYTES, extFor } from "./assetStore.js";
 
 const log = logger("hybridAssetStore");
 const { conversationAssets } = agent_host;
 
-/** File extension for a stored blob, from its MIME. */
-function extFor(mime: string): string {
-  return ({ "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" })[mime] ?? "bin";
-}
 
 export interface HybridAssetStoreOpts {
   /** Postgres connection string. */
