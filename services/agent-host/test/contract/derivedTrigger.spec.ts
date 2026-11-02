@@ -7,7 +7,7 @@
 import { describe, it, expect, vi } from "vitest";
 
 import { createRemotePersonalizedProvider, humanTriggerFromLog } from "../../src/acp/remoteAgentRegistry.js";
-import { isPostableSource } from "../../src/api/management.js";
+import { isPostableSource, SANDBOX_SOURCE } from "../../src/api/management.js";
 import { createSessionManager, type ConversationStore, type SandboxProvisioner } from "../../src/session/manager.js";
 import type { AguiEvent, PromptInput, SessionBridge } from "../../src/bridge.js";
 import type { ExecBackend, SessionId } from "../../src/types.js";
@@ -24,6 +24,9 @@ describe("humanTriggerFromLog", () => {
   });
   it("the LATEST direct trigger wins: a scheduler prompt after a UI one is not human", () => {
     expect(humanTriggerFromLog([user("u1"), sys("scheduler"), sys("background job")])).toBe(false);
+  });
+  it("a sandbox's own message after a UI prompt is not human", () => {
+    expect(humanTriggerFromLog([user("u1"), sys(SANDBOX_SOURCE), sys("resume")])).toBe(false);
   });
   it("a log with no direct trigger fails closed", () => {
     expect(humanTriggerFromLog([])).toBe(false);
