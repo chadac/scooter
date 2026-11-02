@@ -171,7 +171,7 @@ forwarded.
     The Jira handler doesn't check signatures yet, so anyone who can reach the webhooks
     host can post events to `/webhooks/jira`. Until it does, restrict that path at your
     ingress (for example, to Atlassian's published IP ranges) or leave Jira webhooks off.
-    The fix is tracked in [#820](https://github.com/chadac/scooter/issues/820).
+    The fix is tracked in [#820](https://github.com/chadac-me/scooter/issues/820).
 
 <!-- TODO(#820): the jira handler declares JIRA_WEBHOOK_SECRET but never checks it, has no
      jiraEnabled option (JIRA_ENABLED must come from the provider Secret), and its

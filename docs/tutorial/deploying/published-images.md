@@ -1,7 +1,7 @@
 # Using the published images
 
 This is the deployment most teams want: Scooter's CI builds and publishes every image to
-`ghcr.io/chadac/scooter`, and you deploy them with your own configuration. You build
+`ghcr.io/chadac-me/scooter`, and you deploy them with your own configuration. You build
 nothing yourself.
 
 This page sets up a deployment repository that:
@@ -31,7 +31,7 @@ that every image exists before deploying.
 # flake.nix
 {
   inputs = {
-    scooter.url = "github:chadac/scooter";
+    scooter.url = "github:chadac-me/scooter";
     nixpkgs.follows = "scooter/nixpkgs";
     flake-parts.follows = "scooter/flake-parts";
   };
@@ -78,7 +78,7 @@ that every image exists before deploying.
         just test   # the full suite: unit, cluster integration and end-to-end
         ```
 
-        [`CONTRIBUTING.md`](https://github.com/chadac/scooter/blob/main/CONTRIBUTING.md)
+        [`CONTRIBUTING.md`](https://github.com/chadac-me/scooter/blob/main/CONTRIBUTING.md)
         covers the setup and the individual test tiers.
 
 ## Deploy by hand once
@@ -284,7 +284,7 @@ Two things to know:
   a commit whose images are still building. The image check on the pull request then
   fails. Re-run it a few minutes later.
 
-<!-- TODO: vend these as reusable workflows / composite actions from chadac/scooter. -->
+<!-- TODO: vend these as reusable workflows / composite actions from chadac-me/scooter. -->
 
 ## Running on a Claude subscription
 
@@ -296,7 +296,7 @@ and pin its tag:
 # scooter.nix
 { lib, ... }: {
   scooter.images.agent-host.ref = {
-    image = "ghcr.io/chadac/scooter/agent-host-claude";
+    image = "ghcr.io/chadac-me/scooter/agent-host-claude";
     tag = lib.mkOverride 20 "mk0ycrfj32cl";
   };
 }
@@ -308,12 +308,12 @@ in your `flake.lock`, compute it the way Scooter's CI does:
 ```bash
 rev=$(jq -r .nodes.scooter.locked.rev flake.lock)
 NIXPKGS_ALLOW_UNFREE=1 nix eval --impure --raw \
-  "github:chadac/scooter/$rev#packages.x86_64-linux.agent-host-image-claude.outPath" \
+  "github:chadac-me/scooter/$rev#packages.x86_64-linux.agent-host-image-claude.outPath" \
   | xargs basename | cut -c1-12
 ```
 
 Run it whenever you update Scooter. The image check can't catch a stale tag: an older tag
 is still published, so it passes. Making this automatic is tracked in
-[#824](https://github.com/chadac/scooter/issues/824).
+[#824](https://github.com/chadac-me/scooter/issues/824).
 
 <!-- TODO(#824): shrink this section to `scooter.images.agent-host.claude.enable = true` once published refs ship as data. -->

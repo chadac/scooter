@@ -102,7 +102,7 @@ nix build --no-link --print-out-paths "github:NixOS/nixpkgs/$(jq -r .nodes.nixpk
 
 Sources are also mirrored by `cache.nixos.org`. If you received a Scooter image
 and cannot obtain the source this way, open an issue on
-[chadac/scooter](https://github.com/chadac/scooter/issues) and the source will
+[chadac-me/scooter](https://github.com/chadac-me/scooter/issues) and the source will
 be provided.
 
 ## Proprietary components

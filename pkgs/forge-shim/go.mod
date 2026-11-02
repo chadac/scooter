@@ -1,3 +1,3 @@
-module github.com/chadac/scooter/pkgs/forge-shim
+module github.com/chadac-me/scooter/pkgs/forge-shim
 
 go 1.24

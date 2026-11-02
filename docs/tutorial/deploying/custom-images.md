@@ -1,6 +1,6 @@
 # Custom images
 
-There are two reasons to run images other than the ones on `ghcr.io/chadac/scooter`:
+There are two reasons to run images other than the ones on `ghcr.io/chadac-me/scooter`:
 
 - **Your cluster must pull from your own registry**, but the images can stay as published.
   [Mirror them](#mirror-the-published-images): copy the published images into your
@@ -29,8 +29,8 @@ With that prefix, the UI and broker images in the rendered manifests change like
 
 ```text
 # default
-ghcr.io/chadac/scooter/agent-sandbox-ui:zvyycww2x1gj
-ghcr.io/chadac/scooter/agent-broker:3mb12pgj38v5
+ghcr.io/chadac-me/scooter/agent-sandbox-ui:zvyycww2x1gj
+ghcr.io/chadac-me/scooter/agent-broker:3mb12pgj38v5
 
 # with the prefix above
 123456789012.dkr.ecr.us-east-1.amazonaws.com/scooter/agent-sandbox-ui:zvyycww2x1gj
@@ -52,12 +52,12 @@ Add an output that pairs each image's ghcr source with its destination in your r
 # flake.nix, next to image-refs
 packages.image-mirror = pkgs.writeText "image-mirror"
   (pkgs.lib.concatStrings (pkgs.lib.mapAttrsToList
-    (name: i: "ghcr.io/chadac/scooter/${name}:${i.ref.tag} ${i.ref.fullUrl}\n")
+    (name: i: "ghcr.io/chadac-me/scooter/${name}:${i.ref.tag} ${i.ref.fullUrl}\n")
     platform.config.scooter.images));
 ```
 
 ```text
-ghcr.io/chadac/scooter/agent-broker:3mb12pgj38v5 123456789012.dkr.ecr.us-east-1.amazonaws.com/scooter/agent-broker:3mb12pgj38v5
+ghcr.io/chadac-me/scooter/agent-broker:3mb12pgj38v5 123456789012.dkr.ecr.us-east-1.amazonaws.com/scooter/agent-broker:3mb12pgj38v5
 …
 ```
 
@@ -122,7 +122,7 @@ credentials on the nodes instead:
   or use a kubelet credential provider.
 
 A single option for all of this is tracked in
-[#822](https://github.com/chadac/scooter/issues/822).
+[#822](https://github.com/chadac-me/scooter/issues/822).
 
 <!-- TODO(#822): replace this section with scooter.imagePullSecrets once it lands. -->
 
@@ -133,7 +133,7 @@ building from a fork. The fork already contains everything needed to publish.
 
 ### 1. Fork and change
 
-Fork [chadac/scooter](https://github.com/chadac/scooter) and make your changes on its
+Fork [chadac-me/scooter](https://github.com/chadac-me/scooter) and make your changes on its
 `main`. For a contrib, [Writing a contrib](../writing-a-contrib/index.md) covers the code.
 Remember to enable it in `.github/deployment/config.nix`, which decides what goes into the
 images.

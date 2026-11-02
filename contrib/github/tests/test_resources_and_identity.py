@@ -1,6 +1,6 @@
 """GitHub's resource shapes and owner lookup.
 
-`conversation_map` holds ("pull_request", "chadac/scooter#487") while
+`conversation_map` holds ("pull_request", "chadac-me/scooter#487") while
 `resource_links` holds ("pr", the html_url) for the same PR, so each shape must
 resolve to the other.
 """
@@ -40,15 +40,15 @@ def _patch(monkeypatch, handler):
 async def test_github_short_id_offers_the_stored_url():
     assert (
         "pr",
-        "https://github.com/chadac/scooter/pull/474",
-    ) in link_variants("github", "pull_request", "chadac/scooter#474")
+        "https://github.com/chadac-me/scooter/pull/474",
+    ) in link_variants("github", "pull_request", "chadac-me/scooter#474")
 
 
 async def test_github_url_offers_the_short_id():
     assert (
         "pull_request",
-        "chadac/scooter#474",
-    ) in link_variants("github", "pr", "https://github.com/chadac/scooter/pull/474")
+        "chadac-me/scooter#474",
+    ) in link_variants("github", "pr", "https://github.com/chadac-me/scooter/pull/474")
 
 
 async def test_issue_urls_use_the_issues_path_not_pull():
@@ -56,9 +56,9 @@ async def test_issue_urls_use_the_issues_path_not_pull():
 
 
 async def test_the_callers_own_shape_is_tried_first():
-    assert link_variants("github", "pull_request", "chadac/scooter#1")[0] == (
+    assert link_variants("github", "pull_request", "chadac-me/scooter#1")[0] == (
         "pull_request",
-        "chadac/scooter#1",
+        "chadac-me/scooter#1",
     )
 
 
@@ -73,9 +73,9 @@ async def test_type_aliases_are_two_way():
 
 
 async def test_canonical_link_stores_the_long_type_and_the_url():
-    assert canonical_link("github", "pr", "chadac/scooter#7") == (
+    assert canonical_link("github", "pr", "chadac-me/scooter#7") == (
         "pull_request",
-        "https://github.com/chadac/scooter/pull/7",
+        "https://github.com/chadac-me/scooter/pull/7",
     )
 
 

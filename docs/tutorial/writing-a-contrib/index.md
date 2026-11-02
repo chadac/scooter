@@ -16,7 +16,7 @@ Contribs are built **into Scooter's images**. The broker image contains every co
 broker half, and the webhooks image contains every webhooks half. So a contrib lives in
 the Scooter source tree, not in your deployment flake, and there are two ways to ship one:
 
-- **Upstream it.** Open a PR against [chadac/scooter](https://github.com/chadac/scooter).
+- **Upstream it.** Open a PR against [chadac-me/scooter](https://github.com/chadac-me/scooter).
   Once it merges and CI publishes the images, any deployment can enable it.
 - **Run a fork.** Add the contrib in your fork. The fork's `publish-images` workflow
   pushes images to `ghcr.io/<you>/scooter/`. Then point your deployment at the fork:
@@ -32,7 +32,7 @@ the Scooter source tree, not in your deployment flake, and there are two ways to
     ```
 
 Either way, work inside the repo's dev shell (`nix develop`). See
-[`CONTRIBUTING.md`](https://github.com/chadac/scooter/blob/main/CONTRIBUTING.md).
+[`CONTRIBUTING.md`](https://github.com/chadac-me/scooter/blob/main/CONTRIBUTING.md).
 
 ## The parts of a contrib
 

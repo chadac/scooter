@@ -1,4 +1,4 @@
-module github.com/chadac/scooter/conversation-router
+module github.com/chadac-me/scooter/conversation-router
 
 go 1.26
 

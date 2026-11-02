@@ -313,7 +313,7 @@
                       let str = toString d;
                           m = builtins.match ".*/(modules/.*)" str;
                       in if m != null
-                         then { name = builtins.head m; url = "https://github.com/chadac/scooter/blob/main/${builtins.head m}"; }
+                         then { name = builtins.head m; url = "https://github.com/chadac-me/scooter/blob/main/${builtins.head m}"; }
                          else d)
                     opt.declarations;
                 };

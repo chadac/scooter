@@ -102,7 +102,7 @@ The forwarded message hands you the id, and nothing else — picking the endpoin
 is yours:
 
 ```
-@chadac commented on a specific LINE of PR #42 in chadac/scooter:
+@chadac commented on a specific LINE of PR #42 in chadac-me/scooter:
 ...
 (comment_id: 2371885432)
 ```

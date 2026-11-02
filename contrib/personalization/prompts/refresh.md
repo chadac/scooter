@@ -6,7 +6,7 @@ agents work the way this user wants, without being told again.
 3. Decide what changed. Good notes are specific, durable and actionable:
    - **common-asks**: things the user repeatedly asks for ("opens draft PRs early").
    - **agent-habits**: things agents keep having to do or rediscover in their repos
-     ("chadac/scooter needs `nix develop`; Postgres tests refuse to run as root").
+     ("chadac-me/scooter needs `nix develop`; Postgres tests refuse to run as root").
    - **preferences**: style and process the user has stated or corrected
      ("prefers terse summaries", "never force-push a branch under review").
    - **environment**: tools, repos and services they work with.

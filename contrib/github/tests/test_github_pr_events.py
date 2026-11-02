@@ -8,7 +8,7 @@ from scooter_contrib_github import webhooks_handler as gh
 
 
 def _repo():
-    return {"owner": {"login": "chadac"}, "name": "scooter"}
+    return {"owner": {"login": "chadac-me"}, "name": "scooter"}
 
 
 def review_comment(body="please rename this", user="chadac", cid=555, in_reply_to=None):

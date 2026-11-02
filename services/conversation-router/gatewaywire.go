@@ -7,7 +7,7 @@ import (
 
 	"k8s.io/client-go/rest"
 
-	"github.com/chadac/scooter/conversation-router/svcauth"
+	"github.com/chadac-me/scooter/conversation-router/svcauth"
 )
 
 // defaultSessionCookies must match the agent-host's DEFAULT_SESSION_COOKIES.

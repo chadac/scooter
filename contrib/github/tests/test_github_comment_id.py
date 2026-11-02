@@ -8,7 +8,7 @@ from scooter_contrib_github import webhooks_handler as gh
 
 
 def _repo():
-    return {"owner": {"login": "chadac"}, "name": "scooter"}
+    return {"owner": {"login": "chadac-me"}, "name": "scooter"}
 
 
 def issue_comment(cid=991, body="can you also handle the empty case?", is_pr=True):
@@ -111,11 +111,11 @@ class TestTheReplyStepsAreAsked:
         assert "comment your plan" in msg
 
     def test_a_first_mention_carries_the_id_to_react_to(self):
-        text = gh._response_instructions("chadac", "scooter", 42, True, comment_id=991)
+        text = gh._response_instructions("chadac-me", "scooter", 42, True, comment_id=991)
         assert "React 👀 first" in text
         assert "comment_id: 991" in text
 
     def test_a_label_trigger_has_no_comment_to_react_to(self):
-        text = gh._response_instructions("chadac", "scooter", 42, True)
+        text = gh._response_instructions("chadac-me", "scooter", 42, True)
         assert "React" not in text
         assert "comment your plan" in text

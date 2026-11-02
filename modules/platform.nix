@@ -366,7 +366,7 @@ in
     };
     registryPrefix = mkOption {
       type = types.str;
-      default = "ghcr.io/chadac/scooter/";
+      default = "ghcr.io/chadac-me/scooter/";
       example = "123456789012.dkr.ecr.us-east-1.amazonaws.com/myorg/";
       description = ''
         Registry/repository prefix prepended to the default image names

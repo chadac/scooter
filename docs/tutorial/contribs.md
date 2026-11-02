@@ -305,7 +305,7 @@ didn't resolve, so check the broker's logs:
 kubectl -n scooter logs deploy/agent-broker | grep -i <contrib>
 ```
 
-[`examples/kubenix-config.nix`](https://github.com/chadac/scooter/blob/main/examples/kubenix-config.nix)
+[`examples/kubenix-config.nix`](https://github.com/chadac-me/scooter/blob/main/examples/kubenix-config.nix)
 configures every shipped contrib, and CI renders it, so it is a reliable reference.
 
 Next: [Configuring webhooks](webhooks.md).

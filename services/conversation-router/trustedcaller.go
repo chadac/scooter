@@ -13,7 +13,7 @@ import (
 
 	"k8s.io/client-go/rest"
 
-	"github.com/chadac/scooter/conversation-router/svcauth"
+	"github.com/chadac-me/scooter/conversation-router/svcauth"
 )
 
 // TrustedCaller reports whether a request proves it is a trusted in-cluster caller allowed to set `owner`; nil means verification is disabled.

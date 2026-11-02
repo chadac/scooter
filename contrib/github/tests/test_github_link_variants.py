@@ -6,21 +6,21 @@ from scooter_contrib_github.webhooks_handler import _link_variants
 def test_pull_request_offers_the_stored_pr_url():
     assert (
         "pr",
-        "https://github.com/chadac/scooter/pull/474",
-    ) in _link_variants("pull_request", "chadac/scooter#474")
+        "https://github.com/chadac-me/scooter/pull/474",
+    ) in _link_variants("pull_request", "chadac-me/scooter#474")
 
 
 def test_issue_offers_the_stored_issue_url():
     assert (
         "issue",
-        "https://github.com/chadac/scooter/issues/443",
-    ) in _link_variants("issue", "chadac/scooter#443")
+        "https://github.com/chadac-me/scooter/issues/443",
+    ) in _link_variants("issue", "chadac-me/scooter#443")
 
 
 def test_native_shape_is_tried_first():
-    assert _link_variants("pull_request", "chadac/scooter#1")[0] == (
+    assert _link_variants("pull_request", "chadac-me/scooter#1")[0] == (
         "pull_request",
-        "chadac/scooter#1",
+        "chadac-me/scooter#1",
     )
 
 

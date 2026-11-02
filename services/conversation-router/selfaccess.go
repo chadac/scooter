@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chadac/scooter/conversation-router/svcauth"
+	"github.com/chadac-me/scooter/conversation-router/svcauth"
 )
 
 // selfRoutes is the whole surface a sandbox may reach; anything else is 404. Tool-permission

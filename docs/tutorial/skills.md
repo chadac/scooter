@@ -23,7 +23,7 @@ source wins when two use the same filename):
 Two details catch people out:
 
 - **Scooter's platform skills are not included by default.** These are the skills in the
-  repo's top-level [`skills/`](https://github.com/chadac/scooter/tree/main/skills)
+  repo's top-level [`skills/`](https://github.com/chadac-me/scooter/tree/main/skills)
   directory. They teach the agent how to use its sandbox, the broker CLI, web services,
   scheduling and so on. `scooter.agent.skills` starts empty, so you add them yourself
   from `inputs.scooter.lib.scooterSkills` (see below). Almost every deployment wants them.

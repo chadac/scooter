@@ -31,7 +31,7 @@ Your deployment lives in its own repository, as a flake that takes Scooter as an
 # flake.nix
 {
   inputs = {
-    scooter.url = "github:chadac/scooter";
+    scooter.url = "github:chadac-me/scooter";
     nixpkgs.follows = "scooter/nixpkgs";
     flake-parts.follows = "scooter/flake-parts";
   };
@@ -52,7 +52,7 @@ Your deployment lives in its own repository, as a flake that takes Scooter as an
 
 `evalPlatform` is Scooter's entry point. It loads the platform modules and the image
 definitions, so every image reference resolves to a content-addressed tag on
-`ghcr.io/chadac/scooter`. You don't build any images yourself.
+`ghcr.io/chadac-me/scooter`. You don't build any images yourself.
 
 ## 2. Write a minimal configuration
 
@@ -262,7 +262,7 @@ The rest of the tutorial builds on this deployment:
 
 Also useful:
 
-- [`examples/kubenix-config.nix`](https://github.com/chadac/scooter/blob/main/examples/kubenix-config.nix)
+- [`examples/kubenix-config.nix`](https://github.com/chadac-me/scooter/blob/main/examples/kubenix-config.nix)
   is a kitchen-sink example with every feature on. CI renders it, so it always evaluates.
 - The [configuration reference](reference/options/index.md) documents every option.
 - [Features](features/index.md) explains what each part of Scooter does.

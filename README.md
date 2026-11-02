@@ -1,13 +1,13 @@
 # Scooter
 
-[![CI](https://github.com/chadac/scooter/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/chadac/scooter/actions/workflows/ci.yml)
-[![Publish images](https://github.com/chadac/scooter/actions/workflows/publish-images.yml/badge.svg?branch=main)](https://github.com/chadac/scooter/actions/workflows/publish-images.yml)
-[![Docs](https://github.com/chadac/scooter/actions/workflows/docs.yml/badge.svg?branch=main)](https://chadac.github.io/scooter/)
+[![CI](https://github.com/chadac-me/scooter/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/chadac-me/scooter/actions/workflows/ci.yml)
+[![Publish images](https://github.com/chadac-me/scooter/actions/workflows/publish-images.yml/badge.svg?branch=main)](https://github.com/chadac-me/scooter/actions/workflows/publish-images.yml)
+[![Docs](https://github.com/chadac-me/scooter/actions/workflows/docs.yml/badge.svg?branch=main)](https://chadac-me.github.io/scooter/)
 [![Container images](https://img.shields.io/badge/ghcr.io-chadac%2Fscooter-blue?logo=docker&logoColor=white)](https://github.com/chadac?tab=packages&repo_name=scooter)
 
 Scooter is a self-hosted, open source, Kubernetes-based, agent chat platform. Scooter agents are superpowered developers with full power over their dev environment while being fully locked down and under your control. Agents can install tools, spawn web services, collaborate via [VS Code in the browser](https://github.com/coder/code-server), check out, build and contribute back to your software projects.
 
-![A Scooter conversation: the agent reports on a pull request it opened, with the sandbox's web services in the side panel](https://raw.githubusercontent.com/chadac/scooter/assets/readme/scooter-browser-sample.png)
+![A Scooter conversation: the agent reports on a pull request it opened, with the sandbox's web services in the side panel](https://raw.githubusercontent.com/chadac-me/scooter/assets/readme/scooter-browser-sample.png)
 
 The key distinguishing feature of Scooter is that it is designed to be **extensible from the ground up**: You can customize everything Scooter can do, from the skills available to it, the services and tools that each agent has access to, its integrations with other services and permission-controlled access, and any custom Scooter chat UI components that you would ever need.
 
@@ -19,8 +19,8 @@ The core of Scooter is five services:
 
 * **The UI**, where your users can start new conversations, approve tasks, access any agent-hosted services, and view linked pull requests/JIRA issues/Slack threads per agent.
 
-* **The agent host**, where agent conversations are hosted. Each agent (generally) communicates with the user through [goose](https://goose-docs.ai/), although [other ACP-powered integrations are possible](https://chadac.github.io/scooter/features/byoc/). Hosts scale with the number of active conversations, so you can save on costs during off-hours by running fewer (or even zero!) host pods.
-  <!-- TODO: scale-to-zero is untested; verify before publishing. https://github.com/chadac/scooter/issues/817 -->
+* **The agent host**, where agent conversations are hosted. Each agent (generally) communicates with the user through [goose](https://goose-docs.ai/), although [other ACP-powered integrations are possible](https://chadac-me.github.io/scooter/features/byoc/). Hosts scale with the number of active conversations, so you can save on costs during off-hours by running fewer (or even zero!) host pods.
+  <!-- TODO: scale-to-zero is untested; verify before publishing. https://github.com/chadac-me/scooter/issues/817 -->
 
 * **The agent sandbox**, the agent's execution environment. Powered through the [Kubernetes agent-sandbox CRD](https://agent-sandbox.sigs.k8s.io/).
   * Agents have full power of the sandbox environment with minimal risk of impacting other services on your cluster.
@@ -50,7 +50,7 @@ that imports Scooter and renders Kubernetes manifests with [kubenix](https://kub
 # flake.nix
 {
   inputs = {
-    scooter.url = "github:chadac/scooter";
+    scooter.url = "github:chadac-me/scooter";
     flake-parts.follows = "scooter/flake-parts";
   };
 
@@ -98,5 +98,5 @@ nix build && kubectl apply -f result
 
 Scooter trusts the identity header set by whatever sits in front of it, so put an auth
 proxy (e.g. oauth2-proxy) in front of the UI before exposing it. The
-[getting started guide](https://chadac.github.io/scooter/getting-started/) covers auth,
+[getting started guide](https://chadac-me.github.io/scooter/getting-started/) covers auth,
 models, integrations and the other options you'll likely want.

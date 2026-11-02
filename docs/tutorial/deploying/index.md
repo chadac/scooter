@@ -15,7 +15,7 @@ A Scooter deployment is two things:
    first 12 characters of the image's Nix store hash:
 
     ```text
-    ghcr.io/chadac/scooter/agent-broker:3mb12pgj38v5
+    ghcr.io/chadac-me/scooter/agent-broker:3mb12pgj38v5
     ```
 
 ### Content tags
@@ -28,7 +28,7 @@ hash:
 ```text
 /nix/store/3mb12pgj38v5…-image-agent-broker.json
            └──────────┘
-ghcr.io/chadac/scooter/agent-broker:3mb12pgj38v5
+ghcr.io/chadac-me/scooter/agent-broker:3mb12pgj38v5
 ```
 
 So a tag changes exactly when something that goes into the image changes, and never
@@ -62,7 +62,7 @@ macOS, because tags always come from the x86_64 build.
 
 | | Images come from | You need it when | Page |
 |---|---|---|---|
-| **Published images** | `ghcr.io/chadac/scooter`, built by Scooter's CI | Almost always: you configure Scooter but don't change its code | [Using the published images](published-images.md) |
+| **Published images** | `ghcr.io/chadac-me/scooter`, built by Scooter's CI | Almost always: you configure Scooter but don't change its code | [Using the published images](published-images.md) |
 | **Mirrored images** | your registry, copied unchanged from ghcr | Your cluster can't pull from ghcr.io, or policy requires an internal registry | [Custom images → Mirroring](custom-images.md#mirror-the-published-images) |
 | **Your own images** | your registry, built from your fork | You've changed Scooter's code: your own contribs, sandbox packages, patches | [Custom images → Building](custom-images.md#build-your-own-images) |
 

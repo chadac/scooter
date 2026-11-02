@@ -3,7 +3,7 @@
 import { mintJoinToken } from "../auth/remoteAgentToken.js";
 
 /** The published container image, overridable for a private registry or a pinned tag. */
-const DEFAULT_IMAGE = "ghcr.io/chadac/scooter/remote-agent:latest";
+const DEFAULT_IMAGE = "ghcr.io/chadac-me/scooter/remote-agent:latest";
 
 /** The ws(s) URL the container dials for one minted session, derived from the public BYOC base (a bare host defaults to wss). */
 export function connectWsUrl(publicByocUrl: string | undefined, sessionId: string): string {

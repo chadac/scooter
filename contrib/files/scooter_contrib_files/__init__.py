@@ -16,5 +16,5 @@ the only general capabilities it supplies.
 
 This module is import-light on purpose: it imports NEITHER broker nor webhooks, so
 the sandbox image can vendor the tree without either service's surface.
-Design doc: chadac/scooter#768.
+Design doc: chadac-me/scooter#768.
 """

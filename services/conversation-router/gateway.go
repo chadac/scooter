@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chadac/scooter/conversation-router/svcauth"
+	"github.com/chadac-me/scooter/conversation-router/svcauth"
 )
 
 const (

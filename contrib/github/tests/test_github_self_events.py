@@ -16,7 +16,7 @@ OWN_LOGIN = "scooter-chadac-me[bot]"
 
 
 def _repo():
-    return {"owner": {"login": "chadac"}, "name": "scooter"}
+    return {"owner": {"login": "chadac-me"}, "name": "scooter"}
 
 
 def _bot(login=OWN_LOGIN):
