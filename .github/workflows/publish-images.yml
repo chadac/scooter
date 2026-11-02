@@ -10,10 +10,16 @@ on:
   push:
     branches: [main]
   workflow_dispatch: {}
+  # release.yml: also tag each image with the release version.
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
 
 concurrency:
   # One publish per ref; a newer push supersedes an in-flight one.
-  group: publish-images-${{ github.ref }}
+  group: publish-images-${{ github.ref }}-${{ inputs.version }}
   cancel-in-progress: true
 
 permissions:
@@ -62,6 +68,8 @@ jobs:
           - { name: agent-sandbox-os, attr: sandbox-os-image, unfree: false }
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.version }}
 
       - uses: nixbuild/nix-quick-install-action@v30
       - uses: cachix/cachix-action@v15
@@ -151,6 +159,8 @@ jobs:
           - { image: warm-store-controller, attr: warm-store-controller-image }
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.version }}
       - uses: nixbuild/nix-quick-install-action@v30
       - uses: cachix/cachix-action@v15
         with:
@@ -169,6 +179,7 @@ jobs:
       - name: create the multi-arch manifest + move latest
         env:
           NIXPKGS_ALLOW_UNFREE: ${{ matrix.unfree && '1' || '' }}
+          VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
@@ -185,6 +196,14 @@ jobs:
             --platforms linux/amd64,linux/arm64 \
             --template "${repo}:${tag}-ARCH" \
             --target "${repo}:${tag}"
+
+          # A release adds its version tag and leaves latest alone.
+          if [ -n "${VERSION:-}" ]; then
+            skopeo --insecure-policy copy --all \
+              "docker://${repo}:${tag}" "docker://${repo}:${VERSION}"
+            echo "== ${repo}:${tag} is multi-arch (amd64 + arm64); ${VERSION} -> it =="
+            exit 0
+          fi
 
           # `latest` tracks main's current content; a registry-side copy, no rebuild.
           skopeo --insecure-policy copy --all \

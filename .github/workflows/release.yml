@@ -1,0 +1,81 @@
+name: Release
+
+# Merging a VERSION bump tags, releases and publishes v<VERSION>.
+on:
+  push:
+    branches: [main]
+    paths: [VERSION]
+  workflow_dispatch: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  github-release:
+    name: tag + GitHub release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the tag and the release
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: read VERSION and its changelog section
+        id: version
+        run: |
+          set -euo pipefail
+          version=$(tr -d '[:space:]' < VERSION)
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error file=VERSION::'$version' is not MAJOR.MINOR.PATCH"
+            exit 1
+          fi
+          tag="v${version}"
+          awk -v h="## ${tag}" '$0 == h { f = 1; next } f && /^## / { exit } f' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          if ! grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md"; then
+            echo "::error file=CHANGELOG.md::no '## ${tag}' section"
+            exit 1
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "== $TAG already released — skipping =="
+            exit 0
+          fi
+          gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" \
+            --notes-file "$RUNNER_TEMP/notes.md"
+
+  images:
+    name: images
+    needs: github-release
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/publish-images.yml
+    with:
+      version: ${{ needs.github-release.outputs.tag }}
+    secrets: inherit
+
+  flakehub:
+    name: FlakeHub
+    needs: github-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # FlakeHub authenticates the push with the OIDC token
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.github-release.outputs.tag }}
+      - uses: DeterminateSystems/determinate-nix-action@v3
+      - uses: DeterminateSystems/flakehub-push@v7
+        with:
+          visibility: public
+          tag: ${{ needs.github-release.outputs.tag }}
