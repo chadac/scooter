@@ -308,7 +308,13 @@ export function createManagementApi(deps: ManagementDeps): Router {
       const id = ctx.params.id;
       if (!id || !(ctx.req.url ?? "").startsWith("/conversations/")) return undefined;
       try {
-        return (await check(id, ctx.req, ctx.user)) === "deny" ? { status: 404, json: { error: "not found" } } : undefined;
+        let verdict = await check(id, ctx.req, ctx.user);
+        // The broker addresses conversations by their sandbox's short id.
+        if (verdict === "unknown") {
+          const conv = await sessions.getByShortId(id);
+          if (conv) verdict = await check(conv.id, ctx.req, ctx.user);
+        }
+        return verdict === "deny" ? { status: 404, json: { error: "not found" } } : undefined;
       } catch (err) {
         log.errorWith("visibility check failed; refusing", err, { conversation_id: id });
         return { status: 503, json: { error: "could not check access" } };
@@ -460,6 +466,8 @@ export function createManagementApi(deps: ManagementDeps): Router {
     // Hydrate-if-absent (read-only) so a reconnect after a pod move resolves instead of 404ing.
     let conv = sessions.get(ctx.params.id);
     if (!conv && (await sessions.ensureReadable(ctx.params.id))) conv = sessions.get(ctx.params.id);
+    // The broker's OwnerResolver asks by the sandbox's short id.
+    conv ??= await sessions.getByShortId(ctx.params.id);
     if (!conv) return { status: 404, json: { error: "not found" } };
     // Star, title and visibility may be written elsewhere; serve the durable values.
     await sessions.refreshRouterMeta(conv.id).catch(() => {});

@@ -100,11 +100,15 @@ const conv = (over: Partial<Conversation> = {}): Conversation => ({
   ...over,
 });
 
+/** A request from the trusted in-cluster service, e.g. the broker. */
+const SERVICE_HEADER = "x-test-service";
+
 function setup(initial: Partial<Conversation> = {}, opts: { readAccessFails?: boolean } = {}) {
   const convs = new Map<string, Conversation>([["c1", conv(initial)]]);
   const sessions = {
     get: (id: string) => convs.get(id),
     ensureReadable: vi.fn(async (id: string) => convs.has(id)),
+    getByShortId: vi.fn(async (h: string) => [...convs.values()].find((c) => `short-${c.id}` === h)),
     enqueueByThread: vi.fn(async () => {}),
     start: vi.fn(async (threadId: string, model?: string, owner?: string, o?: { visibility?: Visibility }) => {
       const c = conv({ id: threadId, threadId, model, owner, visibility: o?.visibility });
@@ -130,6 +134,7 @@ function setup(initial: Partial<Conversation> = {}, opts: { readAccessFails?: bo
   const accessCheck = createAccessCheck({
     readAccess: (id) => store.readAccess!(id),
     memory: (id) => convs.get(id),
+    trustedService: async (req) => req.headers[SERVICE_HEADER] === "1",
   });
   const api = createManagementApi({
     sessions,
@@ -147,11 +152,12 @@ async function call(
   path: string,
   body?: unknown,
   caller?: string,
+  headers: Record<string, string> = {},
 ): Promise<{ status: number; json: any }> {
   const r = new PassThrough() as unknown as IncomingMessage;
   (r as { method?: string }).method = method;
   (r as { url?: string }).url = path;
-  (r as { headers?: Record<string, string> }).headers = caller ? { "x-auth-user": caller } : {};
+  (r as { headers?: Record<string, string> }).headers = { ...(caller ? { "x-auth-user": caller } : {}), ...headers };
   let status = 200;
   let chunks = "";
   const res = {
@@ -191,6 +197,22 @@ describe("management API on a private conversation", () => {
   it("still serves everyone on a shared conversation", async () => {
     const { api } = setup();
     expect((await call(api, "GET", "/conversations/c1", undefined, "bob")).status).toBe(200);
+  });
+
+  it("serves the broker's lookup by the sandbox's short id, with owner and visibility", async () => {
+    const { api } = setup({ visibility: "private" });
+    const got = await call(api, "GET", "/conversations/short-c1", undefined, undefined, { [SERVICE_HEADER]: "1" });
+    expect(got.status).toBe(200);
+    expect(got.json).toMatchObject({ id: "c1", owner: "alice", visibility: "private" });
+  });
+
+  it("applies the visibility rule to a short id too", async () => {
+    const { api } = setup({ visibility: "private" });
+    expect((await call(api, "GET", "/conversations/short-c1", undefined, "alice")).status).toBe(200);
+    for (const caller of ["bob", undefined]) {
+      expect((await call(api, "GET", "/conversations/short-c1", undefined, caller)).status).toBe(404);
+      expect((await call(api, "GET", "/conversations/short-c1/links", undefined, caller)).status).toBe(404);
+    }
   });
 
   it("refuses with 503 when the visibility read fails", async () => {
