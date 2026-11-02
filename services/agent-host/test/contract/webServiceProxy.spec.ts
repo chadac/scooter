@@ -76,16 +76,8 @@ function fakeInPodService(): Promise<{ server: Server; port: number }> {
   });
 }
 
-/** A port with nothing behind it: the unit is down, as the forwarding path sees it. */
-function deadPort(): Promise<number> {
-  return new Promise((resolve) => {
-    const probe = createServer();
-    probe.listen(0, "127.0.0.1", () => {
-      const port = (probe.address() as AddressInfo).port;
-      probe.close(() => resolve(port));
-    });
-  });
-}
+/** Refuses connections: the unit is down, as forwarding sees it. */
+const DEAD_PORT = 1;
 
 const MARIMO: WebServiceDescriptor = {
   name: "marimo",
@@ -336,7 +328,7 @@ describe("web-service proxy", () => {
     });
 
     it("the loading page polls the short base path", async () => {
-      const { body } = await proxyGet(sandboxProxy(startingRegistry(await deadPort())), `/c/${ID}/marimo/`, { headers: HOST, accept: "text/html" });
+      const { body } = await proxyGet(sandboxProxy(startingRegistry(DEAD_PORT)), `/c/${ID}/marimo/`, { headers: HOST, accept: "text/html" });
       expect(body).toContain("/marimo/__scooter_status");
       expect(body).not.toContain(`/c/${ID}`);
     });
@@ -488,7 +480,7 @@ describe("web-service proxy", () => {
   });
 
   it("declared-but-not-running HTML nav -> auto-starts + serves a loading page (200)", async () => {
-    const registry = startingRegistry(await deadPort(), { runningAfter: 99 });
+    const registry = startingRegistry(DEAD_PORT, { runningAfter: 99 });
     const proxy = makeProxy(registry);
     const { status, body } = await proxyGet(proxy, "/c/conv-1/marimo/", {
       accept: "text/html",
@@ -515,7 +507,7 @@ describe("web-service proxy", () => {
 
   it("a NON-HTML request to a dead service still gets a 502 (no HTML for an XHR/asset)", async () => {
     // An HTML loading page would corrupt an asset or XHR fetch.
-    const proxy = makeProxy(startingRegistry(await deadPort(), { runningAfter: 99 }));
+    const proxy = makeProxy(startingRegistry(DEAD_PORT, { runningAfter: 99 }));
     const { status } = await proxyGet(proxy, "/c/conv-1/marimo/assets/app.js", {
       accept: "*/*",
     });
@@ -545,7 +537,7 @@ describe("web-service proxy", () => {
   it("a refused connection is the liveness check: loading page, auto-start, cache dropped", async () => {
     // The registry says the unit is up and the port says otherwise. The port wins,
     // because it is the one that was asked at the moment of use.
-    const registry = fakeRegistry(await deadPort(), { running: true });
+    const registry = fakeRegistry(DEAD_PORT, { running: true });
     const proxy = makeProxy(registry);
     const { status, body } = await proxyGet(proxy, "/c/conv-1/marimo/", { accept: "text/html" });
     expect(status).toBe(200);
@@ -554,7 +546,7 @@ describe("web-service proxy", () => {
   });
 
   it("a refused connection on an XHR still gets a 502, not a loading page", async () => {
-    const registry = fakeRegistry(await deadPort(), { running: true });
+    const registry = fakeRegistry(DEAD_PORT, { running: true });
     const proxy = makeProxy(registry);
     const { status, body } = await proxyGet(proxy, "/c/conv-1/marimo/api/x", { accept: "*/*" });
     expect(status).toBe(502);
@@ -571,7 +563,7 @@ describe("web-service proxy", () => {
   it("an active unit whose port is not listening yet is not reported running", async () => {
     // systemd says active the moment the unit starts; reloading then would hit a refused
     // connection and land back on a fresh loading page, over and over.
-    const notYet = await proxyGet(makeProxy(fakeRegistry(await deadPort())), "/c/conv-1/marimo/__scooter_status");
+    const notYet = await proxyGet(makeProxy(fakeRegistry(DEAD_PORT)), "/c/conv-1/marimo/__scooter_status");
     expect(JSON.parse(notYet.body)).toMatchObject({ running: false, phase: "service" });
     const up = await proxyGet(makeProxy(fakeRegistry(svc.port)), "/c/conv-1/marimo/__scooter_status");
     expect(JSON.parse(up.body)).toMatchObject({ running: true });
@@ -585,7 +577,7 @@ describe("web-service proxy", () => {
 
   it("the loading page polls the path the browser used, not the manifest's unexpanded basePath", async () => {
     // web-services.nix renders basePath as the literal "/c/${CONVERSATION_ID}/<name>".
-    const registry = startingRegistry(await deadPort(), { runningAfter: 99 });
+    const registry = startingRegistry(DEAD_PORT, { runningAfter: 99 });
     const raw = { ...registry, get: async (id: string, name: string) => {
       const d = await registry.get(id, name);
       return d && { ...d, basePath: "/c/${CONVERSATION_ID}/marimo" };

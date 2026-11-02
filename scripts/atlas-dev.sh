@@ -20,9 +20,13 @@ if [ -z "${ATLAS_DEV_NIX:-}" ] && { ! command -v initdb >/dev/null 2>&1 || ! com
 fi
 
 here="$(cd "$(dirname "$0")/.." && pwd)"
-# A random high port avoids collisions with any local server / parallel runs.
-port=$(( (RANDOM % 20000) + 40000 ))
-pg="$("$here/scripts/pg-ephemeral.sh" start "$port")"
+# Below Linux's ephemeral range; retry since nothing reserves the port.
+for attempt in 1 2 3 4 5; do
+  port=$(( (RANDOM % 12000) + 20000 ))
+  pg="$("$here/scripts/pg-ephemeral.sh" start "$port")" && break
+  [ "$attempt" -lt 5 ] || exit 1
+  echo "atlas-dev: postgres failed on port $port; retrying" >&2
+done
 trap '"$here/scripts/pg-ephemeral.sh" stop "$pg"' EXIT
 createdb -h 127.0.0.1 -p "$port" -U postgres atlasdev
 
