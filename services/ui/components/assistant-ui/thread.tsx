@@ -26,6 +26,7 @@ import { ModelPicker } from "@/src/ModelPicker";
 import { useConversationInterrupts, parseSystemMessage } from "@/src/RuntimeProvider";
 import { InlineRunStatus, ContextFillBar } from "@/src/RunStatusBar";
 import { QueuedMessages } from "@/src/QueuedMessages";
+import { attachStickToBottom } from "@/src/stickToBottom";
 import { useRenaming } from "@/src/sessions";
 import { cn } from "@/lib/utils";
 import {
@@ -159,12 +160,7 @@ function useLoadOlderOnScroll() {
   }, [hasOlderHistory, loadOlderHistory, hasMessages]);
 }
 
-/**
- * Keep the view pinned to the bottom as content grows and land at the tail on a
- * conversation switch. A `stick` intent flag flips false only on a genuine upward user
- * scroll, never on content growth, which is where assistant-ui's own autoScroll gives
- * up; while stuck, a ResizeObserver and a MutationObserver re-pin on any size change.
- */
+/** Pin the thread viewport to the bottom (see attachStickToBottom) once it has messages. */
 function useStickToBottom() {
   const hasMessages = useAuiState((s) => s.thread.messages.length > 0);
   const store = useThreadViewportStore();
@@ -173,110 +169,13 @@ function useStickToBottom() {
     if (!hasMessages) return;
     const el = document.querySelector<HTMLElement>('[data-slot="aui_thread-viewport"]');
     if (!el) return;
-
-    // Whether we are following the bottom; only a real upward user scroll turns it off.
-    let stick = true;
-    let lastTop = el.scrollTop;
-    // While set, the scroll event our own re-pin triggers is ignored.
-    let pinning = 0;
-
-    const atBottom = () => el.scrollHeight - el.scrollTop - el.clientHeight <= 2;
-
-    const syncStore = () => {
+    return attachStickToBottom(el, () => {
       try {
         store.getState().scrollToBottom?.({ behavior: "instant" });
       } catch {
         /* the store shape varies across versions; the raw scrollTop set is what matters */
       }
-    };
-    const pin = () => {
-      pinning++;
-      el.scrollTop = el.scrollHeight;
-      syncStore(); // keep the library's isAtBottom true so its autoScroll stays on
-      requestAnimationFrame(() => {
-        pinning = Math.max(0, pinning - 1);
-        lastTop = el.scrollTop;
-      });
-    };
-
-    // Re-pin every frame until scrollHeight has held steady for a few frames, since a big message keeps reflowing after it mounts and pinning once lands short.
-    let chaseFrame: number | null = null;
-    const CHASE_MAX_FRAMES = 120; // a hard stop for a never-settling layout
-    const CHASE_STABLE_FRAMES = 3; // scrollHeight unchanged this many frames means settled
-    const chase = () => {
-      // A running chase self-extends, so it is not restarted.
-      if (chaseFrame !== null) return;
-      let frames = 0;
-      let stableFrames = 0;
-      let lastHeight = -1;
-      const step = () => {
-        if (!stick) { chaseFrame = null; return; }
-        const h = el.scrollHeight;
-        stableFrames = h === lastHeight ? stableFrames + 1 : 0;
-        lastHeight = h;
-        pin();
-        if (stableFrames >= CHASE_STABLE_FRAMES || ++frames >= CHASE_MAX_FRAMES) {
-          chaseFrame = null;
-          return;
-        }
-        chaseFrame = requestAnimationFrame(step);
-      };
-      chaseFrame = requestAnimationFrame(step);
-    };
-
-    const onScroll = () => {
-      if (pinning > 0) return; // our own re-pin
-      if (el.scrollTop < lastTop - 1) stick = false; // a genuine scroll up stops following
-      else if (atBottom()) stick = true; // back at the bottom resumes it
-      lastTop = el.scrollTop;
-    };
-    el.addEventListener("scroll", onScroll, { passive: true });
-
-    // The viewport's border-box does not change with scrollHeight, so every direct child of the scroll content is observed instead.
-    const ro = new ResizeObserver(() => {
-      if (!stick) return;
-      // The synchronous pin runs with layout, so the first jump is caught even when rAF is starved.
-      pin();
-      chase();
     });
-    const observeContent = () => {
-      ro.disconnect();
-      // The inner scroll content holds the message group and footer.
-      const inner = el.firstElementChild as HTMLElement | null;
-      if (inner) {
-        ro.observe(inner);
-        for (const child of Array.from(inner.children)) ro.observe(child as HTMLElement);
-      } else {
-        ro.observe(el);
-      }
-    };
-    observeContent();
-    // Re-attach the ResizeObserver when new messages mount so their growth is followed too.
-    const mo = new MutationObserver(() => {
-      observeContent();
-      if (!stick) return;
-      pin();
-      chase();
-    });
-    // Observing the whole subtree janks, so only new-message mounts are observed.
-    const messageGroup = el.querySelector<HTMLElement>(
-      '[data-slot="aui_message-group"]',
-    );
-    if (messageGroup) {
-      mo.observe(messageGroup, { childList: true, subtree: false });
-    } else {
-      mo.observe(el, { childList: true, subtree: true }); // the group is not mounted yet
-    }
-
-    // Land at the tail on first paint and chase the history replay's late layout.
-    chase();
-
-    return () => {
-      el.removeEventListener("scroll", onScroll);
-      ro.disconnect();
-      mo.disconnect();
-      if (chaseFrame !== null) cancelAnimationFrame(chaseFrame);
-    };
   }, [hasMessages, store]);
 }
 
