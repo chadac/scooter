@@ -114,16 +114,40 @@ let
   '';
 
   # ── IMAGE LAYERS ─────────────────────────────────────────────────────────────
-  # Two explicit layers with `reproducible = false` and maxLayers = 1 each, so every
-  # layer tar is stored in its derivation and the popularity-grouped layer digests
-  # cannot differ between machines (which makes a cache-fetched manifest unpushable).
+  # Explicit layers with `reproducible = false`, so every layer tar is stored in its
+  # derivation and the layer digests cannot differ between machines (which makes a
+  # cache-fetched manifest unpushable).
 
-  # The whole NixOS system closure.
+  # The system closure, split so a source-tree change re-pushes only the small group.
   baseLayer = n2c.buildLayer {
     deps = [ toplevel ];
-    maxLayers = 1;
+    layersFile = "${srcSplit}/split.json";
     reproducible = false;
   };
+
+  # Two groups: paths that reach the vendored sandbox-os-src, then the stable rest.
+  srcSplit = pkgs.runCommand "sandbox-os-layer-split" {
+    __structuredAttrs = true;
+    exportReferencesGraph.graph = [ toplevel ];
+    nativeBuildInputs = [ pkgs.jq ];
+  } ''
+    mkdir $out
+    jq '.graph as $g
+      | ($g | map({ key: .path, value: .references }) | from_entries) as $refs
+      | { new: [ $g[].path | select(endswith("-sandbox-os-src")) ] }
+      | .seen = .new
+      | until(.new == [];
+          (.seen | map({ key: ., value: true }) | from_entries) as $s
+          | .new = [ $g[].path | select($s[.] | not)
+                     | select(any($refs[.][]; $s[.])) ]
+          | .seen += .new)
+      | (.seen | map({ key: ., value: true }) | from_entries) as $v
+      | [ [ $g[].path | select($v[.] | not) ], [ $g[].path | select($v[.]) ] ]
+      | map(sort)' .attrs.json > $out/split.json
+    # An empty group is rejected by nix2container, so fail here with a clear reason.
+    jq -e 'all(length > 0)' $out/split.json >/dev/null \
+      || { echo "sandbox-os-src is missing from the toplevel closure" >&2; exit 1; }
+  '';
 
   # The image-root files and the baked Nix DB; `layers = [ baseLayer ]` skips paths
   # already in the base layer, and `deps = [ initWrapper ]` keeps the entrypoint out
