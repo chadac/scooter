@@ -1,6 +1,6 @@
 # Who the sandbox's commits are authored by, as the broker says (GET /git/identity): the
-# deployment's bot, or in the owner's private conversation the owner, with the bot
-# credited in a Co-authored-by trailer.
+# owner in their private conversation, crediting the bot, else the bot, crediting
+# the owner. The credit goes in a Co-authored-by trailer.
 #
 # A poller writes the answer to an included gitconfig, and a global hooks dir adds
 # the trailer, running each repo's own hook first. GIT_AUTHOR_* / GIT_COMMITTER_*

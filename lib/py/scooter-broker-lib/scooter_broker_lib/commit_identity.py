@@ -1,4 +1,7 @@
-"""Who a sandbox's commits are authored by: the bot, or the user with the bot as co-author.
+"""Who a sandbox's commits are authored by, and who they credit as co-author.
+
+In the owner's private conversation the owner authors and the bot co-authors.
+Anywhere else the bot authors and the conversation's owner, when known, co-authors.
 
 A forge contrib registers a `CommitIdentitySource`. Asked for `None` it names
 the deployment's own bot; asked for a user it names that user's account, or
@@ -92,11 +95,15 @@ async def _first(user: str | None) -> Person | None:
     return None
 
 
-async def resolve(acting_user: str | None) -> CommitIdentity:
-    """The user (bot as co-author) when acting for a user with an identity, else the bot alone."""
+async def _person(user: str) -> Person | None:
+    return await _chosen_for(user) or await _first(user)
+
+
+async def resolve(acting_user: str | None, owner: str | None = None) -> CommitIdentity:
+    """The acting user with the bot as co-author, else the bot with the owner as co-author."""
     bot = await _first(None)
     if acting_user is not None:
-        user = await _chosen_for(acting_user) or await _first(acting_user)
+        user = await _person(acting_user)
         if user is not None:
             return CommitIdentity(author=user, co_author=bot)
-    return CommitIdentity(author=bot)
+    return CommitIdentity(author=bot, co_author=await _person(owner) if owner else None)

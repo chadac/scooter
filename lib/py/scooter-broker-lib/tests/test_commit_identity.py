@@ -1,4 +1,4 @@
-"""The user authors (bot co-authors) only when acting for a linked user; otherwise the bot authors alone."""
+"""The acting user authors with the bot as co-author; otherwise the bot authors, crediting the owner."""
 
 from __future__ import annotations
 
@@ -93,3 +93,22 @@ async def test_a_failing_lookup_falls_back_to_the_forge_account():
 
     ci.provide_chosen(broken)
     assert await ci.resolve("alice") == ci.CommitIdentity(author=ALICE, co_author=BOT)
+
+
+async def test_not_acting_credits_the_owner():
+    ci.register_commit_identity(forge({None: BOT, "alice": ALICE}))
+    assert await ci.resolve(None, owner="alice") == ci.CommitIdentity(author=BOT, co_author=ALICE)
+
+
+async def test_not_acting_credits_the_owners_chosen_identity():
+    ci.register_commit_identity(forge({None: BOT, "alice": ALICE}))
+    mine = Person("Alice Liddell", "alice@example.com")
+    ci.provide_chosen(chosen({"alice": mine}))
+    got = await ci.resolve(None, owner="alice")
+    assert got == ci.CommitIdentity(author=BOT, co_author=mine)
+    assert got.payload()["co_author"] == "Alice Liddell <alice@example.com>"
+
+
+async def test_an_owner_without_an_identity_is_not_credited():
+    ci.register_commit_identity(forge({None: BOT}))
+    assert await ci.resolve(None, owner="bob") == ci.CommitIdentity(author=BOT)

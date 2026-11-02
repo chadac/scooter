@@ -1,4 +1,4 @@
-"""GET /git/identity: the user authors only in their private conversation, the bot everywhere else."""
+"""GET /git/identity: the owner authors their private conversation; elsewhere the bot authors, crediting the owner."""
 
 from __future__ import annotations
 
@@ -55,9 +55,15 @@ def test_the_owner_authors_in_their_private_conversation():
     }
 
 
-@pytest.mark.parametrize("conv", ["shared", "unknown"])
-def test_the_bot_authors_everywhere_else(conv):
-    assert client(conv).get("/git/identity").json() == {
+def test_the_bot_authors_a_shared_conversation_crediting_the_owner():
+    assert client("shared").get("/git/identity").json() == {
+        "author": {"name": BOT.name, "email": BOT.email},
+        "co_author": ALICE.ident(),
+    }
+
+
+def test_the_bot_authors_alone_in_an_unknown_conversation():
+    assert client("unknown").get("/git/identity").json() == {
         "author": {"name": BOT.name, "email": BOT.email},
         "co_author": None,
     }
