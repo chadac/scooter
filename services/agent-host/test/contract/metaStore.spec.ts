@@ -300,6 +300,7 @@ describe("conversation metadata in Postgres", () => {
       title: "My name",
       userTitled: true,
       starred: false,
+      visibility: "shared",
     });
   });
 

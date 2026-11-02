@@ -36,9 +36,9 @@ const fakeProvisioner = (): SandboxProvisioner => {
 };
 
 /** Star and title as the conversation-router writes them to the row. */
-const routerRows = new Map<SessionId, RouterMeta>();
+const routerRows = new Map<SessionId, Partial<RouterMeta>>();
 const routerWrite = (id: SessionId, patch: Partial<RouterMeta>) =>
-  routerRows.set(id, { title: "", userTitled: false, starred: false, ...routerRows.get(id), ...patch });
+  routerRows.set(id, { ...routerRows.get(id), ...patch });
 
 const inMemoryStore = (): ConversationStore => {
   const logs = new Map<SessionId, AguiEvent[]>();
@@ -522,6 +522,16 @@ describe("SessionManager", () => {
       routerWrite("t" as SessionId, { starred: false });
       await sessions.refreshRouterMeta("t" as SessionId);
       expect(sessions.get("t")?.starred).toBe(false);
+    });
+
+    it("refreshRouterMeta leaves fields the read omits unchanged", async () => {
+      const sessions = createSessionManager({ provisioner: fakeProvisioner(), store: inMemoryStore() });
+      await sessions.start("t");
+      routerWrite("t" as SessionId, { title: "Mine", userTitled: true, starred: true });
+      await sessions.refreshRouterMeta("t" as SessionId);
+      routerRows.set("t" as SessionId, { visibility: "private", starred: undefined });
+      await sessions.refreshRouterMeta("t" as SessionId);
+      expect(sessions.get("t")).toMatchObject({ title: "Mine", userTitled: true, starred: true, visibility: "private" });
     });
   });
 

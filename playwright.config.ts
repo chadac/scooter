@@ -98,6 +98,7 @@ export default defineConfig({
           env: {
             E2E_ROUTER_PORT: "8080",
             E2E_AGENT_HOST_PORT: "8079",
+            E2E_AGENT_HOST_REPLICA_PORT: "8078",
             LOCAL_STATE_PATH: "/tmp/agent-host-e2e",
             // Production's two-store topology: mirroredConversationStore is only constructed
             // when MIRROR_STATE_PATH is set.
@@ -116,7 +117,7 @@ export default defineConfig({
           // Wait on the router's /healthz (proxied to agent-host) so the whole chain is serving
           // before tests start.
           url: "http://localhost:8080/healthz",
-          // PG init + migrate + two service boots need headroom on a cold runner.
+          // PG init + migrate + three service boots need headroom on a cold runner.
           timeout: 120_000,
           // Reuse is opt-in locally (E2E_REUSE_SERVER=1): a leftover server keeps serving its old build.
           reuseExistingServer: !process.env.CI && process.env.E2E_REUSE_SERVER === "1",

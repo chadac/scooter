@@ -79,6 +79,26 @@ describe("SessionManager visibility", () => {
     expect(sessions.get(other.id)?.visibility ?? "shared").toBe("shared");
   });
 
+  it("refreshRouterMeta picks up a visibility another replica stored", async () => {
+    let stored: "shared" | "private" = "shared";
+    const s = store({
+      readRouterMeta: async () => ({ owner: "alice", visibility: stored }),
+    });
+    const sessions = createSessionManager({ provisioner: provisioner(), store: s });
+    const c = await sessions.start("t1", undefined, "alice");
+
+    stored = "private";
+    await sessions.refreshRouterMeta(c.id);
+    expect(sessions.get(c.id)?.visibility).toBe("private");
+    // A subagent spawned after the refresh inherits the stored value.
+    const kid = await sessions.spawnChild(c.id, "kid", { prompt: "x" });
+    expect(kid.visibility).toBe("private");
+
+    stored = "shared";
+    await sessions.refreshRouterMeta(c.id);
+    expect(sessions.get(c.id)?.visibility).toBe("shared");
+  });
+
   it("refuses a subagent and an unowned conversation", async () => {
     const sessions = createSessionManager({ provisioner: provisioner(), store: store() });
     const root = await sessions.start("root", undefined, "alice");

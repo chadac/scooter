@@ -32,7 +32,7 @@ const fakeProvisioner = (): SandboxProvisioner => ({
 });
 
 /** The conversations row as the conversation-router writes it. */
-const routerRows = new Map<SessionId, RouterMeta>();
+const routerRows = new Map<SessionId, Partial<RouterMeta>>();
 
 const inMemoryStore = (): ConversationStore => {
   const logs = new Map<SessionId, AguiEvent[]>();
@@ -48,9 +48,9 @@ const inMemoryStore = (): ConversationStore => {
   };
 };
 
-/** A user rename, which the conversation-router writes straight to the row. */
+/** A user rename, which writes only the title columns of the row. */
 const renameAsUser = (id: SessionId, title: string) =>
-  routerRows.set(id, { title, userTitled: true, starred: false });
+  routerRows.set(id, { ...routerRows.get(id), title, userTitled: true });
 
 /** A conversation already named by its opening marker, plus the wiring index.ts builds. */
 async function titledConversation(): Promise<{

@@ -461,7 +461,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
     let conv = sessions.get(ctx.params.id);
     if (!conv && (await sessions.ensureReadable(ctx.params.id))) conv = sessions.get(ctx.params.id);
     if (!conv) return { status: 404, json: { error: "not found" } };
-    // Star and title are router-written; serve the durable values.
+    // Star, title and visibility may be written elsewhere; serve the durable values.
     await sessions.refreshRouterMeta(conv.id).catch(() => {});
     return { json: view(sessions.get(conv.id) ?? conv) };
   });

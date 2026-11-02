@@ -148,12 +148,25 @@ export function createPgMetaStore(config: PgMetaStoreConfig): MetaStore {
 
     async readRouterMeta(id) {
       const rows = await db
-        .select({ title: conversations.title, userTitled: conversations.userTitled, starred: conversations.starred })
+        .select({
+          title: conversations.title,
+          userTitled: conversations.userTitled,
+          starred: conversations.starred,
+          owner: conversations.owner,
+          visibility: conversations.visibility,
+        })
         .from(conversations)
         .where(eq(conversations.id, id))
         .limit(1);
       if (!rows.length) return undefined;
-      return { title: rows[0].title, userTitled: rows[0].userTitled === true, starred: rows[0].starred === true };
+      const r = rows[0];
+      return {
+        title: r.title,
+        userTitled: r.userTitled === true,
+        starred: r.starred === true,
+        ...(r.owner == null ? {} : { owner: r.owner }),
+        visibility: r.visibility === "private" ? "private" : "shared",
+      };
     },
 
     async touchActivity(id, at) {

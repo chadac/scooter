@@ -37,8 +37,8 @@ const MODEL_SWITCH_NUDGE =
 /** The title a conversation is created with, before the agent's <title> marker names it. */
 export const PLACEHOLDER_TITLE = "New chat";
 
-/** The conversation fields only the conversation-router writes. */
-export interface RouterMeta {
+/** The stored fields the router or another replica may change behind this one. */
+export interface RouterMeta extends AccessFacts {
   title: string;
   userTitled: boolean;
   starred: boolean;
@@ -193,7 +193,7 @@ export interface ConversationStore {
   /** Persist conversation metadata so the list survives a restart; optional. */
   saveMeta?(meta: ConversationMeta): Promise<void>;
   /** The router-owned star and title as persisted; optional. */
-  readRouterMeta?(id: SessionId): Promise<RouterMeta | undefined>;
+  readRouterMeta?(id: SessionId): Promise<Partial<RouterMeta> | undefined>;
   /** Set the visibility of `rootId` and every descendant in one write; optional. */
   setVisibility?(rootId: SessionId, visibility: Visibility): Promise<void>;
   /** Read a conversation's owner and visibility fresh from the shared store, since another
@@ -656,13 +656,16 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           pendingQueue: e.pendingQueue,
         }) ?? Promise.resolve();
 
-  // The router writes star and title without telling this replica.
+  // The router and other replicas write these without telling this one.
   const refreshRouterMeta = async (e: Entry): Promise<void> => {
     const m = await store.readRouterMeta?.(e.id);
     if (!m) return;
-    e.starred = m.starred;
-    e.userTitled = m.userTitled;
-    if (m.userTitled) e.title = m.title;
+    // An absent or undefined key leaves the entry's value unchanged.
+    if (m.owner !== undefined) e.owner = m.owner;
+    if (m.visibility !== undefined) e.visibility = m.visibility;
+    if (m.starred !== undefined) e.starred = m.starred;
+    if (m.userTitled !== undefined) e.userTitled = m.userTitled;
+    if (e.userTitled && m.title !== undefined) e.title = m.title;
   };
 
   /** Events dropped by the ownership fence, per conversation — for sampled logging only. */
