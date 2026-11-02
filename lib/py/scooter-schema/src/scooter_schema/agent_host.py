@@ -90,6 +90,23 @@ class Conversations(Base):
     creator_pod: Mapped[Optional[str]] = mapped_column(Text)
 
 
+class Identities(Base):
+    __tablename__ = 'identities'
+    __table_args__ = (
+        PrimaryKeyConstraint('id', name='identities_pkey'),
+        Index('identities_by_scooter_user', 'scooter_user'),
+        Index('identities_provider_external_id', 'provider', 'external_id', unique=True)
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    external_id: Mapped[str] = mapped_column(Text, nullable=False)
+    handle: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    display_name: Mapped[Optional[str]] = mapped_column(Text)
+    scooter_user: Mapped[Optional[str]] = mapped_column(Text)
+
+
 class UserHookSettings(Base):
     __tablename__ = 'user_hook_settings'
     __table_args__ = (

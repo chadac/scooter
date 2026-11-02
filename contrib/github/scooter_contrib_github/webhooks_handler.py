@@ -24,7 +24,9 @@ from scooter_webhooks_lib.agent_host_client import (
 from scooter_webhooks_lib import policy
 from scooter_webhooks_lib.identity import resolve_owner
 from scooter_webhooks_lib.reply_workflow import reply_workflow
+from scooter_webhooks_lib.sender import Sender
 from .responses import get_app_login, post_github_comment
+from .senders import actor_on, sender_from
 
 logger = logging.getLogger(__name__)
 _C = {"component": "handlers.github"}
@@ -205,6 +207,7 @@ async def _handle_comment(payload: dict):
 
     if await _is_self_authored(author, comment_body):
         return
+    sender = sender_from(author, comment.get("author_association"))
 
     has_mention = policy.mentions_agent(comment_body)
     res_type = "pull_request" if is_pr else "issue"
@@ -224,14 +227,14 @@ async def _handle_comment(payload: dict):
         forward_msg = _format_forwarded_message(
             comment_text, owner, repo, issue_number, is_pr, has_mention, comment_id,
         )
-        await db.store_pending_message("github", res_type, res_id, forward_msg)
+        await db.store_pending_message("github", res_type, res_id, forward_msg, sender)
         return
 
     if existing:
         forward_msg = _format_forwarded_message(
             comment_text, owner, repo, issue_number, is_pr, has_mention, comment_id,
         )
-        outcome = await deliver_message(existing, forward_msg, source="github")
+        outcome = await deliver_message(existing, forward_msg, source="github", sender=sender)
         if outcome is not SendOutcome.NOT_FOUND:
             # The conversation still exists, so a failed run keeps its mapping (issue #802).
             if outcome is not SendOutcome.DELIVERED:
@@ -273,17 +276,17 @@ async def _handle_comment(payload: dict):
             res_type=res_type, res_id=res_id,
             message=full_message, repo=full_repo, conv_title=conv_title,
             owner=owner, repo_name=repo, issue_number=issue_number,
-            invoking_user=user,
+            invoking_user=user, sender=sender,
         )
     )
 
 
-async def _forward_or_ignore(res_id: str, message: str) -> None:
+async def _forward_or_ignore(res_id: str, message: str, sender: Sender | None) -> None:
     """Forward at interrupt priority to the conversation linked to this PR, or do nothing; a PR the agent does not own is not ours to act on."""
     existing = await _resolve_conversation("pull_request", res_id)
     if not existing or is_pending(existing):
         return
-    await send_message(existing, message, priority=True, source="github")
+    await send_message(existing, message, priority=True, source="github", sender=sender)
 
 
 def _line_ref(comment: dict) -> str:
@@ -331,7 +334,8 @@ async def _handle_review_comment(payload: dict):
         f"address it."
         + _comment_ref(comment_id)
     )
-    await _forward_or_ignore(_resource_id(owner, repo, number), message)
+    sender = sender_from(author, comment.get("author_association"))
+    await _forward_or_ignore(_resource_id(owner, repo, number), message, sender)
 
 
 async def _handle_review(payload: dict):
@@ -368,7 +372,8 @@ async def _handle_review(payload: dict):
         tail = "Respond with `github_comment` if it asks for something."
 
     message = f"{head}\n\n" + (f"{body}\n\n" if body else "") + f"---\n\n{tail}"
-    await _forward_or_ignore(_resource_id(owner, repo, number), message)
+    sender = sender_from(author, review.get("author_association"))
+    await _forward_or_ignore(_resource_id(owner, repo, number), message, sender)
 
 
 async def _previous_run_failed(owner: str, repo: str, workflow_id, branch: str, before_id: int) -> bool:
@@ -437,7 +442,7 @@ async def _handle_workflow_run(payload: dict):
             f"guessing. If it is a known flake, say so explicitly rather than silently "
             f"re-running."
         )
-    await _forward_or_ignore(_resource_id(owner, repo, number), message)
+    await _forward_or_ignore(_resource_id(owner, repo, number), message, None)
 
 
 async def _failed_jobs(owner: str, repo: str, run_id) -> list[str]:
@@ -494,6 +499,7 @@ async def _handle_issue_event(payload: dict):
             conv_title=f"Issue #{issue_number}: {issue_title}",
             owner=owner, repo_name=repo, issue_number=issue_number,
             invoking_user=payload.get("sender", {}).get("login"),
+            sender=actor_on(payload, issue),
         )
     )
 
@@ -523,7 +529,7 @@ async def _handle_pr_closed(payload: dict):
             f"PR #{number} in {owner}/{repo} was CLOSED WITHOUT MERGING by @{sender}.\n\n---\n\n"
             f"Stop work on this PR unless asked otherwise. Check the thread for why it was closed."
         )
-    await _forward_or_ignore(_resource_id(owner, repo, number), message)
+    await _forward_or_ignore(_resource_id(owner, repo, number), message, actor_on(payload, pr))
 
 
 async def _handle_pr_event(payload: dict):
@@ -562,6 +568,7 @@ async def _handle_pr_event(payload: dict):
             conv_title=f"PR #{pr_number}: {pr_title}",
             owner=owner, repo_name=repo, issue_number=pr_number,
             invoking_user=payload.get("sender", {}).get("login"),
+            sender=actor_on(payload, pr),
         )
     )
 
@@ -570,6 +577,7 @@ async def _background_create_conversation(
     res_type: str, res_id: str, message: str, repo: str,
     conv_title: str, owner: str, repo_name: str,
     issue_number: int, invoking_user: str | None = None,
+    sender: Sender | None = None,
 ) -> None:
     # Runs pre-run, since create_conversation blocks until the whole agent turn finishes.
     async def _register(conv_id: str) -> None:
@@ -592,7 +600,7 @@ async def _background_create_conversation(
     try:
         result = await create_conversation(
             message, repository=repo, git_provider="github", title=conv_title, on_created=_register,
-            owner=conv_owner, source="github",
+            owner=conv_owner, source="github", sender=sender,
         )
         if not result:
             await _clear_pending(res_type, res_id)
@@ -620,8 +628,8 @@ async def _background_create_conversation(
         conv_id = result.get("conversation_id", "")
 
         messages = await db.get_and_clear_pending_messages("github", res_type, res_id)
-        for msg in messages:
-            ok = await send_message(conv_id, msg, source="github")
+        for msg, msg_sender in messages:
+            ok = await send_message(conv_id, msg, source="github", sender=msg_sender)
             if not ok:
                 logger.warning(
                     "flush of pending message failed",

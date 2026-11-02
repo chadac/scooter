@@ -18,6 +18,8 @@ from typing import Protocol
 import httpx
 from scooter_lib.logging_config import format_error, pseudonym
 
+from .sender import Sender
+
 logger = logging.getLogger(__name__)
 _C = {"component": "agent_host_client"}
 
@@ -108,6 +110,7 @@ async def create_conversation(
     images: list[dict] | None = None,
     files: list[dict] | None = None,
     source: str | None = None,
+    sender: Sender | None = None,
 ) -> dict | None:
     """Spawn an agent conversation for `initial_message` and return {conversation_id, result}, or None on failure.
 
@@ -129,6 +132,8 @@ async def create_conversation(
     if source:
         # Marks a system message (a webhook event, not a human turn).
         payload["source"] = source
+    if sender is not None:
+        payload["sender"] = sender.to_payload()
     if owner:
         # The agent-host honors the owner only for a caller it verified via TokenReview.
         payload["owner"] = owner
@@ -191,6 +196,7 @@ async def deliver_message(
     images: list[dict] | None = None,
     files: list[dict] | None = None,
     source: str | None = None,
+    sender: Sender | None = None,
 ) -> SendOutcome:
     """Send a follow-up into an existing conversation. `priority` (the default) interrupts the running turn at its next tool-call boundary; `priority=False` waits for the run to end, which lands the message out of order, so no built-in source uses it. Only a request that was never accepted is retried; retrying after acceptance would duplicate the message."""
     payload = {
@@ -200,6 +206,8 @@ async def deliver_message(
     }
     if source:
         payload["source"] = source
+    if sender is not None:
+        payload["sender"] = sender.to_payload()
     if priority:
         payload["priority"] = 10  # PRIORITY_INTERRUPT in the agent-host bridge
     log_extra = {**_C, "conversation_id": conversation_id}
@@ -243,10 +251,11 @@ async def send_message(
     images: list[dict] | None = None,
     files: list[dict] | None = None,
     source: str | None = None,
+    sender: Sender | None = None,
 ) -> bool:
     """Send a follow-up message into an existing conversation, True only when the run finished; see deliver_message for `priority`."""
     outcome = await deliver_message(
-        conversation_id, message, priority=priority, images=images, files=files, source=source,
+        conversation_id, message, priority=priority, images=images, files=files, source=source, sender=sender,
     )
     return outcome is SendOutcome.DELIVERED
 

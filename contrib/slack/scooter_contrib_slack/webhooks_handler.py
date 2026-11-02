@@ -21,6 +21,8 @@ from scooter_webhooks_lib.agent_host_client import conversation_url, create_conv
 from scooter_webhooks_lib import policy
 from scooter_webhooks_lib.identity import resolve_owner
 from .files import DownloadedFiles, download_files
+from .senders import sender_of
+from scooter_webhooks_lib.sender import Sender
 from .responses import (
     add_slack_reaction,
     get_bot_user_id,
@@ -167,7 +169,7 @@ async def handle_slack_event(request: Request):
             )
             return {"status": "ok", "deduped": True}
         event = payload.get("event", {})
-        await _handle_event(event)
+        await _handle_event(event, workspace=payload.get("team_id", ""))
 
     return {"status": "ok"}
 
@@ -179,7 +181,8 @@ async def _get_bot_id() -> str | None:
     return _bot_user_id
 
 
-async def _handle_event(event: dict):
+async def _handle_event(event: dict, workspace: str = ""):
+    """Route one event; `workspace` is the team the app received it in."""
     event_type = event.get("type", "")
     subtype = event.get("subtype", "")
 
@@ -192,9 +195,9 @@ async def _handle_event(event: dict):
         return
 
     if event_type == "app_mention":
-        await _handle_mention(event)
+        await _handle_mention(event, workspace)
     elif event_type == "message":
-        await _handle_thread_message(event)
+        await _handle_thread_message(event, workspace)
 
 
 async def _format_thread_history(channel: str, thread_ts: str, up_to_ts: str) -> str:
@@ -229,7 +232,7 @@ async def _format_thread_history(channel: str, thread_ts: str, up_to_ts: str) ->
     )
 
 
-async def _handle_mention(event: dict):
+async def _handle_mention(event: dict, workspace: str = ""):
     """Handle app_mention events."""
     text = event.get("text", "")
     user = event.get("user", "unknown")
@@ -270,11 +273,12 @@ async def _handle_mention(event: dict):
     images = dl.images
     files = dl.file_parts
     comment_text = _weave_attachments(comment_text, dl)
+    sender = await sender_of(event, workspace)
 
     if is_pending(existing):
         _record_message_dispatched(channel, ts)
         forward_msg = _format_forwarded_message(comment_text, channel, thread_ts, has_mention=True)
-        await db.store_pending_message("slack", "thread", res_id, forward_msg)
+        await db.store_pending_message("slack", "thread", res_id, forward_msg, sender)
         return
 
     if existing:
@@ -284,7 +288,7 @@ async def _handle_mention(event: dict):
         await add_slack_reaction(channel, ts, "eyes")
         # A mention to an active conversation is priority, so the agent-host may interrupt a stuck turn.
         asyncio.create_task(
-            _background_forward(existing, forward_msg, priority=True, images=images, files=files)
+            _background_forward(existing, forward_msg, priority=True, images=images, files=files, sender=sender)
         )
         return
 
@@ -307,11 +311,12 @@ async def _handle_mention(event: dict):
             res_id=res_id, message=full_message,
             conv_title=f"Slack: {message_text[:50]}",
             channel=channel, thread_ts=thread_ts, invoking_user=user, images=images, files=files,
+            sender=sender,
         )
     )
 
 
-async def _handle_thread_message(event: dict):
+async def _handle_thread_message(event: dict, workspace: str = ""):
     """Handle message events in threads with active conversations."""
     thread_ts = event.get("thread_ts")
     if not thread_ts:
@@ -356,11 +361,12 @@ async def _handle_thread_message(event: dict):
 
     dl = await download_files(event.get("files"))
     comment_text = _weave_attachments(comment_text, dl)
+    sender = await sender_of(event, workspace)
 
     if is_pending(existing):
         _record_message_dispatched(channel, ts)
         forward_msg = _format_forwarded_message(comment_text, channel, thread_ts, has_mention=False)
-        await db.store_pending_message("slack", "thread", res_id, forward_msg)
+        await db.store_pending_message("slack", "thread", res_id, forward_msg, sender)
         return
 
     # Forward off the request path, since send_message blocks for the whole agent turn.
@@ -368,7 +374,7 @@ async def _handle_thread_message(event: dict):
     forward_msg = _format_forwarded_message(comment_text, channel, thread_ts, has_mention=False)
     asyncio.create_task(
         # Unmentioned replies interrupt too: queued until the run ends, they arrive out of order with the thread.
-        _background_forward(existing, forward_msg, priority=True, images=dl.images, files=dl.file_parts)
+        _background_forward(existing, forward_msg, priority=True, images=dl.images, files=dl.file_parts, sender=sender)
     )
 
 
@@ -379,9 +385,10 @@ async def _background_forward(
     priority: bool,
     images: list[dict] | None = None,
     files: list[dict] | None = None,
+    sender: Sender | None = None,
 ) -> None:
     """Forward a follow-up into an existing conversation off the request path."""
-    ok = await send_message(existing, forward_msg, priority=priority, images=images, files=files, source="slack")
+    ok = await send_message(existing, forward_msg, priority=priority, images=images, files=files, source="slack", sender=sender)
     if not ok:
         logger.warning(
             "forward message to conversation failed",
@@ -394,6 +401,7 @@ async def _background_create_conversation(
     channel: str, thread_ts: str, invoking_user: str | None = None,
     images: list[dict] | None = None,
     files: list[dict] | None = None,
+    sender: Sender | None = None,
 ) -> None:
     # The thread anchor is registered pre-run so the agent's first slack_respond has a thread to infer.
     async def _register(conv_id: str) -> None:
@@ -416,7 +424,7 @@ async def _background_create_conversation(
     owner = await resolve_owner("slack", invoking_user) if invoking_user else None
 
     try:
-        result = await create_conversation(message, title=conv_title, on_created=_register, owner=owner, images=images, files=files, source="slack")
+        result = await create_conversation(message, title=conv_title, on_created=_register, owner=owner, images=images, files=files, source="slack", sender=sender)
         if not result:
             await _clear_pending(res_id)
             # Correct the optimistic ack already posted in _register.
@@ -445,8 +453,8 @@ async def _background_create_conversation(
         conv_id = result.get("conversation_id", "")
 
         messages = await db.get_and_clear_pending_messages("slack", "thread", res_id)
-        for msg in messages:
-            ok = await send_message(conv_id, msg, source="slack")
+        for msg, msg_sender in messages:
+            ok = await send_message(conv_id, msg, source="slack", sender=msg_sender)
             if not ok:
                 logger.warning(
                     "flush of pending message failed",

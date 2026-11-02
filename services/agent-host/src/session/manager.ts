@@ -9,7 +9,7 @@
 
 import type { SessionId, ThreadId, SandboxRef } from "../types.js";
 import type { JobRecord } from "./jobManager.js";
-import type { SessionBridge, AguiEvent, InterruptPolicy, PromptImage, PromptFile } from "../bridge.js";
+import type { SessionBridge, AguiEvent, InterruptPolicy, PromptImage, PromptFile, MessageSender } from "../bridge.js";
 import { danglingRunInfo, orphanRuns } from "./danglingRun.js";
 import { allowAllGuard, type OwnershipGuard } from "./ownershipGuard.js";
 import { noopRegistry, type ConversationRegistry } from "./conversationRegistry.js";
@@ -128,7 +128,7 @@ export interface ConversationMeta {
   visibility?: Visibility;
   /** Messages still queued in the bridge when the conversation was suspended; revive() re-enqueues
    *  them and clears the field. */
-  pendingQueue?: Array<{ text: string; priority: number; source?: string; humanInitiated?: boolean }>;
+  pendingQueue?: Array<{ text: string; priority: number; source?: string; sender?: MessageSender; humanInitiated?: boolean }>;
 }
 
 /** An external resource a conversation is linked to (GitHub PR/issue, GitLab MR, Slack thread, Jira
@@ -304,7 +304,7 @@ export interface SessionManager {
    *  conversation's model on the first prompt and switches it on a later one, `owner` stamps a
    *  conversation newly started here, and `images`/`files` are attachments the bridge resolves
    *  or writes to /workspace/uploads. */
-  promptByThread(threadId: ThreadId, text: string, model?: string, priority?: number, owner?: string, images?: PromptImage[], files?: PromptFile[], source?: string, provider?: string): Promise<void>;
+  promptByThread(threadId: ThreadId, text: string, model?: string, priority?: number, owner?: string, images?: PromptImage[], files?: PromptFile[], source?: string, provider?: string, sender?: MessageSender): Promise<void>;
   /** promptByThread, but resolved once the prompt is queued rather than when its run ends, for a
    *  caller that only hands a message over (POST /messages): a caller that timed out waiting for
    *  the run would resend a message the agent already has; `source` tags it as a system event.
@@ -428,7 +428,7 @@ interface Entry {
   visibility?: Visibility;
   /** Messages still queued in the bridge when this conversation was suspended, for revive() to
    *  re-enqueue. */
-  pendingQueue?: Array<{ text: string; priority: number; source?: string; humanInitiated?: boolean }>;
+  pendingQueue?: Array<{ text: string; priority: number; source?: string; sender?: MessageSender; humanInitiated?: boolean }>;
   /** Suspend the sandbox when this run ends (in memory). */
   stopAfterRun?: boolean;
 }
@@ -795,6 +795,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     files?: PromptFile[],
     source?: string,
     provider?: string,
+    sender?: MessageSender,
   ): Promise<{ run?: Promise<unknown> }> {
     // Find the conversation for this thread: in memory (revive if no live bridge), persisted
     // but not in memory (hydrate on demand and revive so a follow-up continues the existing
@@ -818,7 +819,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     // interrupts idle text generation but lets an in-flight tool call finish.
     return {
       run: entry.bridge?.prompt(
-        { threadId, text, images, files, source },
+        { threadId, text, images, files, source, sender },
         priority ? { priority, interrupt: "thinking" } : undefined,
       ),
     };
@@ -1092,7 +1093,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
             // A queued message that fails to re-run must not fail the revive.
             void entry.bridge
               ?.prompt(
-                { threadId: entry.threadId, text: item.text, source: item.source, humanInitiated: item.humanInitiated },
+                { threadId: entry.threadId, text: item.text, source: item.source, sender: item.sender, humanInitiated: item.humanInitiated },
                 item.priority ? { priority: item.priority } : undefined,
               )
               .catch((err) => {
@@ -1290,8 +1291,8 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       await entry.bridge?.prompt({ threadId: entry.threadId, text, images, files, source, humanInitiated }, opts);
     },
 
-    async promptByThread(threadId, text, model, priority, owner, images, files, source, provider) {
-      const { run } = await queueByThread(threadId, text, model, priority, images, files, source, provider);
+    async promptByThread(threadId, text, model, priority, owner, images, files, source, provider, sender) {
+      const { run } = await queueByThread(threadId, text, model, priority, images, files, source, provider, sender);
       await run;
     },
 

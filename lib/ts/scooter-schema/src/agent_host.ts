@@ -57,6 +57,20 @@ export const userSkills = pgTable("user_skills", {
 	uniqueIndex("user_skills_owner_name").using("btree", table.owner.asc().nullsLast().op("text_ops"), table.name.asc().nullsLast().op("text_ops")),
 ]);
 
+export const identities = pgTable("identities", {
+	id: text().primaryKey().notNull(),
+	provider: text().notNull(),
+	externalId: text("external_id").notNull(),
+	handle: text().notNull(),
+	displayName: text("display_name"),
+	scooterUser: text("scooter_user"),
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+}, (table) => [
+	index("identities_by_scooter_user").using("btree", table.scooterUser.asc().nullsLast().op("text_ops")),
+	uniqueIndex("identities_provider_external_id").using("btree", table.provider.asc().nullsLast().op("text_ops"), table.externalId.asc().nullsLast().op("text_ops")),
+]);
+
 export const userHookSettings = pgTable("user_hook_settings", {
 	owner: text().notNull(),
 	hookId: text("hook_id").notNull(),

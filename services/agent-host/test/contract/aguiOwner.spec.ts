@@ -6,7 +6,7 @@
 
 import { describe, it, expect } from "vitest";
 
-import { createAguiServer, type RunAgentInput } from "../../src/agui/server.js";
+import { createAguiServer, parseInboundSender, type RunAgentInput } from "../../src/agui/server.js";
 
 /** POST once to a server with an optional owner verifier and identity resolver, returning the onPrompt input. */
 async function postAgui(
@@ -93,5 +93,53 @@ describe("/agui owner (resolved from ingress identity — the UI path)", () => {
       { id: "user-real", anonymous: false },
     );
     expect(input?.owner).toBe("user-real");
+  });
+});
+
+describe("/agui sender (trusted-caller gated, like owner)", () => {
+  const SENDER = { provider: "github", externalId: "29139614", handle: "renovate[bot]", level: 40 };
+  const BODY = { threadId: "t1", messages: [{ role: "user", content: "hi" }], source: "github", sender: SENDER };
+
+  it("passes a well-formed sender from the trusted webhooks caller", async () => {
+    const input = await postAgui(BODY, true);
+    expect(input?.sender).toEqual(SENDER);
+  });
+
+  it("drops the sender from an untrusted caller, and from a server with no verifier", async () => {
+    expect((await postAgui(BODY, false))?.sender).toBeUndefined();
+    expect((await postAgui(BODY, undefined))?.sender).toBeUndefined();
+  });
+
+  it("a sender alone (no owner) still gets verified", async () => {
+    const input = await postAgui(BODY, true, { id: "webhooks-sa", anonymous: false });
+    expect(input?.sender?.externalId).toBe("29139614");
+    expect(input?.owner).toBe("webhooks-sa");
+  });
+});
+
+describe("parseInboundSender", () => {
+  const ok = { provider: "gitlab", externalId: "42", handle: "alice", level: 60 };
+
+  it("accepts the contrib levels and keeps a display name", () => {
+    for (const level of [40, 60, 80, 100]) expect(parseInboundSender({ ...ok, level })?.level).toBe(level);
+    expect(parseInboundSender({ ...ok, displayName: "Alice" })?.displayName).toBe("Alice");
+  });
+
+  it("refuses self and vouched, which only the agent-host can assign", () => {
+    expect(parseInboundSender({ ...ok, level: 0 })).toBeUndefined();
+    expect(parseInboundSender({ ...ok, level: 20 })).toBeUndefined();
+  });
+
+  it("refuses an unknown provider, a scooter identity, and a missing stable id", () => {
+    expect(parseInboundSender({ ...ok, provider: "scooter" })).toBeUndefined();
+    expect(parseInboundSender({ ...ok, provider: "myspace" })).toBeUndefined();
+    expect(parseInboundSender({ ...ok, externalId: "" })).toBeUndefined();
+    expect(parseInboundSender({ ...ok, externalId: 42 })).toBeUndefined();
+    expect(parseInboundSender("github:alice")).toBeUndefined();
+  });
+
+  it("refuses an off-scale level", () => {
+    expect(parseInboundSender({ ...ok, level: 50 })).toBeUndefined();
+    expect(parseInboundSender({ ...ok, level: "40" })).toBeUndefined();
   });
 });

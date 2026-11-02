@@ -48,11 +48,11 @@ def _env(existing: str | None = None):
     """Drive the real app with a dispatch spy, yielding (client, dispatched); `existing` is the conversation already on the thread, if any."""
     dispatched: list[tuple] = []
 
-    async def spy_send(conv, msg, *, priority=False, images=None, files=None, source=None):
+    async def spy_send(conv, msg, *, priority=False, images=None, files=None, source=None, sender=None):
         dispatched.append(("send", conv, msg, priority))
         return True
 
-    async def spy_create(message, *, title=None, on_created=None, owner=None, images=None, files=None, source=None):
+    async def spy_create(message, *, title=None, on_created=None, owner=None, images=None, files=None, source=None, sender=None):
         dispatched.append(("create", message, title))
         # Exercise the real on_created hook as create_conversation does.
         if on_created is not None:

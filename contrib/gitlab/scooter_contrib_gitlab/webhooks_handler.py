@@ -22,7 +22,9 @@ from scooter_contrib_jira.issue_keys import extract_issue_keys
 from scooter_webhooks_lib import policy
 from scooter_webhooks_lib.identity import resolve_owner
 from scooter_webhooks_lib.reply_workflow import reply_workflow
+from scooter_webhooks_lib.sender import Sender
 from .responses import post_gitlab_comment
+from .senders import sender_of
 
 logger = logging.getLogger(__name__)
 _C = {"component": "handlers.gitlab"}
@@ -234,6 +236,7 @@ async def _handle_note(payload: dict):
 
     if not has_mention and not existing:
         return
+    sender = await sender_of(payload)
 
     message_text = policy.strip_mention(note_body)
     diff_context = _format_diff_context(note)
@@ -245,7 +248,7 @@ async def _handle_note(payload: dict):
             comment_body, project_id, note_api_type, noteable_iid,
             discussion_id=discussion_id, has_mention=has_mention, note_id=note.get("id"),
         )
-        await db.store_pending_message("gitlab", res_type, res_id, forward_msg)
+        await db.store_pending_message("gitlab", res_type, res_id, forward_msg, sender)
         return
 
     if existing:
@@ -254,7 +257,7 @@ async def _handle_note(payload: dict):
             comment_body, project_id, note_api_type, noteable_iid,
             discussion_id=discussion_id, has_mention=has_mention, note_id=note.get("id"),
         )
-        outcome = await deliver_message(existing, forward_msg, source="gitlab")
+        outcome = await deliver_message(existing, forward_msg, source="gitlab", sender=sender)
         if outcome is not SendOutcome.NOT_FOUND:
             # The conversation still exists, so a failed run keeps its mapping (issue #802).
             if outcome is not SendOutcome.DELIVERED:
@@ -296,7 +299,7 @@ async def _handle_note(payload: dict):
             source="gitlab", res_type=res_type, res_id=res_id,
             message=full_message, repo=repo, conv_title=conv_title,
             project_id=project_id, note_api_type=note_api_type,
-            noteable_iid=noteable_iid, invoking_user=user,
+            noteable_iid=noteable_iid, invoking_user=user, sender=sender,
         )
     )
 
@@ -331,7 +334,7 @@ async def _handle_issue(payload: dict):
             conv_title=f"Issue #{issue_iid}: {issue_title}",
             project_id=project_id, note_api_type="issues",
             invoking_user=payload.get("user", {}).get("username"),
-            noteable_iid=issue_iid,
+            noteable_iid=issue_iid, event=payload,
         )
     )
 
@@ -367,7 +370,7 @@ async def _handle_merge_request(payload: dict):
             conv_title=f"MR !{mr_iid}: {mr_title}",
             project_id=project_id, note_api_type="merge_requests",
             invoking_user=payload.get("user", {}).get("username"),
-            noteable_iid=mr_iid,
+            noteable_iid=mr_iid, event=payload,
         )
     )
 
@@ -376,7 +379,9 @@ async def _background_create_conversation(
     source: str, res_type: str, res_id: str, message: str, repo: str,
     conv_title: str, project_id: int, note_api_type: str,
     noteable_iid: int, invoking_user: str | None = None,
+    sender: Sender | None = None, event: dict | None = None,
 ) -> None:
+    """Start a conversation for a resource; `event` names the sender when `sender` isn't given."""
     # Runs pre-run, since create_conversation blocks until the whole agent turn finishes.
     async def _register(conv_id: str) -> None:
         await db.store_conversation(source, res_type, res_id, conv_id)
@@ -395,11 +400,14 @@ async def _background_create_conversation(
 
     # Best-effort owner lookup; None leaves the conversation unowned.
     conv_owner = await resolve_owner("gitlab", invoking_user) if invoking_user else None
+    if sender is None and event is not None:
+        # Looked up here, off the webhook's response path.
+        sender = await sender_of(event)
 
     try:
         result = await create_conversation(
             message, repository=repo, title=conv_title, on_created=_register,
-            owner=conv_owner, source="gitlab",
+            owner=conv_owner, source="gitlab", sender=sender,
         )
         if not result:
             await _clear_pending(source, res_type, res_id)
@@ -429,8 +437,8 @@ async def _background_create_conversation(
         conv_id = result.get("conversation_id", "")
 
         messages = await db.get_and_clear_pending_messages(source, res_type, res_id)
-        for msg in messages:
-            ok = await send_message(conv_id, msg, source="gitlab")
+        for msg, msg_sender in messages:
+            ok = await send_message(conv_id, msg, source="gitlab", sender=msg_sender)
             if not ok:
                 logger.warning(
                     "flush of pending message failed",

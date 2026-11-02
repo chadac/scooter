@@ -56,6 +56,7 @@ import {
   writeSandboxFile,
   type AguiEvent,
   type ApproverIdentity,
+  type MessageSender,
 } from "./bridge.js";
 import { createAcpClient, type BlockingTool } from "./acp/client.js";
 import { createRecorder } from "./transcript/recorder.js";
@@ -84,6 +85,7 @@ import { createPgUserSkillStore } from "./session/userSkillStore.js";
 import { createHookRunner, parseHooks } from "./hooks/runner.js";
 import type { HookDef, HookRunner } from "./hooks/types.js";
 import { createPgUserHookSettingsStore } from "./hooks/userHookSettingsStore.js";
+import { createMemoryIdentityRegistry, createPgIdentityRegistry } from "./session/identityRegistry.js";
 import { mintConvToken } from "./auth/convToken.js";
 import { createMcpEndpoint, resolveConversation } from "./agent/mcpServer.js";
 import { readSandboxFileBase64, IMAGE_MAX_BYTES, type ImageToolsWiring } from "./agent/imageTools.js";
@@ -1025,6 +1027,8 @@ export async function main(
     backend: userSkillStore ? "postgres" : "none",
     ...(userSkillStore ? {} : { reason: "no agent_host DSN — personal skills are disabled" }),
   });
+  // Without a database, identities live only in this process.
+  const identityRegistry = agentHostDsn ? createPgIdentityRegistry({ dsn: agentHostDsn }) : createMemoryIdentityRegistry();
   // Without a database every hook stays on.
   const userHookSettings = agentHostDsn ? createPgUserHookSettingsStore({ dsn: agentHostDsn }) : undefined;
   const hooksLog = logger("hooks");
@@ -1359,10 +1363,19 @@ export async function main(
       }
       promptFiles.push({ name: f.name, data: f.data, mimeType: f.mimeType });
     }
+    // An unrecordable sender is logged and dropped, not guessed.
+    let sender: MessageSender | undefined;
+    if (input.sender) {
+      try {
+        sender = { id: await identityRegistry.upsert(input.sender), level: input.sender.level };
+      } catch (e) {
+        hostLog.warn("could not record a message sender", { conversation_id: sessionId, provider: input.sender.provider, error: formatError(e) });
+      }
+    }
     try {
       // Refuse the whole message rather than silently dropping files past the count.
       assertFileCount(input.files, uploadLimits);
-      await sessions.promptByThread(sessionId, input.text, model, input.priority, input.owner, promptImages, promptFiles, input.source, input.provider);
+      await sessions.promptByThread(sessionId, input.text, model, input.priority, input.owner, promptImages, promptFiles, input.source, input.provider, sender);
     } catch (err) {
       // The run could not start, so persist a RUN_ERROR to the durable log so a reattaching
       // UI sees the failure.

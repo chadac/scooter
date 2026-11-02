@@ -147,7 +147,14 @@ type AguiEventBase =
   // A platform-injected message (webhook, scheduler, background job, broker, nudge)
   // persisted instead of a role:user message so the UI can collapse it; `source`
   // tags the origin.
-  | { type: "SYSTEM_MESSAGE"; messageId: string; source: string; text: string };
+  | { type: "SYSTEM_MESSAGE"; messageId: string; source: string; text: string; sender?: string; level?: number };
+
+/** Who sent an inbound message: an `identities` row id, and how close they are to the
+ *  conversation (0 closest, 100 unknown). */
+export interface MessageSender {
+  id: string;
+  level: number;
+}
 
 /** The decoration prepended to a system message so the agent treats it as a platform
  *  event rather than a human turn. */
@@ -255,6 +262,8 @@ export interface PromptInput {
   /** Set when the platform injected this prompt: the agent receives a system-message
    *  decoration and the turn persists as a SYSTEM_MESSAGE event. */
   source?: string;
+  /** Who sent a sourced prompt, recorded on its SYSTEM_MESSAGE. */
+  sender?: MessageSender;
   /** The inherited trigger, passed to RunContext.humanInitiated. */
   humanInitiated?: boolean;
 }
@@ -309,7 +318,7 @@ export interface SessionBridge {
 
   /** Remove every queued item and return it for persistence across a bridge teardown,
    *  rejecting each drained prompt() and emitting a clearing QUEUE_UPDATED. */
-  drainQueue(): Array<{ text: string; priority: number; source?: string; humanInitiated?: boolean }>;
+  drainQueue(): Array<{ text: string; priority: number; source?: string; sender?: MessageSender; humanInitiated?: boolean }>;
 
   /** True when a PRIORITY_INTERRUPT item is waiting, which tells a provider's pre-tool
    *  gate to deny the next tool so the run quiesces to a boundary. */
@@ -1131,7 +1140,13 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       if (b.source) {
         const sysId = nextId("sys");
         thisTurnIds.add(sysId);
-        persist({ type: "SYSTEM_MESSAGE", messageId: sysId, source: b.source, text: b.text });
+        persist({
+          type: "SYSTEM_MESSAGE",
+          messageId: sysId,
+          source: b.source,
+          text: b.text,
+          ...(b.sender ? { sender: b.sender.id, level: b.sender.level } : {}),
+        });
         continue;
       }
       const userMsgId = nextId("user");
@@ -1818,6 +1833,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         text: q.input.text,
         priority: q.priority,
         source: q.input.source,
+        sender: q.input.sender,
         humanInitiated: q.input.humanInitiated,
       }));
     },

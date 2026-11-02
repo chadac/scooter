@@ -65,6 +65,8 @@ CREATE TABLE "pending_messages" (
   "resource_type" character varying NOT NULL,
   "resource_id"   character varying NOT NULL,
   "message"       text NOT NULL,
+  -- The Sender payload, so a message queued before its conversation exists keeps it.
+  "sender"        jsonb NULL,
   "created_at"    timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY ("id")
 );

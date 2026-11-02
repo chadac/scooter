@@ -22,6 +22,8 @@ from scooter_webhooks_lib.agent_host_client import (
     SendOutcome, conversation_url, create_conversation, deliver_message, push_link, send_message,
 )
 from .responses import post_jira_comment
+from .senders import sender_of
+from scooter_webhooks_lib.sender import Sender
 
 logger = logging.getLogger(__name__)
 _C = {"component": "handlers.jira"}
@@ -146,18 +148,19 @@ async def _handle_comment(payload: dict):
 
     if not has_mention and not existing:
         return
+    sender = await sender_of(author, issue)
 
     message_text = policy.strip_mention(comment_body)
     comment_text = f"@{author_name} commented:\n\n{message_text}"
 
     if is_pending(existing):
         forward_msg = _format_forwarded_message(comment_text, issue_key, has_mention)
-        await db.store_pending_message("jira", "issue", issue_key, forward_msg)
+        await db.store_pending_message("jira", "issue", issue_key, forward_msg, sender)
         return
 
     if existing:
         forward_msg = _format_forwarded_message(comment_text, issue_key, has_mention)
-        outcome = await deliver_message(existing, forward_msg, source="jira")
+        outcome = await deliver_message(existing, forward_msg, source="jira", sender=sender)
         if outcome is not SendOutcome.NOT_FOUND:
             # The conversation still exists, so a failed run keeps its mapping (issue #802).
             if outcome is not SendOutcome.DELIVERED:
@@ -195,7 +198,7 @@ async def _handle_comment(payload: dict):
     asyncio.create_task(
         _background_create_conversation(
             issue_key=issue_key, message=full_message,
-            conv_title=conv_title,
+            conv_title=conv_title, sender=sender,
         )
     )
 
@@ -236,13 +239,16 @@ async def _handle_issue_updated(payload: dict):
         _background_create_conversation(
             issue_key=issue_key, message=message,
             conv_title=f"Jira {issue_key}: {issue_summary}",
+            actor=payload.get("user"), issue=issue,
         )
     )
 
 
 async def _background_create_conversation(
     issue_key: str, message: str, conv_title: str,
+    sender: Sender | None = None, actor: dict | None = None, issue: dict | None = None,
 ) -> None:
+    """Start a conversation for an issue; `actor` names the sender when `sender` isn't given."""
     # Runs pre-run, since create_conversation blocks until the whole agent turn finishes.
     async def _register(conv_id: str) -> None:
         await db.store_conversation("jira", "issue", issue_key, conv_id)
@@ -258,7 +264,10 @@ async def _background_create_conversation(
         )
 
     try:
-        result = await create_conversation(message, title=conv_title, on_created=_register, source="jira")
+        if sender is None and actor is not None:
+            # Looked up here, off the webhook's response path.
+            sender = await sender_of(actor, issue or {})
+        result = await create_conversation(message, title=conv_title, on_created=_register, source="jira", sender=sender)
         if not result:
             await _clear_pending(issue_key)
             # Correct the optimistic comment already posted in _register.
@@ -285,8 +294,8 @@ async def _background_create_conversation(
         conv_id = result.get("conversation_id", "")
 
         messages = await db.get_and_clear_pending_messages("jira", "issue", issue_key)
-        for msg in messages:
-            ok = await send_message(conv_id, msg, source="jira")
+        for msg, msg_sender in messages:
+            ok = await send_message(conv_id, msg, source="jira", sender=msg_sender)
             if not ok:
                 logger.warning(
                     "flush of pending message failed",

@@ -1404,6 +1404,12 @@ in
             Per-user opt-outs from deployment hooks marked `userCanDisable`, set in the settings
             page and read when a conversation's bridge is built.'';
         };
+        identities = {
+          writers = [ "agent-host" ];
+          note = ''
+            One account in one system (scooter, github, gitlab, slack, jira), keyed by the
+            system's stable id. Every inbound message's sender is one of these.'';
+        };
       };
     };
 

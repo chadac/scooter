@@ -46,6 +46,7 @@ class PendingMessages(Base):
     resource_id: Mapped[str] = mapped_column(String, nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(True), nullable=False, server_default=text('now()'))
+    sender: Mapped[Optional[dict]] = mapped_column(JSONB)
 
 
 class ResourceLinks(Base):

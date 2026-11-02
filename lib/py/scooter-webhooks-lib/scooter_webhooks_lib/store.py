@@ -16,6 +16,7 @@ from sqlalchemy import select, delete, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from . import resources
+from .sender import Sender
 
 # The ORM classes are generated from lib/sql/webhooks/schema.sql; the generator pluralizes names, aliased back to singular here.
 from scooter_schema.webhooks import (
@@ -303,7 +304,7 @@ def is_pending(conversation_id: str | None) -> bool:
 
 
 async def store_pending_message(
-    source: str, resource_type: str, resource_id: str, message: str
+    source: str, resource_type: str, resource_id: str, message: str, sender: Sender | None = None
 ) -> None:
     """Queue a message for a resource whose conversation is still being created."""
     async with get_session() as session:
@@ -312,6 +313,7 @@ async def store_pending_message(
             resource_type=resource_type,
             resource_id=resource_id,
             message=message,
+            sender=sender.to_payload() if sender is not None else None,
         ))
     logger.info(
         "queued pending message",
@@ -326,8 +328,8 @@ async def store_pending_message(
 
 async def get_and_clear_pending_messages(
     source: str, resource_type: str, resource_id: str
-) -> list[str]:
-    """Get and delete all pending messages for a resource."""
+) -> list[tuple[str, Sender | None]]:
+    """Get and delete all pending messages for a resource, each with its sender."""
     async with get_session() as session:
         rows = (
             await session.execute(
@@ -341,7 +343,7 @@ async def get_and_clear_pending_messages(
             )
         ).scalars().all()
 
-        messages = [r.message for r in rows]
+        messages = [(r.message, _stored_sender(r.sender)) for r in rows]
 
         if rows:
             await session.execute(
@@ -353,6 +355,17 @@ async def get_and_clear_pending_messages(
             )
 
         return messages
+
+
+def _stored_sender(data: dict | None) -> Sender | None:
+    """A queued message's sender; an unreadable one is dropped, never guessed."""
+    if not data:
+        return None
+    try:
+        return Sender.from_payload(data)
+    except (KeyError, ValueError):
+        logger.warning("dropped unreadable pending sender", extra=_C)
+        return None
 
 
 async def clear_conversation(

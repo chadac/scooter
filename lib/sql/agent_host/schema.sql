@@ -201,3 +201,23 @@ CREATE TABLE "user_hook_settings" (
   "updated_at" bigint NOT NULL,
   PRIMARY KEY ("owner", "hook_id")
 );
+
+-- One account in one system, keyed by that system's stable id so a rename keeps
+-- what was granted to it. Created the first time a message names it; `handle`
+-- is refreshed from each one. `scooter_user` is set once the account is linked.
+CREATE TABLE "identities" (
+  "id"           text NOT NULL,
+  "provider"     text NOT NULL,
+  "external_id"  text NOT NULL,
+  "handle"       text NOT NULL,
+  "display_name" text NULL,
+  "scooter_user" text NULL,
+  "updated_at"   bigint NOT NULL,
+  PRIMARY KEY ("id")
+);
+
+-- An inbound message is looked up by its sender's stable id.
+CREATE UNIQUE INDEX "identities_provider_external_id" ON "identities" ("provider", "external_id");
+
+-- The rule finds an owner's own accounts through this.
+CREATE INDEX "identities_by_scooter_user" ON "identities" ("scooter_user");

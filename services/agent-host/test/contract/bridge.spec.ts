@@ -719,6 +719,31 @@ describe("system messages (platform-injected, non-human)", () => {
     expect(userStart, "system message must not persist as a user turn").toBeUndefined();
   });
 
+  it("records the sender's identity and level on the SYSTEM_MESSAGE, and only there", async () => {
+    const { bridge, prompts } = makeBridge();
+    const persisted: AguiEvent[] = [];
+    bridge.onPersist((e) => persisted.push(e));
+
+    await bridge.prompt({ threadId: "t1", text: "a comment", source: "github", sender: { id: "ident-1", level: 80 } });
+
+    const sys = persisted.find((e) => e.type === "SYSTEM_MESSAGE") as { sender?: string; level?: number } | undefined;
+    expect(sys?.sender).toBe("ident-1");
+    expect(sys?.level).toBe(80);
+    // The sender is platform state, not prompt text.
+    expect(prompts[0][0].text).toBe(decorateSystemMessage("github", "a comment"));
+  });
+
+  it("a sourced prompt with no sender persists no sender fields", async () => {
+    const { bridge } = makeBridge();
+    const persisted: AguiEvent[] = [];
+    bridge.onPersist((e) => persisted.push(e));
+    await bridge.prompt({ threadId: "t1", text: "a schedule fired", source: "scheduler" });
+    const sys = persisted.find((e) => e.type === "SYSTEM_MESSAGE") as Record<string, unknown> | undefined;
+    expect(sys).toBeDefined();
+    expect("sender" in sys!).toBe(false);
+    expect("level" in sys!).toBe(false);
+  });
+
   it("SENDS the decorated text to the agent (the agent still acts on it)", async () => {
     const { bridge, prompts } = makeBridge();
     await bridge.prompt({ threadId: "t1", text: "a github event", source: "github" });
@@ -1205,6 +1230,22 @@ describe("bridge run queue + cancel", () => {
     await tick();
     // An in-flight item is a run already executing and the pump settles it, so it must not be rejected here.
     expect(rejected, "drainQueue must not reject an ALREADY-RUNNING prompt").toBe(false);
+  });
+
+  it("drainQueue() keeps each message's sender, so a revived conversation still knows who sent it", async () => {
+    const agent = createFakeAcpAgent();
+    agent.setScript([{ finish: { stopReason: "end_turn" } }]);
+    agent.gate();
+    const bridge = mkBridge(agent);
+    await bridge.start();
+
+    void bridge.prompt({ threadId: "t1", text: "running", source: "github", sender: { id: "ident-a", level: 40 } }).catch(() => {});
+    await tick();
+    void bridge.prompt({ threadId: "t1", text: "queued", source: "github", sender: { id: "ident-b", level: 80 } }).catch(() => {});
+    await tick();
+
+    const drained = bridge.drainQueue();
+    expect(drained.map((d) => d.sender)).toEqual([{ id: "ident-a", level: 40 }, { id: "ident-b", level: 80 }]);
   });
 
   it("stop() emits a CLEARING queue snapshot so a revived tab shows no phantom queue", async () => {

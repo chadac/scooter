@@ -44,6 +44,7 @@ export const pendingMessages = pgTable("pending_messages", {
 	resourceType: varchar("resource_type").notNull(),
 	resourceId: varchar("resource_id").notNull(),
 	message: text().notNull(),
+	sender: jsonb(),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 });
 

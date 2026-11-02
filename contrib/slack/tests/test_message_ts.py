@@ -13,7 +13,7 @@ async def _capture_forward(handler_coro) -> dict:
     seen: dict = {}
     started = asyncio.Event()
 
-    async def capturing_send(conv_id, msg, *, priority=False, images=None, files=None, source=None):
+    async def capturing_send(conv_id, msg, *, priority=False, images=None, files=None, source=None, sender=None):
         seen["msg"], seen["priority"] = msg, priority
         started.set()
         return True

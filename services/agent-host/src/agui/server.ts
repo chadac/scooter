@@ -108,6 +108,35 @@ export interface RunAgentInput {
   files?: InboundFile[];
   /** System message source set by a platform caller (webhooks, scheduler), so the agent sees a "system event" and the UI can hide it; harmless if spoofed. */
   source?: string;
+  /** Who sent a webhook message, honored only from the TokenReview-verified webhooks caller. */
+  sender?: InboundSender;
+}
+
+/** A webhook message's sender as a contrib reports it: the platform's stable id, plus the
+ *  level its platform signals prove. */
+export interface InboundSender {
+  provider: string;
+  externalId: string;
+  handle: string;
+  displayName?: string;
+  level: number;
+}
+
+/** The sender providers a contrib may report; "scooter" identities are never sent in. */
+const SENDER_PROVIDERS = new Set(["github", "gitlab", "slack", "jira"]);
+/** member..unknown: self (0) and vouched (20) come only from the agent-host's own state. */
+const CONTRIB_LEVELS = new Set([40, 60, 80, 100]);
+
+/** `raw` as an InboundSender, or undefined if any field is missing or out of range. */
+export function parseInboundSender(raw: unknown): InboundSender | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.provider !== "string" || !SENDER_PROVIDERS.has(r.provider)) return undefined;
+  if (typeof r.externalId !== "string" || r.externalId === "") return undefined;
+  if (typeof r.handle !== "string") return undefined;
+  if (typeof r.level !== "number" || !CONTRIB_LEVELS.has(r.level)) return undefined;
+  const displayName = typeof r.displayName === "string" && r.displayName !== "" ? r.displayName : undefined;
+  return { provider: r.provider, externalId: r.externalId, handle: r.handle, level: r.level, ...(displayName ? { displayName } : {}) };
 }
 
 /** One connected UI client subscribed to a session's event stream. */
@@ -336,6 +365,8 @@ export function createAguiServer(): AguiServer {
         resume?: Array<{ interruptId: string; status: "resolved" | "cancelled"; payload?: unknown }>;
         /** System message source (webhooks/scheduler); absent means a human message. */
         source?: string;
+        /** Who sent a webhook message; see RunAgentInput.sender. */
+        sender?: unknown;
       };
       const sessionId = input.threadId;
       if (await refuseHidden(req, res, sessionId)) return;
@@ -452,7 +483,17 @@ export function createAguiServer(): AguiServer {
       // ingress identity (the same resolver /whoami uses) owns it, and anonymous leaves it
       // unowned.
       let owner: string | undefined;
-      if (input.owner && ownerVerifier && (await ownerVerifier(req).catch(() => false))) {
+      // Owner and sender are trusted only from the webhooks caller.
+      const verified =
+        (input.owner !== undefined || input.sender !== undefined) &&
+        ownerVerifier !== undefined &&
+        (await ownerVerifier(req).catch(() => false));
+      // Untrusted or malformed senders are logged and dropped.
+      const sender = verified ? parseInboundSender(input.sender) : undefined;
+      if (input.sender !== undefined && !sender) {
+        withConversation(sessionId, () => log.warn("dropped an untrusted or malformed sender", { verified }));
+      }
+      if (input.owner && verified) {
         owner = input.owner;
       } else {
         const user = await resolveUserSafely(req);
@@ -462,7 +503,7 @@ export function createAguiServer(): AguiServer {
       // is already sent, so emit a RUN_ERROR on this stream and close it rather than let
       // the outer catch end it with an unparseable raw error.
       try {
-        await promptHandler?.(sessionId, { threadId: sessionId, text, model, provider: pickedProvider, priority: input.priority, owner, images, files, source: input.source });
+        await promptHandler?.(sessionId, { threadId: sessionId, text, model, provider: pickedProvider, priority: input.priority, owner, images, files, source: input.source, sender });
         // promptHandler drives the run; RUN_FINISHED/RUN_ERROR close the stream.
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
