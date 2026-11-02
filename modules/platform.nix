@@ -1568,6 +1568,14 @@ in
                     ); }
                   # Their tokens' audiences, while callers move to scooter-router.
                   { name = "WEBHOOKS_TOKEN_AUDIENCE"; value = "agent-host,scooter-router"; }
+                  # SAs that may reach any conversation, private ones included.
+                  { name = "CONVERSATION_SERVICE_ACCOUNTS";
+                    value = lib.concatStringsSep "," (
+                      [ "system:serviceaccount:${cfg.namespace}:agent-webhooks" ]
+                      ++ lib.optional cfg.scheduler.enable "system:serviceaccount:${cfg.namespace}:agent-scheduler"
+                      # The broker reads a conversation's owner to pick credentials.
+                      ++ lib.optional cfg.broker.enable "system:serviceaccount:${cfg.namespace}:agent-broker"
+                    ); }
                   # Subagent creation goes through the router.
                   { name = "CONVERSATION_ROUTER_URL"; value = "http://agent-host.${cfg.namespace}.svc.cluster.local:8080"; }
                   { name = "CONVERSATION_ROUTER_TOKEN_PATH"; value = "/var/run/secrets/conversation-router/token"; }

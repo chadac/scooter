@@ -737,6 +737,11 @@ export async function main(
     audience: process.env.WEBHOOKS_TOKEN_AUDIENCE || "agent-host",
   });
   server.useOwnerVerifier(ownerVerifier);
+  // Services that may reach any conversation; broader than who may set owners.
+  const conversationServiceVerifier = createWebhooksCallerVerifier({
+    expectedServiceAccount: process.env.CONVERSATION_SERVICE_ACCOUNTS ?? process.env.WEBHOOKS_SERVICE_ACCOUNT,
+    audience: process.env.WEBHOOKS_TOKEN_AUDIENCE || "agent-host",
+  });
 
   // Bring-your-own-Claude is gated on REMOTE_AGENT_JOIN_SECRET; absent means no route and no
   // remote provider.
@@ -1128,14 +1133,14 @@ export async function main(
   // /whoami uses.
   server.useIdentityResolver(resolveUser);
   // Who may see and drive a conversation (session/visibility.ts), checked by the management
-  // API, POST /agui and the web-service proxy. The webhooks SA delivers into any conversation.
+  // API, POST /agui and the web-service proxy. Trusted services reach any conversation.
   const accessCheck = createAccessCheck({
     readAccess: store.readAccess ? (id) => store.readAccess!(id as SessionId) : undefined,
     memory: (id) => {
       const c = sessions.get(id as SessionId);
       return c ? { owner: c.owner, visibility: c.visibility } : undefined;
     },
-    trustedService: ownerVerifier,
+    trustedService: conversationServiceVerifier,
   });
   server.useAccessCheck(accessCheck);
   // Only the web tools' injectable fetch remains here, and nothing overrides it in
