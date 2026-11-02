@@ -161,3 +161,44 @@ func TestSandboxListenerServesOnlyServices(t *testing.T) {
 		t.Errorf("proxied %q with header %q", seen.URL.Path, seen.Header.Get(SandboxHostHeader))
 	}
 }
+
+func TestSandboxListenerRefusesCrossOriginWebSockets(t *testing.T) {
+	const id = "5a515e73-860b-49ba-bc3f-6ff8d5fda5ff"
+	var proxied bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxied = true
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	defer upstream.Close()
+	cfg := config{sandboxDomain: "scooter.example.com", fallback: mustURL(t, upstream.URL)}
+	h := newSandboxHandler(context.Background(), cfg, nil, fakeLabels{"5a515e73": {id}}, cfg.fallback, nil)
+
+	for _, c := range []struct {
+		name, upgrade, origin string
+		refused               bool
+	}{
+		{"same origin", "websocket", "https://5a515e73.scooter.example.com", false},
+		{"same origin, any case", "WebSocket", "https://5A515E73.scooter.example.com", false},
+		{"no Origin", "websocket", "", false},
+		{"plain request from another origin", "", "https://feedbeef.scooter.example.com", false},
+		{"another sandbox", "websocket", "https://feedbeef.scooter.example.com", true},
+		{"the main host", "websocket", "https://scooter.example.com", true},
+		{"another site", "websocket", "https://evil.example.net", true},
+		{"opaque origin", "websocket", "null", true},
+	} {
+		proxied = false
+		req := httptest.NewRequest("GET", "http://5a515e73.scooter.example.com/terminal/ws", nil)
+		if c.upgrade != "" {
+			req.Header.Set("Connection", "Upgrade")
+			req.Header.Set("Upgrade", c.upgrade)
+		}
+		if c.origin != "" {
+			req.Header.Set("Origin", c.origin)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, req)
+		if refused := w.Code == http.StatusForbidden && !proxied; refused != c.refused {
+			t.Errorf("%s: code=%d proxied=%v, want refused=%v", c.name, w.Code, proxied, c.refused)
+		}
+	}
+}
