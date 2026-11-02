@@ -824,7 +824,17 @@ let
            else [ "sandbox-isolation any-destination rule must allow networkPolicy.udpPorts/tcpPorts ${builtins.toJSON want}, got ${builtins.toJSON (map (r: r.ports or [ ]) anyRules)}" ])
     # With no ports, the rule must vanish: an empty `ports` allows all egress.
     ++ (if builtins.any (r: !(r ? to)) (((evalPlatform { module = { lib, ... }: { imports = [ ./kubenix-config.nix ]; scooter.networkPolicy = { udpPorts = lib.mkForce [ ]; tcpPorts = lib.mkForce [ ]; }; }; }).config.kubernetes.resources.networkPolicies.sandbox-isolation.spec.egress))
-        then [ "sandbox-isolation renders a port-less any-destination rule when udpPorts and tcpPorts are empty" ] else [ ]);
+        then [ "sandbox-isolation renders a port-less any-destination rule when udpPorts and tcpPorts are empty" ] else [ ])
+    # Agent-host pods admit only the router and controller, matched by their real pod labels.
+    ++ (let
+          hostNp = (res.networkPolicies or { }).agent-host-ingress or null;
+          podApp = dep: res.deployments.${dep}.spec.template.metadata.labels.app or null;
+          from = if hostNp == null then [ ] else builtins.concatMap (r: map (p: p.podSelector.matchLabels.app or null) (r.from or [ ])) hostNp.spec.ingress;
+        in if hostNp == null then [ "networkPolicies.agent-host-ingress missing (networkPolicy.enable defaults to true)" ] else
+          (if hostNp.spec.podSelector.matchLabels.app == podApp "agent-host" then [ ] else [ "agent-host-ingress does not select the agent-host pods" ])
+          ++ (if from == [ (podApp "conversation-router") (podApp "conversation-controller") ] then [ ]
+              else [ "agent-host-ingress must admit only the router and controller pods, got ${builtins.toJSON from}" ])
+          ++ (if builtins.all (r: r ? from) hostNp.spec.ingress then [ ] else [ "agent-host-ingress has a rule admitting any source" ]));
 
   # A contrib's approval declaration reaches the agent-host, and with aws off it does not.
   approvalsJson =
