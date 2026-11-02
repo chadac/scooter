@@ -9,10 +9,11 @@ import { debugError } from "../debug.js";
 import { logger } from "../log.js";
 import { existsSync } from "node:fs";
 
-import { KubeConfig, Exec, CoreV1Api, type V1Status } from "@kubernetes/client-node";
+import { KubeConfig, Exec, CoreV1Api, type V1Pod, type V1Status } from "@kubernetes/client-node";
 
 import type { ExecRequest, ExecResult, SandboxRef } from "../types.js";
 import type { SandboxApiClient } from "./sandboxExec.js";
+import { describeSandboxDisruption } from "./podDisruption.js";
 
 const log = logger("k8sExec");
 
@@ -385,26 +386,65 @@ export function createK8sSandboxApiClient(
               duration_ms: Date.now() - startedAt,
               ws_close: lastClose ?? null,
             });
-            resolve({
-              stdout: out.text(),
-              stderr: err.text(),
-              exitCode: exit_code,
+            const result = { stdout: out.text(), stderr: err.text(), exitCode: exit_code };
+            // Only a kill, or a close with no status, can mean the sandbox died.
+            if (signal?.aborted || (status && exit_code !== 137 && exit_code !== 143)) {
+              resolve(result);
+              return;
+            }
+            void explainDisruption(new Date(startedAt)).then((note) => {
+              if (!note) return resolve(result);
+              const sep = result.stderr && !result.stderr.endsWith("\n") ? "\n" : "";
+              resolve({
+                stdout: result.stdout,
+                stderr: `${result.stderr}${sep}${note}\n`,
+                exitCode: exit_code === 0 ? 137 : exit_code,
+              });
             });
           });
           ws.on("error", (e: unknown) => {
             settle();
             const err = toExecError(e, lastClose);
             log.errorWith("ws error", err, { status: err.status ?? null, ws_close: lastClose ?? null });
-            reject(err);
+            void withDisruptionNote(err, new Date(startedAt)).then(reject);
           });
         })
         .catch((e: unknown) => {
           settle();
           const err = toExecError(e, lastClose);
           log.errorWith("exec() rejected", err, { status: err.status ?? null, ws_close: lastClose ?? null });
-          reject(err);
+          void withDisruptionNote(err, new Date(startedAt)).then(reject);
         });
     });
+
+  /** Why the sandbox died under a command started at `since`, if it did. */
+  const explainDisruption = async (since: Date): Promise<string | undefined> => {
+    const core = (opts.kubeConfig ?? defaultKubeConfig()).makeApiClient(CoreV1Api);
+    // Kubelet records the termination a moment after the stream drops.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, 1_000));
+      let pod: V1Pod | undefined;
+      try {
+        pod = await core.readNamespacedPod({ namespace: ref.namespace, name: podName });
+      } catch (e) {
+        if ((e as { code?: number }).code !== 404) {
+          log.warn("disruption check: pod read failed", { pod_name: podName, error: String(e) });
+          return undefined;
+        }
+      }
+      const note = describeSandboxDisruption(pod, container, since);
+      if (note) {
+        log.info("sandbox disrupted under a command", { namespace: ref.namespace, pod_name: podName, note });
+        return note;
+      }
+    }
+    return undefined;
+  };
+
+  const withDisruptionNote = async (err: K8sExecError, since: Date): Promise<K8sExecError> => {
+    const note = await explainDisruption(since);
+    return note ? new K8sExecError(`${err.message}. ${note}`, err.status, err.wsClose, { cause: err.cause }) : err;
+  };
 
   return {
     mode: "k8s-exec",
