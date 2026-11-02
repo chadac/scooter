@@ -150,7 +150,8 @@ function PlainCard({
             data-option-id={o.optionId}
             data-blocked={isBlocked ? "true" : undefined}
             title={isBlocked ? blocked?.title : undefined}
-            className={cn(isBlocked && "cursor-not-allowed")}
+            // Long labels wrap rather than overflow.
+            className={cn("h-auto min-h-8 whitespace-normal", isBlocked && "cursor-not-allowed")}
             onClick={() => !isBlocked && choose(o.optionId)}
           >
             {o.name}
