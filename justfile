@@ -13,6 +13,10 @@ default:
 check-flake:
     nix flake show
 
+# What flakehub-push evaluates before publishing; every system must evaluate.
+check-flakehub:
+    nix flake show --all-systems --json --no-write-lock-file > /dev/null
+
 # Render the example platform config (examples/kubenix-config.nix) and assert the
 # expected resources are present, catching module eval errors and silent resource
 # drops.
@@ -445,7 +449,7 @@ lint: typecheck
 # Guard against a stale stubs.lock: re-evaluate stubs.nix and fail if any recorded .drv
 # differs. An in-repo stub (contrib/code-server/ahp) changes its .drv with every source edit, and a
 # stale lock would silently ship the old build. Fix: nix run --inputs-from . nix-stubs#nix-stubs --
-# gen --system x86_64-linux --system aarch64-linux --lock modules/sandbox-os/stubs.lock
+# gen --system x86_64-linux --system aarch64-linux --system aarch64-darwin --lock modules/sandbox-os/stubs.lock
 check-stubs:
     nix run --inputs-from . nix-stubs#nix-stubs -- check --lock modules/sandbox-os/stubs.lock
 

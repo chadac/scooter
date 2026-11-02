@@ -74,6 +74,10 @@ jobs:
           CI: "1"
         run: nix develop --command just ci
 
+      # The release FlakeHub push fails if any system's outputs fail to evaluate.
+      - name: FlakeHub publish dry run (every system evaluates)
+        run: nix develop --command just check-flakehub
+
       # Each Python service's nix build runs its pytest suite (keep the list in sync
       # with the buildPythonApplication services); `.#contribs-all` aggregates every
       # contrib variant, including `example = true` ones no service build ships.

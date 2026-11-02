@@ -4,6 +4,14 @@ Each release's section becomes its GitHub Release notes. Images keep their
 content tags and also gain `vX.Y.Z`; the flake is published to
 [FlakeHub](https://flakehub.com/flake/chadac-me/scooter).
 
+## v1.0.1
+
+- **The flake now publishes to FlakeHub.** v1.0.0 never got there: FlakeHub
+  evaluates every system, and the aarch64-darwin outputs failed. The darwin
+  nix-stubs lock and code-server release are added, and outputs that only exist
+  on Linux (the sandbox image, manifests, claude-code) are left out on darwin.
+- CI now runs the same all-systems evaluation on every PR.
+
 ## v1.0.0
 
 The first tagged release. Scooter has been running in production-shaped

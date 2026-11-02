@@ -14,6 +14,14 @@ let
       url = "https://github.com/coder/code-server/releases/download/v${version}/code-server-${version}-linux-arm64.tar.gz";
       hash = "sha256-5cx42h1jHGz2Fi+bGO6qjunTI54aiLuZ0GAs3F+hhS0=";
     };
+    x86_64-darwin = fetchurl {
+      url = "https://github.com/coder/code-server/releases/download/v${version}/code-server-${version}-macos-amd64.tar.gz";
+      hash = "sha256-sTPgAsKhpPIrLsQsXyMxR/NCtZLi6tysxRcDqG9Ef3c=";
+    };
+    aarch64-darwin = fetchurl {
+      url = "https://github.com/coder/code-server/releases/download/v${version}/code-server-${version}-macos-arm64.tar.gz";
+      hash = "sha256-q0Wtlgclvc37kpmO9U/rL0eQeSJDFc5EpPScVAk0U8k=";
+    };
   };
 in
 stdenv.mkDerivation {
@@ -21,8 +29,8 @@ stdenv.mkDerivation {
   inherit version;
   src = srcs.${stdenv.hostPlatform.system} or (throw "code-server-bin: unsupported system ${stdenv.hostPlatform.system}");
 
-  nativeBuildInputs = [ autoPatchelfHook makeWrapper ];
-  buildInputs = [ stdenv.cc.cc.lib krb5 libsecret ];
+  nativeBuildInputs = lib.optionals stdenv.hostPlatform.isLinux [ autoPatchelfHook ] ++ [ makeWrapper ];
+  buildInputs = lib.optionals stdenv.hostPlatform.isLinux [ stdenv.cc.cc.lib krb5 libsecret ];
   # The microsoft-authentication extension's native broker is a desktop GUI component that a
   # headless server never loads; without it the extension falls back to browser sign-in.
   autoPatchelfIgnoreMissingDeps = [

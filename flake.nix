@@ -286,6 +286,14 @@
           contribSandboxChecks = lib.optionalAttrs pkgs.stdenv.isLinux {
             dev-env-contrib-sandbox = contribSandbox;
           };
+
+          # Outputs needing the Linux-only sandbox image or claude-code.
+          linuxOnlyPackages = [
+            "default" "sandbox-os-image" "example-manifests" "ghcr-image-refs"
+            "k3d-ci-deps" "k3d-image-refs" "platform-manifests-ghcr"
+            "platform-manifests-k3d" "platform-manifests-k3d-backfill"
+            "agent-host-image-claude" "remote-agent" "remote-agent-image"
+          ];
         in
         {
           # Deprecated alias of `lib.evalPlatform`; kept for existing deploys.
@@ -295,7 +303,7 @@
           # Package a Python system task: see nix/scooter-task.nix.
           legacyPackages.mkScooterTask = build.config.mkScooterTask;
 
-          packages = {
+          packages = lib.removeAttrs {
             # The NixOS systemd-PID-1 sandbox image.
             default = builtImages.agent-sandbox-os.package;
 
@@ -485,7 +493,7 @@
 
             # nix build .#ghcr-image-refs -> JSON { <camelName> = "ghcr.io/…:<tag>" }
             ghcr-image-refs = pkgs.writeText "ghcr-image-refs.json" (builtins.toJSON ghcrRefs);
-          };
+          } (lib.optionals (!pkgs.stdenv.hostPlatform.isLinux) linuxOnlyPackages);
 
           # Dev shell
           devShells.default = import ./nix/devshell.nix {

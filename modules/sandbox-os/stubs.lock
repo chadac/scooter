@@ -19,6 +19,101 @@
     }
   },
   "packages": {
+    "aarch64-darwin": {
+      "awscli2": {
+        "attr": "awscli2",
+        "drv": "/nix/store/ygl12qhxz4v6h2hn7irfjy3f9p7mgvz3-awscli2-2.36.31.drv",
+        "output": "out",
+        "bins": [
+          "aws",
+          "aws_completer"
+        ],
+        "name": "awscli2-2.36.31"
+      },
+      "code-server": {
+        "attr": "code-server",
+        "drv": "/nix/store/zkvx7wh6vmpyn7jl8jkyncr06s2yx7fx-code-server-4.141.0.drv",
+        "output": "out",
+        "bins": [
+          "code-server"
+        ],
+        "name": "code-server-4.141.0"
+      },
+      "gh": {
+        "attr": "gh",
+        "drv": "/nix/store/5ch05vzfn1w767sirzrk27z7lm99jh8d-gh-2.103.3.drv",
+        "output": "out",
+        "bins": [
+          "gh"
+        ],
+        "name": "gh-2.103.3"
+      },
+      "glab": {
+        "attr": "glab",
+        "drv": "/nix/store/ciib5qnmm94mg76gkby7zm1y9nzv4smm-glab-1.126.0.drv",
+        "output": "out",
+        "bins": [
+          "glab"
+        ],
+        "name": "glab-1.126.0"
+      },
+      "google-cloud-sdk": {
+        "attr": "google-cloud-sdk",
+        "drv": "/nix/store/pkg20adfz2jnz9zpqad0g2iwq5is2fsm-google-cloud-sdk-583.0.0.drv",
+        "output": "out",
+        "bins": [
+          "gcloud",
+          "gsutil",
+          "bq"
+        ],
+        "name": "google-cloud-sdk-583.0.0"
+      },
+      "marimo": {
+        "attr": "marimo",
+        "drv": "/nix/store/smzxmflnnj1k0xfwrba7v8p1a5b4w9yq-python3.14-marimo-0.25.1.drv",
+        "output": "out",
+        "bins": [
+          "marimo"
+        ],
+        "name": "marimo-0.25.1"
+      },
+      "scooter-vscode-ahp": {
+        "attr": "scooter-vscode-ahp",
+        "drv": "/nix/store/pin00qz3df2fpnbyhc0cimbgd21hxynf-scooter-vscode-ahp-0.0.0.drv",
+        "output": "out",
+        "bins": [
+          "scooter-vscode-ahp"
+        ],
+        "name": "scooter-vscode-ahp-0.0.0"
+      },
+      "tree": {
+        "attr": "tree",
+        "drv": "/nix/store/n3y5w728hgmzgfy70zyz323g2gw66spq-tree-2.3.2.drv",
+        "output": "out",
+        "bins": [
+          "tree"
+        ],
+        "name": "tree-2.3.2"
+      },
+      "ttyd": {
+        "attr": "ttyd",
+        "drv": "/nix/store/ya0w29k5g5xa4sffy4gaa8g3xhsrxjcc-ttyd-1.7.7.drv",
+        "output": "out",
+        "bins": [
+          "ttyd"
+        ],
+        "name": "ttyd-1.7.7"
+      },
+      "uv": {
+        "attr": "uv",
+        "drv": "/nix/store/4wc664d8jdycg1llrckavlxrsga2qs7r-uv-nix-bin-0.13.6-nix.1.drv",
+        "output": "out",
+        "bins": [
+          "uv"
+        ],
+        "name": "uv-nix-bin-0.13.6-nix.1"
+      }
+    },
     "aarch64-linux": {
       "awscli2": {
         "attr": "awscli2",
