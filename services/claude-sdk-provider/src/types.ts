@@ -78,6 +78,8 @@ export interface ExecRequest {
   args: string[];
   cwd: string;
   env: Record<string, string>;
+  /** Per-command deadline for `spawn`, overriding the backend default. */
+  timeoutMs?: number;
 }
 export interface TerminalHandle {
   readonly id: string;

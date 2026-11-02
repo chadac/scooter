@@ -11,7 +11,7 @@ import { join } from "node:path";
 
 import { describe, it, expect } from "vitest";
 
-import { sandboxToolHandlers, TOOL_ALIASES, DISABLED_BUILTINS, IMAGE_MAX_BYTES, imageMimeType } from "./sandboxMcp.js";
+import { sandboxToolHandlers, TOOL_ALIASES, DISABLED_BUILTINS, IMAGE_MAX_BYTES, imageMimeType, BASH_TIMEOUT_MAX_S } from "./sandboxMcp.js";
 
 /** The injection canary, created only if the quoting fails. */
 const CANARY = "/tmp/scooter-injection-canary";
@@ -79,6 +79,26 @@ describe("sandbox MCP tool handlers", () => {
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toContain("nope");
     expect(res.content[0].text).toContain("[exit 2]");
+  });
+
+  it("bash passes a requested timeout to the exec as milliseconds, and none by default", async () => {
+    const { exec, spawns } = fakeExec();
+    const h = sandboxToolHandlers(exec);
+    await h.bash({ command: "make", timeout: 900 });
+    await h.bash({ command: "ls" });
+    expect(spawns[0].timeoutMs).toBe(900_000);
+    expect(spawns[1].timeoutMs).toBeUndefined();
+  });
+
+  it("bash rejects a non-positive or over-max timeout without running anything", async () => {
+    const { exec, spawns } = fakeExec();
+    const h = sandboxToolHandlers(exec);
+    for (const timeout of [0, -5, BASH_TIMEOUT_MAX_S + 1, Number.NaN]) {
+      const res = await h.bash({ command: "ls", timeout });
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toMatch(/timeout must be/);
+    }
+    expect(spawns).toHaveLength(0);
   });
 
   it("bash keeps an absolute /workspace cwd but ignores an agent-host-pod cwd", async () => {

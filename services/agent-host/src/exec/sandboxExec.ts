@@ -34,7 +34,7 @@ export { connectSandbox } from "./k8sExec.js";
 
 /** Options for the exec backend. */
 export interface SandboxExecOptions {
-  /** Hard per-command deadline in ms (default 5 min, 0 disables), after which a running command is aborted with a timeout message and non-zero exit. */
+  /** Default per-command deadline in ms (5 min; 0 disables); a request's `timeoutMs` overrides it. */
   commandTimeoutMs?: number;
 }
 
@@ -75,12 +75,13 @@ export function createSandboxExecBackend(api: SandboxApiClient, opts: SandboxExe
       // `timedOut` distinguishes the hard timeout from a user kill so goose gets an
       // actionable "timed out" result.
       let timedOut = false;
+      const timeoutMs = req.timeoutMs ?? commandTimeoutMs;
       const timer =
-        commandTimeoutMs > 0
+        timeoutMs > 0
           ? setTimeout(() => {
               timedOut = true;
               controller.abort();
-            }, commandTimeoutMs)
+            }, timeoutMs)
           : undefined;
       const clearTimer = () => {
         if (timer) clearTimeout(timer);
@@ -114,7 +115,7 @@ export function createSandboxExecBackend(api: SandboxApiClient, opts: SandboxExe
           const detail = String(formatted.message ?? JSON.stringify(formatted));
           log.errorWith("spawn execute failed", err);
           const msg = timedOut
-            ? `command timed out after ${Math.round(commandTimeoutMs / 1000)}s and was terminated — ` +
+            ? `command timed out after ${Math.round(timeoutMs / 1000)}s and was terminated — ` +
               `narrow it (e.g. scope the path, avoid scanning /nix/store or /) or run it in the background`
             : `exec failed: ${detail}`;
           buffered += msg;

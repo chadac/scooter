@@ -60,6 +60,8 @@ export interface ExecRequest {
   env?: Record<string, string>;
   /** Fed on stdin, so large input avoids the argv limit. */
   stdin?: string;
+  /** Per-command deadline for `spawn`, overriding the backend default. */
+  timeoutMs?: number;
 }
 
 export interface ExecResult {

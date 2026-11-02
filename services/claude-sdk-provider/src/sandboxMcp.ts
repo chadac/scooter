@@ -39,6 +39,9 @@ function sandboxCwd(cwd?: string): string {
 const GLOB_MAX = 300;
 const GREP_MAX = 200;
 
+/** Longest per-call bash timeout the model may request, in seconds. */
+export const BASH_TIMEOUT_MAX_S = 30 * 60;
+
 /** Single-quote a value for `sh -lc`. */
 const shq = (v: string): string => "'" + v.replace(/'/g, "'\\''") + "'";
 
@@ -102,10 +105,20 @@ const err = (text: string): ToolResult => ({ content: [{ type: "text", text }], 
 export function sandboxToolHandlers(exec: ExecBackend) {
   return {
     /** Run a shell command in the sandbox and return the combined output. */
-    async bash(args: { command: string; cwd?: string }): Promise<ToolResult> {
+    async bash(args: { command: string; cwd?: string; timeout?: number }): Promise<ToolResult> {
       const command = (args?.command ?? "").trim();
       if (!command) return err("bash: no command provided");
-      const handle = exec.spawn({ command: "sh", args: ["-lc", command], cwd: sandboxCwd(args?.cwd), env: {} });
+      const timeout = args?.timeout;
+      if (timeout !== undefined && !(Number.isFinite(timeout) && timeout > 0 && timeout <= BASH_TIMEOUT_MAX_S)) {
+        return err(`bash: timeout must be over 0 and at most ${BASH_TIMEOUT_MAX_S} seconds`);
+      }
+      const handle = exec.spawn({
+        command: "sh",
+        args: ["-lc", command],
+        cwd: sandboxCwd(args?.cwd),
+        env: {},
+        ...(timeout !== undefined ? { timeoutMs: Math.round(timeout * 1000) } : {}),
+      });
       let out = "";
       handle.onOutput((chunk) => {
         out += chunk;
@@ -219,8 +232,18 @@ export async function createSandboxMcpServer(exec: ExecBackend): Promise<{
   const server = sdk.createSdkMcpServer({
     name: SANDBOX_SERVER_NAME,
     tools: [
-      sdk.tool("bash", "Run a shell command in the sandbox workspace.", { command: z.string(), cwd: z.string().optional() },
-        (a) => h.bash(a as { command: string; cwd?: string })),
+      sdk.tool(
+        "bash",
+        "Run a shell command in the sandbox workspace. It blocks until the command exits or times out " +
+          `(the deployment default, normally 5 min). Set \`timeout\` (seconds, max ${BASH_TIMEOUT_MAX_S}) shorter for commands that might hang, ` +
+          "or longer for a known-slow build; use run_background for anything longer.",
+        {
+          command: z.string(),
+          cwd: z.string().optional(),
+          timeout: z.number().positive().max(BASH_TIMEOUT_MAX_S).optional().describe("Seconds before the command is killed."),
+        },
+        (a) => h.bash(a as { command: string; cwd?: string; timeout?: number }),
+      ),
       sdk.tool("read", "Read a file from the sandbox. Images (.png, .jpg, .jpeg, .gif, .webp, up to 5 MB) are returned as images you can see, e.g. screenshots.", { path: z.string() },
         (a) => h.read(a as { path: string })),
       sdk.tool("write", "Write (create/overwrite) a file in the sandbox.", { path: z.string(), content: z.string() },

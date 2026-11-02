@@ -195,6 +195,31 @@ describe("ExecBackend hard command timeout (P0 — runaway-command deadlock fix)
     }
   });
 
+  it("a request's timeoutMs overrides the backend default, shorter or longer", async () => {
+    vi.useFakeTimers();
+    try {
+      const exec = createSandboxExecBackend(hangingApi(), { commandTimeoutMs: 5000 });
+      const short = exec.spawn({ command: "sleep", args: ["9"], timeoutMs: 1000 });
+      const shortOut: string[] = [];
+      short.onOutput((c) => shortOut.push(c));
+      const long = exec.spawn({ command: "make", args: [], timeoutMs: 20_000 });
+      let longSettled = false;
+      const longP = long.waitForExit().then((r) => ((longSettled = true), r));
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect((await short.waitForExit()).exitCode).toBe(124);
+      expect(shortOut.join("")).toMatch(/timed out after 1s/i);
+
+      // Still running past the 5s default.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(longSettled).toBe(false);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect((await longP).exitCode).toBe(124);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("commandTimeoutMs=0 disables the timeout (a long command is not aborted by a timer)", async () => {
     vi.useFakeTimers();
     try {
