@@ -3,5 +3,13 @@
 # (GITLAB_TOKEN is a placeholder the proxy replaces), so it holds no credential.
 { pkgs, ... }:
 {
-  environment.systemPackages = [ pkgs.glab ];
+  # The image ships glab whatever the deployment enables; ./deployment.nix sets the env.
+  environment.systemPackages = [
+    (pkgs.writeShellScriptBin "glab" ''
+      if [ -z "''${GITLAB_TOKEN:-}" ]; then
+        echo "scooter: GitLab is not enabled in this deployment (contribs.gitlab); no credentials are provided." >&2
+      fi
+      exec ${pkgs.glab}/bin/glab "$@"
+    '')
+  ];
 }
