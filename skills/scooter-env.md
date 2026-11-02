@@ -14,6 +14,9 @@ triggers:
 - rebuild environment
 - persistent tool
 - add a package to the environment
+- mcp server
+- add an mcp server
+- give yourself tools
 ---
 
 # Modifying your own environment (scooter-rebuild)
@@ -85,6 +88,25 @@ Enable a background systemd service:
   };
 }
 ```
+
+Give yourself an MCP server's tools with `mcpServers.<name>`:
+```nix
+{ pkgs, ... }: {
+  mcpServers.time = {
+    enable = true;
+    # A stdio server; it is bridged to HTTP for you.
+    stdioCommand = "${pkgs.mcp-server-time}/bin/mcp-server-time";
+    description = "Current time and timezone conversion.";
+  };
+}
+```
+
+After the switch is `ready`, its tools appear on your **next message**, from an
+MCP server named `sandbox-<name>` (here `sandbox-time`). A server
+that already speaks streamable HTTP uses `command` instead, and must listen on
+`0.0.0.0:$MCP_PORT`. Names may use only letters, digits, `_` and `-`.
+`scooter-mcp list` shows each server's state; a server that is not running is
+not offered, so check `journalctl -u mcp-<name>` if its tools do not appear.
 
 ## It runs in the BACKGROUND — keep working, then check the status
 

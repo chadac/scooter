@@ -37,7 +37,7 @@ in
   dev-env-contrib-files = runTest ./contrib-files.nix;
   # Web-service persistence across a pod recreate: the enabled set is recorded on the PVC and restored at boot.
   dev-env-service-persist = runTest ./service-persist.nix;
-  # The mcpServers option: unit, discovery manifest, auto-assigned ports and the per-boot bearer token on loopback.
+  # The mcpServers option: unit, discovery manifest, auto-assigned ports, open ports and the stdio wrapper.
   dev-env-mcp-servers = runTest ./mcp-servers.nix;
   # The mcpServers port assertions actually fire (pure eval, no VM).
   dev-env-mcp-server-ports = runTest ./mcp-server-ports.nix;

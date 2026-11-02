@@ -40,9 +40,9 @@ describe("tunnel target resolution", () => {
     }
   });
 
-  it("RESERVES sandbox:<name> — recognised but not resolvable yet, and it says so", () => {
+  it("RESERVES sandbox-<name> — recognised but not resolvable yet, and it says so", () => {
     // An unimplemented target fails loudly rather than behaving like scooter-env.
-    const r = resolveTunnelTarget("sandbox:my-server", "conv-a", deps);
+    const r = resolveTunnelTarget("sandbox-my-server", "conv-a", deps);
     expect(r.ok).toBe(false);
     expect(r.ok === false && r.reason).toMatch(/not (yet )?(supported|implemented)|sandbox/i);
   });

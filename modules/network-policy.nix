@@ -1,7 +1,7 @@
 # Platform NetworkPolicies: the in-namespace network wall.
 #
 # - Sandboxes reach only the broker, forge proxy, router self-access, DNS and the internet.
-# - Only platform pods reach a sandbox, so sandboxes can't reach each other.
+# - Only the agent-host and router reach a sandbox; only the agent-host reaches its MCP ports.
 # - Only the router and conversation-controller reach agent-host pods.
 #
 # Needs a CNI that enforces NetworkPolicy; elsewhere these are inert.
@@ -17,11 +17,15 @@ let
   # label from the pod template, so the provisioner's own sandbox-name label never reaches the pod.
   sandboxLabel = "agents.x-k8s.io/sandbox-name-hash";
   isSandbox = { matchExpressions = [{ key = sandboxLabel; operator = "Exists"; }]; };
-  notSandbox = { matchExpressions = [{ key = sandboxLabel; operator = "DoesNotExist"; }]; };
 
   tcp = port: { protocol = "TCP"; inherit port; };
   udp = port: { protocol = "UDP"; inherit port; };
   anyPorts = map udp npcfg.udpPorts ++ map tcp npcfg.tcpPorts;
+
+  # The router carries web services, never MCP, so it gets every port outside the MCP range.
+  mcpPorts = import ./sandbox-os/mcp-port-range.nix;
+  tcpRange = port: endPort: { protocol = "TCP"; inherit port endPort; };
+  notMcpPorts = [ (tcpRange 1 (mcpPorts.first - 1)) (tcpRange (mcpPorts.last + 1) 65535) ];
 
   # Named container ports, so a port change in the owning module cannot drift from here.
   brokerPorts = [ (tcp "http") (tcp "forge-proxy") ];
@@ -83,6 +87,20 @@ in
       '';
       description = "Extra NetworkPolicy egress rules for sandbox pods, e.g. an in-network Nix cache.";
     };
+    sandboxExtraIngress = mkOption {
+      type = types.listOf types.attrs;
+      default = [ ];
+      example = lib.literalExpression ''
+        [ { from = [ { podSelector.matchLabels.app = "metrics-scraper"; } ]; ports = [ { protocol = "TCP"; port = 9100; } ]; } ]
+      '';
+      description = ''
+        Extra NetworkPolicy ingress rules for sandbox pods. By default only the agent-host
+        may connect, plus the conversation router on every port outside the MCP server
+        range (9700-9799). That rule uses `endPort`, which the CNI must support (k3s's
+        kube-router, Calico and Cilium do). Keep extra rules off the MCP range: those
+        servers are unauthenticated and trust whoever reaches them.
+      '';
+    };
     agentHostExtraIngress = mkOption {
       type = types.listOf types.attrs;
       default = [ ];
@@ -105,7 +123,10 @@ in
         policyTypes = [ "Ingress" "Egress" ];
 
         # The agent-host and router dial the pod IP directly; nothing else needs to.
-        ingress = [{ from = [{ podSelector = notSandbox; }]; }];
+        ingress = [
+          { from = [{ podSelector.matchLabels.app = "agent-host"; }]; }
+          { from = [{ podSelector.matchLabels.app = "conversation-router"; }]; ports = notMcpPorts; }
+        ] ++ npcfg.sandboxExtraIngress;
 
         egress =
           # Any destination: NodeLocal DNSCache's host-network IP matches no podSelector.

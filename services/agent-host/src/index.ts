@@ -90,6 +90,8 @@ import { mintConvToken } from "./auth/convToken.js";
 import { createMcpEndpoint, resolveConversation } from "./agent/mcpServer.js";
 import { readSandboxFileBase64, IMAGE_MAX_BYTES, type ImageToolsWiring } from "./agent/imageTools.js";
 import { createBrokerMcpProxy } from "./agent/brokerMcpProxy.js";
+import { createSandboxMcpProxy } from "./agent/sandboxMcpProxy.js";
+import { createMcpServerRegistry, offeredMcpServers, type OfferedMcpServer } from "./agent/mcpServerRegistry.js";
 import {
   lastAssistantText,
   subagentDoneNotice,
@@ -1308,6 +1310,28 @@ export async function main(
     });
   }
 
+  // MCP servers declared in each conversation's pod, proxied here.
+  const sandboxMcpServers = config.fakeSandbox
+    ? undefined
+    : createMcpServerRegistry({
+        sandboxFor: (id) => sessions.get(id)?.sandbox,
+        connect: (ref) => connectSandbox(ref),
+      });
+  const sandboxMcpProxy =
+    sandboxMcpServers && mcpEndpoint && convTokenSecret
+      ? createSandboxMcpProxy({
+          baseUrl: process.env.AGENT_SELF_MODIFY_MCP_URL ?? `http://127.0.0.1:${config.port}`,
+          resolveConversation: (req) => resolveConversation(req, convTokenSecret),
+          serverFor: (id, name) => sandboxMcpServers.get(id, name),
+          podIPFor: async (id) => {
+            const ref = sessions.get(id)?.sandbox;
+            if (!ref) throw new Error(`no sandbox for conversation ${id}`);
+            return (await resolvePodTarget(ref)).podIP;
+          },
+          invalidate: (id) => sandboxMcpServers.invalidate(id),
+        })
+      : undefined;
+
   // Restore conversations at startup, from the conversations rows when multi-replica; a pod
   // that cannot read the source of truth retries with backoff and then exits rather than
   // serving a stale view.
@@ -1582,6 +1606,7 @@ export async function main(
       mcpHandler: mcpEndpoint ? (req, res, body) => mcpEndpoint.handle(req, res, body) : undefined,
       resourceLookup,
       brokerMcpHandler: brokerMcpProxy ? (req, res, body) => brokerMcpProxy.handle(req, res, body) : undefined,
+      sandboxMcpHandler: sandboxMcpProxy ? (req, res, body, name) => sandboxMcpProxy.handle(req, res, body, name) : undefined,
       answerPermission: async (sessionId, toolCallId, optionId, approver) => {
         // Route the user's choice to the conversation's bridge, forwarding `approver` so an
         // approval interrupt relays the authorized human to the broker.
@@ -1886,10 +1911,10 @@ export async function main(
     // The agent is offered two MCP servers split by who owns the tools: scooter-env for the
     // control-plane tools and scooter-broker for the contrib provider tools, both carrying
     // the same conversation token.
-    const offeredServers = [
+    const platformServers = (): OfferedMcpServer[] => [
       ...(mcpEndpoint
         ? [{
-            type: "http",
+            type: "http" as const,
             name: "scooter-env",
             url: mcpEndpoint.urlFor(conversationId),
             headers: mcpEndpoint.headersFor(conversationId, owner),
@@ -1897,7 +1922,7 @@ export async function main(
         : []),
       ...(brokerMcpProxy && mcpEndpoint
         ? [{
-            type: "http",
+            type: "http" as const,
             name: "scooter-broker",
             url: brokerMcpProxy.url(),
             // The same conversation token; the proxy verifies it and attaches the rotating SA
@@ -1906,7 +1931,19 @@ export async function main(
           }]
         : []),
     ];
+    const offeredServers = platformServers();
     const mcpServers = offeredServers.length ? offeredServers : undefined;
+    // Re-read per run; only running servers are offered.
+    const resolveMcpServers = sandboxMcpServers && sandboxMcpProxy && mcpEndpoint
+      ? async (conv: string): Promise<OfferedMcpServer[]> => [
+          ...platformServers(),
+          ...offeredMcpServers(
+            await sandboxMcpServers.running(conv),
+            (d) => sandboxMcpProxy.urlFor(d.name),
+            mcpEndpoint.headersFor(conv, owner),
+          ),
+        ]
+      : undefined;
     // The floor ACP client factory is the cloud brain (SDK-claude on Bedrock, or goose) a run
     // uses when no personalized remote agent applies.
     const floorAcpClientFactory = async () => {
@@ -2078,6 +2115,7 @@ export async function main(
       // Same source as the in-pod write, so BYO matches cloud.
       personalSkills: () => personalSkillsFor(owner),
       acpProviders,
+      resolveMcpServers,
       // Per-provider model resolution: the conversation's choice when the run's provider
       // offers it, else that provider's default.
       model,

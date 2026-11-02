@@ -63,5 +63,5 @@ flowchart LR
 When the CNI enforces NetworkPolicy, Scooter's policies mean that:
 
 - sandboxes reach only the broker, its forge proxy, the router's self-access listener, DNS and the internet, and never each other;
-- only platform pods reach a sandbox;
+- only the agent-host and the router reach a sandbox, and only the agent-host reaches its MCP servers (ports 9700-9799);
 - only the router and the conversation-controller reach agent-host pods.

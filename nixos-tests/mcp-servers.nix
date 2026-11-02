@@ -1,7 +1,7 @@
 # nixosTest: the mcpServers option renders a unit and the discovery manifest,
-# auto-assigns ports, and binds loopback by default. Fake python http.servers
-# stand in for real MCP servers so the VM stays hermetic; what is under test is
-# the module's contract with the agent-host McpServerRegistry.
+# auto-assigns ports, and opens them to the pod network. Fake python http.servers
+# stand in for HTTP servers and a stdio fake covers the default wrapper;
+# what is under test is the contract with the agent-host McpServerRegistry.
 
 { pkgs, lib, sandboxModule }:
 
@@ -25,6 +25,25 @@ let
     HTTPServer((addr, port), H).serve_forever()
     PY
   '';
+
+  # A minimal stdio MCP server with one `echo` tool, independent of any mcp library version.
+  stdioServer = pkgs.writeScript "fake-stdio-mcp-server" ''
+    #!${pkgs.python3}/bin/python3
+    import json, sys
+    def reply(i, result): print(json.dumps({"jsonrpc": "2.0", "id": i, "result": result}), flush=True)
+    for line in sys.stdin:
+        m = json.loads(line)
+        if "id" not in m: continue
+        method, i = m["method"], m["id"]
+        if method == "initialize":
+            reply(i, {"protocolVersion": m["params"]["protocolVersion"], "capabilities": {"tools": {}}, "serverInfo": {"name": "echo", "version": "1"}})
+        elif method == "tools/list":
+            reply(i, {"tools": [{"name": "echo", "description": "Echo text", "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}}}]})
+        elif method == "tools/call":
+            reply(i, {"content": [{"type": "text", "text": "echo:" + m["params"]["arguments"]["text"]}]})
+        else:
+            print(json.dumps({"jsonrpc": "2.0", "id": i, "error": {"code": -32601, "message": method}}), flush=True)
+  '';
 in
 pkgs.testers.runNixOSTest {
   name = "dev-env-mcp-servers";
@@ -45,19 +64,24 @@ pkgs.testers.runNixOSTest {
     mcpServers.alpha = {
       enable = true;
       description = "Alpha test server";
-      command = "${fakeServer} 127.0.0.1 9700";
+      command = "${fakeServer} 0.0.0.0 9700";
       extraConfig.unitConfig.X-Mcp-Test = "yes";
     };
     mcpServers.beta = {
       enable = true;
-      command = "${fakeServer} 127.0.0.1 9701";
+      command = "${fakeServer} 0.0.0.0 9701";
       autoStart = false;
     };
     mcpServers.gamma = {
       enable = true;
-      port = 9911;
-      command = "${fakeServer} 127.0.0.1 9911";
+      port = 9790;
+      command = "${fakeServer} 0.0.0.0 9790";
       autoStart = false;
+    };
+    # A stdio server through the default stdioWrapper.
+    mcpServers.time = {
+      enable = true;
+      stdioCommand = "${stdioServer}";
     };
   };
 
@@ -71,12 +95,13 @@ pkgs.testers.runNixOSTest {
     # 1. Ports are auto-assigned by sorted index from the 9700 base, and an explicit port is left alone.
     assert srv["alpha"]["port"] == 9700, srv
     assert srv["beta"]["port"] == 9701, srv
-    assert srv["gamma"]["port"] == 9911, srv
+    assert srv["gamma"]["port"] == 9790, srv
+    assert srv["time"]["port"] == 9702, srv
     assert srv["alpha"]["unit"] == "mcp-alpha", srv
     assert srv["alpha"]["description"] == "Alpha test server", srv
     assert srv["alpha"]["path"] == "/mcp", srv
 
-    # 2. The manifest carries no credential; access control is the loopback bind.
+    # 2. The manifest carries no credential.
     assert "token" not in json.dumps(data).lower(), data
 
     # 3. autoStart defaults on, so alpha is up on its own while beta and gamma are declared but not started.
@@ -85,11 +110,20 @@ pkgs.testers.runNixOSTest {
     machine.fail("systemctl is-active --quiet mcp-beta.service")
     machine.fail("systemctl is-active --quiet mcp-gamma.service")
 
-    # 4. Loopback by default and the firewall closed: nothing listens off-loopback and there is no accept rule.
-    machine.succeed("ss -ltn | grep -q '127.0.0.1:9700'")
-    machine.fail("ss -ltn | grep -qE '0\\.0\\.0\\.0:9700|\\*:9700'")
+    # 4. The agent-host dials podIP:port, so the port is open on the pod network.
+    machine.succeed("ss -ltn | grep -qE '0\\.0\\.0\\.0:9700'")
     machine.succeed("systemctl is-active --quiet firewall")
-    machine.fail("iptables -S nixos-fw | grep -E -- '--dport 9700 .*-j nixos-fw-accept'")
+    machine.succeed("iptables -S nixos-fw | grep -E -- '--dport 9700 .*-j nixos-fw-accept'")
+    machine.succeed("iptables -S nixos-fw | grep -E -- '--dport 9790 .*-j nixos-fw-accept'")
+
+    # 4a. The default stdioWrapper serves a stdio server as stateless streamable HTTP.
+    machine.wait_for_open_port(9702, timeout=180)
+    hdrs = "-H 'content-type: application/json' -H 'accept: application/json, text/event-stream'"
+    call = '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}'
+    out = machine.succeed(f"curl -fsS -i -X POST http://127.0.0.1:9702/mcp {hdrs} -d '{call}'")
+    assert "echo:hi" in out, out
+    # Stateless: no session for a restarted server to invalidate.
+    assert "mcp-session-id" not in out.lower(), out
 
     # 5. It serves, and CONVERSATION_ID was recovered from /proc/1/environ since the unit does not declare it.
     machine.succeed("curl -fsS http://127.0.0.1:9700/mcp | grep -q 'mcp-ok:conv-test'")

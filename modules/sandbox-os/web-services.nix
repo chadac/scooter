@@ -15,6 +15,7 @@
 let
   cfg = config.webServices;
   enabled = lib.filterAttrs (_: s: s.enable) cfg;
+  mcpRange = import ./mcp-port-range.nix;
 
   unitName = name: "webservice-${name}";
 
@@ -421,6 +422,10 @@ in
         let ports = lib.mapAttrsToList (_: s: s.port) enabled;
         in lib.length ports == lib.length (lib.unique ports);
       message = "webServices: enabled services must have unique ports.";
-    }];
+    }] ++ lib.mapAttrsToList (name: s: {
+      # The router cannot reach the MCP range (network-policy.nix).
+      assertion = s.port < mcpRange.first || s.port > mcpRange.last;
+      message = "webServices.${name}: port ${toString s.port} is in the range reserved for mcpServers (${toString mcpRange.first}-${toString mcpRange.last}).";
+    }) enabled;
   };
 }

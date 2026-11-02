@@ -9,7 +9,7 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import { formatError, logger } from "../log.js";
+import { describeError, formatError, logger } from "../log.js";
 
 const log = logger("broker-mcp-proxy");
 
@@ -54,20 +54,6 @@ const DROP = new Set([
   CONV_TOKEN_HEADER,
 ]);
 
-/** "fetch failed <- connect ECONNREFUSED (ECONNREFUSED)": each cause, readable. */
-function describe(err: unknown): string {
-  const parts: string[] = [];
-  for (let e: unknown = err; e !== undefined && parts.length < 4; e = (e as { cause?: unknown }).cause) {
-    if (!(e instanceof Error)) {
-      parts.push(String(e));
-      break;
-    }
-    const code = (e as { code?: unknown }).code;
-    parts.push(code ? `${e.message} (${String(code)})` : e.message);
-  }
-  return parts.join(" <- ");
-}
-
 export function createBrokerMcpProxy(deps: BrokerMcpProxyDeps): BrokerMcpProxy {
   const path = deps.path ?? "/broker-mcp";
   const doFetch = deps.fetchImpl ?? fetch;
@@ -111,7 +97,7 @@ export function createBrokerMcpProxy(deps: BrokerMcpProxyDeps): BrokerMcpProxy {
           error: formatError(err),
         });
         res.statusCode = 502;
-        res.end(`could not reach the broker MCP endpoint: ${describe(err)}`);
+        res.end(`could not reach the broker MCP endpoint: ${describeError(err)}`);
         return;
       }
 

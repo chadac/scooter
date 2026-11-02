@@ -24,7 +24,7 @@ const BRIDGE_CONFIG = {
 
 const server = (name: string, port: number): OfferedMcpServer => ({
   type: "http",
-  name: `sandbox:${name}`,
+  name: `sandbox-${name}`,
   url: `http://127.0.0.1:${port}/mcp`,
   headers: [],
 });
@@ -88,7 +88,7 @@ describe("bridge — sandbox MCP servers change under a live conversation", () =
 
     expect(rec.clients(), "a changed set must create a NEW client").toBe(2);
     expect(rec.sessions(), "and a second session").toHaveLength(2);
-    const alpha = rec.sessions()[1].find((s) => s.name === "sandbox:alpha");
+    const alpha = rec.sessions()[1].find((s) => s.name === "sandbox-alpha");
     expect(alpha?.url, "alpha must be re-registered at its NEW port").toContain("9701");
 
     await bridge.stop();
@@ -156,6 +156,51 @@ describe("bridge — sandbox MCP servers change under a live conversation", () =
 
     expect(rec.clients()).toBe(1);
     expect(rec.sessions()[0][0].url).toContain("1234");
+
+    await bridge.stop();
+  });
+
+  it("starts the session with the static set when the resolver fails on the FIRST run", async () => {
+    // No session to keep yet; a blip must not fail the run.
+    const exec = createSandboxExecBackend(createFakeSandboxApi());
+    const rec = recordingProvider(exec);
+
+    const bridge = createSessionBridge({
+      config: { ...BRIDGE_CONFIG, mcpServers: [server("static", 1234)] },
+      exec,
+      acpProviders: [rec.provider],
+      resolveMcpServers: async () => {
+        throw new Error("exec blip");
+      },
+    });
+
+    await bridge.prompt({ threadId: "t1", text: "one" });
+
+    expect(rec.sessions()).toHaveLength(1);
+    expect(rec.sessions()[0].map((s) => s.name)).toEqual(["sandbox-static"]);
+
+    await bridge.stop();
+  });
+
+  it("does NOT rebuild a provider that brings its own MCP set", async () => {
+    // BYO's own set never matches the resolver's fingerprint.
+    const exec = createSandboxExecBackend(createFakeSandboxApi());
+    const rec = recordingProvider(exec);
+    const own = [{ type: "http" as const, name: "scooter-env", url: "tunnel://scooter-env", headers: [] }];
+    const provider: AcpProvider = { ...rec.provider, mcpServersFor: () => own };
+
+    const bridge = createSessionBridge({
+      config: BRIDGE_CONFIG,
+      exec,
+      acpProviders: [provider],
+      resolveMcpServers: async () => [server("alpha", 9700)],
+    });
+
+    await bridge.prompt({ threadId: "t1", text: "one" });
+    await bridge.prompt({ threadId: "t1", text: "two" });
+
+    expect(rec.clients(), "its session must be reused").toBe(1);
+    expect(rec.sessions()[0]).toEqual(own);
 
     await bridge.stop();
   });

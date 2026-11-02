@@ -3,9 +3,9 @@
  * discovery manifest (/run/scooter/mcp-servers.json, rendered by the `mcpServers`
  * NixOS option) via the exec API and drives their systemd units through
  * `scooter-mcp`, plus the pure resolver that turns descriptors into `new_session`
- * entries. A server that is not running is not offered, since a dead MCP endpoint
- * degrades the whole session, and the offered set carries a fingerprint so the
- * bridge can tell whether a rebuild changed anything.
+ * entries. Only running servers are offered, since a dead MCP endpoint degrades the
+ * whole session, and the offered set carries a fingerprint so the bridge can tell
+ * whether a rebuild changed anything.
  */
 
 import { formatError, logger } from "../log.js";
@@ -17,11 +17,11 @@ const log = logger("mcp-registry");
 /** The manifest file the `mcpServers` option renders inside the pod. */
 export const MCP_MANIFEST_PATH = "/run/scooter/mcp-servers.json";
 
-/** The name of the agent-host's own in-process MCP endpoint, which a sandbox-declared server may not take. */
-export const RESERVED_NAMES = new Set(["scooter-env"]);
+/** Prefix for sandbox-declared servers, so none can shadow the platform's own. */
+export const SANDBOX_PREFIX = "sandbox-";
 
-/** Prefix for sandbox-declared servers, matching the reservation in acp/tunnelTargets.ts. */
-export const SANDBOX_PREFIX = "sandbox:";
+/** Server names model APIs accept inside a tool name (`mcp__<server>__<tool>`). */
+const NAME_RE = /^[A-Za-z0-9_-]+$/;
 
 export interface McpServerDescriptor {
   name: string;
@@ -31,7 +31,6 @@ export interface McpServerDescriptor {
   path: string;
   unit: string;
   autoStart: boolean;
-  listenAddress: string;
 }
 
 /** An HTTP header on an offered MCP server, per the ACP schema's `HttpHeader`. */
@@ -60,8 +59,11 @@ export interface McpServerRegistryDeps {
 }
 
 export interface McpServerRegistry {
+  /** The declared servers, or [] when the pod cannot be read. */
   list(conversationId: string, opts?: { force?: boolean }): Promise<McpServerDescriptor[]>;
   get(conversationId: string, name: string): Promise<McpServerDescriptor | null>;
+  /** The declared servers whose units are active; throws when the pod cannot be read. */
+  running(conversationId: string): Promise<McpServerDescriptor[]>;
   isRunning(conversationId: string, name: string): Promise<boolean>;
   /** Start it if it is not already up; false means no such server or the start failed. */
   ensureStarted(conversationId: string, name: string): Promise<boolean>;
@@ -76,7 +78,7 @@ export function parseMcpManifest(json: string): McpServerDescriptor[] {
     return data.servers.flatMap((s): McpServerDescriptor[] => {
       if (typeof s !== "object" || s === null) return [];
       const o = s as Record<string, unknown>;
-      if (typeof o.name !== "string" || typeof o.port !== "number") return [];
+      if (typeof o.name !== "string" || !NAME_RE.test(o.name) || typeof o.port !== "number") return [];
       return [{
         name: o.name,
         displayName: typeof o.displayName === "string" ? o.displayName : o.name,
@@ -85,7 +87,6 @@ export function parseMcpManifest(json: string): McpServerDescriptor[] {
         path: typeof o.path === "string" ? o.path : "/mcp",
         unit: typeof o.unit === "string" ? o.unit : `mcp-${o.name}`,
         autoStart: o.autoStart !== false,
-        listenAddress: typeof o.listenAddress === "string" ? o.listenAddress : "127.0.0.1",
       }];
     });
   } catch {
@@ -96,26 +97,36 @@ export function parseMcpManifest(json: string): McpServerDescriptor[] {
 /** How long a successful manifest read stays authoritative, since nothing in the pod signals a `scooter-rebuild`. */
 export const MCP_MANIFEST_TTL_MS = 10_000;
 
-/** The servers to offer a session, namespaced under `sandbox:` so none can shadow scooter-env and sorted by name so a reorder is not a fingerprint change. */
+/** The servers to offer a session, sorted by name so a reorder is not a fingerprint change. */
 export function offeredMcpServers(
   descriptors: McpServerDescriptor[],
   urlFor: (d: McpServerDescriptor) => string,
+  headers: McpHeader[] = [],
 ): OfferedMcpServer[] {
   return descriptors
-    .filter((d) => !RESERVED_NAMES.has(d.name))
     .slice()
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
     .map((d) => ({
       type: "http" as const,
       name: `${SANDBOX_PREFIX}${d.name}`,
       url: urlFor(d),
-      headers: [],
+      headers,
     }));
 }
 
 /** A stable identity for the offered set, which the bridge compares across runs to decide whether to rebuild the agent session; it covers names, URLs and header names only, never header values, since a freshly minted token differs on every mint. */
 export function fingerprintOffered(offered: OfferedMcpServer[]): string {
   return JSON.stringify(offered.map((o) => [o.name, o.url, o.headers.map((h) => h.name)]));
+}
+
+/** How many entries the manifest lists, or -1 if it is not a manifest. */
+function listedCount(raw: string): number {
+  try {
+    const data = JSON.parse(raw) as { servers?: unknown };
+    return data && Array.isArray(data.servers) ? data.servers.length : -1;
+  } catch {
+    return -1;
+  }
 }
 
 export function createMcpServerRegistry(
@@ -126,65 +137,70 @@ export function createMcpServerRegistry(
   const now = opts.now ?? (() => Date.now());
   const cache = new Map<string, { descriptors: McpServerDescriptor[]; at: number }>();
 
-  async function load(conversationId: string, force = false): Promise<McpServerDescriptor[]> {
-    const entry = cache.get(conversationId);
-    const cached = !force && entry && now() - entry.at < ttlMs ? entry.descriptors : undefined;
-    // Only a non-empty cached list is authoritative, since an empty one usually means
-    // the pod could not be read yet.
-    if (cached && cached.length > 0) return cached;
+  async function execFor(conversationId: string): Promise<ExecLike> {
     const ref = deps.sandboxFor(conversationId);
-    if (!ref) return [];
-    let descriptors: McpServerDescriptor[] = [];
-    try {
-      const exec = await deps.connect(ref);
-      const raw = await exec.download(MCP_MANIFEST_PATH);
-      descriptors = parseMcpManifest(raw);
-      // A manifest that was read but parsed to nothing is a different problem from an
-      // absent one, with the same user-visible symptom.
-      if (raw.trim() !== "" && descriptors.length === 0) {
-        log.warn("the MCP manifest parsed to no servers; check the rendered file", {
-          conversation_id: conversationId,
-          path: MCP_MANIFEST_PATH,
-          bytes: raw.length,
-        });
-      }
-    } catch (err) {
-      // An unreadable manifest and no declared servers both surface as an empty list, so log which.
-      log.warn("could not read the MCP manifest; offering no sandbox servers this time", {
+    if (!ref) throw new Error(`no sandbox for conversation ${conversationId}`);
+    return deps.connect(ref);
+  }
+
+  /** The declared servers; throws if unreadable, so a blip is not "none". */
+  async function read(conversationId: string, force = false): Promise<McpServerDescriptor[]> {
+    const entry = cache.get(conversationId);
+    if (!force && entry && now() - entry.at < ttlMs) return entry.descriptors;
+    const exec = await execFor(conversationId);
+    // The image always renders the manifest, so a failed read is a blip, not none declared.
+    const raw = await exec.download(MCP_MANIFEST_PATH);
+    const descriptors = parseMcpManifest(raw);
+    if (listedCount(raw) !== descriptors.length) {
+      log.warn("the MCP manifest has entries the agent-host cannot use; check the rendered file", {
         conversation_id: conversationId,
         path: MCP_MANIFEST_PATH,
-        error: formatError(err),
+        bytes: raw.length,
+        usable: descriptors.length,
       });
-      descriptors = [];
     }
-    if (descriptors.length > 0) cache.set(conversationId, { descriptors, at: now() });
+    cache.set(conversationId, { descriptors, at: now() });
     return descriptors;
   }
 
-  async function execFor(conversationId: string): Promise<ExecLike | null> {
-    const ref = deps.sandboxFor(conversationId);
-    if (!ref) return null;
+  async function list(conversationId: string, force = false): Promise<McpServerDescriptor[]> {
     try {
-      return await deps.connect(ref);
-    } catch {
-      return null;
+      return await read(conversationId, force);
+    } catch (err) {
+      log.warn("could not read the MCP manifest", { conversation_id: conversationId, error: formatError(err) });
+      return [];
     }
+  }
+
+  /** `systemctl is-active` prints one state per unit, in argument order. */
+  async function activeUnits(conversationId: string, units: string[]): Promise<Set<string>> {
+    const exec = await execFor(conversationId);
+    const r = await exec.execute({ command: "systemctl", args: ["is-active", ...units] });
+    const states = r.stdout.split("\n").map((l) => l.trim());
+    return new Set(units.filter((_, i) => states[i] === "active"));
   }
 
   const registry: McpServerRegistry = {
     async list(conversationId, listOpts) {
-      return load(conversationId, listOpts?.force ?? false);
+      return list(conversationId, listOpts?.force ?? false);
     },
     async get(conversationId, name) {
-      return (await load(conversationId)).find((d) => d.name === name) ?? null;
+      return (await list(conversationId)).find((d) => d.name === name) ?? null;
+    },
+    async running(conversationId) {
+      const declared = await read(conversationId);
+      if (declared.length === 0) return [];
+      const active = await activeUnits(conversationId, declared.map((d) => d.unit));
+      const down = declared.filter((d) => !active.has(d.unit)).map((d) => d.name);
+      // A declared server the agent never sees needs a trace.
+      if (down.length) log.info("not offering MCP servers that are not running", { conversation_id: conversationId, servers: down });
+      return declared.filter((d) => active.has(d.unit));
     },
     async isRunning(conversationId, name) {
       const desc = await registry.get(conversationId, name);
-      const exec = await execFor(conversationId);
-      if (!desc || !exec) return false;
+      if (!desc) return false;
       try {
-        const r = await exec.execute({ command: "systemctl", args: ["is-active", desc.unit] });
-        return r.exitCode === 0 && r.stdout.trim() === "active";
+        return (await activeUnits(conversationId, [desc.unit])).has(desc.unit);
       } catch {
         return false;
       }
@@ -193,14 +209,11 @@ export function createMcpServerRegistry(
       const desc = await registry.get(conversationId, name);
       if (!desc) return false;
       if (await registry.isRunning(conversationId, name)) return true;
-      const exec = await execFor(conversationId);
-      if (!exec) return false;
-      // Through `scooter-mcp` so the autostart intent is persisted to the workspace PVC
-      // and survives a suspend/resume pod recreate.
+      // Through `scooter-mcp` so the autostart intent survives a suspend/resume.
       try {
+        const exec = await execFor(conversationId);
         const r = await exec.execute({ command: "scooter-mcp", args: ["start", name] });
         if (r.exitCode !== 0) {
-          // The declared server will not be offered to the agent, so leave a trace.
           log.warn("scooter-mcp start failed; this server will not be offered", {
             conversation_id: conversationId,
             server: name,

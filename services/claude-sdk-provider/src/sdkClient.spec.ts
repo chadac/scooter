@@ -496,3 +496,57 @@ describe("named MCP servers reach the SDK — the contrib provider tools", () =>
   });
 });
 
+
+describe("new_session MCP servers reach the SDK — the sandbox's declared servers", () => {
+  const sandboxServer = {
+    type: "http",
+    name: "sandbox-time",
+    url: "http://127.0.0.1:8080/sandbox-mcp/time",
+    headers: [{ name: "Authorization", value: "Bearer tok" }],
+  };
+
+  it("adds each server and pre-approves its tools", async () => {
+    // Only new_session knows the sandbox's set.
+    const fq = fakeQuery();
+    const client = await mkClient(fq.queryImpl);
+    await client.newSession({ cwd: "/w", mcpServers: [sandboxServer] } as never);
+    await client.prompt({ prompt: [{ type: "text", text: "hi" }] } as never);
+
+    const servers = fq.calls[0].options.mcpServers as Record<string, { type: string; url: string; headers?: Record<string, string> }>;
+    expect(servers["sandbox-time"]).toEqual({
+      type: "http",
+      url: "http://127.0.0.1:8080/sandbox-mcp/time",
+      headers: { Authorization: "Bearer tok" },
+    });
+    expect(servers.sandbox, "the in-process sandbox tools stay").toBeDefined();
+    expect(fq.calls[0].options.allowedTools as string[]).toContain("mcp__sandbox-time");
+  });
+
+  it("keeps the constructor's entry when new_session repeats a name", async () => {
+    // The constructor's scooter-broker carries the real headers.
+    const fq = fakeQuery();
+    const client = await createSdkAcpClient({
+      oauthToken: "t", model: "claude-x", exec: fakeExec, systemPrompt: "hi",
+      queryImpl: fq.queryImpl,
+      mcpServers: [{ name: "scooter-broker", url: "http://x/broker-mcp", headers: { "x-conv": "ctor" } }],
+    });
+    await client.newSession({
+      cwd: "/w",
+      mcpServers: [{ type: "http", name: "scooter-broker", url: "http://y", headers: [] }],
+    } as never);
+    await client.prompt({ prompt: [{ type: "text", text: "hi" }] } as never);
+    const servers = fq.calls[0].options.mcpServers as Record<string, { url: string }>;
+    expect(servers["scooter-broker"].url).toBe("http://x/broker-mcp");
+    const allowed = fq.calls[0].options.allowedTools as string[];
+    expect(allowed.filter((t) => t === "mcp__scooter-broker").length).toBeGreaterThan(0);
+  });
+
+  it("drops a server the next new_session no longer offers", async () => {
+    const fq = fakeQuery();
+    const client = await mkClient(fq.queryImpl);
+    await client.newSession({ cwd: "/w", mcpServers: [sandboxServer] } as never);
+    await client.newSession({ cwd: "/w", mcpServers: [] } as never);
+    await client.prompt({ prompt: [{ type: "text", text: "hi" }] } as never);
+    expect(Object.keys(fq.calls[0].options.mcpServers as object)).not.toContain("sandbox-time");
+  });
+});

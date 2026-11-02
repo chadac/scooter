@@ -40,8 +40,8 @@ pkgs.runCommand "dev-env-mcp-server-ports"
 
   # (1) Two servers sharing an explicit port.
   dup=$(${failedFor ''
-    { mcpServers.a = { enable = true; port = 9800; command = "${fakeCmd}"; };
-      mcpServers.b = { enable = true; port = 9800; command = "${fakeCmd}"; }; }
+    { mcpServers.a = { enable = true; port = 9750; command = "${fakeCmd}"; };
+      mcpServers.b = { enable = true; port = 9750; command = "${fakeCmd}"; }; }
   ''})
   echo "dup: $dup"
   echo "$dup" | grep -q "unique ports" || { echo "FAIL: duplicate explicit ports were accepted"; exit 1; }
@@ -54,13 +54,13 @@ pkgs.runCommand "dev-env-mcp-server-ports"
   echo "clash: $clash"
   echo "$clash" | grep -q "unique ports" || { echo "FAIL: explicit port colliding with an auto one was accepted"; exit 1; }
 
-  # (3) A port already taken by a web service.
+  # (3) A web service inside the MCP range, which the router cannot reach.
   web=$(${failedFor ''
     { webServices.demo = { enable = true; port = 9700; command = "${fakeCmd}"; };
       mcpServers.a = { enable = true; command = "${fakeCmd}"; }; }
   ''})
   echo "web: $web"
-  echo "$web" | grep -q "collide with webServices" || { echo "FAIL: an MCP/webService port collision was accepted"; exit 1; }
+  echo "$web" | grep -q "reserved for mcpServers" || { echo "FAIL: a web service in the MCP range was accepted"; exit 1; }
 
   # (4) Exactly one of command/stdioCommand.
   both=$(${failedFor ''
@@ -77,12 +77,33 @@ pkgs.runCommand "dev-env-mcp-server-ports"
   ok=$(${failedFor ''
     { mcpServers.a = { enable = true; command = "${fakeCmd}"; };
       mcpServers.b = { enable = true; command = "${fakeCmd}"; };
-      mcpServers.c = { enable = true; port = 9911; command = "${fakeCmd}"; }; }
+      mcpServers.c = { enable = true; port = 9790; command = "${fakeCmd}"; }; }
   ''})
   echo "ok: $ok"
-  if echo "$ok" | grep -qE "unique ports|collide with webServices|exactly one"; then
+  if echo "$ok" | grep -qE "unique ports|reserved for mcpServers|exactly one|names may use"; then
     echo "FAIL: the happy path tripped an mcpServers assertion: $ok"; exit 1
   fi
+
+  # (6) A name that cannot appear in a tool name.
+  badname=$(${failedFor ''{ mcpServers."my.server" = { enable = true; command = "${fakeCmd}"; }; }''})
+  echo "badname: $badname"
+  echo "$badname" | grep -q "names may use" || { echo "FAIL: a name with '.' was accepted"; exit 1; }
+
+  # (7) An explicit port outside the range only the agent-host can reach.
+  outside=$( { ${failedFor ''{ mcpServers.a = { enable = true; port = 9800; command = "${fakeCmd}"; }; }''} } 2>&1 || true)
+  echo "outside: $outside"
+  echo "$outside" | grep -q "between 9700 and 9799" || { echo "FAIL: a port outside the MCP range was accepted"; exit 1; }
+
+  # (8) The manifest is rendered even with nothing declared, so absent means unreadable.
+  rules=$(nix eval --impure --offline --extra-experimental-features 'nix-command flakes' --json --expr '
+    let pkgs = import ${pkgs.path} { system = "x86_64-linux"; };
+    in ((import (${pkgs.path} + "/nixos/lib/eval-config.nix")) {
+      system = "x86_64-linux";
+      modules = [ ${mcpModule} ${webModule} { nixpkgs.pkgs = pkgs; system.stateVersion = "24.11"; } ];
+    }).config.systemd.tmpfiles.rules
+  ')
+  echo "rules: $rules"
+  echo "$rules" | grep -q "/run/scooter/mcp-servers.json" || { echo "FAIL: no manifest rendered when no server is declared"; exit 1; }
 
   touch $out
 ''

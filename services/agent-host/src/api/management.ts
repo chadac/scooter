@@ -133,6 +133,8 @@ export interface ManagementDeps {
   resourceLookup?: { lookup(conversationId: string, source: string): Promise<unknown | undefined> };
   /** The broker-MCP proxy handler; absent when the broker or the conversation-token secret is not configured. */
   brokerMcpHandler?: (req: IncomingMessage, res: ServerResponse, body: unknown) => Promise<void>;
+  /** The sandbox-MCP proxy, per server name; absent without a sandbox or token secret. */
+  sandboxMcpHandler?: (req: IncomingMessage, res: ServerResponse, body: unknown, name: string) => Promise<void>;
   /** Upload caps served to the UI in /whoami's `limits` block (scooter.uploads). */
   uploadLimits?: { maxFileBytes: number; maxFilesPerMessage: number };
   /** Resolves the caller's identity per request; defaults to the env-configured resolver. */
@@ -342,6 +344,19 @@ export function createManagementApi(deps: ManagementDeps): Router {
     };
     r.post("/broker-mcp", route as never);
     r.get("/broker-mcp", route as never);
+  }
+
+  // MCP servers declared in the conversation's own pod.
+  if (deps.sandboxMcpHandler) {
+    const proxy = deps.sandboxMcpHandler;
+    const route = async (ctx: { req: IncomingMessage; res: ServerResponse; params: Record<string, string>; body: <T>() => Promise<T> }) => {
+      const body = ctx.req.method === "POST" ? await ctx.body<unknown>().catch(() => undefined) : undefined;
+      await proxy(ctx.req, ctx.res, body, ctx.params.name);
+    };
+    r.post("/sandbox-mcp/:name", route as never);
+    r.get("/sandbox-mcp/:name", route as never);
+    // MCP clients end a session with DELETE.
+    r.del("/sandbox-mcp/:name", route as never);
   }
 
   // The caller per the trusted ingress identity header (anonymous when none).

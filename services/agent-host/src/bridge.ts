@@ -1494,6 +1494,20 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     provider: deps.pickedProvider,
   });
 
+  /** The resolver's set, or undefined (use the static set) if it fails. */
+  const resolveOrStatic = async (): Promise<OfferedMcpServer[] | undefined> => {
+    if (!deps.resolveMcpServers) return undefined;
+    try {
+      return await deps.resolveMcpServers(conversationId);
+    } catch (err) {
+      log.warn("could not resolve sandbox MCP servers; starting the session without them", {
+        conversation_id: conversationId,
+        error: formatError(err),
+      });
+      return undefined;
+    }
+  };
+
   // Lazily ready one client per provider (initialize, newSession, hooks wired once), cached
   // by provider id; a failed init drops the entry.
   const readyProvider = (provider: AcpProvider): Promise<ReadySession> => {
@@ -1520,7 +1534,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       // resolver, falling back to the static `config.mcpServers`.
       const resolved = provider.mcpServersFor
         ? provider.mcpServersFor(conversationId)
-        : ((await deps.resolveMcpServers?.(conversationId)) ?? (deps.config.mcpServers as OfferedMcpServer[] | undefined));
+        : ((await resolveOrStatic()) ?? (deps.config.mcpServers as OfferedMcpServer[] | undefined));
       const mcpServers = resolved;
       // Remember what this session was created with, so a later run can tell whether the
       // sandbox's set changed.
@@ -1610,12 +1624,11 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     return ready;
   };
 
-  /** Drop a cached session whose MCP set no longer matches the sandbox's, since a
-   *  `scooter-rebuild` can hand an auto-assigned port to a different server and the old
-   *  session would silently talk to the wrong one; a resolver failure keeps the existing
-   *  session rather than blocking the run. */
-  const dropSessionIfMcpChanged = async (providerId: string): Promise<void> => {
-    if (!deps.resolveMcpServers) return;
+  /** Drop a cached session whose MCP set changed; keep it if resolving fails. */
+  const dropSessionIfMcpChanged = async (provider: AcpProvider): Promise<void> => {
+    // A provider bringing its own set never used the resolver.
+    if (!deps.resolveMcpServers || provider.mcpServersFor) return;
+    const providerId = provider.id;
     const cached = readySessions.get(providerId);
     if (!cached) return; // nothing cached: the next readyProvider builds it fresh anyway
     let settled: { client: AcpClient; mcpFingerprint: string };
@@ -1717,7 +1730,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       );
     }
     await dropSessionIfDead(provider.id);
-    await dropSessionIfMcpChanged(provider.id);
+    await dropSessionIfMcpChanged(provider);
     await dropSessionIfSkillsChanged(provider.id);
     const ready = await readyProvider(provider);
     acpClient = ready.client;

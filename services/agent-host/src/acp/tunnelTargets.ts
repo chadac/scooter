@@ -4,8 +4,10 @@
  * than host:port mean a user's machine can only reach servers the platform offers it.
  * The conversation id is supplied server-side from the stream's session, never from
  * the frame payload, so a container cannot name another conversation's resources.
- * `sandbox:<name>` is reserved but not resolvable yet.
+ * `sandbox-<name>` is reserved but not resolvable over the tunnel yet.
  */
+
+import { SANDBOX_PREFIX } from "../agent/mcpServerRegistry.js";
 
 /** The one target every conversation gets: the agent-host's in-process MCP endpoint. */
 export const SCOOTER_ENV = "scooter-env";
@@ -13,8 +15,6 @@ export const SCOOTER_ENV = "scooter-env";
  *  slack), offered separately from scooter-env since it is a different upstream whose
  *  rotating SA token the proxy attaches. */
 export const SCOOTER_BROKER = "scooter-broker";
-/** Reserved prefix for sandbox-declared servers (not resolvable yet). */
-export const SANDBOX_PREFIX = "sandbox:";
 
 /** What a resolved target points at. */
 export interface ResolvedTarget {

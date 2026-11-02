@@ -161,6 +161,27 @@ function emitContextUsage(msg: unknown, last: PromptUsage | null): SessionUpdate
   return { sessionUpdate: "context_usage", usedTokens: last.tokens, contextWindow };
 }
 
+type HttpMcpConfig = { type: "http"; url: string; headers?: Record<string, string> };
+
+/** The `new_session` HTTP servers not already configured, as SDK mcpServers entries. */
+function sessionMcpServers(offered: unknown[] | undefined, configured: Set<string>): Record<string, HttpMcpConfig> {
+  const out: Record<string, HttpMcpConfig> = {};
+  for (const s of offered ?? []) {
+    const o = s as { type?: unknown; name?: unknown; url?: unknown; headers?: unknown };
+    if (o?.type !== "http" || typeof o.name !== "string" || typeof o.url !== "string") continue;
+    if (configured.has(o.name)) continue;
+    const headers = Array.isArray(o.headers)
+      ? Object.fromEntries(
+          (o.headers as Array<{ name?: unknown; value?: unknown }>)
+            .filter((h) => typeof h?.name === "string" && typeof h?.value === "string")
+            .map((h) => [h.name as string, h.value as string]),
+        )
+      : {};
+    out[o.name] = { type: "http", url: o.url, ...(Object.keys(headers).length ? { headers } : {}) };
+  }
+  return out;
+}
+
 /** Spawn an SDK-backed AcpClient. */
 export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpClient> {
   const { server, toolAliases, disallowedTools } = await createSandboxMcpServer(deps.exec);
@@ -323,6 +344,9 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
     },
   };
 
+  /** baseOptions plus the current session's extra MCP servers. */
+  let sessionOptions: Record<string, unknown> = baseOptions;
+
   return {
     async initialize(_p: InitializeParams) {
       return { protocolVersion: 1 };
@@ -330,6 +354,15 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
 
     async newSession(p: NewSessionParams) {
       blockingTools = p?.blockingTools ?? {};
+      // Sandbox-declared servers arrive per session, not at construction.
+      const extra = sessionMcpServers(p?.mcpServers, new Set(Object.keys(baseOptions.mcpServers as object)));
+      sessionOptions = Object.keys(extra).length
+        ? {
+            ...baseOptions,
+            mcpServers: { ...(baseOptions.mcpServers as object), ...extra },
+            allowedTools: [...(baseOptions.allowedTools as string[]), ...Object.keys(extra).map((n) => `mcp__${n}`)],
+          }
+        : baseOptions;
       // The SDK mints its own session id on first query; this is a stable handle.
       sessionId = `sdk_${Date.now()}`;
       // Clear any resume id so the first prompt starts a fresh SDK session.
@@ -339,7 +372,7 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
 
     async prompt(params: PromptParams): Promise<{ stopReason: string }> {
       // Resume the SDK session so the turn continues the conversation; undefined on the first turn.
-      const options = sdkSessionId ? { ...baseOptions, resume: sdkSessionId } : baseOptions;
+      const options = sdkSessionId ? { ...sessionOptions, resume: sdkSessionId } : sessionOptions;
       // A prompt with an image rides the SDK streaming-input form so the base64 image reaches the model.
       const hasImage = params.prompt.some((b) => b.type === "image");
       const promptArg: string | AsyncIterable<SdkUserMessage> = hasImage

@@ -1,8 +1,9 @@
 # mcpServers.<name>: declarative in-pod MCP servers registered with the agent.
 # One option renders both the systemd unit `mcp-<name>` and the discovery
 # manifest /run/scooter/mcp-servers.json the agent-host reads to learn each
-# server's port. Unlike web-services.nix, servers bind loopback with the firewall
-# closed, units are restartIfChanged, and ports are auto-assigned.
+# server's port. The agent-host proxies to podIP:port; the sandbox-isolation
+# NetworkPolicy admits only the agent-host to their reserved port range. Unlike
+# web services, units are restartIfChanged and ports are auto-assigned.
 
 { config, lib, pkgs, ... }:
 
@@ -13,8 +14,9 @@ let
   unitName = name: "mcp-${name}";
 
   # Auto-assigned ports start here; a rebuild can hand a port to a different server, so the agent-host rebuilds its session whenever the offered set changes.
-  basePort = 9700;
-  maxAutoPorts = 100;
+  range = import ./mcp-port-range.nix;
+  basePort = range.first;
+  maxAutoPorts = range.last - range.first + 1;
 
   # Names wanting an auto port, sorted so assignment is a pure function of the enabled set.
   autoNames = lib.sort (a: b: a < b)
@@ -27,10 +29,8 @@ let
        else basePort + (lib.lists.findFirstIndex (n: n == name) 0 autoNames);
 
   resolvedPorts = lib.mapAttrsToList (name: _: portOf name) enabled;
-  webServicePorts = lib.mapAttrsToList (_: s: s.port)
-    (lib.filterAttrs (_: s: s.enable) (config.webServices or { }));
 
-  # The discovery manifest read by the agent-host McpServerRegistry; access control is the loopback bind, not a credential.
+  # Read by the agent-host McpServerRegistry; holds no credential.
   manifestJSON = builtins.toJSON {
     servers = lib.mapAttrsToList (name: s: {
       inherit name;
@@ -40,7 +40,6 @@ let
       path = s.path;
       unit = unitName name;
       autoStart = s.autoStart;
-      listenAddress = s.listenAddress;
     }) enabled;
   };
   manifestFile = pkgs.writeText "mcp-servers.json" manifestJSON;
@@ -169,68 +168,50 @@ let
         type = lib.types.nullOr lib.types.str;
         default = null;
         description = ''
-          ExecStart for a server that already speaks streamable HTTP. It MUST bind
-          `listenAddress`:`port`. Mutually exclusive with stdioCommand.
+          ExecStart for a server that already speaks streamable HTTP. It must listen
+          on 0.0.0.0 at `port`, which the unit also exports as `$MCP_PORT`, since the
+          agent-host reaches it at the pod IP. Mutually exclusive with stdioCommand.
         '';
       };
 
       stdioCommand = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
+        example = "\${pkgs.mcp-server-time}/bin/mcp-server-time";
         description = ''
-          A STDIO MCP server (the common shape). Wrapped by mcp-proxy to expose
-          streamable HTTP on `port`, since the agent runs outside this pod and
+          A stdio MCP server, the common shape. It is wrapped by `stdioWrapper` to
+          serve streamable HTTP on `port`, since the agent runs outside this pod and
           cannot speak stdio to it. Mutually exclusive with command.
         '';
       };
 
       stdioWrapper = lib.mkOption {
         type = lib.types.functionTo lib.types.str;
-        default = { listenAddress, port, stdioCommand }:
-          "exec uv tool run mcp-proxy --host ${listenAddress} --port ${toString port} -- ${stdioCommand}";
-        defaultText = lib.literalExpression ''uv tool run mcp-proxy --host <addr> --port <port> -- <stdioCommand>'';
+        default = { port, stdioCommand }:
+          "exec ${pkgs.mcp-proxy}/bin/mcp-proxy --stateless --host 0.0.0.0 --port ${toString port} -- ${stdioCommand}";
+        defaultText = lib.literalExpression ''"exec ''${pkgs.mcp-proxy}/bin/mcp-proxy --stateless --host 0.0.0.0 --port <port> -- <stdioCommand>"'';
         description = ''
-          How a stdio server is bridged to streamable HTTP. The default runs
-          mcp-proxy through `uv` (already in the sandbox stub set), so no new
-          package is needed; override it to pin a different bridge. The default's
-          exact flags are only exercised once the npx/uvx work lands — a server
-          using `command` does not go through here at all.
+          How a stdio server is bridged to streamable HTTP, given `port` and
+          `stdioCommand`. The default is mcp-proxy in stateless mode, so the agent
+          holds no MCP session that a restart (a rebuild, or a suspend and resume)
+          would invalidate.
         '';
       };
 
       port = lib.mkOption {
-        type = lib.types.nullOr lib.types.port;
+        type = lib.types.nullOr (lib.types.ints.between range.first range.last);
         default = null;
         description = ''
-          In-pod TCP port. Leave null (the default) to have one assigned — the port
-          is mechanism nobody declaring a server should have to pick, and the
-          manifest tells the agent-host which one it got.
+          In-pod TCP port, within 9700-9799: the NetworkPolicy lets only the agent-host
+          reach that range. Leave null (the default) to have one assigned from 9700;
+          the manifest tells the agent-host which one it got.
 
-          Auto-assignment is by index in the sorted set of auto-port servers, so
-          adding a server whose name sorts earlier RENUMBERS the ones after it, and
-          a port can be REUSED by a different server across a rebuild.
-
-          The unit and the manifest always agree (one evaluation produces both), but
-          that is not sufficient on its own: a consumer holding a previously-read
-          URL can be pointed at a different server than it thinks. The agent-host
-          must therefore rebuild its agent session whenever the offered set changes,
-          not merely re-read the manifest.
-
-          It is also why these units are restartIfChanged = true (unlike
-          webServices): a renumbered server must actually rebind, or the manifest
-          advertises a port nothing is listening on.
-        '';
-      };
-
-      listenAddress = lib.mkOption {
-        type = lib.types.str;
-        default = "127.0.0.1";
-        description = ''
-          Bind address. Defaults to LOOPBACK, and the firewall is left closed, so a
-          declared server is not reachable from other pods. An MCP server exposes
-          real capability (the workspace, brokered credentials) and these pods have
-          no NetworkPolicy, so binding 0.0.0.0 would publish that to every pod that
-          can route here. Set to "0.0.0.0" only together with an ingress control.
+          Assignment is by index in the sorted set of auto-port servers, so adding a
+          server whose name sorts earlier renumbers the ones after it. That is safe:
+          the agent reaches each server through the agent-host by name, which reads
+          the port from the manifest per request. It is also why these units are
+          restartIfChanged = true, unlike webServices: a renumbered server must
+          actually rebind.
         '';
       };
 
@@ -298,13 +279,19 @@ in
     description = "Declarative in-pod MCP servers, registered with the agent on its next message.";
   };
 
-  config = lib.mkIf (enabled != { }) {
+  config = lib.mkMerge [
+  {
+    # Always rendered, so a missing manifest means unreadable, never none declared.
+    systemd.tmpfiles.rules = [
+      "d /run/scooter 0755 root root -"
+      "L+ /run/scooter/mcp-servers.json - - - - ${manifestFile}"
+    ];
+  }
+  (lib.mkIf (enabled != { }) {
     environment.systemPackages = [ scooterMcp ];
 
-    # Only servers deliberately bound off-loopback get a firewall rule.
-    networking.firewall.allowedTCPPorts =
-      lib.mapAttrsToList (name: _: portOf name)
-        (lib.filterAttrs (_: s: s.listenAddress != "127.0.0.1") enabled);
+    # The agent-host dials podIP:port; the NetworkPolicy admits only it to this range.
+    networking.firewall.allowedTCPPorts = resolvedPorts;
 
     systemd.services = lib.mapAttrs' (name: s:
       let
@@ -322,7 +309,7 @@ in
         # A stdio server is bridged to streamable HTTP by `stdioWrapper`; an http one runs as given.
         execStart =
           if s.stdioCommand != null then
-            "${pkgs.bash}/bin/bash -c ${lib.escapeShellArg (s.stdioWrapper { inherit (s) listenAddress stdioCommand; inherit port; })}"
+            "${pkgs.bash}/bin/bash -c ${lib.escapeShellArg (s.stdioWrapper { inherit (s) stdioCommand; inherit port; })}"
           else
             s.command;
         base = {
@@ -360,14 +347,9 @@ in
       };
     };
 
-    systemd.tmpfiles.rules = [
-      "d /run/scooter 0755 root root -"
-      "L+ /run/scooter/mcp-servers.json - - - - ${manifestFile}"
-    ];
-
     assertions = [
       {
-        # Two explicit ports can collide with each other, which the web-service check below would not see.
+        # Explicit ports can collide with each other or with auto-assigned ones.
         assertion = lib.length resolvedPorts == lib.length (lib.unique resolvedPorts);
         message =
           "mcpServers: enabled servers must have unique ports (resolved: "
@@ -376,19 +358,18 @@ in
           + "collides with an auto-assigned one — leave `port` unset to get a free one.";
       }
       {
-        assertion = lib.intersectLists resolvedPorts webServicePorts == [ ];
-        message =
-          "mcpServers: port(s) "
-          + lib.concatMapStringsSep ", " toString (lib.intersectLists resolvedPorts webServicePorts)
-          + " collide with webServices. Both share the pod's port space.";
-      }
-      {
         assertion = lib.length autoNames <= maxAutoPorts;
         message = "mcpServers: more than ${toString maxAutoPorts} auto-port servers; assign `port` explicitly.";
       }
-    ] ++ lib.mapAttrsToList (name: s: {
+    ] ++ lib.mapAttrsToList (name: _: {
+      # The agent sees tools as mcp__sandbox-<name>__<tool>, which model APIs restrict.
+      assertion = builtins.match "[A-Za-z0-9_-]+" name != null;
+      message = "mcpServers.${name}: names may use only letters, digits, '_' and '-'.";
+    }) enabled
+    ++ lib.mapAttrsToList (name: s: {
       assertion = (s.command == null) != (s.stdioCommand == null);
       message = "mcpServers.${name}: set exactly one of `command` or `stdioCommand`.";
     }) enabled;
-  };
+  })
+  ];
 }

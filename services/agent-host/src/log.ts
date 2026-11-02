@@ -172,3 +172,17 @@ export function forgetWarned(keep?: Set<string>): void {
 }
 
 export type Logger = ReturnType<typeof logger>;
+
+/** "fetch failed <- connect ECONNREFUSED (ECONNREFUSED)": each cause, readable. */
+export function describeError(err: unknown): string {
+  const parts: string[] = [];
+  for (let e: unknown = err; e !== undefined && parts.length < 4; e = (e as { cause?: unknown }).cause) {
+    if (!(e instanceof Error)) {
+      parts.push(String(e));
+      break;
+    }
+    const code = (e as { code?: unknown }).code;
+    parts.push(code ? `${e.message} (${String(code)})` : e.message);
+  }
+  return parts.join(" <- ");
+}

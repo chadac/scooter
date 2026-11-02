@@ -810,6 +810,20 @@ let
     ++ builtins.concatMap (n: if builtins.elem n (ctrPortNames "agent-broker") then [ ] else [ "sandbox-isolation names broker port `${n}`, which the broker does not declare" ]) (npPortsTo "agent-broker")
     ++ (if hasName routerPorts "self" then [ ] else [ "sandbox-isolation names router port `self`, which the router does not declare" ])
     ++ builtins.concatMap (app: if npPortsTo app == [ ] then [ ] else [ "sandbox-isolation lets sandboxes reach ${app}" ]) [ "agent-host" "agent-shared-db" "agent-webhooks" "agent-scheduler" "ui" ]
+    # Only the agent-host reaches a sandbox's MCP ports; the router gets everything else.
+    ++ (let
+          mcp = import ../modules/sandbox-os/mcp-port-range.nix;
+          from = r: map (p: p.podSelector.matchLabels.app or null) (r.from or [ ]);
+          got = map (r: { apps = from r; ports = r.ports or null; }) sandboxNp.spec.ingress;
+          want = [
+            { apps = [ "agent-host" ]; ports = null; }
+            { apps = [ "conversation-router" ]; ports = [
+                { protocol = "TCP"; port = 1; endPort = mcp.first - 1; }
+                { protocol = "TCP"; port = mcp.last + 1; endPort = 65535; }
+              ]; }
+          ];
+        in if got == want then [ ]
+           else [ "sandbox-isolation ingress must admit only the agent-host, and the router outside the MCP range, got ${builtins.toJSON got}" ])
     ++ (if builtins.all (b: b.ipBlock.cidr == "0.0.0.0/0" && builtins.all (c: builtins.elem c b.ipBlock.except) [ "10.0.0.0/8" "100.64.0.0/10" "169.254.0.0/16" ]) npInternet && npInternet != [ ] then [ ]
         else [ "sandbox-isolation internet egress must except the pod/tailnet/metadata ranges" ])
     ++ (if ((evalPlatform { module = { lib, ... }: { imports = [ ./kubenix-config.nix ]; scooter.networkPolicy.enable = lib.mkForce false; }; }).config.kubernetes.resources.networkPolicies or { }) ? sandbox-isolation
