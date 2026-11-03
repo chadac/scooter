@@ -42,6 +42,8 @@ jobs:
       full: ${{ steps.tier.outputs.full }}
       release: ${{ steps.tier.outputs.release }}
       skip: ${{ steps.tier.outputs.skip }}
+      # Runner per matrix entry, weighted by each fleet's capacity.
+      runners: ${{ steps.runners.outputs.runners }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -56,6 +58,19 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: node scripts/ci-report.mjs tier --labels "$LABELS"
+      # Fork PRs never reach the home runners; ONPREM_RUNNERS=off disables them.
+      # Each entry goes onprem with ONPREM_SHARE% odds: 4 slots vs 20 hosted.
+      - id: runners
+        env:
+          FORK: ${{ github.event.pull_request.head.repo.fork || false }}
+          ONPREM: ${{ vars.ONPREM_RUNNERS || 'on' }}
+          SHARE: ${{ vars.ONPREM_SHARE || '17' }}
+        run: |
+          if [ "$FORK" = true ] || [ "$ONPREM" = off ]; then SHARE=0; fi
+          list=$(for _ in $(seq 64); do
+            if [ $((RANDOM % 100)) -lt "$SHARE" ]; then echo '"onprem"'; else echo '"ubuntu-latest"'; fi
+          done | paste -sd, -)
+          echo "runners=[$list]" >> "$GITHUB_OUTPUT"
 
   # One job per `just ci-<shard>`, so the fast checks run in parallel.
   fast:
@@ -64,7 +79,7 @@ jobs:
     if: needs.tier.outputs.skip != 'true'
     permissions:
       contents: read
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.tier.outputs.runners)[strategy.job-index] }}
     strategy:
       fail-fast: false # report every failing shard, not just the first
       matrix:
@@ -73,11 +88,14 @@ jobs:
       - uses: actions/checkout@v5
 
       - uses: nixbuild/nix-quick-install-action@v30
+        if: ${{ !startsWith(runner.name, 'onprem') }}
 
       # Cachix binary cache: pushes with CACHIX_AUTH_TOKEN set, pulls read-only without it.
       - uses: cachix/cachix-action@v15
         with:
           name: scooter
+          # onprem: the cache is already set system-wide (untrusted users can't add it).
+          skipAddingSubstituter: ${{ startsWith(runner.name, 'onprem') }}
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       # CI=1 selects vitest's default reporter.
@@ -150,7 +168,7 @@ jobs:
     name: build image ${{ matrix.image.attr }}
     needs: tier
     if: needs.tier.outputs.full == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.tier.outputs.runners)[strategy.job-index] }}
     strategy:
       fail-fast: false # report every broken image, not just the first
       matrix:
@@ -171,9 +189,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: nixbuild/nix-quick-install-action@v30
+        if: ${{ !startsWith(runner.name, 'onprem') }}
       - uses: cachix/cachix-action@v15
         with:
           name: scooter
+          # onprem: the cache is already set system-wide (untrusted users can't add it).
+          skipAddingSubstituter: ${{ startsWith(runner.name, 'onprem') }}
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       # Building to completion forces every layer derivation. The claude-baked
       # images contain the unfree claude CLI, hence allowUnfree + --impure.
@@ -234,7 +255,7 @@ jobs:
     name: db migrations (${{ matrix.variant }})
     needs: tier
     if: needs.tier.outputs.full == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.tier.outputs.runners)[strategy.job-index] }}
     strategy:
       fail-fast: false
       matrix:
@@ -242,9 +263,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: nixbuild/nix-quick-install-action@v30
+        if: ${{ !startsWith(runner.name, 'onprem') }}
       - uses: cachix/cachix-action@v15
         with:
           name: scooter
+          # onprem: the cache is already set system-wide (untrusted users can't add it).
+          skipAddingSubstituter: ${{ startsWith(runner.name, 'onprem') }}
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: nix build .#checks.x86_64-linux.db-migrate-${{ matrix.variant }}
         env:
@@ -308,9 +332,12 @@ jobs:
           # main's history for the worktree baseline build.
           fetch-depth: 0
       - uses: nixbuild/nix-quick-install-action@v30
+        if: ${{ !startsWith(runner.name, 'onprem') }}
       - uses: cachix/cachix-action@v15
         with:
           name: scooter
+          # onprem: the cache is already set system-wide (untrusted users can't add it).
+          skipAddingSubstituter: ${{ startsWith(runner.name, 'onprem') }}
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       # 1. Measure the PR's images (JSON to pr-sizes.json; build logs to stderr).
@@ -397,9 +424,12 @@ jobs:
         with:
           fetch-depth: 0     # the merge base's worktree
       - uses: nixbuild/nix-quick-install-action@v30
+        if: ${{ !startsWith(runner.name, 'onprem') }}
       - uses: cachix/cachix-action@v15
         with:
           name: scooter
+          # onprem: the cache is already set system-wide (untrusted users can't add it).
+          skipAddingSubstituter: ${{ startsWith(runner.name, 'onprem') }}
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: run the touched suites, PR and merge base interleaved
         run: scripts/bench-ab.sh "origin/${{ github.base_ref }}" bench-out
@@ -464,6 +494,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: nixbuild/nix-quick-install-action@v30
+        if: ${{ !startsWith(runner.name, 'onprem') }}
       - id: list
         name: list dev-env-* checks
         run: |
@@ -493,8 +524,8 @@ jobs:
 
   nixos-test:
     name: nixosTest ${{ matrix.test }}
-    needs: nixos-tests-matrix
-    runs-on: ubuntu-latest
+    needs: [nixos-tests-matrix, tier]
+    runs-on: ${{ fromJSON(needs.tier.outputs.runners)[strategy.job-index] }}
     # Non-required until the KVM-accelerated matrix is consistently green on the runner.
     continue-on-error: true
     strategy:
@@ -509,6 +540,8 @@ jobs:
       # /dev/kvm ships with restrictive group perms on GitHub runners, and without
       # them qemu silently falls back to much slower TCG emulation.
       - name: enable KVM access (else qemu falls back to slow TCG)
+        # onprem: done in its NixOS config (kvm 0666, LimitNOFILE).
+        if: ${{ !startsWith(runner.name, 'onprem') }}
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
             | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -517,16 +550,21 @@ jobs:
           ls -l /dev/kvm
 
       - uses: nixbuild/nix-quick-install-action@v30
+        if: ${{ !startsWith(runner.name, 'onprem') }}
 
       # Cachix: pushes when CACHIX_AUTH_TOKEN is set, pulls read-only otherwise.
       - uses: cachix/cachix-action@v15
         with:
           name: scooter
+          # onprem: the cache is already set system-wide (untrusted users can't add it).
+          skipAddingSubstituter: ${{ startsWith(runner.name, 'onprem') }}
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       # virtiofsd holds one host fd per guest-visible inode, so a test that reads a
       # big tree off the shared store exhausts the default 65536.
       - name: raise the fd limit virtiofsd inherits
+        # onprem: done in its NixOS config (kvm 0666, LimitNOFILE).
+        if: ${{ !startsWith(runner.name, 'onprem') }}
         run: |
           # Only matters when nix uses a daemon; the build step raises its own shell's
           # limit for the single-user case.
@@ -540,7 +578,8 @@ jobs:
 
       - name: build ${{ matrix.test }}
         run: |
-          sudo prlimit --pid $$ --nofile=1048576:1048576
+          # onprem has no sudo; its runner's hard limit is already 1048576.
+          [[ "$RUNNER_NAME" == onprem-* ]] || sudo prlimit --pid $$ --nofile=1048576:1048576
           ulimit -n 1048576
           ulimit -n
           nix build ".#checks.x86_64-linux.${{ matrix.test }}" --print-build-logs
@@ -685,9 +724,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: nixbuild/nix-quick-install-action@v30
+        if: ${{ !startsWith(runner.name, 'onprem') }}
       - uses: cachix/cachix-action@v15
         with:
           name: scooter
+          # onprem: the cache is already set system-wide (untrusted users can't add it).
+          skipAddingSubstituter: ${{ startsWith(runner.name, 'onprem') }}
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       # k3d needs Docker (present on ubuntu-latest); k3d and kubectl come from nixpkgs.
@@ -735,9 +777,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: nixbuild/nix-quick-install-action@v30
+        if: ${{ !startsWith(runner.name, 'onprem') }}
       - uses: cachix/cachix-action@v15
         with:
           name: scooter
+          # onprem: the cache is already set system-wide (untrusted users can't add it).
+          skipAddingSubstituter: ${{ startsWith(runner.name, 'onprem') }}
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       # The rancher/k3s image ships only runc, which gives non-privileged systemd no writable cgroup,
@@ -803,9 +848,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: nixbuild/nix-quick-install-action@v30
+        if: ${{ !startsWith(runner.name, 'onprem') }}
       - uses: cachix/cachix-action@v15
         with:
           name: scooter
+          # onprem: the cache is already set system-wide (untrusted users can't add it).
+          skipAddingSubstituter: ${{ startsWith(runner.name, 'onprem') }}
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       - name: render the example
@@ -945,9 +993,12 @@ jobs:
       # `playwright test --list` and `vitest list`, which resolve projects, testMatch
       # and testIgnore.
       - uses: nixbuild/nix-quick-install-action@v30
+        if: ${{ !startsWith(runner.name, 'onprem') }}
       - uses: cachix/cachix-action@v15
         with:
           name: scooter
+          # onprem: the cache is already set system-wide (untrusted users can't add it).
+          skipAddingSubstituter: ${{ startsWith(runner.name, 'onprem') }}
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       # A window of recent runs regardless of conclusion, not the last GREEN one: the full
@@ -1037,10 +1088,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: nixbuild/nix-quick-install-action@v30
+        if: ${{ !startsWith(runner.name, 'onprem') }}
       # No authToken: self-hosted runners get no secrets, and a shard only needs to pull.
       - uses: cachix/cachix-action@v15
         with:
           name: scooter
+          # onprem: the cache is already set system-wide (untrusted users can't add it).
+          skipAddingSubstituter: ${{ startsWith(runner.name, 'onprem') }}
 
       # One script so the `flake focus full` job stands up an identical cluster.
       - name: bring up k3d + the platform
@@ -1405,9 +1459,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: nixbuild/nix-quick-install-action@v30
+        if: ${{ !startsWith(runner.name, 'onprem') }}
       - uses: cachix/cachix-action@v15
         with:
           name: scooter
+          # onprem: the cache is already set system-wide (untrusted users can't add it).
+          skipAddingSubstituter: ${{ startsWith(runner.name, 'onprem') }}
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       # PLAYWRIGHT_JSON_OUTPUT_NAME makes the json reporter write to a file;
@@ -1606,9 +1663,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: nixbuild/nix-quick-install-action@v30
+        if: ${{ !startsWith(runner.name, 'onprem') }}
       - uses: cachix/cachix-action@v15
         with:
           name: scooter
+          # onprem: the cache is already set system-wide (untrusted users can't add it).
+          skipAddingSubstituter: ${{ startsWith(runner.name, 'onprem') }}
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - name: e2e ×5 (report flaky)
         env:
@@ -1645,9 +1705,12 @@ jobs:
           # Full history: the control run builds a worktree at the PR's base commit.
           fetch-depth: 0
       - uses: nixbuild/nix-quick-install-action@v30
+        if: ${{ !startsWith(runner.name, 'onprem') }}
       - uses: cachix/cachix-action@v15
         with:
           name: scooter
+          # onprem: the cache is already set system-wide (untrusted users can't add it).
+          skipAddingSubstituter: ${{ startsWith(runner.name, 'onprem') }}
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       # Fails loudly when the label is set but no pattern is given.
@@ -1827,9 +1890,12 @@ jobs:
           # Full history: the control step builds a worktree at the PR's base commit.
           fetch-depth: 0
       - uses: nixbuild/nix-quick-install-action@v30
+        if: ${{ !startsWith(runner.name, 'onprem') }}
       - uses: cachix/cachix-action@v15
         with:
           name: scooter
+          # onprem: the cache is already set system-wide (untrusted users can't add it).
+          skipAddingSubstituter: ${{ startsWith(runner.name, 'onprem') }}
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
       # FULL_TARGET=1 intersects `flake-specs:` with the full-target allowlist and
