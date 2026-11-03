@@ -18,7 +18,7 @@ mcp = FastMCP(name="slack")
 SOURCE = "slack"
 
 
-def _target_from_link(link: dict) -> dict | None:
+def target_from_link(link: dict) -> dict | None:
     """The channel (and thread, when known) a Slack link's `ref` points at; the channel alone is a complete target."""
     ref = ref_of(link)
     channel = ref.get("channel")
@@ -29,7 +29,7 @@ def _target_from_link(link: dict) -> dict | None:
 
 async def slack_target(ctx: ToolContext) -> dict | None:
     """The Slack thread this conversation is attached to, or None; shared by the gate and the handlers."""
-    return first_target(await ctx.links.list(), SOURCE, _target_from_link)
+    return first_target(await ctx.links.list(), SOURCE, target_from_link)
 
 
 async def _slack_attached(ctx: ToolContext) -> bool:

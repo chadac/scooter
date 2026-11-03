@@ -35,6 +35,8 @@ in
       services.broker = {
         enable = true;
         env.SLACK_BOT_TOKEN = config.botTokenSecret;
+        # Post pending questions to the thread, so a Slack user sees the agent waiting.
+        notifyAwaitingInput = true;
       };
       services.webhooks = {
         enable = true;

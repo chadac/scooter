@@ -233,6 +233,11 @@ let
   contribUserApi = lib.mapAttrs (name: _: { brokerPrefix = "/${name}"; })
     (lib.filterAttrs (_: c: c.enable && c.ui.enable
       && (lib.any (t: t.api) c.ui.settingsTabs || (c.ui.panel != null && c.ui.panel.api))) config.contribs);
+  # The contribs whose broker half hears when a conversation waits on the user, and
+  # the route the agent-host posts each pending interrupt to.
+  awaitingInputNotify = lib.mapAttrs (name: _: { path = "/${name}/awaiting-input"; })
+    (lib.filterAttrs (_: c: c.enable && c.services.broker.enable
+      && c.services.broker.notifyAwaitingInput) config.contribs);
   # Skill DIRECTORIES ship SKILL.md to the agent as `<name>.md`, with a note naming
   # the sandbox copy (modules/skills/sandbox.nix) after the frontmatter,
   # since a skill resolves its scripts/ against "the directory it was loaded from"
@@ -1769,6 +1774,9 @@ in
                   # Contribs whose settings tab reaches its broker half as the signed-in
                   # user through /contrib-api, name -> broker prefix.
                   { name = "CONTRIB_USER_API_JSON"; value = builtins.toJSON contribUserApi; }
+                ++ lib.optional (cfg.broker.enable && awaitingInputNotify != { })
+                  # Contribs told about each pending question or approval, name -> route.
+                  { name = "AWAITING_INPUT_NOTIFY_JSON"; value = builtins.toJSON awaitingInputNotify; }
                 ++ lib.optionals cfg.broker.enable [
                   # BROKER_URL and the projected broker token for the approve/deny and
                   # /contrib-api relays, and the links queries the agent-host makes.

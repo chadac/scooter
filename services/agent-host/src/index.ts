@@ -48,6 +48,7 @@ import { createPgLinkStore } from "./session/linkStore.js";
 import { parseLinkTypeAliases } from "./session/linkTypeAliases.js";
 import { createPgMetaStore } from "./session/metaStore.js";
 import { createPgAwaitingInputStore } from "./session/awaitingInputStore.js";
+import { createAwaitingInputNotifier, parseAwaitingInputNotify } from "./session/awaitingInputNotify.js";
 import { createPvcAssetStore, withStaging } from "./session/assetStore.js";
 import { createHybridAssetStore } from "./session/hybridAssetStore.js";
 import {
@@ -714,6 +715,16 @@ export async function main(
       else if (event.type === "PERMISSION_RESOLVED") void awaitingInput.set(id, null);
     });
   }
+  const notifyAwaitingInput = createAwaitingInputNotifier({
+    targets: parseAwaitingInputNotify(process.env.AWAITING_INPUT_NOTIFY_JSON),
+    broker: async () => {
+      const url = (process.env.BROKER_URL ?? "").replace(/\/$/, "");
+      return url ? { url, headers: await sharedBrokerAuthHeaders() } : null;
+    },
+    listLinks: async (id) => (await store.listLinks?.(id)) ?? [],
+    publicUrl: process.env.PUBLIC_URL || undefined,
+  });
+  if (notifyAwaitingInput) store.onAppend?.((id, { event }) => void notifyAwaitingInput(id, event));
   // Image/media assets: metadata in Postgres and bytes on the assets PVC (ASSETS_PATH, else
   // LOCAL_STATE_PATH), or PVC-only without a DSN.
   const assetsPath = process.env.ASSETS_PATH ?? config.localStatePath;

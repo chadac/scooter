@@ -416,6 +416,17 @@ let
           broker (`Provider(mount_at_root=True)`), and two contribs may not claim the same one.
         '';
       };
+      notifyAwaitingInput = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Tell this contrib's broker half whenever a conversation starts waiting on the
+          user: a question the agent asked, or an approval. The agent-host POSTs each
+          pending interrupt, with the conversation's links and URL, to
+          `/<contrib>/awaiting-input`, so the contrib can surface it where the user is,
+          e.g. the Slack thread the conversation came from. Delivery is best-effort.
+        '';
+      };
     };
   };
 in
