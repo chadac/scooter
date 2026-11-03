@@ -26,6 +26,7 @@ import type { ConversationLink } from "../session/manager.js";
 import { registerWebFetch } from "./agentTools.js";
 import { registerSchedulerTools, type SchedulerToolsWiring } from "./schedulerTools.js";
 import { handleListModels, handleSwitchModel, type ModelToolsWiring } from "./modelTools.js";
+import { handleConversationStatus, handleMakeConversationPrivate, type ConversationToolsWiring } from "./conversationTools.js";
 import {
   handleSetConversationTitle,
   MAX_TITLE_LENGTH,
@@ -150,6 +151,7 @@ export async function buildServer(
   subagents?: SubagentManager,
   titles?: TitleToolsWiring,
   images?: ImageToolsWiring,
+  conversation?: ConversationToolsWiring,
 ): Promise<McpServer> {
   const server = new McpServer({ name: "scooter-env", version: "1.0.0" });
   if (titles) {
@@ -171,6 +173,36 @@ export async function buildServer(
       },
       async (args) =>
         handleSetConversationTitle(titles, conversationId, args) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
+    );
+  }
+  if (conversation) {
+    server.registerTool(
+      "conversation_status",
+      {
+        title: "Show this conversation's status",
+        description:
+          "Show THIS conversation's id, title, owner, visibility (shared or private: whether the " +
+          "sandbox acts as the owner), model, sandbox state and size, age and last activity. Check " +
+          "it before relying on the owner's credentials (SSH key, commit identity).",
+        inputSchema: {},
+      },
+      async () =>
+        handleConversationStatus(conversation, conversationId) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
+    );
+    server.registerTool(
+      "make_conversation_private",
+      {
+        title: "Make this conversation private",
+        description:
+          "Make THIS conversation private, so only its owner can see or prompt it and the sandbox " +
+          "acts as the owner (their SSH key, their commit identity). One-way: only the owner can make " +
+          "it shared again, from the UI. Call it when the task needs the owner's own credentials and " +
+          "the conversation is shared. If anyone other than the owner has prompted this conversation, " +
+          "get the owner's explicit approval first, because their requests would then run as the owner.",
+        inputSchema: {},
+      },
+      async () =>
+        handleMakeConversationPrivate(conversation, conversationId) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
     );
   }
   if (jobs) {
@@ -489,6 +521,8 @@ export function createMcpEndpoint(deps: {
   titles?: TitleToolsWiring;
   /** When provided, exposes view_image. */
   images?: ImageToolsWiring;
+  /** When provided, exposes conversation_status and make_conversation_private. */
+  conversation?: ConversationToolsWiring;
 }): McpEndpoint {
   const path = deps.path ?? "/mcp";
   const secret = deps.convTokenSecret ?? "";
@@ -523,7 +557,7 @@ export function createMcpEndpoint(deps: {
       }
       // Stateless transport with no session id.
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-      const server = await buildServer(conv, deps.agentTools, deps.jobs, deps.models, deps.resources, deps.scheduler, deps.subagents, deps.titles, deps.images);
+      const server = await buildServer(conv, deps.agentTools, deps.jobs, deps.models, deps.resources, deps.scheduler, deps.subagents, deps.titles, deps.images, deps.conversation);
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
     },

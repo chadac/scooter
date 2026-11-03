@@ -89,6 +89,7 @@ import { createMemoryIdentityRegistry, createPgIdentityRegistry } from "./sessio
 import { mintConvToken } from "./auth/convToken.js";
 import { createMcpEndpoint, resolveConversation } from "./agent/mcpServer.js";
 import { readSandboxFileBase64, IMAGE_MAX_BYTES, type ImageToolsWiring } from "./agent/imageTools.js";
+import type { ConversationToolsWiring } from "./agent/conversationTools.js";
 import { createBrokerMcpProxy } from "./agent/brokerMcpProxy.js";
 import { createSandboxMcpProxy } from "./agent/sandboxMcpProxy.js";
 import { createMcpServerRegistry, offeredMcpServers, type OfferedMcpServer } from "./agent/mcpServerRegistry.js";
@@ -1195,6 +1196,16 @@ export async function main(
       }
     : undefined;
 
+  // conversation_status, and make_conversation_private: shared → private only; going shared
+  // stays the owner's PATCH.
+  const conversationToolsWiring: ConversationToolsWiring = {
+    get: (id) => sessions.get(id as SessionId),
+    currentVisibility: async (id) =>
+      (await store.readAccess?.(id as SessionId))?.visibility ?? sessions.get(id as SessionId)?.visibility ?? "shared",
+    makePrivate: (id) => sessions.setVisibility(id as SessionId, "private"),
+    resources: resourceToolsWiring?.currentResources,
+  };
+
   // One HTTP client to the scheduler service, shared by the agent MCP tools and the UI
   // settings proxy, with every call scoped to an owner.
   const schedulerClient = process.env.SCHEDULER_URL
@@ -1271,6 +1282,7 @@ export async function main(
           subagents: subagentManager,
           titles: titleToolsWiring,
           images: imageToolsWiring,
+          conversation: conversationToolsWiring,
         })
       : undefined;
 
