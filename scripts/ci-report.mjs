@@ -12,14 +12,17 @@
 //
 // A run's tier decides which gates are in play: `pr` (the default for a PR) runs the
 // fast checks, `full` (the merge queue, main, the nightly, or a PR labelled
-// `full-ci`) runs everything.
+// `full-ci`) runs everything. A change to only RELEASE_FILES gets `skip` on the PR,
+// which runs nothing, and `release` in the merge queue, which runs the full tier
+// plus every gate marked `release: true`, each made required.
 //
 // Usage:
 //   ci-report.mjs post --section <id> --status <pass|fail|warn|skip> \
 //     [--summary <text>] [--body <file>] [--gates <f>] [--labels a,b] [--sections-dir <d>]
 //   ci-report.mjs evaluate [--gates <f>] [--labels a,b] [--sections-dir <d>]   # exit 1 if blocked
-//   ci-report.mjs tier [--labels a,b]          # writes full=<true|false> to $GITHUB_OUTPUT
-//     env: GH_TOKEN, GITHUB_REPOSITORY, GITHUB_EVENT_NAME, PR (unset outside a PR);
+//   ci-report.mjs tier [--labels a,b]   # writes full=, release=, skip=<true|false> to $GITHUB_OUTPUT
+//     env: GH_TOKEN, GITHUB_REPOSITORY, GITHUB_EVENT_NAME, PR (unset outside a PR),
+//     BASE_SHA + HEAD_SHA (the compared range; unset, no run is a release);
 //     <sections-dir> defaults to $RUNNER_TEMP/ci-sections
 //
 // `--summary` wraps the body in a <details>; omit it when the job renders its own
@@ -41,8 +44,19 @@ export const HEADING = "## CI";
 /** The PR label that runs the merge-queue suite on the PR itself. */
 export const FULL_TIER_LABEL = "full-ci";
 
-/** `full` for every run but an unlabelled PR, which gets the fast `pr` tier. */
-export function tierFor(event, labels = []) {
+/** The files a release PR may touch; anything else needs real CI. */
+export const RELEASE_FILES = ["VERSION", "CHANGELOG.md"];
+
+/** Whether a change set is a release bump and nothing else. */
+export const isReleaseOnly = (files) =>
+  files.length > 0 && files.every((f) => RELEASE_FILES.includes(f));
+
+/** For a release-only change, `skip` on the PR and `release` in the queue; else `pr` for an unlabelled PR, else `full`. */
+export function tierFor(event, labels = [], files = []) {
+  if (isReleaseOnly(files)) {
+    if (event === "pull_request") return "skip";
+    if (event === "merge_group") return "release";
+  }
   return event !== "pull_request" || labels.includes(FULL_TIER_LABEL)
     ? "full"
     : "pr";
@@ -99,6 +113,22 @@ const coerce = (v) =>
 
 /** The gates in play: a label-gated one needs its label, a `full` one the full tier. */
 export function activeGates(gates, labels = [], tier = "full") {
+  if (tier === "skip") return [];
+  if (tier === "release") {
+    const full = activeGates(gates, labels, "full");
+    return gates
+      .filter((g) => g.release || full.includes(g))
+      .map((g) =>
+        g.release
+          ? {
+              ...g,
+              require: "always",
+              advisory: false,
+              block_while_pending: true,
+            }
+          : g,
+      );
+  }
   return gates.filter(
     (g) =>
       ((g.require ?? "always") !== "when_labelled" ||
@@ -225,6 +255,15 @@ export function hasSection(body, section) {
 
 // ——— the impure half ———————————————————————————————————————————————
 
+/** Files changed between BASE_SHA and HEAD_SHA; empty when either is unset. */
+async function changedFiles(repo, token) {
+  const { BASE_SHA: base, HEAD_SHA: head } = process.env;
+  if (!base || !head) return [];
+  // Capped at 300 files, far past any release-only change.
+  const cmp = await api(`repos/${repo}/compare/${base}...${head}`, token);
+  return (cmp.files ?? []).map((f) => f.filename);
+}
+
 const api = async (path, token, init = {}) => {
   const res = await fetch(`https://api.github.com/${path}`, {
     ...init,
@@ -294,7 +333,7 @@ async function upsert({ repo, pr, token, section, gates }) {
   return { url: null, attempt: 3 };
 }
 
-function main(argv) {
+async function main(argv) {
   const cmd = argv[0];
   const opt = (n, d) => {
     const i = argv.indexOf(`--${n}`);
@@ -304,11 +343,12 @@ function main(argv) {
     readFileSync(opt("gates", ".github/ci-gates.yml"), "utf8"),
   );
   const labels = (opt("labels", "") || "").split(",").filter(Boolean);
-  const tier = tierFor(process.env.GITHUB_EVENT_NAME, labels);
-  const active = activeGates(gates, labels, tier);
   const repo = process.env.GITHUB_REPOSITORY;
   const pr = process.env.PR;
   const token = process.env.GH_TOKEN;
+  const files = await changedFiles(repo, token);
+  const tier = tierFor(process.env.GITHUB_EVENT_NAME, labels, files);
+  const active = activeGates(gates, labels, tier);
   const dir = opt(
     "sections-dir",
     join(process.env.RUNNER_TEMP ?? ".", "ci-sections"),
@@ -331,7 +371,8 @@ function main(argv) {
   }
 
   if (cmd === "tier") {
-    const line = `full=${tier === "full"}\n`;
+    const full = tier === "full" || tier === "release";
+    const line = `full=${full}\nrelease=${tier === "release"}\nskip=${tier === "skip"}\n`;
     if (process.env.GITHUB_OUTPUT)
       appendFileSync(process.env.GITHUB_OUTPUT, line);
     process.stdout.write(line);
@@ -367,4 +408,7 @@ function main(argv) {
 
 // Run only as a CLI, so the spec can import the pure functions above.
 if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`)
-  main(process.argv.slice(2));
+  main(process.argv.slice(2)).catch((e) => {
+    console.error(e);
+    process.exitCode = 1;
+  });

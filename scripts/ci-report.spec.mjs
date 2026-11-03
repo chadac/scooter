@@ -84,6 +84,17 @@ describe("tierFor", () => {
     expect(tierFor("merge_group", [])).toBe("full");
     expect(tierFor("push", [])).toBe("full");
   });
+
+  it("skips a release-only PR and gives its queue entry the release tier", () => {
+    const bump = ["VERSION", "CHANGELOG.md"];
+    expect(tierFor("pull_request", [], bump)).toBe("skip");
+    expect(tierFor("pull_request", ["full-ci"], bump)).toBe("skip");
+    expect(tierFor("merge_group", [], ["VERSION"])).toBe("release");
+    expect(tierFor("pull_request", [], [...bump, "flake.nix"])).toBe("pr");
+    expect(tierFor("merge_group", [], [...bump, "flake.nix"])).toBe("full");
+    expect(tierFor("push", [], bump)).toBe("full");
+    expect(tierFor("schedule", [], bump)).toBe("full");
+  });
 });
 
 describe("activeGates", () => {
@@ -97,6 +108,32 @@ describe("activeGates", () => {
       "e2e-fast",
       "size",
     ]);
+  });
+
+  it("gates a skip-tier run on nothing", () => {
+    expect(activeGates(gates, ["e2e-full"], "skip")).toEqual([]);
+  });
+
+  it("adds each `release: true` gate to a release run as required", () => {
+    const g = [
+      { id: "a", require: "always" },
+      { id: "b", require: "always", tier: "full" },
+      {
+        id: "c",
+        require: "when_labelled",
+        label: "x",
+        advisory: true,
+        release: true,
+      },
+      { id: "d", require: "when_labelled", label: "y" },
+    ];
+    const active = activeGates(g, [], "release");
+    expect(active.map((x) => x.id)).toEqual(["a", "b", "c"]);
+    expect(active[2]).toMatchObject({
+      require: "always",
+      advisory: false,
+      block_while_pending: true,
+    });
   });
 
   it("leaves a full-tier gate out of a PR-tier run, so the PR never waits on it", () => {

@@ -5,6 +5,9 @@ name: CI
 # `full-ci` get the `full` tier: everything, adding the image builds, db
 # migrations, sharded e2e, the whole nixosTest matrix and the path-gated k3d jobs.
 # The opt-in flake, bench and e2e-full jobs stay label-driven on either tier.
+# A change to only VERSION and CHANGELOG.md is a release: its PR gets the `skip`
+# tier and runs nothing, so it is ready once approved; its queue entry gets the
+# `release` tier, the full tier plus e2e-full and the heavy nixosTests, all required.
 # Every reporting job saves one gate section (and writes it into a shared PR
 # comment), and `ci-summary`, the single required check, evaluates this run's
 # sections against the base commit's .github/ci-gates.yml. The Cachix cache
@@ -38,6 +41,8 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       full: ${{ steps.tier.outputs.full }}
+      release: ${{ steps.tier.outputs.release }}
+      skip: ${{ steps.tier.outputs.skip }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -47,11 +52,16 @@ jobs:
           sparse-checkout-cone-mode: false
       - id: tier
         env:
+          GH_TOKEN: ${{ github.token }}
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: node scripts/ci-report.mjs tier --labels "$LABELS"
 
   ci:
     name: fast checks (flake + typecheck + unit + python)
+    needs: tier
+    if: needs.tier.outputs.skip != 'true'
     permissions:
       contents: read
       pull-requests: write   # posts its own gate section (scripts/ci-report.mjs)
@@ -430,6 +440,7 @@ jobs:
   nixos-tests-matrix:
     name: enumerate dev-env nixosTests
     needs: tier
+    if: needs.tier.outputs.skip != 'true'
     runs-on: ubuntu-latest
     outputs:
       tests: ${{ steps.list.outputs.tests }}
@@ -439,8 +450,8 @@ jobs:
       FULL: ${{ needs.tier.outputs.full }}
       # Tests too expensive for per-PR runs (space-separated check names).
       HEAVY_TESTS: "dev-env-scooter-module"
-      # Include heavy tests when: nightly schedule, OR the PR has the label.
-      INCLUDE_HEAVY: ${{ github.event_name == 'schedule' || contains(github.event.pull_request.labels.*.name, 'full-nixos-tests') }}
+      # Include heavy tests when: nightly schedule, a release, OR the PR has the label.
+      INCLUDE_HEAVY: ${{ github.event_name == 'schedule' || needs.tier.outputs.release == 'true' || contains(github.event.pull_request.labels.*.name, 'full-nixos-tests') }}
     steps:
       - uses: actions/checkout@v5
       - uses: nixbuild/nix-quick-install-action@v30
@@ -525,16 +536,16 @@ jobs:
           ulimit -n
           nix build ".#checks.x86_64-linux.${{ matrix.test }}" --print-build-logs
 
-  # Decides from the changed paths which cluster jobs need to run.
+  # Decides from the changed paths which cluster jobs need to run; a release runs all.
   cluster-changes:
     name: detect sandbox-image changes
     needs: tier
     if: needs.tier.outputs.full == 'true'
     runs-on: ubuntu-latest
     outputs:
-      run: ${{ steps.filter.outputs.image }}
-      platform: ${{ steps.filter.outputs.platform }}
-      example: ${{ steps.filter.outputs.example }}
+      run: ${{ needs.tier.outputs.release == 'true' || steps.filter.outputs.image }}
+      platform: ${{ needs.tier.outputs.release == 'true' || steps.filter.outputs.platform }}
+      example: ${{ needs.tier.outputs.release == 'true' || steps.filter.outputs.example }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -883,11 +894,13 @@ jobs:
   # as e2e fast; each shard boots its own cluster.
   e2e-full-distribute:
     name: e2e full distribute (shard)
-    # Trigger-gated only (nightly, manual, or the `e2e-full` label); the platform
-    # path filter would skip product-code changes the suite must cover.
+    # Trigger-gated only (nightly, manual, a release, or the `e2e-full` label); the
+    # platform path filter would skip product-code changes the suite must cover.
+    needs: tier
     if: >-
       github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
+      needs.tier.outputs.release == 'true' ||
       contains(github.event.pull_request.labels.*.name, 'e2e-full')
     runs-on: ubuntu-latest
     outputs:
@@ -1004,8 +1017,8 @@ jobs:
     if: needs.e2e-full-distribute.result == 'success'
     # The self-hosted fleet, for this job only: a shard is ~25 min of k3d and
     # platform deploy, ~60 on a sweep. Safe only because the gate above is
-    # schedule/dispatch/label, none of which a fork can trigger; `runs-on` is not a
-    # security boundary on its own.
+    # schedule/dispatch/label, or a queued release that changes no code, none of
+    # which a fork can trigger; `runs-on` is not a security boundary on its own.
     runs-on: [self-hosted, linux, x64, nix]
     # Bounds a wedged cluster holding a fleet runner all day; the default 360 does not.
     timeout-minutes: 150
@@ -1297,9 +1310,9 @@ jobs:
           retention-days: 90
           if-no-files-found: ignore
 
-      # PR only; sticky, so a re-run replaces the verdict.
+      # Sticky on a PR, so a re-run replaces the verdict; in the queue, the section only.
       - name: post the verdict on the PR
-        if: always() && github.event_name == 'pull_request' && hashFiles('comment.md') != ''
+        if: always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') && hashFiles('comment.md') != ''
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1309,8 +1322,7 @@ jobs:
           set -euo pipefail
           # No --summary: the compare script renders its own <details> summary line,
           # so ci-report places the body verbatim.
-          # Advisory per .github/ci-gates.yml, so this status decides what the gate
-          # table shows, not whether the PR can merge.
+          # Advisory per .github/ci-gates.yml except on a release, which needs `pass`.
           status=warn
           grep -q '^<details><summary>✅' comment.md && status=pass
           grep -q '^<details><summary>❌' comment.md && status=fail
@@ -2034,7 +2046,8 @@ jobs:
   nixos-report:
     name: nixosTest report
     needs: [nixos-tests-matrix, nixos-test]
-    if: always()
+    # Skipped matrix: a skip-tier run, which reports nothing.
+    if: always() && needs.nixos-tests-matrix.result != 'skipped'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -2103,5 +2116,8 @@ jobs:
           merge-multiple: true
       - name: evaluate the gates
         env:
+          GH_TOKEN: ${{ github.token }}
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: node scripts/ci-report.mjs evaluate --labels "$LABELS"

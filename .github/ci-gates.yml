@@ -19,6 +19,7 @@
 #
 # `advisory: true` keeps a gate visible in the table but never blocks, and
 # `block_while_pending: false` lets a PR merge before the gate has answered.
+# `release: true` puts a gate in play on every release queue run, required.
 # The order here is the render order of the comment's sections.
 
 gates:
@@ -39,6 +40,8 @@ gates:
     # a human reads the attributable part in the comment.
     advisory: true
     block_while_pending: false
+    # A release must pass it outright.
+    release: true
 
   - id: flake-fast
     name: flake focus (targeted ×20)
