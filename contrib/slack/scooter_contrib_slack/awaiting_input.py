@@ -3,7 +3,8 @@
 The agent-host POSTs `/slack/awaiting-input` when a conversation starts waiting on the
 user (`services.broker.notifyAwaitingInput`). A conversation started from Slack would
 otherwise sit silently blocked, since its Slack user never sees the UI's card. Answering
-still happens in the UI; the message says what is asked and links there.
+the message says what is asked, links to the UI, and for a single-click answer
+carries buttons the webhooks half handles (`/webhooks/slack/interactive`).
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from scooter_broker_lib.links import first_target
 from scooter_broker_lib.types import AuthDependency, Identity, Provider, Transport
 from scooter_lib.logging_config import format_error
 
+from .answers import ASK_USER_KIND, SECTION_MAX, answer_blocks, escape, questions_of
 from .mcp_tools import SOURCE, target_from_link
 
 logger = logging.getLogger(__name__)
@@ -44,12 +46,16 @@ class AwaitingInputNotice(Transport):
                 return {"posted": False, "reason": "no Slack thread linked"}
             if provider.credential is None:
                 raise HTTPException(status_code=503, detail="slack has no bot token")
+            text = format_notice(notice)
             payload: dict[str, Any] = {
                 "channel": target["channel"],
-                "text": format_notice(notice),
+                "text": text,
                 "unfurl_links": False,
                 "unfurl_media": False,
             }
+            blocks = answer_blocks(notice, text)
+            if blocks:
+                payload["blocks"] = blocks
             if target.get("thread_ts"):
                 payload["thread_ts"] = target["thread_ts"]
             fields = {"conversation_id": notice.get("conversationId"), "channel": target["channel"]}
@@ -70,46 +76,35 @@ class AwaitingInputNotice(Transport):
         return router
 
 
-ASK_USER_KIND = "ask-user.questions"
-# Slack rejects a message's text past 40k characters; stay well under.
-MAX_TEXT = 3500
-
-
-def _escape(text: Any) -> str:
-    """Slack's three control characters, so agent text cannot forge links or mentions."""
-    return str(text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-
-def _questions(data: Any) -> list[dict]:
-    raw = data.get("questions") if isinstance(data, dict) else None
-    return [q for q in raw if isinstance(q, dict) and q.get("question")] if isinstance(raw, list) else []
+# The text doubles as the buttons' section, which Slack caps at 3000 characters.
+MAX_TEXT = SECTION_MAX - 100
 
 
 def _question_lines(q: dict) -> list[str]:
-    header = f"*{_escape(q['header'])}:* " if q.get("header") else ""
+    header = f"*{escape(q['header'])}:* " if q.get("header") else ""
     pick = " _(pick any)_" if q.get("multiSelect") else ""
-    lines = [f"{header}{_escape(q['question'])}{pick}"]
+    lines = [f"{header}{escape(q['question'])}{pick}"]
     for opt in q.get("options") or []:
         if not isinstance(opt, dict) or not opt.get("label"):
             continue
-        desc = f" — {_escape(opt['description'])}" if opt.get("description") else ""
-        lines.append(f"    • {_escape(opt['label'])}{desc}")
+        desc = f" — {escape(opt['description'])}" if opt.get("description") else ""
+        lines.append(f"    • {escape(opt['label'])}{desc}")
     return lines
 
 
 def format_notice(notice: dict) -> str:
     """The thread message for one pending interrupt, in Slack mrkdwn."""
     interrupt = notice.get("interrupt") or {}
-    questions = _questions(interrupt.get("data")) if interrupt.get("kind") == ASK_USER_KIND else []
+    questions = questions_of(interrupt.get("data")) if interrupt.get("kind") == ASK_USER_KIND else []
     if questions:
         noun = "a question" if len(questions) == 1 else f"{len(questions)} questions"
         lines = [f":question: I have {noun} and I'm waiting for your answer:"]
         for q in questions:
             lines += ["", *_question_lines(q)]
     else:
-        message = _escape(interrupt.get("message") or "I need your input")
+        message = escape(interrupt.get("message") or "I need your input")
         lines = [f":raised_hand: I'm waiting on you: {message}"]
-        names = [_escape(o.get("name")) for o in interrupt.get("options") or [] if isinstance(o, dict) and o.get("name")]
+        names = [escape(o.get("name")) for o in interrupt.get("options") or [] if isinstance(o, dict) and o.get("name")]
         if names:
             lines.append(f"Choices: {' / '.join(names)}")
     text = "\n".join(lines)

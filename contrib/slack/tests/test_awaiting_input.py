@@ -115,3 +115,13 @@ def test_a_slack_refusal_is_reported(monkeypatch):
     client, _ = _client(monkeypatch, slack_reply={"ok": False, "error": "channel_not_found"})
     r = client.post("/slack/awaiting-input", json=_notice())
     assert r.status_code == 502 and "channel_not_found" in r.text
+
+
+def test_a_single_question_posts_one_button_per_option(monkeypatch):
+    client, sent = _client(monkeypatch)
+    client.post("/slack/awaiting-input", json=_notice())
+    blocks = json.loads(sent[0].content)["blocks"]
+    assert blocks[0]["text"]["text"].startswith(":question:")
+    buttons = blocks[1]["elements"]
+    assert [b["text"]["text"] for b in buttons] == ["Postgres", "SQLite"]
+    assert json.loads(buttons[0]["value"]) == {"c": "conv-1", "i": "q1", "o": "answer", "q": "Which database?", "a": "Postgres"}

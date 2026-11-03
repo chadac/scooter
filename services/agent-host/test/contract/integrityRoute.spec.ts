@@ -31,7 +31,7 @@ function stubSessions(id: string): SessionManager {
   } as unknown as SessionManager;
 }
 
-const stubServer = { onPermission: () => {}, broadcast: () => {} } as never;
+const stubServer = { broadcast: () => {} } as never;
 
 /** Start the SSE integrity route synchronously so its replay races a pending append, capturing the written frames. */
 function startIntegrity(
@@ -71,7 +71,7 @@ describe("events.integrity — replays an in-flight (unflushed) append", () => {
         sessions: stubSessions(id),
         store,
         server: stubServer,
-        answerPermission: async () => {},
+        answerInterrupt: async () => ({ ok: true }),
       });
 
       // The user's message is appended fire-and-forget, as wireEventLog does, so the write is still pending.
@@ -99,7 +99,7 @@ describe("events.integrity — system messages", () => {
     try {
       const store = createFileConversationStore(root);
       const id = "conv-sys";
-      const api = createManagementApi({ sessions: stubSessions(id), store, server: stubServer, answerPermission: async () => {} });
+      const api = createManagementApi({ sessions: stubSessions(id), store, server: stubServer, answerInterrupt: async () => ({ ok: true }) });
       const events = [
         { type: "TEXT_MESSAGE_START", messageId: "u1", role: "user" },
         { type: "TEXT_MESSAGE_CONTENT", messageId: "u1", delta: "hi" },
@@ -160,7 +160,7 @@ describe("events.integrity — ownership", () => {
         sessions: stubSessions(id),
         store,
         server: stubServer,
-        answerPermission: async () => {},
+        answerInterrupt: async () => ({ ok: true }),
         streamOwnership: async () => "elsewhere",
       });
       const stream = startWithEnd(api, id);
@@ -183,7 +183,7 @@ describe("events.integrity — ownership", () => {
           sessions: stubSessions(id),
           store,
           server: stubServer,
-          answerPermission: async () => {},
+          answerInterrupt: async () => ({ ok: true }),
           streamOwnership: async () => where,
         });
         const stream = startWithEnd(api, id);

@@ -483,3 +483,27 @@ async def test_send_message_is_true_only_when_delivered(monkeypatch):
     body = _sse('{"type":"RUN_ERROR","message":"boom"}')
     _patch_attempts(monkeypatch, _FakeStream(body))
     assert await ahc.send_message("c1", "hi") is False
+
+
+def _patch_answer(monkeypatch, status: int, json: dict, captured: dict):
+    async def fake_post(self, url, **kwargs):  # noqa: ANN001
+        captured["url"] = url
+        captured["json"] = kwargs.get("json")
+        return httpx.Response(status, json=json, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+
+async def test_answer_interrupt_names_the_answerer(monkeypatch):
+    captured: dict = {}
+    _patch_answer(monkeypatch, 200, {"answered": True}, captured)
+    err = await ahc.answer_interrupt("c-1", "i-1", answered_by="u-1", email="u@example.com", option_id="answer", result={"answers": {"Q": "A"}})
+    assert err is None
+    assert captured["url"].endswith("/conversations/c-1/interrupts/i-1/answer")
+    assert captured["json"] == {"answeredBy": {"id": "u-1", "email": "u@example.com"}, "optionId": "answer", "result": {"answers": {"Q": "A"}}}
+
+
+async def test_answer_interrupt_reports_the_refusal(monkeypatch):
+    _patch_answer(monkeypatch, 403, {"error": "only the conversation's owner can answer"}, {})
+    err = await ahc.answer_interrupt("c-1", "i-1", answered_by="u-2", option_id="allow")
+    assert err == "only the conversation's owner can answer"

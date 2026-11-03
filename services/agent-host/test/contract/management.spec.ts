@@ -168,7 +168,7 @@ describe("management API", () => {
       sessions,
       store: fakeStore([]),
       server: stubServer,
-      answerPermission: async () => {},
+      answerInterrupt: async () => ({ ok: true }),
     });
 
     const res = await call(api, "POST", "/conversations", { title: "hello" });
@@ -184,13 +184,93 @@ describe("management API", () => {
       sessions,
       store: fakeStore([]),
       server: stubServer,
-      answerPermission: async () => {},
+      answerInterrupt: async () => ({ ok: true }),
     });
 
     const res = await call(api, "POST", "/conversations", { threadId: "attacker-chosen-id" });
 
     expect(res.status).toBe(201);
     expect((res.json as { id?: string }).id).not.toBe("attacker-chosen-id");
+  });
+
+  // A Slack button answers as the clicker's Scooter user: only the verified webhooks caller
+  // may name the answerer, and only the conversation's owner may answer.
+  describe("POST /conversations/:id/interrupts/:interruptId/answer", () => {
+    const mk = (verified: boolean, outcome = { ok: true }) => {
+      const answerInterrupt = vi.fn(async () => outcome);
+      const api = createManagementApi({
+        sessions: fakeSessions(),
+        store: fakeStore([]),
+        server: stubServer,
+        answerInterrupt,
+        ownerVerifier: async () => verified,
+        conversationOwner: async (id) => (id === "c1" ? { owner: "chadac" } : undefined),
+      });
+      return { api, answerInterrupt };
+    };
+    const answer = (api: ReturnType<typeof createManagementApi>, by: string, path = "/conversations/c1/interrupts/i1/answer") =>
+      call(api, "POST", path, { answeredBy: { id: by }, optionId: "answer", result: { answers: { Q: "A" } } });
+
+    it("answers as the owner", async () => {
+      const { api, answerInterrupt } = mk(true);
+      const res = await answer(api, "chadac");
+      expect(res.status).toBe(200);
+      expect(answerInterrupt).toHaveBeenCalledWith(
+        "c1",
+        { interruptId: "i1", status: "resolved", payload: { optionId: "answer", result: { answers: { Q: "A" } } } },
+        { id: "chadac" },
+      );
+    });
+
+    it("refuses anyone but the owner", async () => {
+      const { api, answerInterrupt } = mk(true);
+      expect((await answer(api, "mallory")).status).toBe(403);
+      expect(answerInterrupt).not.toHaveBeenCalled();
+    });
+
+    it("refuses an unverified caller naming the owner", async () => {
+      const { api, answerInterrupt } = mk(false);
+      expect((await answer(api, "chadac")).status).toBe(403);
+      expect(answerInterrupt).not.toHaveBeenCalled();
+    });
+
+    it("refuses an unowned or unknown conversation", async () => {
+      const { api } = mk(true);
+      expect((await answer(api, "chadac", "/conversations/nope/interrupts/i1/answer")).status).toBe(403);
+    });
+
+    it("reports an interrupt no longer waiting", async () => {
+      const { api } = mk(true, { ok: false, reason: "already answered" } as never);
+      const res = await answer(api, "chadac");
+      expect(res.status).toBe(409);
+      expect(res.json).toEqual({ error: "already answered" });
+    });
+  });
+
+  // The permission route answers through the same resume path as /agui, revive included.
+  describe("POST /conversations/:id/permission/:toolCallId", () => {
+    const mk = (outcome: { ok: boolean; reason?: string }) => {
+      const answerInterrupt = vi.fn(async () => outcome);
+      const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt });
+      return { api, answerInterrupt };
+    };
+
+    it("answers as the requesting user", async () => {
+      const { api, answerInterrupt } = mk({ ok: true });
+      const res = await call(api, "POST", "/conversations/c1/permission/t1", { optionId: "allow" }, { "x-auth-user": "alice" });
+      expect(res.status).toBe(204);
+      expect(answerInterrupt).toHaveBeenCalledWith(
+        "c1",
+        { interruptId: "t1", status: "resolved", payload: { optionId: "allow" } },
+        expect.objectContaining({ id: "alice" }),
+      );
+    });
+
+    it("reports an answer nothing was waiting for", async () => {
+      const { api } = mk({ ok: false, reason: "gone" });
+      const res = await call(api, "POST", "/conversations/c1/permission/t1", { optionId: "allow" }, { "x-auth-user": "alice" });
+      expect(res.status).toBe(409);
+    });
   });
 
   // A body `owner` (webhooks' resolved user) is honored only for a caller the ownerVerifier accepts. Why: issue #897.
@@ -201,7 +281,7 @@ describe("management API", () => {
         sessions,
         store: fakeStore([]),
         server: stubServer,
-        answerPermission: async () => {},
+        answerInterrupt: async () => ({ ok: true }),
         ownerVerifier,
       });
       return { sessions, api };
@@ -249,7 +329,7 @@ describe("management API", () => {
     sessions.refreshRouterMeta = vi.fn(async (id: string) => {
       (sessions.get(id) as { starred?: boolean }).starred = true;
     });
-    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     const { status, json } = await call(api, "GET", "/conversations/c1");
     expect(status).toBe(200);
     expect((json as any).starred).toBe(true);
@@ -262,7 +342,7 @@ describe("management API", () => {
       sessions: fakeSessions(),
       store: fakeStore([]),
       server: stubServer,
-      answerPermission: async () => {},
+      answerInterrupt: async () => ({ ok: true }),
       sandboxResources: async () => size,
     });
     const { status, json } = await call(api, "GET", "/conversations/c1/resources");
@@ -271,7 +351,7 @@ describe("management API", () => {
   });
 
   it("GET /conversations/:id/resources -> {resources:null} when unwired (fake/no-broker)", async () => {
-    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     const { status, json } = await call(api, "GET", "/conversations/c1/resources");
     expect(status).toBe(200);
     expect((json as any).resources).toBeNull();
@@ -282,7 +362,7 @@ describe("management API", () => {
       sessions: fakeSessions(),
       store: fakeStore([]),
       server: stubServer,
-      answerPermission: async () => {},
+      answerInterrupt: async () => ({ ok: true }),
       sandboxResources: async () => {
         throw new Error("broker down");
       },
@@ -294,7 +374,7 @@ describe("management API", () => {
 
   it("GET /conversations/:id/resources carries pendingRestart, null when nothing is pending", async () => {
     const sessions = fakeSessions();
-    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     expect((await call(api, "GET", "/conversations/c1/resources")).json).toMatchObject({ pendingRestart: null });
     sessions.pendingRestart = vi.fn(async () => ({ image: { from: "os:old", to: "os:new" } }));
     const { json } = await call(api, "GET", "/conversations/c1/resources");
@@ -305,7 +385,7 @@ describe("management API", () => {
     const sessions = fakeSessions();
     const result = { fromImage: "os:old", toImage: "os:new", imageCurrent: true, sizeApplied: false, ready: true };
     sessions.restartSandbox = vi.fn(async () => result);
-    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     const { status, json } = await call(api, "POST", "/conversations/c1/restart");
     expect(status).toBe(200);
     expect(json).toEqual(result);
@@ -316,7 +396,7 @@ describe("management API", () => {
     sessions.restartSandbox = vi.fn(async () => {
       throw Object.assign(new Error("conversation c2 is running in this sandbox"), { code: 409 });
     });
-    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     const { status, json } = await call(api, "POST", "/conversations/c1/restart");
     expect(status).toBe(409);
     expect((json as any).error).toContain("c2 is running");
@@ -326,7 +406,7 @@ describe("management API", () => {
     const sessions = fakeSessions();
     (sessions.get("c1") as any).owner = "bob";
     sessions.restartSandbox = vi.fn();
-    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     const { status } = await call(api, "POST", "/conversations/c1/restart", undefined, { "x-auth-user": "alice" });
     expect(status).toBe(403);
     expect(sessions.restartSandbox).not.toHaveBeenCalled();
@@ -341,7 +421,7 @@ describe("management API", () => {
         sessions,
         store: fakeStore([]),
         server: stubServer,
-        answerPermission: async () => {},
+        answerInterrupt: async () => ({ ok: true }),
         authEnforced,
       });
       return (await call(api, "POST", "/conversations/c1/restart")).status;
@@ -351,13 +431,13 @@ describe("management API", () => {
   });
 
   it("GET /whoami returns the caller's identity (header)", async () => {
-    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     const me = await call(api, "GET", "/whoami", undefined, { "x-auth-user": "alice", "x-auth-email": "a@x.io" });
     expect(me.json).toEqual({ id: "alice", email: "a@x.io", anonymous: false });
   });
 
   it("GET /whoami is anonymous when no header is set", async () => {
-    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     const me = await call(api, "GET", "/whoami");
     expect(me.json).toEqual({ id: "anonymous", email: null, anonymous: true });
   });
@@ -367,7 +447,7 @@ describe("management API", () => {
       sessions: fakeSessions(),
       store: fakeStore([]),
       server: stubServer,
-      answerPermission: async () => {},
+      answerInterrupt: async () => ({ ok: true }),
       uploadLimits: { maxFileBytes: 100 * 1024 * 1024, maxFilesPerMessage: 2 },
     });
     const me = await call(api, "GET", "/whoami", undefined, { "x-auth-user": "alice" });
@@ -396,7 +476,7 @@ describe("management API", () => {
 
   it("GET /users/by-email returns the Scooter user id for a matching email", async () => {
     const api = createManagementApi({
-      sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {},
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }),
       identityStore: fakeIdentity({ "alice@example.com": "user-alice" }),
     });
     const res = await call(api, "GET", "/users/by-email?email=Alice@Example.com");
@@ -406,14 +486,14 @@ describe("management API", () => {
 
   it("GET /users/by-email 404s an unmatched email", async () => {
     const api = createManagementApi({
-      sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {},
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }),
       identityStore: fakeIdentity({ "alice@example.com": "user-alice" }),
     });
     expect((await call(api, "GET", "/users/by-email?email=bob@example.com")).status).toBe(404);
   });
 
   it("GET /users/by-email 400s a missing email, 404s when no store is wired", async () => {
-    const noStore = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const noStore = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     expect((await call(noStore, "GET", "/users/by-email")).status).toBe(400);
     expect((await call(noStore, "GET", "/users/by-email?email=x@y.io")).status).toBe(404);
   });
@@ -422,7 +502,7 @@ describe("management API", () => {
 
   it("GET /users lists the learned users when an identity store is wired", async () => {
     const api = createManagementApi({
-      sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {},
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }),
       identityStore: fakeIdentity({ "alice@example.com": "user-alice", "bob@example.com": "user-bob" }),
     });
     const { status, json } = await call(api, "GET", "/users");
@@ -432,7 +512,7 @@ describe("management API", () => {
   });
 
   it("GET /users 501s (configured:false via the client) when no identity store is wired", async () => {
-    const noStore = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const noStore = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     const res = await call(noStore, "GET", "/users");
     expect(res.status).toBe(501);
     expect((res.json as { error: string }).error).toMatch(/identity store not configured/);
@@ -440,7 +520,7 @@ describe("management API", () => {
 
   it("GET /models returns the catalog (default + available + hints)", async () => {
     const api = createManagementApi({
-      sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {},
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }),
       models: { default: "opus", available: ["opus", "sonnet"], hints: { sonnet: "fast/cheap" } },
     });
     const { status, json } = await call(api, "GET", "/models");
@@ -455,7 +535,7 @@ describe("management API", () => {
 
   it("GET /models defaults hints to {} when unset", async () => {
     const api = createManagementApi({
-      sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {},
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }),
       models: { default: "opus", available: ["opus"] },
     });
     const { json } = await call(api, "GET", "/models");
@@ -467,7 +547,7 @@ describe("management API", () => {
   it("GET /models carries defaultFor, so a UI can mark the default PER PROVIDER", async () => {
     // A model that is the default on one provider must not be labelled "(default)" under every group.
     const api = createManagementApi({
-      sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {},
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }),
       models: {
         default: "opus",
         available: ["opus", "sonnet"],
@@ -486,7 +566,7 @@ describe("management API", () => {
     // A connected BYOC container serves the run, so its model is the default, not the floor's.
     const resolveDefault = vi.fn(async () => ({ model: "claude-opus-5-5", provider: "byoc" }));
     const api = createManagementApi({
-      sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {},
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }),
       resolveUser: () => ({ id: "alice", anonymous: false }),
       models: { default: "grok", available: ["grok", "claude-opus-5-5"], resolveDefault },
     });
@@ -497,7 +577,7 @@ describe("management API", () => {
 
   it("GET /models keeps the static default when resolving fails", async () => {
     const api = createManagementApi({
-      sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {},
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }),
       models: { default: "grok", available: ["grok", "opus"], resolveDefault: async () => { throw new Error("controller down"); } },
     });
     const { status, json } = await call(api, "GET", "/models");
@@ -507,7 +587,7 @@ describe("management API", () => {
 
   it("POST /conversations/:id/suspend + resume flip status", async () => {
     const sessions = fakeSessions();
-    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     const s = await call(api, "POST", "/conversations/c1/suspend");
     expect((s.json as any).status).toBe("suspended");
     const r = await call(api, "POST", "/conversations/c1/resume");
@@ -517,7 +597,7 @@ describe("management API", () => {
   it("POST /conversations/:id/compact compacts (202) then revives", async () => {
     const sessions = fakeSessions();
     const compact = vi.fn(async () => ({ summarizedTurns: 8, keptRuns: 3 }));
-    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {}, compact });
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }), compact });
     const { status, json } = await call(api, "POST", "/conversations/c1/compact");
     expect(status).toBe(202);
     expect((json as any).compacted).toBe(true);
@@ -527,7 +607,7 @@ describe("management API", () => {
 
   it("POST compact → 200 compacted:false when too short (no revive)", async () => {
     const sessions = fakeSessions();
-    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {}, compact: async () => null });
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }), compact: async () => null });
     const { status, json } = await call(api, "POST", "/conversations/c1/compact");
     expect(status).toBe(200);
     expect((json as any).compacted).toBe(false);
@@ -537,7 +617,7 @@ describe("management API", () => {
   it("POST compact → 502 on a summarizer failure, conversation untouched (no revive)", async () => {
     const sessions = fakeSessions();
     const api = createManagementApi({
-      sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {},
+      sessions, store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }),
       compact: async () => { throw new Error("LLM down"); },
     });
     const { status } = await call(api, "POST", "/conversations/c1/compact");
@@ -546,13 +626,13 @@ describe("management API", () => {
   });
 
   it("POST compact → 501 when compaction is unwired (no token)", async () => {
-    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     expect((await call(api, "POST", "/conversations/c1/compact")).status).toBe(501);
   });
 
   it("POST /conversations/:id/messages prompts the thread", async () => {
     const sessions = fakeSessions();
-    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     const { status } = await call(api, "POST", "/conversations/c1/messages", { text: "do it" });
     expect(status).toBe(202);
     expect(sessions.enqueueByThread).toHaveBeenCalledWith("c1", "do it", undefined, PRIORITY_INTERRUPT);
@@ -560,7 +640,7 @@ describe("management API", () => {
 
   it("POST /conversations/:id/messages with a source queues a system event", async () => {
     const sessions = fakeSessions();
-    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     const { status } = await call(api, "POST", "/conversations/c1/messages", { text: "a remark", source: "files" });
     expect(status).toBe(202);
     expect(sessions.enqueueByThread).toHaveBeenCalledWith("c1", "a remark", "files", PRIORITY_INTERRUPT);
@@ -568,7 +648,7 @@ describe("management API", () => {
 
   it("POST /conversations/:id/messages from a sandbox gets the sandbox source", async () => {
     const sessions = fakeSessions();
-    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     const { status } = await call(api, "POST", "/conversations/c1/messages", { text: "go on" }, { "x-scooter-caller": "sandbox" });
     expect(status).toBe(202);
     expect(sessions.enqueueByThread).toHaveBeenCalledWith("c1", "go on", SANDBOX_SOURCE, PRIORITY_INTERRUPT);
@@ -576,7 +656,7 @@ describe("management API", () => {
 
   it("POST /conversations/:id/messages from a sandbox keeps its own source", async () => {
     const sessions = fakeSessions();
-    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     await call(api, "POST", "/conversations/c1/messages", { text: "a remark", source: "files" }, { "x-scooter-caller": "sandbox" });
     expect(sessions.enqueueByThread).toHaveBeenCalledWith("c1", "a remark", "files", PRIORITY_INTERRUPT);
   });
@@ -585,7 +665,7 @@ describe("management API", () => {
     "POST /conversations/:id/messages refuses source %j",
     async (source) => {
       const sessions = fakeSessions();
-      const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+      const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
       const { status } = await call(api, "POST", "/conversations/c1/messages", { text: "x", source });
       expect(status).toBe(400);
       expect(sessions.enqueueByThread).not.toHaveBeenCalled();
@@ -597,7 +677,7 @@ describe("management API", () => {
       { type: "RUN_STARTED", threadId: "c1", runId: "r" },
       { type: "RUN_FINISHED", threadId: "c1", runId: "r" },
     ];
-    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore(events), server: stubServer, answerPermission: async () => {} });
+    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore(events), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     const { json } = await call(api, "GET", "/conversations/c1/history");
     expect((json as any).events).toHaveLength(2);
   });
@@ -611,7 +691,7 @@ describe("management API", () => {
       { type: "RUN_FINISHED", threadId: "c1", runId: `r${n}` },
     ];
     const events = [...mkRun(1), ...mkRun(2), ...mkRun(3)];
-    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore(events), server: stubServer, answerPermission: async () => {} });
+    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore(events), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     const { json } = await call(api, "GET", "/conversations/c1/tail?runs=1");
     const body = json as any;
     expect(body.runs).toBe(1);
@@ -635,7 +715,7 @@ describe("management API", () => {
 
   it("GET /conversations/:id/assets/:assetId streams the bytes with the right content-type", async () => {
     const api = createManagementApi({
-      sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {}, assets: fakeAssets(),
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }), assets: fakeAssets(),
     });
     const { status, headers, body } = await callRaw(api, "GET", "/conversations/c1/assets/img1.png");
     expect(status).toBe(200);
@@ -645,14 +725,14 @@ describe("management API", () => {
 
   it("GET assets 404s an unknown asset", async () => {
     const api = createManagementApi({
-      sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {}, assets: fakeAssets(),
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }), assets: fakeAssets(),
     });
     const { status } = await callRaw(api, "GET", "/conversations/c1/assets/nope.png");
     expect(status).toBe(404);
   });
 
   it("GET assets 404s when assets are not enabled", async () => {
-    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     const { status } = await callRaw(api, "GET", "/conversations/c1/assets/img1.png");
     expect(status).toBe(404);
   });
@@ -660,7 +740,7 @@ describe("management API", () => {
   // The ?scope filter and list-level sources enrichment live in the conversation-router; the per-conversation links routes live here.
 
   it("POST then GET /conversations/:id/links round-trips an external link", async () => {
-    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     const post = await call(api, "POST", "/conversations/c1/links", {
       source: "github",
       resourceType: "pull_request",
@@ -674,14 +754,14 @@ describe("management API", () => {
   });
 
   it("POST /conversations/:id/links rejects a missing source/type", async () => {
-    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     const { status } = await call(api, "POST", "/conversations/c1/links", { url: "x" });
     expect(status).toBe(400);
   });
 
   it("links routes resolve the broker's SHORT id to the full conversation", async () => {
     // The broker identifies the conversation by the short DNS hash from the SA token, so a link posted under it must land on the full conversation.
-    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     const short = shortIdOf("c1");
     const post = await call(api, "POST", `/conversations/${short}/links`, {
       source: "github",
@@ -700,7 +780,7 @@ describe("management API", () => {
   it("accepts a link for a NOT-YET-EXISTENT conversation (the Slack on_created pre-run flow)", async () => {
     // The Slack webhook registers the thread link before /agui creates the session, so the POST must be written under the raw id.
     const store = fakeStore([]);
-    const api = createManagementApi({ sessions: fakeSessions(), store, server: stubServer, answerPermission: async () => {} });
+    const api = createManagementApi({ sessions: fakeSessions(), store, server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     const threadId = "brand-new-thread-uuid";
     const post = await call(api, "POST", `/conversations/${threadId}/links`, {
       source: "slack",
@@ -717,7 +797,7 @@ describe("management API", () => {
 
   // --- sandbox file I/O for contribs ------------------------------------------
 
-  const baseDeps = () => ({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+  const baseDeps = () => ({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
 
   it("POST /conversations/:id/files writes to the caller's dir and returns the path", async () => {
     const writeSandboxFile = vi.fn(async (_id: string, f: { dir: string; name: string }) => `${f.dir}/${f.name}`);
@@ -787,7 +867,7 @@ describe("management API", () => {
   it("GET /conversations/:id/web-services lists services with a URL + running state", async () => {
     const api = createManagementApi({
       sessions: fakeSessions(), store: fakeStore([]), server: stubServer,
-      answerPermission: async () => {}, webServices: fakeWebServices(),
+      answerInterrupt: async () => ({ ok: true }), webServices: fakeWebServices(),
     });
     const { status, json } = await call(api, "GET", "/conversations/c1/web-services");
     expect(status).toBe(200);
@@ -801,7 +881,7 @@ describe("management API", () => {
     const seen: Array<boolean | undefined> = [];
     const api = createManagementApi({
       sessions: fakeSessions(), store: fakeStore([]), server: stubServer,
-      answerPermission: async () => {},
+      answerInterrupt: async () => ({ ok: true }),
       webServices: fakeWebServices({
         list: async (_id: string, opts?: { force?: boolean }) => {
           seen.push(opts?.force);
@@ -817,7 +897,7 @@ describe("management API", () => {
   it("GET web-services leaves out an unlisted service (a backend another one frames)", async () => {
     const api = createManagementApi({
       sessions: fakeSessions(), store: fakeStore([]), server: stubServer,
-      answerPermission: async () => {},
+      answerInterrupt: async () => ({ ok: true }),
       webServices: fakeWebServices({
         list: async () => [
           { name: "notebook", displayName: "Notebook", port: 2720, basePath: "/c/c1/notebook", unit: "webservice-notebook" },
@@ -830,7 +910,7 @@ describe("management API", () => {
   });
 
   it("GET web-services returns [] when the registry is unwired (fake/local mode)", async () => {
-    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     const { json } = await call(api, "GET", "/conversations/c1/web-services");
     expect((json as any).services).toEqual([]);
   });
@@ -838,7 +918,7 @@ describe("management API", () => {
   it("GET /conversations/:id/ready probes actual pod readiness for a running conversation", async () => {
     const api = createManagementApi({
       sessions: fakeSessions(), store: fakeStore([]), server: stubServer,
-      answerPermission: async () => {}, webServices: fakeWebServices({ ready: async () => true }),
+      answerInterrupt: async () => ({ ok: true }), webServices: fakeWebServices({ ready: async () => true }),
     });
     const { json } = await call(api, "GET", "/conversations/c1/ready");
     expect(json).toEqual({ ready: true, status: "running" });
@@ -847,7 +927,7 @@ describe("management API", () => {
   it("GET /ready reports ready:false when the pod exec probe fails (ContainerCreating)", async () => {
     const api = createManagementApi({
       sessions: fakeSessions(), store: fakeStore([]), server: stubServer,
-      answerPermission: async () => {}, webServices: fakeWebServices({ ready: async () => false }),
+      answerInterrupt: async () => ({ ok: true }), webServices: fakeWebServices({ ready: async () => false }),
     });
     const { json } = await call(api, "GET", "/conversations/c1/ready");
     expect(json).toEqual({ ready: false, status: "running" });
@@ -857,7 +937,7 @@ describe("management API", () => {
     const web = fakeWebServices();
     const api = createManagementApi({
       sessions: fakeSessions(), store: fakeStore([]), server: stubServer,
-      answerPermission: async () => {}, webServices: web,
+      answerInterrupt: async () => ({ ok: true }), webServices: web,
     });
     const started = await call(api, "POST", "/conversations/c1/web-services/marimo/start");
     expect(started.status).toBe(202);
@@ -868,7 +948,7 @@ describe("management API", () => {
   it("POST start 404s an unknown service, 404s an unknown conversation", async () => {
     const api = createManagementApi({
       sessions: fakeSessions(), store: fakeStore([]), server: stubServer,
-      answerPermission: async () => {}, webServices: fakeWebServices(),
+      answerInterrupt: async () => ({ ok: true }), webServices: fakeWebServices(),
     });
     expect((await call(api, "POST", "/conversations/c1/web-services/nope/start")).status).toBe(404);
     expect((await call(api, "POST", "/conversations/nope/web-services/marimo/start")).status).toBe(404);
@@ -877,7 +957,7 @@ describe("management API", () => {
   it("POST start maps a systemctl failure to 502", async () => {
     const api = createManagementApi({
       sessions: fakeSessions(), store: fakeStore([]), server: stubServer,
-      answerPermission: async () => {},
+      answerInterrupt: async () => ({ ok: true }),
       webServices: fakeWebServices({ start: async () => { throw new Error("unit failed"); } }),
     });
     const { status } = await call(api, "POST", "/conversations/c1/web-services/marimo/start");
@@ -886,14 +966,14 @@ describe("management API", () => {
 
   it("DELETE /conversations/:id ends it", async () => {
     const sessions = fakeSessions();
-    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     const { status } = await call(api, "DELETE", "/conversations/c1");
     expect(status).toBe(204);
     expect(sessions.end).toHaveBeenCalledWith("c1");
   });
 
   it("404 on an unknown conversation", async () => {
-    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     const { status } = await call(api, "GET", "/conversations/nope");
     expect(status).toBe(404);
   });
@@ -908,7 +988,7 @@ describe("management API", () => {
       // Not in memory yet, but hydratable.
       ensureReadable: vi.fn(async (id: string) => { map.set(id, conv({ id, threadId: id, status: "suspended" })); return true; }),
     } as unknown as SessionManager;
-    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     const { status } = await call(api, "GET", "/conversations/moved-1");
     expect(status).not.toBe(404);
     expect(sessions.ensureReadable).toHaveBeenCalledWith("moved-1");
@@ -945,7 +1025,7 @@ describe("management API", () => {
 
     it("resolves by the SHORT id the broker sends (not just the full threadId) and raises the interrupt", async () => {
       const { sessions, raiseInterrupt } = sessionsWithBridge();
-      const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+      const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
       // The broker POSTs the short hash.
       const { status } = await call(api, "POST", `/conversations/${SHORT}/approvals/aws`, awsBody);
       expect(status).toBe(202);
@@ -955,7 +1035,7 @@ describe("management API", () => {
 
     it("still resolves by the FULL threadId (UI/webhooks path unchanged)", async () => {
       const { sessions, raiseInterrupt } = sessionsWithBridge();
-      const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+      const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
       const { status } = await call(api, "POST", `/conversations/${UUID}/approvals/aws`, awsBody);
       expect(status).toBe(202);
       expect(raiseInterrupt).toHaveBeenCalledOnce();
@@ -963,7 +1043,7 @@ describe("management API", () => {
 
     it("REVIVES a conversation with no live bridge, then raises (idle-suspended path)", async () => {
       const { sessions, raiseInterrupt } = sessionsWithBridge({ bridge: false });
-      const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+      const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
       const { status } = await call(api, "POST", `/conversations/${SHORT}/approvals/aws`, awsBody);
       expect(sessions.revive).toHaveBeenCalledWith(UUID); // revived by the RESOLVED id
       expect(status).toBe(202);
@@ -972,14 +1052,14 @@ describe("management API", () => {
 
     it("404s a genuinely unknown conversation (neither full nor short id matches)", async () => {
       const { sessions } = sessionsWithBridge();
-      const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+      const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
       const { status } = await call(api, "POST", `/conversations/totally-unknown/approvals/aws`, awsBody);
       expect(status).toBe(404);
     });
 
     it("400s without a request_id", async () => {
       const { sessions } = sessionsWithBridge();
-      const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+      const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
       const { status } = await call(api, "POST", `/conversations/${SHORT}/approvals/aws`, { message: "no id" });
       expect(status).toBe(400);
     });
@@ -1005,7 +1085,7 @@ describe("management API", () => {
       store.appendEvent = async (_id, e) => {
         appended.push(e);
       };
-      const api = createManagementApi({ sessions, store, server: stubServer, answerPermission: async () => {} });
+      const api = createManagementApi({ sessions, store, server: stubServer, answerInterrupt: async () => ({ ok: true }) });
       return { api, appended };
     };
 
@@ -1208,7 +1288,7 @@ describe("management API", () => {
 
     it("calls bridge.cancel() on the running conversation (202)", async () => {
       const { sessions, cancel } = sessionsWithCancel();
-      const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+      const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
       const { status } = await call(api, "POST", "/conversations/c1/cancel");
       expect(status).toBe(202);
       expect(cancel).toHaveBeenCalledOnce();
@@ -1216,14 +1296,14 @@ describe("management API", () => {
 
     it("is a no-op-OK (202) when the conversation has no live bridge", async () => {
       const { sessions } = sessionsWithCancel({ bridge: false });
-      const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+      const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
       const { status } = await call(api, "POST", "/conversations/c1/cancel");
       expect(status).toBe(202); // stopping "nothing" still succeeds — a stale click never errors
     });
 
     it("404s an unknown conversation", async () => {
       const { sessions } = sessionsWithCancel();
-      const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} });
+      const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
       const { status } = await call(api, "POST", "/conversations/nope/cancel");
       expect(status).toBe(404);
     });
@@ -1253,7 +1333,7 @@ describe("management API", () => {
     }
 
     const mk = (scheduler?: ReturnType<typeof fakeScheduler>["client"]) =>
-      createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {}, scheduler });
+      createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }), scheduler });
 
     it("501s when the scheduler isn't configured", async () => {
       const res = await call(mk(undefined), "GET", "/scheduled-tasks", undefined, { "x-auth-user": "alice" });
@@ -1306,7 +1386,7 @@ describe("management API", () => {
       const conversationOwner = async (id: string) => (id in owners ? { owner: owners[id] } : undefined);
       const mkT = (client: ReturnType<typeof fakeScheduler>["client"]) =>
         createManagementApi({
-          sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {},
+          sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }),
           scheduler: client, conversationOwner,
         });
       const body = { title: "t", prompt: "p", cron: "0 8 * * *" };
@@ -1372,7 +1452,7 @@ describe("management API", () => {
         end: vi.fn(async () => {}),
         suspend: vi.fn(async () => {}),
       } as unknown as SessionManager;
-      return { api: createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerPermission: async () => {} }), sessions, durable };
+      return { api: createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) }), sessions, durable };
     };
 
     it("DELETE hydrates an absent conversation and destroys it (no 404 leak)", async () => {
@@ -1473,7 +1553,7 @@ describe("management API", () => {
         sessions: fakeSessions(),
         store: fakeStore([]),
         server: stubServer,
-        answerPermission: async () => {},
+        answerInterrupt: async () => ({ ok: true }),
         userSkills,
         builtinSkillNames,
       });
@@ -1576,7 +1656,7 @@ describe("management API", () => {
         sessions: fakeSessions(),
         store: fakeStore([]),
         server: stubServer,
-        answerPermission: async () => {},
+        answerInterrupt: async () => ({ ok: true }),
         ...(opts.deny ? { accessCheck: async () => "deny" as const } : {}),
         contribApi: {
           contribs: parseContribUserApi(JSON.stringify({ echo: { brokerPrefix: "/echo" } })),
@@ -1692,7 +1772,7 @@ describe("links resilience", () => {
   it("GET /conversations/:id/links lets a database outage propagate for the server's 503", async () => {
     const { DbUnavailableError } = await import("../../src/db/pgPool.js");
     const store = { ...fakeStore([]), listLinks: async () => { throw new DbUnavailableError("listLinks", new Error("down")); } };
-    const api = createManagementApi({ sessions: fakeSessions(), store, server: stubServer, answerPermission: async () => {} });
+    const api = createManagementApi({ sessions: fakeSessions(), store, server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     await expect(call(api, "GET", "/conversations/c1/links")).rejects.toBeInstanceOf(DbUnavailableError);
   });
 });
@@ -1711,7 +1791,7 @@ describe("hook settings", () => {
   });
   const hooks = [hook("finish-or-ask", true), hook("policy", false)];
   const mk = (userHookSettings?: UserHookSettingsStore) =>
-    createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerPermission: async () => {}, hooks, userHookSettings });
+    createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }), hooks, userHookSettings });
   const alice = { "x-auth-user": "alice" };
 
   it("lists every hook, on by default, and whether the caller may change it", async () => {

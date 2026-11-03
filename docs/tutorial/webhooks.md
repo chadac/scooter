@@ -153,6 +153,9 @@ mention event is used, so `mentionPattern` doesn't apply.
       `https://scooter-webhooks.example.com/webhooks/slack`, and subscribe to the bot
       events `app_mention` and `message.channels` (plus `message.groups` for private
       channels). Slack verifies the URL immediately, so deploy the service first.
+    - **Interactivity & Shortcuts** (optional): turn on and set the **Request URL** to
+      `https://scooter-webhooks.example.com/webhooks/slack/interactive`, so the conversation's
+      owner can answer the agent's questions and approvals from the buttons in its thread.
 
     Reinstall the app after changing scopes.
 

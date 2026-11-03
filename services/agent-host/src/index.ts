@@ -3,7 +3,7 @@
  *
  *   AguiServer (SSE) <-- browser
  *      | onPrompt    -> SessionManager.prompt
- *      | onPermission-> bridge permission answer
+ *      | onResume    -> answer a pending interrupt
  *      | onAttach    -> replay ConversationStore events
  *   SessionManager
  *      |-- SandboxProvisioner (kube: cold Sandbox per conversation)
@@ -1444,16 +1444,11 @@ export async function main(
     }
   });
 
-  // A user's answer to a permission/option request -> resolve the blocked run.
-  server.onPermission(async (sessionId, toolCallId, optionId) => {
-    sessions.get(sessionId)?.bridge?.answerPermission(toolCallId, optionId);
-  });
-
   // assistant-ui resumes a paused run by POSTing /agui with resume[]; if the direct answer
   // does not land (the run is gone after a rollout or idle-suspend), revive and re-raise
   // the pending interrupt, then retry, returning whether it was answered so the caller can
   // close with RUN_ERROR instead of hanging.
-  server.onResume(async (sessionId, entry, approver) => {
+  const resumeInterrupt: Parameters<typeof server.onResume>[0] = async (sessionId, entry, approver) => {
     // cancelled -> empty optionId (which the bridge treats as a cancel); resolved -> the
     // chosen optionId.
     const optionId =
@@ -1513,7 +1508,8 @@ export async function main(
 
     // 4) Genuinely unanswerable; the caller turns this into a RUN_ERROR on the stream.
     return { ok: false, reason: "this approval is no longer awaiting an answer (it may have expired or already been answered)" };
-  });
+  };
+  server.onResume(resumeInterrupt);
 
   server.onAttach(async (sessionId, conn) => {
     for await (const event of store.readEvents(sessionId)) conn.send(event);
@@ -1630,14 +1626,7 @@ export async function main(
       resourceLookup,
       brokerMcpHandler: brokerMcpProxy ? (req, res, body) => brokerMcpProxy.handle(req, res, body) : undefined,
       sandboxMcpHandler: sandboxMcpProxy ? (req, res, body, name) => sandboxMcpProxy.handle(req, res, body, name) : undefined,
-      answerPermission: async (sessionId, toolCallId, optionId, approver) => {
-        // Route the user's choice to the conversation's bridge, forwarding `approver` so an
-        // approval interrupt relays the authorized human to the broker.
-        const answered = sessions.get(sessionId)?.bridge?.answerPermission(toolCallId, optionId, approver);
-        if (!answered) {
-          hostLog.warn("no pending permission", { conversation_id: sessionId, tool_call_id: toolCallId });
-        }
-      },
+      answerInterrupt: resumeInterrupt,
       // Relay the user's answer to the contrib that asked, shared with the revive re-raise.
       resolveApproval: resolveApprovalForBroker,
       canApproveRequest: async (_sessionId, contrib, requestId, approver) => {

@@ -1,25 +1,38 @@
 """Slack webhook handler.
 
 A mention in a channel creates or forwards a conversation; any message in a thread
-with an active conversation is auto-forwarded.
+with an active conversation is auto-forwarded. A click on a pending question's answer
+button answers it as the clicker, who must own the conversation.
 """
 
 import asyncio
 import hashlib
 import hmac
+import json
 import logging
 import time
+from urllib.parse import parse_qs
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from scooter_lib.logging_config import format_error
 from scooter_webhooks_lib import store as db
 from scooter_webhooks_lib.store import PENDING_CONVERSATION_ID, is_pending
 
 from .config import require_relay_key, settings
-from scooter_webhooks_lib.agent_host_client import conversation_url, create_conversation, push_link, send_message
+from scooter_webhooks_lib.agent_host_client import (
+    answer_interrupt,
+    conversation_url,
+    create_conversation,
+    push_link,
+    send_message,
+    user_id_for_email,
+)
 from scooter_webhooks_lib import policy
-from scooter_webhooks_lib.identity import resolve_owner
+from scooter_webhooks_lib.identity import get_user_email, resolve_owner
+from .answers import BLOCK_ID, answered_blocks, parse_value
 from .files import DownloadedFiles, download_files
 from .senders import sender_of
 from scooter_webhooks_lib.sender import Sender
@@ -81,7 +94,10 @@ def _verify_slack_signature(body: bytes, timestamp: str, signature: str) -> bool
     if not settings.slack_signing_secret:
         logger.warning("SLACK_SIGNING_SECRET is not set; rejecting the unverifiable delivery", extra=_C)
         return False
-    if abs(time.time() - int(timestamp)) > 60 * 5:
+    try:
+        if abs(time.time() - int(timestamp)) > 60 * 5:
+            return False
+    except ValueError:
         return False
     sig_basestring = f"v0:{timestamp}:{body.decode('utf-8')}"
     expected = "v0=" + hmac.new(
@@ -473,6 +489,70 @@ async def _clear_pending(res_id: str) -> None:
     if is_pending(existing):
         await db.clear_conversation("slack", "thread", res_id)
     await db.get_and_clear_pending_messages("slack", "thread", res_id)
+
+
+@router.post("/webhooks/slack/interactive")
+async def handle_slack_interaction(request: Request):
+    """Receive a click on a pending question's answer button (the app's Interactivity URL)."""
+    if not settings.slack_enabled:
+        return {"status": "disabled"}
+    body = await request.body()
+    timestamp = request.headers.get("x-slack-request-timestamp", "")
+    signature = request.headers.get("x-slack-signature", "")
+    if not _verify_slack_signature(body, timestamp, signature):
+        raise HTTPException(status_code=401, detail="Invalid Slack signature")
+    try:
+        payload = json.loads(parse_qs(body.decode()).get("payload", [""])[0])
+    except ValueError:
+        raise HTTPException(status_code=400, detail="no interaction payload") from None
+    if payload.get("type") != "block_actions":
+        return {"status": "ignored"}
+    action = next((a for a in payload.get("actions") or [] if a.get("block_id") == BLOCK_ID), None)
+    if action is None:
+        return {"status": "ignored"}
+    # Slack wants an ack within 3s; answering may revive the conversation.
+    asyncio.create_task(_answer_from_click(payload, action))
+    return {"status": "ok"}
+
+
+async def _answer_from_click(payload: dict, action: dict) -> None:
+    """Answer as the clicker's Scooter user, then replace the buttons or tell the clicker why not."""
+    response_url = payload.get("response_url") or ""
+    slack_user = (payload.get("user") or {}).get("id") or ""
+    value = parse_value(action.get("value") or "")
+    if value is None:
+        return
+    fields = {**_C, "conversation_id": value["c"], "interrupt_id": value["i"]}
+    # The email too: an approval may be authorized against it.
+    email = await get_user_email("slack", slack_user) if slack_user else None
+    owner = await user_id_for_email(email) if email else None
+    if owner is None:
+        logger.info("answer click from an unmatched Slack user", extra=fields)
+        await _respond(response_url, {"response_type": "ephemeral", "replace_original": False,
+                                      "text": "I couldn't match your Slack account to a Scooter user, so I can't take your answer."})
+        return
+    result = {"answers": {value["q"]: value["a"]}} if value.get("q") else None
+    error = await answer_interrupt(value["c"], value["i"], answered_by=owner, email=email, option_id=value["o"], result=result)
+    if error:
+        await _respond(response_url, {"response_type": "ephemeral", "replace_original": False,
+                                      "text": f"Your answer wasn't taken: {error}."})
+        return
+    label = value.get("a") or (action.get("text") or {}).get("text") or value["o"]
+    original = (payload.get("message") or {}).get("blocks") or []
+    await _respond(response_url, {"replace_original": True, "text": f"Answered: {label}",
+                                  "blocks": answered_blocks(original, slack_user, label)})
+    logger.info("answered a pending question from Slack", extra=fields)
+
+
+async def _respond(response_url: str, body: dict) -> None:
+    """Reply through the interaction's response_url, which needs no bot token."""
+    if not response_url.startswith("https://hooks.slack.com/"):
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            await client.post(response_url, json=body)
+    except httpx.HTTPError as e:
+        logger.warning("slack response_url post failed", extra={**_C, "error": format_error(e)})
 
 
 class SlackReplyRequest(BaseModel):

@@ -140,7 +140,7 @@ function setup(initial: Partial<Conversation> = {}, opts: { readAccessFails?: bo
     sessions,
     store,
     server: { subscribeSSE: vi.fn(async () => {}) } as unknown as AguiServer,
-    answerPermission: async () => {},
+    answerInterrupt: async () => ({ ok: true }),
     accessCheck,
   });
   return { api, sessions, convs };

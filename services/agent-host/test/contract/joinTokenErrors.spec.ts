@@ -16,7 +16,7 @@ function makeApi(remoteAgent: unknown) {
     sessions: { list: () => [] },
     store: { async *readEvents() {} },
     server: { broadcast() {} },
-    answerPermission: async () => {},
+    answerInterrupt: async () => ({ ok: true }),
     remoteAgent,
     resolveUser: () => ({ id: "chadac", anonymous: false }),
   } as never);

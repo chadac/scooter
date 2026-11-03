@@ -140,8 +140,8 @@ const apiFor = (sessions: SessionManager, store: ReturnType<typeof createFileCon
   createManagementApi({
     sessions,
     store,
-    server: { onPermission: () => {}, broadcast: () => {} } as never,
-    answerPermission: async () => {},
+    server: { broadcast: () => {} } as never,
+    answerInterrupt: async () => ({ ok: true }),
   });
 
 describe("recovered (suspended → revived) conversations", () => {

@@ -440,3 +440,42 @@ async def user_id_for_email(email: str) -> str | None:
             },
         )
         return None
+
+
+async def answer_interrupt(
+    conversation_id: str,
+    interrupt_id: str,
+    *,
+    answered_by: str,
+    email: str | None = None,
+    option_id: str,
+    result: dict | None = None,
+) -> str | None:
+    """Answer a pending question as the Scooter user `answered_by`; None on success, else why it was refused."""
+    base = _cfg().agent_host_url.rstrip("/")
+    headers = {"content-type": "application/json"}
+    token = _sa_token()
+    if token:
+        headers["authorization"] = f"Bearer {token}"
+    body: dict = {"answeredBy": {"id": answered_by, **({"email": email} if email else {})}, "optionId": option_id}
+    if result is not None:
+        body["result"] = result
+    fields = {**_C, "conversation_id": conversation_id, "interrupt_id": interrupt_id}
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{base}/conversations/{conversation_id}/interrupts/{interrupt_id}/answer",
+                json=body,
+                headers=headers,
+            )
+    except httpx.HTTPError as e:
+        logger.warning("answering a pending question failed", extra={**fields, "error": format_error(e)})
+        return "Scooter is unreachable"
+    if resp.status_code < 300:
+        return None
+    try:
+        reason = resp.json().get("error")
+    except ValueError:
+        reason = None
+    logger.info("agent-host refused an answer", extra={**fields, "status": resp.status_code, "reason": reason})
+    return reason or f"Scooter refused the answer ({resp.status_code})"

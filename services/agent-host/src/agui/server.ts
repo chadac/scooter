@@ -179,7 +179,6 @@ export interface AguiServer {
   close(): Promise<void>;
   onPrompt(handler: (sessionId: SessionId, input: RunAgentInput) => Promise<void>): void;
   /** Answer a pending permission request (toolCallId -> optionId). */
-  onPermission(handler: (sessionId: SessionId, toolCallId: string, optionId: string) => Promise<void>): void;
   /** Resume a paused run with the user's interrupt answer; `ok:false` means the run could not accept it, so the resume branch closes the SSE with a RUN_ERROR. */
   onResume(
     handler: (
@@ -219,9 +218,6 @@ export function createAguiServer(): AguiServer {
 
   let promptHandler:
     | ((sessionId: SessionId, input: RunAgentInput) => Promise<void>)
-    | undefined;
-  let permissionHandler:
-    | ((sessionId: SessionId, toolCallId: string, optionId: string) => Promise<void>)
     | undefined;
   let resumeHandler:
     | ((
@@ -573,14 +569,6 @@ export function createAguiServer(): AguiServer {
       return;
     }
 
-    // POST /sessions/:id/permission/:toolCallId  { optionId }
-    if (req.method === "POST" && parts[0] === "sessions" && parts[2] === "permission") {
-      const body = JSON.parse((await readBody(req)) || "{}") as { optionId: string };
-      await permissionHandler?.(parts[1], parts[3], body.optionId);
-      res.writeHead(204).end();
-      return;
-    }
-
     // The web-service reverse proxy (/c/<id>/<service>/...) goes last so it never shadows the API routes.
     if (mountedProxy && mountedProxy.matches(url.pathname)) {
       await mountedProxy.handleHttp(req, res);
@@ -646,9 +634,6 @@ export function createAguiServer(): AguiServer {
       // without taking it as a parameter; a throw still propagates to the caller's catch.
       promptHandler = (sessionId, input) =>
         withConversation(sessionId, () => handler(sessionId, input));
-    },
-    onPermission(handler) {
-      permissionHandler = handler;
     },
     onResume(handler) {
       resumeHandler = handler;
