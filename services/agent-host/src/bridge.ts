@@ -29,7 +29,7 @@ import { buildHistoryPreamble } from "./agent/transcript.js";
 import { modelAllowedFor, defaultFor, type ModelCatalog } from "./agent/models.js";
 import { fingerprintOffered, type OfferedMcpServer } from "./agent/mcpServerRegistry.js";
 
-import { formatError, logger } from "./log.js";
+import { errorText, formatError, logger } from "./log.js";
 import type { HookEvent, HookOutcome, HookRunner } from "./hooks/types.js";
 import { inlineImage, replaceInlineImages, toImageRef, type StageAsset } from "./session/mediaRefs.js";
 
@@ -189,6 +189,14 @@ export function eventsAfterRun(events: AguiEvent[], runId: RunId | undefined): A
   }
   // Run not in the log: replay everything.
   return events;
+}
+
+// Setup abandoned by an ended run, not an agent failure.
+class SetupAbandonedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SetupAbandonedError";
+  }
 }
 
 /** Rewrite a known raw agent/API error (context overflow) into a clearer user-facing
@@ -433,6 +441,9 @@ export interface BridgeDeps {
    *  cancelled with a RUN_ERROR, and the first update disarms it (default 60_000; 0 disables). */
   firstActivityTimeoutMs?: number;
 
+  // Pre-prompt setup budget in ms (default 300_000; 0 disables).
+  setupTimeoutMs?: number;
+
   /** Liveness probe cadence for a run in flight: the run is force-terminated only when
    *  `acpClient.isAlive()` reports the agent process dead, never on silence alone
    *  (default 30_000; 0 disables). */
@@ -537,6 +548,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   const terminalCommands = new Map<string, string>();
   const priorityInterruptMs = deps.priorityInterruptMs ?? 0;
   const firstActivityTimeoutMs = deps.firstActivityTimeoutMs ?? 60_000;
+  const setupTimeoutMs = deps.setupTimeoutMs ?? 300_000;
   const livenessProbeMs = deps.livenessProbeMs ?? 30_000;
   // Auto-retry budget for a transiently failed run (see deathRetry* in BridgeDeps).
   const RETRY_MAX = deps.deathRetryMax ?? 5;
@@ -563,6 +575,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
 
   // One ready client per provider id, plus the client and session serving the current run.
   const readySessions = new Map<string, Promise<ReadySession>>();
+  // Sessions still starting, so a drop can evict them too.
+  const building = new Map<Promise<ReadySession>, string>();
   let acpClient: AcpClient | undefined;
 
   // A wedged run's cause usually arrives after the watchdog gave up and the client was
@@ -580,6 +594,10 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   const dropCachedSession = (why: string) => {
     // Settle pending requests FIRST: the session that would receive the answer is going away.
     abandonAgentPermissions(why);
+    // A session still starting is suspect too; it closes itself.
+    for (const [pending, providerId] of building) {
+      if (readySessions.get(providerId) === pending) readySessions.delete(providerId);
+    }
     if (!currentProviderId) return;
     log.warn("dropping the cached agent session; the next attempt re-initializes", {
       provider: currentProviderId,
@@ -706,9 +724,11 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     // tool_call_ids whose last update handed off a live terminal handle, meaning the command
     // is still running and the real finish is a later update.
     terminalPending: Set<string>;
-    // The dead-on-arrival watchdog, armed at RUN_STARTED and disarmed by the first ACP update.
+    // DOA watchdog: armed at the send, disarmed by first update.
     sawActivity?: boolean;
     activityTimer?: ReturnType<typeof setTimeout>;
+    // Setup watchdog: armed at RUN_STARTED, disarmed at the send.
+    setupTimer?: ReturnType<typeof setTimeout>;
     // The liveness watchdog timer, which terminates the run only if the agent process died.
     livenessTimer?: ReturnType<typeof setTimeout>;
     // Set once a terminal event has been emitted for this run, so no path emits a second one.
@@ -1046,9 +1066,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       signalWedged = resolve;
     });
 
-    // Dead-on-arrival watchdog: no ACP activity within firstActivityTimeoutMs ends the run
-    // with a RUN_ERROR and cancels the agent so the stuck subprocess unblocks.
-    // Re-armed after pre-prompt hooks; their time isn't the agent's.
+    // DOA: silence after the send ends and cancels the run.
     const armActivityWatchdog = () => {
       if (firstActivityTimeoutMs <= 0) return;
       st.activityTimer = setTimeout(() => {
@@ -1084,7 +1102,32 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         signalWedged();
       }, firstActivityTimeoutMs);
     };
-    armActivityWatchdog();
+
+    // Setup timeout: nothing reached the agent, so nothing to cancel.
+    if (setupTimeoutMs > 0) {
+      st.setupTimer = setTimeout(() => {
+        if (st.ended || st.terminated) return;
+        st.ended = true;
+        st.terminated = true;
+        outcome = "error";
+        log.warn("run setup timed out before the prompt was sent", {
+          run_id: st.runId,
+          waited_ms: setupTimeoutMs,
+          retryable: true,
+        });
+        emit({
+          type: "RUN_ERROR",
+          message:
+            `The agent session wasn't ready within ${Math.round(setupTimeoutMs / 1000)}s ` +
+            "(sandbox start, MCP servers or session creation). Nothing was sent to the agent; " +
+            "the run will be retried.",
+          code: "setup_timeout",
+        });
+        st.retryable = true;
+        dropCachedSession("setup did not finish before the deadline");
+        signalWedged();
+      }, setupTimeoutMs);
+    }
 
     // Liveness watchdog: force-terminates a run only when the agent process has died without
     // a terminal event, so silence (a long tool call, a paused permission request) just
@@ -1169,11 +1212,24 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       }
     }
 
+    // Ended during setup: skip the rest, nothing was sent.
+    const endedBeforeSend = () => {
+      log.warn("run ended before its prompt was sent; not sending it", { run_id: st.runId });
+      return { runId, retryable: st.retryable === true };
+    };
+
     try {
       if (!started) await self.start();
       // Resolve the provider for this run's context and point acpClient/acpSessionId at its
       // ready client.
-      await resolveForRun(runContextFor(input));
+      const resolving = resolveForRun(runContextFor(input), () => st.terminated === true);
+      // A late failure explains the hang to the next attempt.
+      resolving.catch((err) => {
+        if (st.terminated && !(err instanceof SetupAbandonedError)) noteRunDiagnostic(errorText(err));
+      });
+      // Raced so the setup watchdog frees the pump.
+      await Promise.race([resolving, wedged]);
+      if (st.terminated) return endedBeforeSend();
       debug("[bridge] prompt: sending to goose, session=%s", acpSessionId);
       // Seed new sessions fully, returning ones with missed turns.
       let historyPreamble = "";
@@ -1228,8 +1284,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       const fileNoteBlocks: ContentBlock[] =
         savedFilePaths.length > 0 ? [{ type: "text", text: buildFileNote(savedFilePaths) }] : [];
       const hookContext: string[] = [];
+      if (st.terminated) return endedBeforeSend();
       if (deps.hooks) {
-        if (st.activityTimer) clearTimeout(st.activityTimer);
         if (ready && !ready.sessionStartFired) {
           ready.sessionStartFired = true;
           const started = await fireHooks(st, "SessionStart", { source: "startup" }, "startup");
@@ -1244,27 +1300,35 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           return { runId, retryable: false };
         }
         hookContext.push(...submit.context);
-        if (!st.sawActivity && !st.ended) armActivityWatchdog();
       }
       const hookBlocks: ContentBlock[] = hookContext.length
         ? [{ type: "text", text: decorateSystemMessage("hook", hookContext.join("\n\n")) }]
         : [];
       const promptBlocks = [...textBlocks, ...hookBlocks, ...fileNoteBlocks, ...imageBlocks];
-        // These two log lines bracket the one call that can hang and say which provider took
-        // the run.
-        log.info("acp prompt: sending", {
-          run_id: st.runId,
-          blocks: promptBlocks.length,
-          has_session: acpSessionId !== undefined,
-        });
       // Raced against the watchdogs: a rejection still lands in the catch below, and
       // Promise.race marks the loser handled.
       // A Stop hook's block sends the agent back in this run.
       let turnBlocks = promptBlocks;
       let stopReason = "end_turn";
       for (let stopBlocks = 0; ; stopBlocks++) {
+        // Never send for an ended run; it would run unseen.
+        if (st.terminated) return endedBeforeSend();
+        if (stopBlocks === 0) {
+          if (st.setupTimer) clearTimeout(st.setupTimer);
+          st.setupTimer = undefined;
+          if (!st.sawActivity) armActivityWatchdog();
+          // Brackets the one call that can hang, naming its provider.
+          log.info("acp prompt: sending", {
+            run_id: st.runId,
+            blocks: promptBlocks.length,
+            has_session: acpSessionId !== undefined,
+          });
+        }
         st.lastText = "";
-        const promptCall = acpClient!.prompt({ sessionId: acpSessionId!, prompt: turnBlocks });
+        // Bound now so the abandon path cancels this exact session.
+        const client = acpClient!;
+        const sessionId = acpSessionId!;
+        const promptCall = client.prompt({ sessionId, prompt: turnBlocks });
         const raced = await Promise.race([
           promptCall.then((r) => ({ abandoned: false as const, stopReason: r.stopReason })),
           wedged.then(() => ({ abandoned: true as const })),
@@ -1272,7 +1336,10 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         if (raced.abandoned) {
           // Record the abandoned call's eventual rejection, often the only account of why the
           // run produced nothing.
-          promptCall.catch((err) => noteRunDiagnostic(err instanceof Error ? err.message : String(err)));
+          promptCall.catch((err) => noteRunDiagnostic(errorText(err)));
+          // The watchdog's cancel may have missed this session.
+          void client.killActiveTerminals(false, sessionId).catch(() => {});
+          void client.cancel(sessionId).catch(() => {});
           // A watchdog already emitted this run's terminal event and set `retryable`, so return
           // and let the pump re-drive the batch.
           return { runId, retryable: st.retryable === true };
@@ -1313,7 +1380,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       closeOpenReasoning(st);
       // Record it even when the watchdog already terminated the run, since this rejection is
       // the only account of why.
-      noteRunDiagnostic(err instanceof Error ? err.message : String(err));
+      if (!(err instanceof SetupAbandonedError)) noteRunDiagnostic(errorText(err));
       // The watchdog's own cancel makes the pending prompt() reject here, and it already
       // emitted the terminal event.
       if (!st.terminated) {
@@ -1323,7 +1390,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           emit({ type: "RUN_FINISHED", threadId: input.threadId, runId, cancelled: true });
         } else {
           outcome = "error";
-          const raw = err instanceof Error ? err.message : String(err);
+          const raw = errorText(err);
           // Replaying a turn that already ran tools re-sends the user's message on top of work it
           // may have finished (a commit, a PR edit), so only a turn that never started is retried.
           const replaySafe = !st.sawActivity;
@@ -1345,6 +1412,10 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       }
     } finally {
       // Always clear the watchdog timers (normal completion, error, or already fired).
+      if (st.setupTimer) {
+        clearTimeout(st.setupTimer);
+        st.setupTimer = undefined;
+      }
       if (st.activityTimer) {
         clearTimeout(st.activityTimer);
         st.activityTimer = undefined;
@@ -1555,6 +1626,11 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         blockingTools: deps.config.blockingTools,
       });
       debug("[bridge] readyProvider(%s): newSession -> %s", provider.id, sid);
+      // Dropped while starting: nobody may prompt it, so close it.
+      if (readySessions.get(provider.id) !== ready) {
+        await client.close().catch(() => {});
+        throw new SetupAbandonedError(`agent session for ${provider.id} was dropped while it was starting`);
+      }
       // Subscribe once per client and route updates to the current run.
       client.onSessionUpdate((sid, u) => {
         // Filter by session, since a BYO owner's conversations share one wire and another
@@ -1620,12 +1696,21 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       return { client, acpSessionId: sid, historySeeded: false, mcpFingerprint, skillsFingerprint: skillsFingerprint(skills) };
     })();
     readySessions.set(provider.id, ready);
-    ready.catch(() => readySessions.delete(provider.id));
+    const built = ready;
+    building.set(built, provider.id);
+    // Delete only this build's entry; a newer one may exist.
+    built.then(
+      () => building.delete(built),
+      () => {
+        building.delete(built);
+        if (readySessions.get(provider.id) === built) readySessions.delete(provider.id);
+      },
+    );
     return ready;
   };
 
   /** Drop a cached session whose MCP set changed; keep it if resolving fails. */
-  const dropSessionIfMcpChanged = async (provider: AcpProvider): Promise<void> => {
+  const dropSessionIfMcpChanged = async (provider: AcpProvider, abandoned?: () => boolean): Promise<void> => {
     // A provider bringing its own set never used the resolver.
     if (!deps.resolveMcpServers || provider.mcpServersFor) return;
     const providerId = provider.id;
@@ -1649,7 +1734,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       });
       return;
     }
-    if (next === settled.mcpFingerprint) return;
+    // An ended run must not close the retry's session.
+    if (next === settled.mcpFingerprint || abandoned?.()) return;
     log.info("sandbox MCP servers changed; rebuilding the agent session", {
       conversation_id: conversationId,
       provider: providerId,
@@ -1674,7 +1760,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   const currentSkills = async () => skillPayloads(deps.config.skillsDir, (await deps.personalSkills?.()) ?? []);
 
   /** Drop a session whose skills changed; agents read them only at start. */
-  const dropSessionIfSkillsChanged = async (providerId: string): Promise<void> => {
+  const dropSessionIfSkillsChanged = async (providerId: string, abandoned?: () => boolean): Promise<void> => {
     const cached = readySessions.get(providerId);
     if (!cached) return;
     let settled: ReadySession;
@@ -1693,7 +1779,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       });
       return;
     }
-    if (next === settled.skillsFingerprint) return;
+    if (next === settled.skillsFingerprint || abandoned?.()) return;
     log.info("skills changed; rebuilding the agent session", { conversation_id: conversationId, provider: providerId });
     readySessions.delete(providerId);
     await settled.client.close().catch((err) =>
@@ -1722,7 +1808,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
 
   // Resolve the provider for a run and point acpClient/acpSessionId at its ready client,
   // throwing if none is eligible.
-  const resolveForRun = async (ctx: RunContext): Promise<void> => {
+  const resolveForRun = async (ctx: RunContext, abandoned?: () => boolean): Promise<void> => {
     const provider = await pickAcpProvider(acpProviders, ctx);
     if (!provider) {
       throw new Error(
@@ -1730,9 +1816,12 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       );
     }
     await dropSessionIfDead(provider.id);
-    await dropSessionIfMcpChanged(provider);
-    await dropSessionIfSkillsChanged(provider.id);
+    await dropSessionIfMcpChanged(provider, abandoned);
+    await dropSessionIfSkillsChanged(provider.id, abandoned);
+    // An ended run must not touch the retry's session.
+    if (abandoned?.()) throw new SetupAbandonedError("run ended during setup");
     const ready = await readyProvider(provider);
+    if (abandoned?.()) throw new SetupAbandonedError("run ended during setup");
     acpClient = ready.client;
     acpSessionId = ready.acpSessionId;
     currentProviderId = provider.id;
