@@ -237,3 +237,28 @@ class TestPrClosed:
         payload["action"] = "synchronize"
         await gh._handle_pr_event(payload)
         assert not forwarded.called
+
+
+class TestPrDequeued:
+    def _dequeued(self, reason):
+        return {
+            "action": "dequeued", "reason": reason,
+            "pull_request": {"number": 431},
+            "repository": _repo(), "sender": {"login": "github-merge-queue[bot]"},
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_CI_drop_reaches_the_agent_with_the_reason(self, forwarded):
+        await gh._handle_pr_event(self._dequeued("FAILED_CHECKS"))
+        msg = forwarded.call_args[0][1]
+        assert "REMOVED FROM THE MERGE QUEUE" in msg and "failed_checks" in msg and "CI failed" in msg
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_reason_is_still_forwarded(self, forwarded):
+        await gh._handle_pr_event(self._dequeued("queue_cleared"))
+        assert "queue_cleared" in forwarded.call_args[0][1]
+
+    @pytest.mark.asyncio
+    async def test_leaving_the_queue_by_merging_is_not_a_drop(self, forwarded):
+        await gh._handle_pr_event(self._dequeued("merged"))
+        assert not forwarded.called

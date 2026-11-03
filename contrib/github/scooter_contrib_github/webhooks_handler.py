@@ -567,11 +567,41 @@ async def _handle_pr_closed(payload: dict):
     await _forward_or_ignore(_resource_id(owner, repo, number), message, actor_on(payload, pr))
 
 
+_DEQUEUE_HINTS = {
+    "failed_checks": "CI failed on the merge group: find the failing check, fix it and push.",
+    "merge_conflict": "It conflicts with the queue ahead of it: rebase on the base branch and push.",
+    "manual": "Someone removed it by hand: check the thread for why before doing anything.",
+}
+
+
+async def _handle_pr_dequeued(payload: dict):
+    """pull_request dequeued: tell the linked conversation its PR left the merge queue unmerged."""
+    reason = (payload.get("reason") or "unknown").lower()
+    if reason in ("merged", "merge"):
+        return
+    pr = payload.get("pull_request", {})
+    number = pr.get("number")
+    repo_data = payload.get("repository", {})
+    owner = repo_data.get("owner", {}).get("login", "")
+    repo = repo_data.get("name", "")
+    sender = payload.get("sender", {}).get("login", "unknown")
+    hint = _DEQUEUE_HINTS.get(reason, "Find out why from the PR and its merge-group checks.")
+    message = (
+        f"PR #{number} in {owner}/{repo} was REMOVED FROM THE MERGE QUEUE "
+        f"(reason: {reason}, by @{sender}).\n\n---\n\n"
+        f"{hint} It must be queued again to merge."
+    )
+    await _forward_or_ignore(_resource_id(owner, repo, number), message, actor_on(payload, pr))
+
+
 async def _handle_pr_event(payload: dict):
-    """Handle pull_request event (labeled, closed)."""
+    """Handle pull_request event (labeled, closed, dequeued)."""
     action = payload.get("action", "")
     if action == "closed":
         await _handle_pr_closed(payload)
+        return
+    if action == "dequeued":
+        await _handle_pr_dequeued(payload)
         return
     if action != "labeled":
         return
