@@ -75,6 +75,14 @@ describe("scheduler agent tools", () => {
     expect(res.content[0].text).toMatch(/isn't yours|no scheduled task/i);
   });
 
+  it("view returns the full prompt, untruncated, with newlines kept", async () => {
+    const prompt = "line one\n\n" + "x".repeat(500) + "\nTHE END";
+    const { wiring } = wiringFor("alice", [task({ prompt })]);
+    const res = await handleView(wiring, CONV, { id: "t1" });
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0].text).toContain(prompt);
+  });
+
   it("create passes the owner + task fields to the client", async () => {
     const { wiring, calls } = wiringFor("alice");
     const res = await handleCreate(wiring, CONV, { title: "morning", prompt: "do X", cron: "0 8 * * *" });

@@ -85,12 +85,17 @@ function resolveTarget(target: string | null | undefined, conversationId: string
 const ok = (text: string): ToolResult => ({ content: [{ type: "text", text }] });
 const err = (text: string): ToolResult => ({ content: [{ type: "text", text }], isError: true });
 
-/** Render a task compactly for the model. */
-function fmt(t: ScheduledTask): string {
+/** One-line task header: id, state, title, schedule and target. */
+function header(t: ScheduledTask): string {
   const state = t.enabled ? "enabled" : "disabled";
   const next = t.next_run_at ? ` next=${t.next_run_at}` : "";
   const target = t.conversation_id ? ` → conv ${t.conversation_id}` : "";
-  return `- ${t.id} [${state}] "${t.title}" — cron="${t.cron}" tz=${t.timezone}${next}${target}\n    ${t.prompt.replace(/\s+/g, " ").slice(0, 120)}`;
+  return `- ${t.id} [${state}] "${t.title}" — cron="${t.cron}" tz=${t.timezone}${next}${target}`;
+}
+
+/** Render a task compactly for the model, with a prompt preview. */
+function fmt(t: ScheduledTask): string {
+  return `${header(t)}\n    ${t.prompt.replace(/\s+/g, " ").slice(0, 120)}`;
 }
 
 // --- pure handlers ----------------------------
@@ -119,7 +124,9 @@ export async function handleView(w: SchedulerToolsWiring, conversationId: string
   if (!t) return err(`No scheduled task ${args.id} (or it isn't yours).`);
   const runs = await w.client.runs(owner, args.id);
   const recent = runs.slice(0, 5).map((r) => `    ${r.fired_at} → ${r.status}${r.conversation_id ? ` (conv ${r.conversation_id})` : ""}${r.error ? ` err: ${r.error}` : ""}`).join("\n");
-  return ok(fmt(t) + (recent ? `\n  recent runs:\n${recent}` : "\n  (no runs yet)"));
+  // Full prompt: edit replaces it wholesale, so a preview would lose text.
+  const body = `${header(t)}\n  prompt:\n${t.prompt}`;
+  return ok(body + (recent ? `\n  recent runs:\n${recent}` : "\n  (no runs yet)"));
 }
 
 export async function handleCreate(
@@ -185,7 +192,7 @@ export function registerSchedulerTools(server: McpServer, wiring: SchedulerTools
     (a: { query: string }) => handleSearch(wiring, conversationId, a));
 
   R("view_scheduled_task",
-    { title: "View a scheduled task", description: "Show one scheduled task in detail, including its recent run history.", inputSchema: { id: z.string().describe("The task id.") } },
+    { title: "View a scheduled task", description: "Show one scheduled task in detail: its full, untruncated prompt and its recent run history.", inputSchema: { id: z.string().describe("The task id.") } },
     (a: { id: string }) => handleView(wiring, conversationId, a));
 
   R("create_scheduled_task",
