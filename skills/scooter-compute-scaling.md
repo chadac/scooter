@@ -128,6 +128,6 @@ gpu a whole number). Omit a field to keep it. Keep requests == limits for Guaran
 set_sandbox_resources(requestCpu="8", limitCpu="8", requestMemory="32Gi", limitMemory="32Gi")
 ```
 
-Prefer a preset when one fits. A raw size shows in the UI's Sandbox tab as **Custom**
+Prefer a preset when one fits. A raw size shows in the UI's Session tab as **Custom**
 rather than a named size, and it can land outside what the cluster can actually
 schedule — the preset table is what the operator has confirmed is available.

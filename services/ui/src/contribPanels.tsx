@@ -1,5 +1,5 @@
 /**
- * Hosts for contrib right-panel tabs (`ui.panel`) and fenced-block renderers
+ * Hosts for contrib Session-tab sections (`ui.panel`) and fenced-block renderers
  * (`ui.markdownFences`). Both load lazily from the same module table as settings
  * tabs, and both are contained: a missing entry, a chunk that fails to load, or a
  * render that throws shows an error in that tab or block only.
@@ -39,10 +39,10 @@ function Failed({ what, testId, error }: { what: string; testId: string; error: 
 const outOfStep = (entry: string) =>
   `${entry} is not in this UI build; the UI image and the contrib manifest are out of step.`;
 
-/** One contrib's right-panel tab body. */
+/** One contrib's Session-tab section body. */
 export function ContribPanelBody({ panel, setCount }: { panel: ContribPanel } & PanelProps) {
   const Panel = lazyContrib<PanelProps>(panel.entry);
-  const what = `The ${panel.label} tab`;
+  const what = `The ${panel.label} section`;
   if (!Panel) return <Failed what={what} testId="contrib-panel-error" error={outOfStep(panel.entry)} />;
   return (
     <Boundary what={what} testId="contrib-panel-error">

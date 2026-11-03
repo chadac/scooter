@@ -1,6 +1,7 @@
 /**
- * The Sandbox tab: the current conversation's pod lifecycle status with a Start button
- * when down, its resource allotment and size picker, and, while running, its web services. Status is fetched directly for the current conversation rather than read
+ * The Session tab's body: the current conversation's pod lifecycle status with a Start
+ * button when down, its resource allotment and size picker, a collapsible Services
+ * section, then the caller's further sections. Status is fetched directly for the current conversation rather than read
  * off the sessions store, and services are enumerable only while the pod is running.
  */
 
@@ -27,6 +28,7 @@ import { agentHostConfig } from "./config.js";
 import { useSessions, currentConversation } from "./sessions.js";
 import { pollWhileVisible } from "./visiblePoll.js";
 import { ServiceRows } from "./ServicesPanel.js";
+import { PanelSection } from "./PanelSection.js";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -193,15 +195,6 @@ const BANNER_TEXT: Record<SandboxState, string> = {
   ended: "Sandbox ended",
   unknown: "Checking sandbox…",
 };
-
-/** A section heading in the Sandbox tab. */
-function SectionLabel({ children }: { children: ReactNode }) {
-  return (
-    <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-      {children}
-    </div>
-  );
-}
 
 /** Whether a resources object carries any value worth showing. */
 function hasResources(r: SandboxResources | null | undefined): r is SandboxResources {
@@ -419,6 +412,8 @@ export interface SandboxPanelViewProps {
   /** Re-read the in-pod service manifest to pick up a just-declared service without waiting. */
   onRescanServices?: () => void;
   rescanning?: boolean;
+  /** Further Session-tab sections, rendered after Services. */
+  children?: ReactNode;
 }
 
 /** Pure view: the status banner and, when running, the service list, else a Start prompt. */
@@ -444,6 +439,7 @@ export function SandboxPanelView({
   onStopService,
   onRescanServices,
   rescanning,
+  children,
 }: SandboxPanelViewProps) {
   // The "+ Service" card reveals an explainer, since services are declared in-sandbox rather than created here.
   const [showAddHint, setShowAddHint] = useState(false);
@@ -540,10 +536,9 @@ export function SandboxPanelView({
       ) : null}
 
       {/* Services when running, a hint otherwise. */}
-      {state === "running" ? (
-        <>
-          <section className="flex flex-col gap-2">
-            <SectionLabel>Web services</SectionLabel>
+      <PanelSection id="services" label="Services" count={state === "running" ? services.length : 0}>
+        {state === "running" ? (
+          <div className="flex flex-col gap-2">
             {services.length === 0 ? (
               <p className="text-xs text-muted-foreground" data-testid="sandbox-no-services">
                 No web services declared in this sandbox.
@@ -566,19 +561,20 @@ export function SandboxPanelView({
                 {onRescanServices ? <> Use the <RotateCw className="inline size-3" role="img" aria-label="Re-scan" /> button above to re-scan once it&apos;s added.</> : ""}
               </p>
             ) : null}
-          </section>
-        </>
-      ) : (
-        <p className="text-xs text-muted-foreground">
-          {state === "suspended"
-            ? "The sandbox pod is suspended (idle). Start it to reach its web services."
-            : state === "starting"
-              ? "Bringing the sandbox pod up… services appear once it's running."
-              : state === "ended"
-                ? "This conversation was ended; its sandbox is gone."
-                : "Checking the sandbox status…"}
-        </p>
-      )}
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            {state === "suspended"
+              ? "The sandbox pod is suspended (idle). Start it to reach its web services."
+              : state === "starting"
+                ? "Bringing the sandbox pod up… services appear once it's running."
+                : state === "ended"
+                  ? "This conversation was ended; its sandbox is gone."
+                  : "Checking the sandbox status…"}
+          </p>
+        )}
+      </PanelSection>
+      {children}
     </div>
   );
 }

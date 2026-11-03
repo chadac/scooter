@@ -1,6 +1,6 @@
 # shares' declaration: agents publish static bundles that the broker serves at
 # /s/<uuid>/, stored in this contrib's own database. Its deployment half is
-# ./deployment.nix. Its UI half is the Shares tab and the inline `scooter-embed` block.
+# ./deployment.nix. Its UI half is the Shares section and the inline `scooter-embed` block.
 { lib, ... }:
 
 {

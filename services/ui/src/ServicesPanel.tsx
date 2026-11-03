@@ -1,6 +1,6 @@
 /**
  * ServiceRows: the web-services grid (per-service status plus start/stop/open), used
- * by the Sandbox tab, which owns the data fetching and pod-status context. A stopped
+ * by the Session tab, which owns the data fetching and pod-status context. A stopped
  * service shows Start; a running one shows Open (/c/<id>/<name>/, reverse-proxied
  * into the pod) and Stop. `onAdd` renders a trailing dashed "add" card when provided.
  */

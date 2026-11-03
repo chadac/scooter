@@ -1,4 +1,4 @@
-/** ServiceRows (the web-services list used by the Sandbox tab): a running service shows Open and Stop, a stopped one shows Start. */
+/** ServiceRows (the web-services list used by the Session tab): a running service shows Open and Stop, a stopped one shows Start. */
 
 import { describe, it, expect } from "vitest";
 import { createElement } from "react";

@@ -689,10 +689,10 @@ ui.interruptRenderers."ask-user.questions".entry = "ui/QuestionCard.tsx";
   one with `_meta["scooter.dev/interrupt"] = { kind, data }` on `requestPermission`,
   and reads the answer from `_meta["scooter.dev/interrupt-result"]`.
 
-#### Right-panel tabs (`ui.panel`)
+#### Session-tab sections (`ui.panel`)
 
-A contrib can add one tab to the conversation's right-hand panel, after Sandbox,
-Approvals and Subagents:
+A contrib can add one collapsible section to the right-hand panel's Session tab,
+after Services and Subagents:
 
 ```nix
 ui.panel = {
@@ -703,15 +703,15 @@ ui.panel = {
 ```
 
 - **The module.** Same file and import rules as a settings tab. Its default export
-  takes `PanelProps`: `setCount(n)` sets the tab's badge. It stays mounted while the
-  tab is hidden, so the badge stays current. `useConversationKey()` changes when the
+  takes `PanelProps`: `setCount(n)` sets the section's badge. It stays mounted while the
+  section is collapsed, so the badge stays current. `useConversationKey()` changes when the
   user opens another conversation, for the module's effect deps.
 - **Talking to the broker.** With `api = true`, `conversationFetch("<name>", "<rest>")`
   reaches the broker at `/<name>/conversation/<id>/<rest>`, after the agent-host has
   checked the user may see that conversation. It resolves null before the
   conversation exists on the server. `api` needs `services.broker.enable`.
 - **Failure is contained.** A missing entry, a chunk that fails to load or a render
-  that throws shows an error card in that tab only.
+  that throws shows an error card in that section only.
 
 `contrib/shares/ui/Panel.tsx` is the example.
 

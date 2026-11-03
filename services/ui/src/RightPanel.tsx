@@ -1,9 +1,9 @@
 /**
- * RightPanel: the single right-side panel hosting the Sandbox, Approvals and
- * Subagents tabs, then one tab per enabled contrib that declares a `ui.panel`.
+ * RightPanel: the single right-side panel with two tabs. Session holds the sandbox
+ * status and collapsible sections (Services, Subagents, then one per enabled contrib
+ * that declares a `ui.panel`), so adding a section never widens the tab bar.
  * Approvals is a gate the user cannot miss, so a new interrupt auto-focuses that tab.
- * (Queued messages render inline in the thread.) Each tab carries a count badge, and a
- * tab with an empty backing list is still selectable. The tab bodies are existing
+ * (Queued messages render inline in the thread.) The tab bodies are existing
  * components, e.g. InterruptList (data-testid `interrupt-panel`).
  */
 
@@ -14,6 +14,7 @@ import { mobileNav, useDrawer } from "./mobileNav.js";
 import { InterruptList } from "./InterruptPanel.js";
 import { SandboxPanelView, useSandboxStatus } from "./SandboxPanel.js";
 import { SubagentsPanel, subagentsOf } from "./SubagentsPanel.js";
+import { PanelSection } from "./PanelSection.js";
 import { contribPanels } from "./contribManifest.js";
 import { ContribPanelBody } from "./contribPanels.js";
 import { useSessions } from "./sessions.js";
@@ -21,8 +22,7 @@ import { useConversationInterrupts } from "./RuntimeProvider.js";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-// A contrib panel's tab is keyed by its contrib name.
-type Tab = "sandbox" | "approvals" | "subagents" | `contrib:${string}`;
+type Tab = "session" | "approvals";
 
 function TabButton({
   active,
@@ -94,8 +94,8 @@ export function RightPanel() {
     return set;
   };
 
-  // Sandbox is the leftmost, always-present tab, so it is the default.
-  const [active, setActive] = useState<Tab>("sandbox");
+  // Session is the leftmost, always-present tab, so it is the default.
+  const [active, setActive] = useState<Tab>("session");
 
   // On mobile the panel is an overlay right-drawer toggled from the header; desktop
   // (≥1200px) pins it in-flow regardless.
@@ -123,7 +123,7 @@ export function RightPanel() {
         drawer === "panel" && "translate-x-0",
       )}
       data-testid="right-panel"
-      aria-label="Sandbox status + services and approvals"
+      aria-label="Session and approvals"
     >
       <div className="flex border-b" role="tablist">
         {/* Mobile-only: dismiss the drawer (backdrop tap also closes it). */}
@@ -137,9 +137,9 @@ export function RightPanel() {
           <X className="size-4" aria-hidden />
         </button>
         <TabButton
-          active={active === "sandbox"}
-          onClick={() => setActive("sandbox")}
-          label="Sandbox"
+          active={active === "session"}
+          onClick={() => setActive("session")}
+          label="Session"
           count={0}
         />
         <TabButton
@@ -149,27 +149,11 @@ export function RightPanel() {
           count={nInterrupts}
           alert // a pending approval is a gate, so its badge is red
         />
-        {nSubagents > 0 && (
-          <TabButton
-            active={active === "subagents"}
-            onClick={() => setActive("subagents")}
-            label="Subagents"
-            count={nSubagents}
-          />
-        )}
-        {panels.map((p) => (
-          <TabButton
-            key={p.contrib}
-            active={active === `contrib:${p.contrib}`}
-            onClick={() => setActive(`contrib:${p.contrib}`)}
-            label={p.label}
-            count={panelCounts[p.contrib] ?? 0}
-          />
-        ))}
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-3">
-        {active === "sandbox" ? (
+        {/* Session stays mounted while hidden, so contrib sections keep their counts. */}
+        <div hidden={active !== "session"}>
           <SandboxPanelView
             state={sandbox.state}
             services={sandbox.services}
@@ -180,8 +164,27 @@ export function RightPanel() {
             onStopService={sandbox.stopService}
             onRescanServices={sandbox.rescanServices}
             rescanning={sandbox.rescanning}
-          />
-        ) : active === "approvals" ? (
+          >
+            {nSubagents > 0 && (
+              <PanelSection id="subagents" label="Subagents" count={nSubagents}>
+                <SubagentsPanel />
+              </PanelSection>
+            )}
+            {panels.map((p) => (
+              <PanelSection
+                key={p.contrib}
+                id={`contrib-${p.contrib}`}
+                label={p.label}
+                count={panelCounts[p.contrib] ?? 0}
+              >
+                <div data-testid={`contrib-panel-${p.contrib}`}>
+                  <ContribPanelBody panel={p} setCount={counterFor(p.contrib)} />
+                </div>
+              </PanelSection>
+            ))}
+          </SandboxPanelView>
+        </div>
+        {active === "approvals" ? (
           nInterrupts > 0 ? (
             <InterruptList />
           ) : (
@@ -189,15 +192,7 @@ export function RightPanel() {
               No pending approvals.
             </p>
           )
-        ) : active === "subagents" ? (
-          <SubagentsPanel />
         ) : null}
-        {/* Mounted while hidden, so a panel keeps its badge count current. */}
-        {panels.map((p) => (
-          <div key={p.contrib} hidden={active !== `contrib:${p.contrib}`} data-testid={`contrib-panel-${p.contrib}`}>
-            <ContribPanelBody panel={p} setCount={counterFor(p.contrib)} />
-          </div>
-        ))}
       </div>
     </aside>
   );

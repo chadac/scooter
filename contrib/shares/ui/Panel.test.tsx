@@ -1,4 +1,4 @@
-/** The Shares tab: the broker's listing body mapped to rows, and the list it renders. */
+/** The Shares section: the broker's listing body mapped to rows, and the list it renders. */
 
 import { describe, it, expect } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";

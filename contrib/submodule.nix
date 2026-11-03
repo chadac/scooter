@@ -107,7 +107,7 @@ let
         type = types.str;
         example = "ui/SettingsTab.tsx";
         description = ''
-          The tab's module, relative to this contrib's directory and inside its `ui/`.
+          The section's module, relative to this contrib's directory and inside its `ui/`.
           Its default export is a React component with no props. It may import only
           @/components/*, @/lib/*, @/src/contrib/sdk and services/ui/package.json deps (an
           ESLint rule enforces this). A string so the UI build resolves it; a path
@@ -128,26 +128,26 @@ let
     };
   };
 
-  # A tab in the conversation's right-hand panel.
+  # A collapsible section in the right-hand panel's Session tab.
   panelModule = {
     options = {
       label = mkOption {
         type = types.str;
         example = "Shares";
-        description = "The tab's label.";
+        description = "The section's label.";
       };
       order = mkOption {
         type = types.int;
         default = 100;
-        description = "Sort key after the built-in tabs (Sandbox, Approvals, Subagents); ties sort by contrib name.";
+        description = "Sort key after the built-in sections (Services, Subagents); ties sort by contrib name.";
       };
       entry = mkOption {
         type = types.str;
         example = "ui/Panel.tsx";
         description = ''
-          The tab's module, relative to this contrib's directory and inside its `ui/`.
+          The section's module, relative to this contrib's directory and inside its `ui/`.
           Its default export is a React component taking `PanelProps` from
-          @/src/contrib/sdk. It stays mounted while the tab is hidden, so its badge
+          @/src/contrib/sdk. It stays mounted while the section is collapsed, so its badge
           count stays current. Same import rules as a settings tab's `entry`.
         '';
       };
@@ -283,7 +283,7 @@ let
         example = literalExpression ''
           { label = "Shares"; entry = "ui/Panel.tsx"; api = true; }
         '';
-        description = "This contrib's tab in the conversation's right-hand panel. Checked by contrib/conversation-ui.nix.";
+        description = "This contrib's section in the right-hand panel's Session tab. Checked by contrib/conversation-ui.nix.";
       };
 
       markdownFences = mkOption {

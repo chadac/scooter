@@ -1,5 +1,5 @@
 /**
- * The Shares tab (`ui.panel`): the static pages Scooter published from this
+ * The Shares section (`ui.panel`): the static pages Scooter published from this
  * conversation, each a stable /s/<uuid>/ link that outlives the session. It lists them
  * through the agent-host's conversation relay to the broker's
  * `/shares/conversation/<id>/list`, which the relay reaches only after checking the
@@ -10,7 +10,7 @@ import { useEffect, useState } from "react";
 
 import { conversationFetch, useConversationKey, type PanelProps } from "@/src/contrib/sdk";
 
-/** One published share as this tab shows it. */
+/** One published share as this section shows it. */
 export interface ShareView {
   uuid: string;
   url: string;
@@ -52,7 +52,7 @@ async function loadShares(): Promise<ShareView[]> {
   }
 }
 
-/** The tab body, polling every 10s while open. */
+/** The section body, polling every 10s while mounted. */
 export default function Panel({ setCount }: PanelProps) {
   const key = useConversationKey();
   const [shares, setShares] = useState<ShareView[]>([]);

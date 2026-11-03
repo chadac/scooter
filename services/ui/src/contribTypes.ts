@@ -69,11 +69,11 @@ export interface ContribInterruptRenderer {
   entry: string;
 }
 
-/** A contrib's tab in the conversation's right-hand panel, keyed by contrib name. */
+/** A contrib's section in the Session tab, keyed by contrib name. */
 export interface ContribPanel {
   /** The contrib that declared it. */
   contrib: string;
-  /** Tab label. */
+  /** Section label. */
   label: string;
   /** Sort key among contrib panels. */
   order: number;
@@ -106,7 +106,7 @@ export interface ContribManifest {
   settingsTabs: Record<string, ContribSettingsTab>;
   /** Contrib interrupt renderers, keyed by request kind. */
   interruptRenderers: Record<string, ContribInterruptRenderer>;
-  /** Contrib right-panel tabs, keyed by contrib name. */
+  /** Contrib Session-tab sections, keyed by contrib name. */
   panels: Record<string, ContribPanel>;
   /** Contrib fenced-block renderers, keyed by fence language. */
   markdownFences: Record<string, ContribMarkdownFence>;

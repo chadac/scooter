@@ -47,11 +47,11 @@ fastOnly("the ~subagent directive is a fake-agent test hook")("subagent conversa
     expect(subId, "the subagent row must carry a server conversation id").toBeTruthy();
     expect(subId).not.toBe(parentId);
 
-    // Rule 2: the parent shows it as a sub-conversation; the tab only renders when the
-    // parent can resolve its children.
-    const tab = page.locator('[data-testid="right-panel-tab-subagents"]');
-    await expect(tab, "the parent must offer a Subagents tab").toBeVisible();
-    await tab.click();
+    // Rule 2: the parent shows it as a sub-conversation; the section only renders when
+    // the parent can resolve its children.
+    const section = page.locator('[data-testid="right-panel-section-subagents"]');
+    await expect(section, "the parent's Session tab must offer a Subagents section").toBeVisible();
+    await expect(section).toHaveAttribute("data-open", "true");
     const panelRows = page.locator('[data-testid="subagent-row"]');
     await expect(panelRows).toHaveCount(1);
     await expect(panelRows.first()).toContainText("investigate the broker timeout");

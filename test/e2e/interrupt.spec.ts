@@ -12,7 +12,7 @@ import { test, expect } from "./fixtures.js";
 
 const panel = {
   rightPanel: '[data-testid="right-panel"]',
-  sandboxTab: '[data-testid="right-panel-tab-sandbox"]',
+  sandboxTab: '[data-testid="right-panel-tab-session"]',
   approvalsTab: '[data-testid="right-panel-tab-approvals"]',
   root: '[data-testid="interrupt-panel"]',
   option: '[data-testid="interrupt-option"]',
@@ -47,7 +47,7 @@ test.describe("agent option dropdown (interrupt)", () => {
     }).toPass({ timeout: 90_000 });
 
     // The interrupt content goes away once answered; the right panel itself persists and
-    // returns to the Sandbox tab.
+    // returns to the Session tab.
     await expect(page.locator(panel.root)).toHaveCount(0, { timeout: 10_000 });
     await expect(page.locator(panel.rightPanel)).toBeVisible();
     await expect(page.locator(panel.sandboxTab)).toBeVisible();

@@ -23,7 +23,7 @@ const sb = {
 };
 const panel = {
   root: '[data-testid="right-panel"]',
-  sandboxTab: '[data-testid="right-panel-tab-sandbox"]',
+  sandboxTab: '[data-testid="right-panel-tab-session"]',
   sandboxPanel: '[data-testid="sandbox-panel"]',
   sandboxState: '[data-testid="sandbox-state"]',
 };
@@ -177,11 +177,11 @@ test.describe("right panel: tabs + sandbox surface", () => {
     await expect(page.locator(panel.root)).toBeVisible({ timeout: 30_000 });
     const before = await snapshot(page);
 
-    // Sandbox tab.
+    // Session tab.
     await page.locator(panel.sandboxTab).click();
     await expect(page.locator(panel.sandboxTab)).toHaveAttribute("aria-selected", "true");
     await expect(page.locator(panel.sandboxPanel)).toBeVisible({ timeout: 20_000 });
-    assertConsistent(await snapshot(page), "sandbox tab selected");
+    assertConsistent(await snapshot(page), "session tab selected");
 
     // There is no Queue tab: queued messages render inline in the thread, and nothing
     // is queued here, so no faded queued bubbles either.

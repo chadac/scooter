@@ -50,7 +50,7 @@ export function ConversationArea() {
   );
 }
 
-/** Header sandbox pill mirroring the Sandbox tab's status. */
+/** Header sandbox pill mirroring the Session tab's status. */
 export function SandboxStatusPill() {
   const { state, hasConversation } = useSandboxStatus();
   if (!hasConversation) return null;

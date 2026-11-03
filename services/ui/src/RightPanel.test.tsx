@@ -1,11 +1,11 @@
 /**
- * The right-side tabbed panel (Sandbox, Approvals, Queue, Services).
+ * The right-side panel: the Session and Approvals tabs.
  *
- * SSR render, so this covers the structure: the persistent Sandbox status tab
- * (leftmost, default-active on first paint), the tab bar and count badges. Tab
- * clicks and the auto-focus-Approvals effect need a real DOM and are covered by
- * the Playwright e2e. The sessions store always seeds a current conversation, so
- * the panel is always shown.
+ * SSR render, so this covers the structure: the persistent Session tab (leftmost,
+ * default-active on first paint) holding the sandbox status and its collapsible
+ * sections, the two-tab bar and the count badges. Tab clicks, section toggles and the
+ * auto-focus-Approvals effect need a real DOM and are covered by the Playwright e2e.
+ * The sessions store always seeds a current conversation, so the panel is always shown.
  */
 
 import { describe, it, expect } from "vitest";
@@ -41,14 +41,24 @@ const interrupt = (id: string, message: string): PendingInterrupt => ({
 });
 
 describe("RightPanel", () => {
-  it("always shows the panel with a persistent, default-active Sandbox tab", () => {
+  it("always shows the panel with a persistent, default-active Session tab", () => {
     const html = render({});
     expect(html).toContain('data-testid="right-panel"');
-    expect(html).toContain('data-testid="right-panel-tab-sandbox"');
-    // Sandbox is the leftmost, default-active tab -> its content renders on first paint.
+    expect(html).toContain('data-testid="right-panel-tab-session"');
+    // Session is the leftmost, default-active tab -> its content renders on first paint.
     expect(html).toContain('data-testid="sandbox-panel"');
-    // The sandbox tab button is the selected one (aria-selected precedes data-testid).
-    expect(html).toMatch(/aria-selected="true"[^>]*right-panel-tab-sandbox/);
+    // The session tab button is the selected one (aria-selected precedes data-testid).
+    expect(html).toMatch(/aria-selected="true"[^>]*right-panel-tab-session/);
+  });
+
+  it("has exactly two tabs, with Services a collapsible section of Session", () => {
+    const html = render({});
+    const tabs = html.match(/data-testid="right-panel-tab-[a-z]+"/g) ?? [];
+    expect(tabs).toEqual(['data-testid="right-panel-tab-session"', 'data-testid="right-panel-tab-approvals"']);
+    expect(html).toMatch(/data-testid="right-panel-section-services" data-open="true"/);
+    expect(html).toMatch(/right-panel-section-toggle-services" aria-expanded="true"/);
+    // No subagents here, so no empty Subagents section.
+    expect(html).not.toContain('data-testid="right-panel-section-subagents"');
   });
 
   it("has no Queue tab (queued messages render inline in the thread); approvals badge absent when there are none", () => {
@@ -59,7 +69,7 @@ describe("RightPanel", () => {
     expect(html).not.toContain('data-testid="right-panel-badge-approvals"');
   });
 
-  it("first paint is the Sandbox tab even with pending approvals (auto-focus is a client effect)", () => {
+  it("first paint is the Session tab even with pending approvals (auto-focus is a client effect)", () => {
     const html = render({ interrupts: [interrupt("i1", "approve the deploy?")] });
     // On the SSR first paint the interrupt lives in the inactive Approvals tab.
     expect(html).toContain('data-testid="sandbox-panel"');

@@ -1,6 +1,6 @@
 /**
  * The supported surface for contrib UI code (contrib/<name>/ui/*.tsx: settings tabs,
- * interrupt renderers, right-panel tabs and fenced-block renderers). Such a module may
+ * interrupt renderers, Session-tab sections and fenced-block renderers). Such a module may
  * import only from here, @/components/*, @/lib/* and services/ui/package.json deps; the
  * ESLint rule in services/ui/eslint.config.js enforces it.
  * Anything a module needs from the app belongs here, so
@@ -80,9 +80,9 @@ export function useConversationKey(): string {
   return useSessions().currentId;
 }
 
-/** What a contrib's right-panel tab (its `ui.panel` entry) receives. */
+/** What a contrib's Session-tab section (its `ui.panel` entry) receives. */
 export interface PanelProps {
-  /** Set the tab's badge; 0 or null hides it. */
+  /** Set the section's badge; 0 or null hides it. */
   setCount(count: number | null): void;
 }
 
