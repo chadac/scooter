@@ -19,6 +19,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# drizzle-kit and pglite come from the workspace install.
+npm install
+
 # --- step 1: render the spec artifacts from the module system ----------------
 # Built rather than `nix eval`ed, so both files come from one derivation and
 # cannot disagree.

@@ -593,9 +593,18 @@ db-validate:
       scripts/atlas-dev.sh migrate validate --env "$env"
     done
 
-# Everything CI runs.
-ci: check-flake check-manifests check-stubs check-image-coverage check-contrib-coverage check-skill-lock check-conv-token-vector check-user-grants check-lockfiles check-npm-hashes check-shell-syntax lint db-generate-check db-migrate-check test-unit
+# Everything the fast checks run; CI runs one job per shard.
+ci: ci-eval ci-node ci-repo
     @echo "✅ ci (fast) passed — run 'just test' for cluster + e2e tiers"
+
+# Flake evaluation; check-flakehub's all-systems eval subsumes check-flake.
+ci-eval: check-flakehub check-manifests
+
+# npm lockfiles, lint, typecheck and unit tests.
+ci-node: check-lockfiles lint test-unit
+
+# Repo consistency: stubs, npm hashes, generated code, migrations.
+ci-repo: check-stubs check-image-coverage check-contrib-coverage check-skill-lock check-conv-token-vector check-user-grants check-npm-hashes check-shell-syntax db-generate-check db-migrate-check
 
 # Build + serve the docs site locally (mkdocs + the generated kubenix option pages).
 docs:

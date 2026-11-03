@@ -57,14 +57,18 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: node scripts/ci-report.mjs tier --labels "$LABELS"
 
-  ci:
-    name: fast checks (flake + typecheck + unit + python)
+  # One job per `just ci-<shard>`, so the fast checks run in parallel.
+  fast:
+    name: fast checks (${{ matrix.shard }})
     needs: tier
     if: needs.tier.outputs.skip != 'true'
     permissions:
       contents: read
-      pull-requests: write   # posts its own gate section (scripts/ci-report.mjs)
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false # report every failing shard, not just the first
+      matrix:
+        shard: [eval, node, repo]
     steps:
       - uses: actions/checkout@v5
 
@@ -76,46 +80,52 @@ jobs:
           name: scooter
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
-      # check-flake + check-manifests + typecheck + unit vitest inside the pinned dev
-      # shell; CI=1 selects vitest's default reporter.
-      - name: just ci (flake check, typecheck, unit)
+      # CI=1 selects vitest's default reporter.
+      - name: just ci-${{ matrix.shard }}
         env:
           CI: "1"
-        run: nix develop --command just ci
-
-      # The release FlakeHub push fails if any system's outputs fail to evaluate.
-      - name: FlakeHub publish dry run (every system evaluates)
-        run: nix develop --command just check-flakehub
+          SHARD: ${{ matrix.shard }}
+        run: nix develop --command just "ci-$SHARD"
 
       # Each Python service's nix build runs its pytest suite (keep the list in sync
       # with the buildPythonApplication services); `.#contribs-all` aggregates every
       # contrib variant, including `example = true` ones no service build ships.
       - name: python service tests (nix build runs pytest)
+        if: matrix.shard == 'repo'
         run: nix build .#broker .#webhooks .#checks.x86_64-linux.webhooks-entrypoints .#checks.x86_64-linux.broker-entrypoints .#scheduler .#scooter-task .#scooter-prompt .#checks.x86_64-linux.scooter-prompt-tests .#conversation-controller .#warm-store-controller .#scooter-schema .#contribs-all --print-build-logs
 
       # Building .#agentHost under nix resolves @scooter/schema through the nix
       # symlink, which the workspace-resolving `just typecheck` cannot exercise.
       - name: agent-host + byoc-controller + generated Drizzle schema + sandbox VS Code pieces (nix)
+        if: matrix.shard == 'repo'
         run: nix build .#scooter-schema-js .#scooter-svcauth-js .#agentHost .#byoc-controller .#scooter-vscode-ahp .#code-server-bin --print-build-logs
 
-      # This job is the 'fast' gate and reports itself; always() so a red run still
-      # resolves the gate for `ci-summary`.
+  # All shards report as one `fast` gate; always() resolves it when red.
+  fast-report:
+    name: report fast checks
+    needs: [tier, fast]
+    if: always() && needs.tier.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write   # posts the gate section (scripts/ci-report.mjs)
+    steps:
+      - uses: actions/checkout@v5
       - name: post fast-checks section
-        if: always()
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
-          OK: ${{ job.status }}
+          RESULT: ${{ needs.fast.result }}
         run: |
           set -euo pipefail
-          if [ "$OK" = "success" ]; then
+          if [ "$RESULT" = "success" ]; then
             status=pass; summary="fast checks — flake · typecheck · unit · python"
             printf 'All fast checks passed.\n' > fast.md
           else
-            status=fail; summary="fast checks — FAILED"
-            printf 'See the job log: flake eval, typecheck, unit tests or the python builds failed.\n' > fast.md
+            status=fail; summary="fast checks — FAILED ($RESULT)"
+            printf 'See the failing "fast checks (…)" job: eval, node or repo.\n' > fast.md
           fi
           node scripts/ci-report.mjs post --section fast --status "$status" \
             --summary "$summary" --body fast.md --labels "$LABELS"
@@ -2093,7 +2103,7 @@ jobs:
   # producer still yields a verdict.
   ci-summary:
     name: ci summary (gates)
-    needs: [tier, ci, image-build-report, db-migrations-report, image-sizes, bench, nixos-report, cluster-report, e2e-collect, e2e-full-collect, flake-focus, flake-focus-full]
+    needs: [tier, fast-report, image-build-report, db-migrations-report, image-sizes, bench, nixos-report, cluster-report, e2e-collect, e2e-full-collect, flake-focus, flake-focus-full]
     if: always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group')
     runs-on: ubuntu-latest
     permissions:
