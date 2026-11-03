@@ -6,12 +6,10 @@
 
 let
   ccfg = config.contribs.imagegen;
-  # The Bedrock backend's own freeform fields (region, roleArn); absent entirely
-  # when the deployment never declared `backends.bedrock`.
-  bedrock = ccfg.backends.bedrock or null;
+  bedrock = ccfg.backends.bedrock;
 in
 {
-  config = lib.mkIf (config.scooter.broker.enable && ccfg.enable && bedrock != null && bedrock.enable) {
+  config = lib.mkIf (config.scooter.broker.enable && ccfg.enable && bedrock.enable) {
     # IRSA: the broker pod calls bedrock-runtime as itself, no secret of ours to hold.
     scooter.broker.serviceAccountAnnotations = lib.optionalAttrs ((bedrock.roleArn or "") != "") {
       "eks.amazonaws.com/role-arn" = bedrock.roleArn;

@@ -6,9 +6,9 @@ let
   inherit (lib) mkOption types;
 
   # A backend's own schema: the three fields every selector/cap needs, plus whatever
-  # else that backend's factory reads off the config (apiKeySecret, url, region, …) —
-  # those live only in each backend's own code, never in this shared schema.
-  backendModule = types.submodule {
+  # else that backend's factory reads off the config (apiKeySecret, url, …) —
+  # those live in each backend's own code or typed module, never in this shared schema.
+  backendOptions = {
     freeformType = with types; attrsOf anything;
     options = {
       enable = mkOption {
@@ -27,6 +27,29 @@ let
         description = ''
           Per-user daily cap on THIS backend. Stacks with the contrib-wide `dailyLimit`:
           a user over either is skipped for this backend. null = no backend-specific cap.
+        '';
+      };
+    };
+  };
+  backendModule = types.submodule backendOptions;
+
+  # The shipped Bedrock backend's own fields, typed so the defaults reach its factory.
+  bedrockModule = {
+    options = {
+      region = mkOption {
+        type = types.str;
+        default = "us-west-2";
+        description = "AWS region for bedrock-runtime; Stable Image Core is in-region only in us-west-2.";
+      };
+      models = mkOption {
+        type = types.nonEmptyListOf types.str;
+        default = [ "stability.stable-image-core-v1:1" ];
+        example = [ "stability.stable-image-core-v1:1" "amazon.nova-canvas-v1:0" ];
+        description = ''
+          Bedrock model ids to offer, the first being the default. Each must start with a
+          prefix the backend knows the request shape of: `stability.` (Stable Image
+          Core/Ultra, SD3.5), `amazon.titan-image-generator` or `amazon.nova-canvas`.
+          The broker's role needs `bedrock:InvokeModel` on each, with model access granted.
         '';
       };
     };
@@ -55,7 +78,14 @@ in
         '';
       };
       backends = mkOption {
-        type = types.attrsOf backendModule;
+        type = types.submodule {
+          freeformType = types.attrsOf backendModule;
+          options.bedrock = mkOption {
+            type = types.submoduleWith { modules = [ backendOptions bedrockModule ]; };
+            default = { };
+            description = "The shipped Bedrock backend: `backendModule`'s fields plus region and models.";
+          };
+        };
         default = { };
         example = lib.literalExpression ''
           { bedrock = { enable = true; priority = 100; }; }
