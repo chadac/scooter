@@ -8,12 +8,16 @@ import {
   MARKER,
   activeGates,
   evaluateGates,
+  findForkPr,
   gateTable,
   hasSection,
   mergeSection,
+  mergeSections,
   parseGates,
   parseSections,
   post,
+  publish,
+  publishable,
   readSavedSections,
   renderComment,
   saveSection,
@@ -306,6 +310,61 @@ describe("saved sections", () => {
     writeFileSync(join(d, "x.json"), JSON.stringify({ id: "x", status: "ok" }));
     expect(readSavedSections(d).size).toBe(0);
   });
+
+  it("ignore an id that could break out of the section tags", () => {
+    const d = dir();
+    writeFileSync(
+      join(d, "x.json"),
+      JSON.stringify({ id: "x -->", status: "pass", content: "" }),
+    );
+    expect(readSavedSections(d).size).toBe(0);
+  });
+});
+
+describe("publishing a fork run", () => {
+  it("keeps only declared gates and caps each section", () => {
+    const saved = new Map([
+      ["size", { id: "size", status: "pass", content: "x".repeat(7000) }],
+      ["made-up", { id: "made-up", status: "pass", content: "y" }],
+    ]);
+    const out = publishable(saved, all);
+    expect([...out.keys()]).toEqual(["size"]);
+    expect(out.get("size").content).toMatch(/_\(truncated\)_$/);
+    expect(out.get("size").content.length).toBeLessThan(6100);
+  });
+
+  it("lays the run's sections over the posted comment", () => {
+    const body = mergeSection("", section("size", "fail", "old"), all);
+    const run = new Map([
+      ["e2e-fast", { id: "e2e-fast", status: "pass", content: "new" }],
+    ]);
+    const merged = parseSections(mergeSections(body, run, all));
+    expect(merged.get("size").status).toBe("fail");
+    expect(merged.get("e2e-fast").status).toBe("pass");
+  });
+});
+
+describe("findForkPr", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const pr = (sha, repo) => ({ number: 7, head: { sha, repo: { full_name: repo } } });
+
+  it("matches the run's head commit on a fork", async () => {
+    vi.stubGlobal("fetch", async () =>
+      Response.json([pr("old", "f/r"), pr("abc", "f/r")]),
+    );
+    const found = await findForkPr({
+      repo: "o/r", token: "t", sha: "abc", owner: "f", branch: "b",
+    });
+    expect(found.head.sha).toBe("abc");
+  });
+
+  it("ignores a same-repo PR", async () => {
+    vi.stubGlobal("fetch", async () => Response.json([pr("abc", "o/r")]));
+    const found = await findForkPr({
+      repo: "o/r", token: "t", sha: "abc", owner: "o", branch: "b",
+    });
+    expect(found).toBeNull();
+  });
 });
 
 describe("post", () => {
@@ -343,5 +402,23 @@ describe("post", () => {
     });
     expect(r.url).toBeNull();
     expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("publish", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("fails loudly when the token cannot write", async () => {
+    vi.stubGlobal("fetch", async (_url, init) =>
+      init?.method
+        ? new Response('{"message":"Bad credentials"}', { status: 401 })
+        : Response.json([]),
+    );
+    const sections = new Map([
+      ["size", { id: "size", status: "pass", content: "ok" }],
+    ]);
+    await expect(
+      publish({ repo: "o/r", pr: 1, token: "t", sections, gates: all }),
+    ).rejects.toThrow(/401/);
   });
 });

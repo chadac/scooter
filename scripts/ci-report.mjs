@@ -21,6 +21,8 @@
 //     [--summary <text>] [--body <file>] [--gates <f>] [--labels a,b] [--sections-dir <d>]
 //   ci-report.mjs evaluate [--gates <f>] [--labels a,b] [--sections-dir <d>]   # exit 1 if blocked
 //   ci-report.mjs tier [--labels a,b]   # writes full=, release=, skip=<true|false> to $GITHUB_OUTPUT
+//   ci-report.mjs publish [--gates <f>] [--sections-dir <d>]   # ci-comment.yml, for fork PRs
+//     env: RUN_HEAD_SHA, RUN_HEAD_OWNER, RUN_HEAD_BRANCH (the finished run's head)
 //     env: GH_TOKEN, GITHUB_REPOSITORY, GITHUB_EVENT_NAME, PR (unset outside a PR),
 //     BASE_SHA + HEAD_SHA (the compared range; unset, no run is a release);
 //     <sections-dir> defaults to $RUNNER_TEMP/ci-sections
@@ -236,15 +238,46 @@ export function saveSection(dir, section) {
   );
 }
 
+// Sections come from artifacts a fork's code may have written, so they are checked.
+const SECTION_ID = /^[a-z0-9-]+$/;
+const MAX_SECTION = 6000;
+
 /** Read the sections saved by `saveSection`; a missing dir means none. */
 export function readSavedSections(dir) {
   const sections = new Map();
   if (!existsSync(dir)) return sections;
   for (const f of readdirSync(dir).filter((f) => f.endsWith(".json"))) {
     const s = JSON.parse(readFileSync(join(dir, f), "utf8"));
-    if (s.id && STATUSES.includes(s.status)) sections.set(s.id, s);
+    if (
+      SECTION_ID.test(s.id ?? "") &&
+      STATUSES.includes(s.status) &&
+      typeof s.content === "string"
+    )
+      sections.set(s.id, { id: s.id, status: s.status, content: s.content });
   }
   return sections;
+}
+
+/** Saved sections for declared gates only, each capped, so the comment fits GitHub's limit. */
+export function publishable(saved, gates) {
+  const out = new Map();
+  for (const g of gates) {
+    const s = saved.get(g.id);
+    if (!s) continue;
+    const content =
+      s.content.length > MAX_SECTION
+        ? `${s.content.slice(0, MAX_SECTION)}\n\n_(truncated)_`
+        : s.content;
+    out.set(g.id, { ...s, content });
+  }
+  return out;
+}
+
+/** Lay a run's sections over the posted comment, keeping any it did not report. */
+export function mergeSections(body, sections, gates) {
+  const merged = parseSections(body);
+  for (const [id, s] of sections) merged.set(id, s);
+  return renderComment(merged, gates);
 }
 
 /** Did our section survive someone else's concurrent write? */
@@ -299,18 +332,51 @@ export async function post({ repo, pr, token, section, gates }) {
   // The merge queue, main and the nightly have no PR to comment on.
   if (!pr) return { url: null, attempt: 0 };
   try {
-    return await upsert({ repo, pr, token, section, gates });
+    return await upsert({
+      repo,
+      pr,
+      token,
+      label: `section '${section.id}'`,
+      merge: (body) => mergeSection(body, section, gates),
+      landed: (body) => hasSection(body, section),
+    });
   } catch (e) {
-    // Fork PR tokens are read-only; evaluate reads saved sections.
+    // Fork PR tokens are read-only; ci-comment.yml posts for those.
     console.warn(`::warning::could not write the CI comment: ${e.message}`);
     return { url: null, attempt: 0 };
   }
 }
 
-async function upsert({ repo, pr, token, section, gates }) {
+/** The open fork PR whose head is this commit, found from the API, never from the run's artifacts. */
+export async function findForkPr({ repo, token, sha, owner, branch }) {
+  const prs = await api(
+    `repos/${repo}/pulls?state=open&per_page=100&head=${encodeURIComponent(`${owner}:${branch}`)}`,
+    token,
+  );
+  return (
+    prs.find(
+      (p) => p.head.sha === sha && p.head.repo?.full_name !== repo,
+    ) ?? null
+  );
+}
+
+/** Post a whole run's sections to its PR at once; ci-comment.yml calls this for fork PRs. */
+export async function publish({ repo, pr, token, sections, gates }) {
+  return upsert({
+    repo,
+    pr,
+    token,
+    label: `${sections.size} sections`,
+    merge: (body) => mergeSections(body, sections, gates),
+    landed: (body) =>
+      [...sections.values()].every((s) => hasSection(body, s)),
+  });
+}
+
+async function upsert({ repo, pr, token, label, merge, landed }) {
   for (let attempt = 1; attempt <= 3; attempt++) {
     const existing = await findComment(repo, pr, token);
-    const merged = mergeSection(existing?.body ?? "", section, gates);
+    const merged = merge(existing?.body ?? "");
     if (existing)
       await api(`repos/${repo}/issues/comments/${existing.id}`, token, {
         method: "PATCH",
@@ -322,14 +388,11 @@ async function upsert({ repo, pr, token, section, gates }) {
         body: JSON.stringify({ body: merged }),
       });
     const check = await findComment(repo, pr, token);
-    if (check && hasSection(check.body, section))
-      return { url: check.html_url, attempt };
+    if (check && landed(check.body)) return { url: check.html_url, attempt };
     await new Promise((r) => setTimeout(r, attempt * 2000));
   }
   // Never fail a job over a comment: the section's own check still stands.
-  console.warn(
-    `::warning::could not confirm section '${section.id}' after 3 attempts`,
-  );
+  console.warn(`::warning::could not confirm ${label} after 3 attempts`);
   return { url: null, attempt: 3 };
 }
 
@@ -342,17 +405,52 @@ async function main(argv) {
   const gates = parseGates(
     readFileSync(opt("gates", ".github/ci-gates.yml"), "utf8"),
   );
-  const labels = (opt("labels", "") || "").split(",").filter(Boolean);
   const repo = process.env.GITHUB_REPOSITORY;
-  const pr = process.env.PR;
   const token = process.env.GH_TOKEN;
-  const files = await changedFiles(repo, token);
-  const tier = tierFor(process.env.GITHUB_EVENT_NAME, labels, files);
-  const active = activeGates(gates, labels, tier);
   const dir = opt(
     "sections-dir",
     join(process.env.RUNNER_TEMP ?? ".", "ci-sections"),
   );
+
+  if (cmd === "publish") {
+    const { RUN_HEAD_SHA: sha, RUN_HEAD_OWNER: owner } = process.env;
+    const branch = process.env.RUN_HEAD_BRANCH;
+    const found = await findForkPr({ repo, token, sha, owner, branch });
+    if (!found) {
+      console.log(`no open fork PR has head ${sha}; nothing to post`);
+      return;
+    }
+    const prLabels = found.labels.map((l) => l.name);
+    process.env.BASE_SHA = found.base.sha;
+    process.env.HEAD_SHA = sha;
+    const tier = tierFor(
+      "pull_request",
+      prLabels,
+      await changedFiles(repo, token),
+    );
+    const active = activeGates(gates, prLabels, tier);
+    const sections = publishable(readSavedSections(dir), gates);
+    if (!sections.size) {
+      console.log("the run saved no sections; nothing to post");
+      return;
+    }
+    const r = await publish({
+      repo,
+      pr: found.number,
+      token,
+      sections,
+      gates: active,
+    });
+    if (!r.url) process.exitCode = 1;
+    else console.log(`posted ${sections.size} sections → ${r.url}`);
+    return;
+  }
+
+  const labels = (opt("labels", "") || "").split(",").filter(Boolean);
+  const pr = process.env.PR;
+  const files = await changedFiles(repo, token);
+  const tier = tierFor(process.env.GITHUB_EVENT_NAME, labels, files);
+  const active = activeGates(gates, labels, tier);
 
   if (cmd === "evaluate") {
     const sections = readSavedSections(dir);
@@ -380,7 +478,7 @@ async function main(argv) {
   }
 
   if (cmd !== "post") {
-    console.error("usage: ci-report.mjs <post|evaluate|tier> [options]");
+    console.error("usage: ci-report.mjs <post|evaluate|tier|publish> [options]");
     process.exitCode = 2;
     return;
   }

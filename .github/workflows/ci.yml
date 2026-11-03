@@ -9,7 +9,8 @@ name: CI
 # tier and runs nothing, so it is ready once approved; its queue entry gets the
 # `release` tier, the full tier plus e2e-full and the heavy nixosTests, all required.
 # Every reporting job saves one gate section (and writes it into a shared PR
-# comment), and `ci-summary`, the single required check, evaluates this run's
+# comment, which ci-comment.yml posts instead for a fork PR), and `ci-summary`,
+# the single required check, evaluates this run's
 # sections against the base commit's .github/ci-gates.yml. The Cachix cache
 # `scooter` is pushed to when CACHIX_AUTH_TOKEN is set and pulled read-only otherwise.
 

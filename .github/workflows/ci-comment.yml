@@ -1,0 +1,55 @@
+name: ci-comment
+
+# Posts the CI comment on fork PRs, as chadac-bot. A fork's `pull_request` run
+# gets a read-only token and no secrets, so its report jobs only save their
+# sections as `ci-section-*` artifacts; this run posts them once CI finishes.
+#
+# Safe with a secret because `workflow_run` always runs this file as it is on
+# main, and nothing here checks out or runs PR code: the script comes from main,
+# the artifacts are parsed as data, and the PR is looked up from the API rather
+# than taken from them. CHADAC_BOT_TOKEN lives in the `chadac-bot` environment,
+# which only main may deploy to, so a same-repo branch editing ci.yml can't read it.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  actions: read   # downloads the finished run's artifacts
+
+concurrency:
+  group: ci-comment-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+
+jobs:
+  post:
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion != 'cancelled' &&
+      github.event.workflow_run.head_repository.full_name != github.repository
+    runs-on: ubuntu-latest
+    environment: chadac-bot
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/ci-report.mjs
+            .github/ci-gates.yml
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+          pattern: ci-section-*
+          path: ${{ runner.temp }}/ci-sections
+          merge-multiple: true
+      - name: post the CI comment
+        env:
+          GH_TOKEN: ${{ secrets.CHADAC_BOT_TOKEN }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_HEAD_OWNER: ${{ github.event.workflow_run.head_repository.owner.login }}
+          RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: node scripts/ci-report.mjs publish
