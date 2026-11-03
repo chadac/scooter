@@ -1,8 +1,8 @@
 # NixOS dev-environment sandbox image: the shared modules/sandbox-os config
 # evaluated with `boot.isContainer = true` and packaged as a nix2container OCI
 # image whose entrypoint boots systemd as PID 1. Container-only packaging concerns
-# (isContainer, the overlay store, the unmanaged /etc/hosts) live here rather than
-# in modules/sandbox-os, which the nixosTests import bare. Output: { image;
+# (isContainer, the overlay store, the unmanaged /etc/hosts) live in ./container.nix
+# rather than in modules/sandbox-os, which the nixosTests import bare. Output: { image;
 # toplevel; nixos; }.
 
 { pkgs, lib, n2c
@@ -37,7 +37,7 @@ let
   };
 
   nixos = pkgs.nixos ({ lib, ... }: {
-    imports = [ ../../modules/sandbox-os ]
+    imports = [ ../../modules/sandbox-os ./container.nix ]
       ++ contribSandbox.modules
       ++ map (f: ../../. + "/${f}") extraModuleFiles
       ++ extraModules;
@@ -45,7 +45,7 @@ let
     # The same files repo-relative, so the re-converge replays them from the vendored
     # tree (a module imported above but missing here is dropped by the first self-modify).
     programs.scooterModule.extraReconvergeModuleFiles =
-      contribSandbox.treeRelative ++ extraModuleFiles
+      [ "pkgs/sandbox-os/container.nix" ] ++ contribSandbox.treeRelative ++ extraModuleFiles
       # The skill directories, as reconverge-inputs.nix baked them into the tree.
       ++ lib.optional (contribSandbox.skillDirs != { }) "skill-dirs/module.nix";
 
@@ -53,19 +53,6 @@ let
 
     # The nix-stubs source and binary for runtime-converge.nix to vendor.
     _module.args.nixStubs = nixStubs;
-
-    # Packaging-only: systemd PID 1 in a container, kernel/boot trimmed.
-    boot.isContainer = true;
-
-    # kubelet bind-mounts /etc/hosts and /etc/hostname, so NixOS must not manage them
-    # or activation fails trying to replace them with store symlinks.
-    environment.etc.hosts.enable = false;
-    environment.etc.hostname.enable = false;
-
-    # The writable overlay Nix store, without which `nix profile install`, lazy-tool
-    # builds and the re-converge cannot write the store (see
-    # modules/sandbox-os/overlay-store.nix).
-    programs.overlayStore.enable = true;
 
     # The pinned nixpkgs the dev-env registry resolves against, the `path:` ref of the
     # same source the re-converge uses.
@@ -79,12 +66,6 @@ let
     };
     # Ship the same source object the script references, so the in-pod build is offline.
     system.extraDependencies = [ nixpkgsSource ];
-
-    # The built-in web services are declared by default so they are startable on
-    # demand, with mkDefault so a deployment can turn one off.
-    webServices.terminal.enable = lib.mkDefault true;
-    # Tramp and ssh clients reach the sandbox through it.
-    webServices.ssh.enable = lib.mkDefault true;
   });
 
   toplevel = nixos.config.system.build.toplevel;
