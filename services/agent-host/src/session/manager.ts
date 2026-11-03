@@ -1770,12 +1770,12 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
     async sweepIdle(idleMs, now = nowMs()) {
       const suspended: SessionId[] = [];
-      // A conversation with any non-terminal descendant must not be swept, since its subagents
-      // share the pod.
+      // A conversation with a running descendant must not be swept, since its subagents share the
+      // pod. A suspended child does not pin it: reviving the child revives its root first.
       const hasLiveDescendant = (id: SessionId): boolean => {
         for (const c of entries.values()) {
           if (c.parentId !== id) continue;
-          if (c.status !== "ended") return true; // a live child
+          if (c.status === "running") return true; // a live child
           if (hasLiveDescendant(c.id)) return true; // ...or a live grandchild
         }
         return false;

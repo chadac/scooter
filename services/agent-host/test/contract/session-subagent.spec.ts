@@ -161,6 +161,18 @@ describe("SessionManager subagents", () => {
     expect(sessions.get(root.id)?.status).toBe("running");
   });
 
+  it("idle-sweeps a parent whose only subagent is already suspended (issue #1094)", async () => {
+    const provisioner = fakeProvisioner();
+    const sessions = createSessionManager({ provisioner, store: inMemoryStore() });
+    const root = await sessions.start("root", undefined, "alice");
+    await sessions.spawnChild(root.id, "c1", { prompt: "a" });
+
+    expect(await sessions.sweepIdle(0)).toEqual(["c1"]);
+    expect(sessions.get("c1")?.status).toBe("suspended");
+    expect(await sessions.sweepIdle(0)).toEqual([root.id]);
+    expect(provisioner.suspend).toHaveBeenCalledOnce();
+  });
+
   it("onSubagentComplete fires (subagentId + parentId) when a subagent's run FINISHES — event-driven, no poll", async () => {
     const bf = fakeBridgeFactory();
     const sessions = createSessionManager({

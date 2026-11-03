@@ -114,7 +114,9 @@ def reconcile(
     if conv.phase == "Suspended":
         if conv.host_pod is not None:
             return Detach(reason="suspended — release placement (clear host_pod)")
-        if conv.sandbox_mode == "Running":
+        # A subagent shares its parent's Sandbox, which stays Running while the parent lives, so
+        # only the owning (top-level) row can evidence a zombie.
+        if conv.sandbox_mode == "Running" and conv.parent_id is None:
             return SuspendSandbox(
                 reason="suspended + unhosted but the Sandbox is RUNNING — zombie (or a revive mid-flight; loop confirms over two ticks)"
             )
