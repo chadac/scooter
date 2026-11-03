@@ -203,6 +203,7 @@ async def _handle_note(payload: dict):
         note_api_type = "merge_requests"
         res_type = "merge_request"
         res_id = _resource_id(repo, res_type, mr_iid)
+        web_url = mr.get("url")
         context = f"Context: MR !{mr_iid} '{mr_title}' (branch: {source_branch}) in {repo}"
     elif noteable_type == "Issue":
         issue = payload.get("issue", {})
@@ -213,6 +214,7 @@ async def _handle_note(payload: dict):
         note_api_type = "issues"
         res_type = "issue"
         res_id = _resource_id(repo, res_type, issue_iid)
+        web_url = issue.get("url")
         context = f"Context: Issue #{issue_iid} '{issue_title}' in {repo}"
     else:
         return
@@ -221,6 +223,8 @@ async def _handle_note(payload: dict):
     existing = (
         await db.lookup_conversation("gitlab", res_type, res_id)
         or await db.get_conversation_for_resource("gitlab", res_type, res_id)
+        # A link stored under a URL the configured host can't rebuild.
+        or (web_url and await db.get_conversation_for_resource("gitlab", res_type, web_url))
     )
 
     if not existing and noteable_type == "MergeRequest":
@@ -235,6 +239,10 @@ async def _handle_note(payload: dict):
             existing = await _infer_conversation_from_jira(jira_keys, res_type, res_id)
 
     if not has_mention and not existing:
+        logger.info(
+            "note on unlinked resource without mention; ignoring",
+            extra={**_C, "source": "gitlab", "resource_type": res_type, "resource_id": res_id},
+        )
         return
     sender = await sender_of(payload)
 

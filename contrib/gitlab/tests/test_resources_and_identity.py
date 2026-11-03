@@ -36,10 +36,21 @@ async def test_gitlab_url_offers_the_short_forms():
     ) == ["https://gitlab.com/acme/web/issues/12", "acme/web#12"]
 
 
-async def test_a_short_id_stays_itself():
-    # The instance host is not in `acme/web!7`, so widening it would invent a URL.
-    assert resource_id_variants("gitlab", "mr", "acme/web!7") == ["acme/web!7"]
-    assert canonical_link("gitlab", "mr", "acme/web!7") == ("merge_request", "acme/web!7")
+async def test_a_short_id_offers_the_url_on_the_configured_host(monkeypatch):
+    monkeypatch.setattr(settings, "gitlab_host", "gitlab.example.com")
+    assert resource_id_variants("gitlab", "mr", "group/sub/web!7") == [
+        "group/sub/web!7", "https://gitlab.example.com/group/sub/web/-/merge_requests/7",
+    ]
+    assert resource_id_variants("gitlab", "issue", "acme/web#12") == [
+        "acme/web#12", "https://gitlab.example.com/acme/web/-/issues/12",
+    ]
+    assert canonical_link("gitlab", "mr", "acme/web!7") == (
+        "merge_request", "https://gitlab.example.com/acme/web/-/merge_requests/7",
+    )
+
+
+async def test_an_unparseable_id_stays_itself():
+    assert resource_id_variants("gitlab", "mr", "not-a-resource") == ["not-a-resource"]
 
 
 async def test_type_aliases_are_two_way():
