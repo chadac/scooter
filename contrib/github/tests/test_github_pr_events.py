@@ -2,6 +2,8 @@
 
 from unittest.mock import AsyncMock, patch
 
+import httpx
+
 import pytest
 
 from scooter_contrib_github import webhooks_handler as gh
@@ -150,6 +152,50 @@ class TestWorkflowRun:
     async def test_cancelled_is_not_actionable(self, forwarded):
         await gh._handle_workflow_run(self._run("cancelled"))
         assert not forwarded.called
+
+    def _fork_run(self, sha="abc"):
+        return self._run(
+            "failure", pull_requests=[], head_sha=sha,
+            head_repository={"owner": {"login": "chadac"}},
+        )
+
+    @pytest.fixture
+    def pulls(self, monkeypatch):
+        """Serve the open-PR lookup with a fork PR whose head is abc."""
+        seen = []
+
+        def handler(request):
+            seen.append(request)
+            return httpx.Response(200, json=[{"number": 1096, "head": {"sha": "abc"}}])
+
+        real = httpx.AsyncClient
+        monkeypatch.setattr(
+            gh.httpx, "AsyncClient",
+            lambda *a, **kw: real(*a, transport=httpx.MockTransport(handler), **kw),
+        )
+        monkeypatch.setattr(
+            "scooter_contrib_github.responses._headers_for_repo", AsyncMock(return_value={}),
+        )
+        return seen
+
+    @pytest.mark.asyncio
+    async def test_a_FORK_PR_failure_is_routed_by_its_branch(self, forwarded, pulls):
+        with patch.object(gh, "_failed_jobs", new=AsyncMock(return_value=[])):
+            await gh._handle_workflow_run(self._fork_run())
+        assert pulls[0].url.params["head"] == "chadac:feat/x"
+        assert "PR #1096" in forwarded.call_args[0][1]
+
+    @pytest.mark.asyncio
+    async def test_a_fork_run_for_a_superseded_commit_is_ignored(self, forwarded, pulls):
+        await gh._handle_workflow_run(self._fork_run(sha="old"))
+        assert not forwarded.called
+
+    @pytest.mark.asyncio
+    async def test_a_same_repo_run_without_a_PR_skips_the_lookup(self, forwarded, pulls):
+        await gh._handle_workflow_run(self._run(
+            "failure", pull_requests=[], head_repository={"owner": {"login": "chadac-me"}},
+        ))
+        assert not pulls and not forwarded.called
 
 
 class TestPrClosed:

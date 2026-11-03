@@ -407,6 +407,35 @@ async def _previous_run_failed(owner: str, repo: str, workflow_id, branch: str, 
     return False
 
 
+async def _fork_pr_number(owner: str, repo: str, run: dict) -> int | None:
+    """The open PR a fork's run belongs to, or None; GitHub omits it for forks."""
+    head_owner = (run.get("head_repository") or {}).get("owner", {}).get("login", "")
+    branch = run.get("head_branch", "")
+    if not head_owner or not branch or head_owner == owner:
+        return None
+    try:
+        from .responses import _headers_for_repo, GITHUB_API
+
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{GITHUB_API}/repos/{owner}/{repo}/pulls",
+                headers=await _headers_for_repo(owner, repo),
+                params={"head": f"{head_owner}:{branch}", "state": "open"},
+            )
+            resp.raise_for_status()
+            pulls = resp.json()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "fork PR lookup failed; dropping the CI event",
+            extra={**_C, "source": "github", "error": str(e), "branch": f"{head_owner}:{branch}"},
+        )
+        return None
+    for pr in pulls:
+        if pr.get("head", {}).get("sha") == run.get("head_sha"):
+            return pr.get("number")
+    return None
+
+
 async def _handle_workflow_run(payload: dict):
     """workflow_run: CI finished, forwarded on failure and on a success that follows a red run."""
     if payload.get("action") != "completed":
@@ -417,14 +446,15 @@ async def _handle_workflow_run(payload: dict):
     if conclusion not in ("failure", "success"):
         return
 
-    prs = run.get("pull_requests") or []
-    if not prs:
-        return
-    number = prs[0].get("number")
-
     repo_data = payload.get("repository", {})
     owner = repo_data.get("owner", {}).get("login", "")
     repo = repo_data.get("name", "")
+
+    prs = run.get("pull_requests") or []
+    number = prs[0].get("number") if prs else await _fork_pr_number(owner, repo, run)
+    if not number:
+        return
+
     name = run.get("name", "workflow")
     url = run.get("html_url", "")
     branch = run.get("head_branch", "")
