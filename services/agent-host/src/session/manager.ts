@@ -701,8 +701,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     if (e.userTitled && m.title !== undefined) e.title = m.title;
   };
 
-  /** Events dropped by the ownership fence, per conversation — for sampled logging only. */
-  const fencedDrops = new Map<SessionId, number>();
+  // Wired bridges per conversation; detached ones may still be running.
+  const wired = new Map<SessionId, Set<SessionBridge>>();
+  // Bridges being killed; their remaining events are dropped.
+  const doomed = new WeakSet<SessionBridge>();
   /** Dangling-run reconciliations in flight, so racing callers settle each conversation once. */
   const danglingReconciles = new Set<SessionId>();
 
@@ -730,31 +732,60 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
   // refreshSandbox throttle: conversation -> last cluster read.
   const REFRESH_SANDBOX_MS = 5_000;
   const lastSandboxRefresh = new Map<SessionId, number>();
-  /** Cancel the run (and its sandbox execs) and drop the bridge. */
+  // Cancel and drop every bridge this pod has for `id`.
   const stopLocalRun = async (id: SessionId, why: string): Promise<void> => {
     // An in-flight revive would rebuild the bridge after teardown.
     await reviving.get(id)?.catch(() => {});
     const entry = entries.get(id);
-    const bridge = entry?.bridge;
-    if (!entry || !bridge) return;
-    // Detach first so no prompt reaches the dying bridge.
-    entry.bridge = undefined;
-    entry.status = "suspended";
-    const qs = bridge.queueState?.();
-    log.warn(`${why} — stopping this pod's run`, { conversation_id: id, running: qs?.running, queued: qs?.queued });
-    // cancel() kills sandbox execs; stop() alone leaves them running.
-    await bridge.cancel().catch((err: unknown) =>
-      log.warn("cancel of a fenced run failed", { conversation_id: id, error: formatError(err) }),
-    );
-    await bridge.stop().catch((err: unknown) =>
-      log.warn("bridge stop of a fenced run failed", { conversation_id: id, error: formatError(err) }),
+    const bridges = new Set(wired.get(id));
+    wired.delete(id);
+    if (entry?.bridge) {
+      bridges.add(entry.bridge);
+      // Detach first so no prompt reaches the dying bridge.
+      entry.bridge = undefined;
+      entry.status = "suspended";
+    }
+    if (bridges.size === 0) return;
+    const qs = [...bridges].map((b) => b.queueState?.());
+    log.warn(`${why} — stopping this pod's run`, {
+      conversation_id: id,
+      bridges: bridges.size,
+      running: qs.some((q) => q?.running),
+      queued: qs.reduce((n, q) => n + (q?.queued ?? 0), 0),
+    });
+    for (const bridge of bridges) {
+      doomed.add(bridge);
+      // cancel() kills sandbox execs; stop() alone leaves them running.
+      await bridge.cancel().catch((err: unknown) =>
+        log.warn("cancel of a fenced run failed", { conversation_id: id, error: formatError(err) }),
+      );
+      await bridge.stop().catch((err: unknown) =>
+        log.warn("bridge stop of a fenced run failed", { conversation_id: id, error: formatError(err) }),
+      );
+    }
+  };
+  // A failed write means this pod is not the writer.
+  const killUnwritable = (id: SessionId, bridge: SessionBridge, why: string) => {
+    if (doomed.has(bridge)) return;
+    doomed.add(bridge);
+    // Caught: an unhandled rejection would kill the process.
+    stopLocalRun(id, why).catch((err: unknown) =>
+      log.warn("stopping a fenced run failed", { conversation_id: id, error: formatError(err) }),
     );
   };
   const wireEventLog = (e: Entry) => {
-    if (!e.bridge) return;
+    const bridge = e.bridge;
+    if (!bridge) return;
+    // Rewired (revived) means live again.
+    doomed.delete(bridge);
+    const set = wired.get(e.id) ?? new Set<SessionBridge>();
+    // Drop detached bridges that are idle; they cannot run again.
+    for (const b of set) if (b !== bridge && !b.queueState?.().running) set.delete(b);
+    wired.set(e.id, set.add(bridge));
     // Persist via onPersist only: it sees every event that should be logged exactly once, while
     // onEvent would double-log broadcasts.
-    e.bridge.onPersist((event) => {
+    bridge.onPersist((event) => {
+      if (doomed.has(bridge)) return;
       e.lastActivityAt = nowMs();
       // An interrupt pause doesn't end the run.
       if (
@@ -765,29 +796,16 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       }
       // Cheap synchronous pre-filter; the store's AppendFence is the authority.
       if (!ownershipGuard.canWrite(e.id)) {
-        // Warn, sampled (first drop, then every 25th), because this drop is how a mid-run
-        // reassignment truncates the run's log.
-        const n = (fencedDrops.get(e.id) ?? 0) + 1;
-        fencedDrops.set(e.id, n);
-        if (n === 1 || n % 25 === 0) {
-          log.warn("ownership fence dropped an event (reassigned mid-run?)", {
-            conversation_id: e.id,
-            event_type: event.type,
-            dropped_so_far: n,
-          });
-        }
-        // A run that can't write is not this pod's to run.
-        if (n === 1) {
-          // Caught: an unhandled rejection would kill the process.
-          stopLocalRun(e.id, "write fenced by the ownership cache").catch((err: unknown) =>
-            log.warn("stopping a fenced run failed", { conversation_id: e.id, error: formatError(err) }),
-          );
-        }
+        // Loud: this drop truncates the run's log.
+        log.warn("ownership fence dropped an event (reassigned mid-run?)", {
+          conversation_id: e.id,
+          event_type: event.type,
+        });
+        killUnwritable(e.id, bridge, "write fenced by the ownership cache");
         return;
       }
-      // Not bare `void`: the store rethrows append failures after logging them, and an unhandled
-      // rejection would kill the process.
-      store.appendEvent(e.id, event).catch(() => {});
+      // An unpersisted run must not keep acting unseen.
+      store.appendEvent(e.id, event).catch(() => killUnwritable(e.id, bridge, "durable append failed"));
     });
   };
 
@@ -1479,6 +1497,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         if (destroyPod) await provisioner.destroy(e.sandbox);
         e.bridge = undefined;
         e.status = "ended";
+        wired.delete(targetId);
         // Drop from memory and persisted state so it neither lists nor returns on the next
         // hydrate().
         entries.delete(targetId);

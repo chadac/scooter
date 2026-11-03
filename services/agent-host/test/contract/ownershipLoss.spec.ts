@@ -179,9 +179,45 @@ describe("a fenced write stops the run, not just the write", () => {
       ownershipGuard: guard,
       bridgeFactory: () => bridge as never,
     } as never);
-    return { bridge, sessions, emit: (e: AguiEvent) => persist?.(e) };
+    return { guard, bridge, store, sessions, emit: (e: AguiEvent) => persist?.(e) };
   };
   const text = { type: "TEXT_MESSAGE_CONTENT", messageId: "m1", delta: "hi" } as never as AguiEvent;
+
+  it("a refusal also kills a bridge a suspend already detached, which may still be running @proves", async () => {
+    const { bridge, sessions } = setup("this-pod");
+    const conv = await sessions.start("t1" as never);
+    await sessions.suspend(conv.id as SessionId);
+    expect(sessions.get(conv.id as SessionId)?.bridge).toBeUndefined();
+
+    await sessions.stopFencedRun(conv.id as SessionId);
+
+    expect(bridge.cancel, "the detached run must be cancelled too").toHaveBeenCalledTimes(1);
+  });
+
+  it("a failed durable append kills the run @proves", async () => {
+    const { bridge, store, sessions, emit } = setup("this-pod");
+    (store as { appendEvent: unknown }).appendEvent = async () => {
+      throw new Error("connection terminated");
+    };
+    await sessions.start("t1" as never);
+    emit(text);
+    await vi.waitFor(() => expect(bridge.cancel).toHaveBeenCalledTimes(1));
+    expect(bridge.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("a second reassignment away from this pod stops the run again @proves", async () => {
+    const { guard, bridge, sessions, emit } = setup("other-pod");
+    const conv = await sessions.start("t1" as never);
+    emit(text);
+    await vi.waitFor(() => expect(bridge.cancel).toHaveBeenCalledTimes(1));
+
+    guard.observe("t1", { hostPod: "this-pod", generation: 3 });
+    await sessions.revive(conv.id as SessionId);
+    guard.observe("t1", { hostPod: "other-pod", generation: 4 });
+    emit(text);
+
+    await vi.waitFor(() => expect(bridge.cancel).toHaveBeenCalledTimes(2));
+  });
 
   it("the first event the cache fences cancels the run, even on a pod that never owned it @proves", async () => {
     const { bridge, sessions, emit } = setup("other-pod");
