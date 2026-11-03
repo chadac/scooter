@@ -122,10 +122,11 @@ Rules of thumb:
 `main` merges through a merge queue, and `ci summary (gates)` is the only
 required check. A PR without labels gets the **`pr` tier**: the fast checks
 (`just ci`, the python and nix builds) plus four core nixosTests (`CORE_TESTS`
-in `.github/workflows/ci.yml`). The merge queue, `main` and the nightly get the
+in `.github/workflows/ci.yml`). The merge queue and the nightly get the
 **`full` tier**, which adds image builds, db migrations, e2e fast, the whole
 nixosTest matrix and the path-gated k3d jobs. A gate with `tier: full` in
-`.github/ci-gates.yml` is enforced only there.
+`.github/ci-gates.yml` is enforced only there. CI does not re-run on `main`, since
+the queue tested that exact commit; `main-ci.yml` just reports its verdict.
 
 Add the **`full-ci`** label to run the full tier on the PR itself. Do it before
 queueing any change the fast tier cannot judge: UI or agent-host behaviour

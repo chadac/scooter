@@ -1,0 +1,30 @@
+name: main CI
+
+# Reports the merge queue's `ci summary (gates)` verdict for each commit on main,
+# so the README badge reflects what landed without re-running CI.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  checks: read
+
+jobs:
+  queue-verdict:
+    name: merge queue verdict
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          run=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=ci%20summary%20(gates)" \
+            --jq '[.check_runs[] | select(.app.slug == "github-actions")][0] // empty | "\(.conclusion) \(.html_url)"')
+          if [ -z "$run" ]; then
+            echo "::error::no merge queue \`ci summary (gates)\` on $GITHUB_SHA"
+            exit 1
+          fi
+          conclusion=${run%% *} url=${run#* }
+          echo "merge queue verdict for ${GITHUB_SHA:0:7}: $conclusion ([run]($url))" >> "$GITHUB_STEP_SUMMARY"
+          echo "$conclusion: $url"
+          [ "$conclusion" = success ]

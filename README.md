@@ -1,6 +1,6 @@
 # Scooter
 
-[![CI](https://github.com/chadac-me/scooter/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/chadac-me/scooter/actions/workflows/ci.yml)
+[![CI](https://github.com/chadac-me/scooter/actions/workflows/main-ci.yml/badge.svg?branch=main)](https://github.com/chadac-me/scooter/actions/workflows/main-ci.yml)
 [![Publish images](https://github.com/chadac-me/scooter/actions/workflows/publish-images.yml/badge.svg?branch=main)](https://github.com/chadac-me/scooter/actions/workflows/publish-images.yml)
 [![Docs](https://github.com/chadac-me/scooter/actions/workflows/docs.yml/badge.svg?branch=main)](https://chadac-me.github.io/scooter/)
 [![Container images](https://img.shields.io/badge/ghcr.io-chadac%2Fscooter-blue?logo=docker&logoColor=white)](https://github.com/chadac?tab=packages&repo_name=scooter)

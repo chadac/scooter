@@ -1,7 +1,7 @@
 name: CI
 
 # Two tiers, chosen by the `tier` job. A PR gets the `pr` tier: the fast checks and
-# the core nixosTests. The merge queue, main, the nightly and a PR labelled
+# the core nixosTests. The merge queue, the nightly and a PR labelled
 # `full-ci` get the `full` tier: everything, adding the image builds, db
 # migrations, sharded e2e, the whole nixosTest matrix and the path-gated k3d jobs.
 # The opt-in flake, bench and e2e-full jobs stay label-driven on either tier.
@@ -18,8 +18,7 @@ on:
     # `labeled` so adding an opt-in label (`full-ci`, `flake-check`,
     # `e2e-full-flake-check`, `e2e-full`, `full-nixos-tests`, `bench`) re-runs CI.
     types: [opened, synchronize, reopened, labeled]
-  push:
-    branches: [main]
+  # No `push` on main: the queue already tested that exact commit.
   # The merge queue tests each entry on a temporary `gh-readonly-queue/*` ref and
   # needs this trigger for the required checks to run there.
   merge_group:
@@ -29,7 +28,7 @@ on:
   # Manual trigger for running the nightly-only jobs on demand.
   workflow_dispatch:
 
-# Cancel superseded runs of the same event on a ref; a push never cancels the nightly.
+# Cancel superseded runs of the same event on a ref.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
