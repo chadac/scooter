@@ -94,6 +94,22 @@ describe("ToolCallView", () => {
     expect(html).not.toContain("provider-tool-card");
   });
 
+  it("shows a generic tool result's images while the card is collapsed", () => {
+    const url = "/conversations/c1/assets/abc.png";
+    const html = renderToStaticMarkup(
+      createElement(ToolCallView, part({
+        toolName: "mcp__scooter-env__view_image",
+        args: { path: "/workspace/shot.png" },
+        result: [{ type: "image", mimeType: "image/png", assetId: "abc.png", url }, { type: "text", text: "[Image: source: x]" }],
+      })),
+    );
+    expect(html).not.toContain("provider-tool-card");
+    expect(html).toContain('data-slot="media-strip"');
+    expect(html).toContain(url);
+    // The card stays collapsed: the result's text is not rendered until it is opened.
+    expect(html).not.toContain("[Image: source: x]");
+  });
+
   it("shows a running spinner on a shell card while the turn is in flight and no result yet", () => {
     // Status is always complete, so the spinner comes from our run state (result undefined plus isRunning).
     const html = renderWithRun(

@@ -255,10 +255,13 @@ function ToolFallbackArgs({
 
 function ToolFallbackResult({
   result,
+  showImages = true,
   className,
   ...props
 }: React.ComponentProps<"div"> & {
   result?: unknown;
+  /** False when the card already shows the result's images outside the collapsed body. */
+  showImages?: boolean;
 }) {
   if (result === undefined) return null;
   // Images the agent-host stored out of the result render inline; the rest stays text.
@@ -273,7 +276,7 @@ function ToolFallbackResult({
       <p className="aui-tool-fallback-result-header text-muted-foreground text-xs font-medium">
         Result:
       </p>
-      <MediaStrip images={images.map((i) => ({ src: i.src, alt: "" }))} className="mt-1" />
+      {showImages && <MediaStrip images={images.map((i) => ({ src: i.src, alt: "" }))} className="mt-1" />}
       {omitted.length > 0 && (
         <p data-slot="tool-fallback-result-omitted" className="text-muted-foreground mt-1 text-xs italic">
           {omitted.length === 1 ? "1 image" : `${omitted.length} images`} not shown ({[...new Set(omitted)].join(", ")})
@@ -566,9 +569,18 @@ const ToolFallbackImpl: ToolCallMessagePartComponent & {
     if (isRequiresAction) setOpen(true);
   }
 
+  // A finished result's images show under the header even while the card is collapsed (the
+  // default), so a screenshot the agent viewed is visible without opening the tool call.
+  const showsResult = !isCancelled && !forceRunning;
+  const images = showsResult ? splitResultImages(result, ASSET_BASE_URL).images : [];
+
   return (
     <ToolFallbackRoot open={open} onOpenChange={setOpen}>
       <ToolFallbackTrigger toolName={toolName} status={effectiveStatus} />
+      <MediaStrip
+        images={images.map((i) => ({ src: i.src, alt: "" }))}
+        className="aui-tool-fallback-images mb-1"
+      />
       <ToolFallbackContent>
         <ToolFallbackError status={effectiveStatus} />
         <ToolFallbackArgs
@@ -585,7 +597,7 @@ const ToolFallbackImpl: ToolCallMessagePartComponent & {
           />
         )}
         {/* While running there is no result yet, so the folded result is stale or absent. */}
-        {!isCancelled && !forceRunning && <ToolFallbackResult result={result} />}
+        {showsResult && <ToolFallbackResult result={result} showImages={false} />}
       </ToolFallbackContent>
     </ToolFallbackRoot>
   );
