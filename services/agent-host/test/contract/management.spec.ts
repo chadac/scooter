@@ -795,6 +795,56 @@ describe("management API", () => {
     expect((json as any).links[0]).toMatchObject({ source: "slack", resourceType: "thread" });
   });
 
+  describe("service-only routes under AUTH_ENFORCE", () => {
+    const SVC = { authorization: "Bearer svc" };
+    const enforced = (serviceCaller?: (req: IncomingMessage) => Promise<boolean>) => {
+      const raiseInterrupt = vi.fn();
+      const c = conv({ id: "c1", threadId: "c1", bridge: { raiseInterrupt, withdrawInterrupt: () => true } as never });
+      const sessions = { ...fakeSessions(), get: (id: string) => (id === "c1" ? c : undefined) } as unknown as SessionManager;
+      const api = createManagementApi({
+        sessions,
+        store: fakeStore([]),
+        server: stubServer,
+        answerInterrupt: async () => ({ ok: true }),
+        authEnforced: true,
+        serviceCaller,
+        resourceLookup: { lookup: async () => ({ source: "slack" }) },
+      });
+      return { api, raiseInterrupt };
+    };
+    const isService = async (req: IncomingMessage) => req.headers.authorization === "Bearer svc";
+    const link = { source: "github", resourceType: "pr", url: "https://example.com/pr/1" };
+    const routes: Array<[string, string, unknown?]> = [
+      ["POST", "/conversations/c1/links", link],
+      ["POST", "/conversations/c1/approvals/aws", { request_id: "r1", message: "m" }],
+      ["DELETE", "/conversations/c1/approvals/aws/r1"],
+      ["GET", "/conversations/c1/resource-map"],
+    ];
+
+    it.each(routes)("%s %s refuses a caller without a service token", async (method, path, body) => {
+      const { api, raiseInterrupt } = enforced(isService);
+      expect((await call(api, method, path, body, { authorization: "Bearer user" })).status).toBe(403);
+      expect(raiseInterrupt).not.toHaveBeenCalled();
+    });
+
+    it.each(routes)("%s %s accepts a verified service caller", async (method, path, body) => {
+      const { api } = enforced(isService);
+      expect((await call(api, method, path, body, SVC)).status).toBeLessThan(300);
+    });
+
+    it("refuses everyone when no service verifier is wired", async () => {
+      const { api } = enforced();
+      expect((await call(api, "POST", "/conversations/c1/links", link, SVC)).status).toBe(403);
+    });
+
+    it("a verifier that throws counts as not a service", async () => {
+      const { api } = enforced(async () => {
+        throw new Error("tokenreview down");
+      });
+      expect((await call(api, "POST", "/conversations/c1/links", link, SVC)).status).toBe(403);
+    });
+  });
+
   // --- sandbox file I/O for contribs ------------------------------------------
 
   const baseDeps = () => ({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });

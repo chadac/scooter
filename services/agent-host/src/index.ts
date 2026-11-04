@@ -1557,6 +1557,7 @@ export async function main(
       store,
       server,
       ownerVerifier,
+      serviceCaller: conversationServiceVerifier,
       webServices,
       sandboxOrigins,
       identityStore,

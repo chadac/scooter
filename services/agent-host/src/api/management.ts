@@ -141,6 +141,8 @@ export interface ManagementDeps {
   resolveUser?: ResolveUser;
   /** Whether a request is a trusted in-cluster caller (webhooks/scheduler) allowed to set a body `owner`; absent means a body owner is never honored. */
   ownerVerifier?: (req: IncomingMessage) => Promise<boolean>;
+  /** Whether a request is a platform service; checked under authEnforced. */
+  serviceCaller?: (req: IncomingMessage) => Promise<boolean>;
   /** The visibility check guarding every /conversations/:id route; absent means no guard (tests). */
   accessCheck?: AccessCheck;
   /** AUTH_ENFORCE: the router proves every user, so anonymous is never the single user. */
@@ -909,6 +911,13 @@ export function createManagementApi(deps: ManagementDeps): Router {
   // External resource links (the GitHub PR / Slack thread a conversation came from): the
   // webhooks service POSTs them on create and the UI GETs them.
 
+  // Links, approval cards and the resource map are service-only.
+  const fromService = async (req: IncomingMessage): Promise<boolean> => {
+    if (!deps.authEnforced) return true;
+    return deps.serviceCaller ? deps.serviceCaller(req).catch(() => false) : false;
+  };
+  const serviceOnly = { status: 403, json: { error: "only a platform service may call this" } };
+
   // Accepts a conversation id or the broker's sandbox key.
   const resolveConvId = async (id: string): Promise<string | null> => {
     const conv = sessions.get(id) ?? (await sessions.getBySandboxKey(id));
@@ -927,6 +936,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
   // here because the broker must not read the webhooks table directly, and kept out of
   // GET /links so the UI shows no phantom links.
   r.get("/conversations/:id/resource-map", async (ctx) => {
+    if (!(await fromService(ctx.req))) return serviceOnly;
     if (!deps.resourceLookup) return { json: { mappings: [] } };
     const source = ctx.query.get("source") ?? "";
     const sources = source ? [source] : ["slack", "github", "gitlab", "jira"];
@@ -949,6 +959,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
   });
 
   r.post("/conversations/:id/links", async (ctx) => {
+    if (!(await fromService(ctx.req))) return serviceOnly;
     const body = await ctx.body<{
       source?: string;
       resourceType?: string;
@@ -1118,6 +1129,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
   // whose answer routes back via deps.resolveApproval; `:contrib` is not validated here so
   // a contrib deployed slightly ahead of the agent-host can still raise.
   r.post("/conversations/:id/approvals/:contrib", async (ctx) => {
+    if (!(await fromService(ctx.req))) return serviceOnly;
     const body = await ctx.body<{
       request_id?: string;
       message?: string;
@@ -1153,6 +1165,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
 
   // Withdraws a card another approval superseded.
   r.del("/conversations/:id/approvals/:contrib/:requestId", async (ctx) => {
+    if (!(await fromService(ctx.req))) return serviceOnly;
     const conv = sessions.get(ctx.params.id) ?? (await sessions.getBySandboxKey(ctx.params.id));
     if (!conv) return { status: 404, json: { error: "unknown conversation" } };
     const requestId = ctx.params.requestId;
