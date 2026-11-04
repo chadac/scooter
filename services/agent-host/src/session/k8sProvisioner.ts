@@ -69,6 +69,8 @@ const RECONCILE_RETRY_DELAYS_MS = [3_000, 6_000];
 type EnvVar = { name: string; value?: string };
 /** The container env vars `conversationEnv` owns; resume reconciles exactly these. */
 const CONVERSATION_ENV = ["CONVERSATION_URL", "CONVERSATION_ID", "SCOOTER_SERVICES_ORIGIN"];
+/** Exists only once NixOS activation has linked /run/current-system. */
+export const ACTIVATED_PROBE = "/run/current-system/sw/bin/true";
 /** Annotation: hash of the platform template the podTemplate came from. */
 export const TEMPLATE_HASH_ANNOTATION = "scooter.io/template-hash";
 
@@ -956,6 +958,13 @@ export function sandboxManifest(
                     // Unmasked only under a user namespace (the apiserver rejects it otherwise); a
                     // masked /proc is what stops a nested build sandbox mounting its own.
                     ...(userNamespace ? { procMount: "Unmasked" } : {}),
+                  },
+                  // Ready only once activation has linked the system profile.
+                  startupProbe: {
+                    exec: { command: [ACTIVATED_PROBE] },
+                    periodSeconds: 1,
+                    timeoutSeconds: 5,
+                    failureThreshold: 300,
                   },
                 }
                 : {}),
