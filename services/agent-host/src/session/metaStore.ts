@@ -48,7 +48,7 @@ export interface PgMetaStoreConfig {
   dsn?: string;
   /** Override of the database handle for tests, defaulting to a hardened pool over `dsn`. */
   db?: NodePgDatabase;
-  /** File-backed metadata to seed from, once, when Postgres holds no conversations at all. */
+  /** File-backed metadata to seed from when Postgres is empty at this process's first list. */
   legacy?: Pick<MetaStore, "listConversations">;
 }
 
@@ -118,6 +118,9 @@ export function createPgMetaStore(config: PgMetaStoreConfig): MetaStore {
     };
     return values;
   };
+
+  // Set after the first successful list, so a table emptied by deletes is never re-seeded.
+  let seedChecked = false;
 
   /** Seed from files; a backfilled conversation has no creator. */
   const backfill = async (metas: ConversationMeta[]): Promise<void> => {
@@ -239,11 +242,14 @@ export function createPgMetaStore(config: PgMetaStoreConfig): MetaStore {
       // Not best-effort: answering [] for a failed read blanks a sidebar while the data is intact.
       const res = await db.select().from(conversations).orderBy(desc(conversations.lastActivityAt));
       const rows = (res as MetaRow[]).map(rowToMeta);
-      if (rows.length > 0 || !config.legacy) return rows;
+      if (seedChecked || rows.length > 0 || !config.legacy) {
+        seedChecked = true;
+        return rows;
+      }
 
-      // The table is empty: seed once from the file store so the sidebar is not blank on first
-      // boot.
+      // The table is empty on first list: seed from the file store so the sidebar is not blank.
       const legacy = await config.legacy.listConversations();
+      seedChecked = true;
       if (legacy.length === 0) return rows;
       await backfill(legacy).catch((e) =>
         log.error("metadata backfill failed (serving the file rows anyway)", {

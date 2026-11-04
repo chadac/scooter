@@ -373,6 +373,34 @@ describe("seeding from file-backed metadata", () => {
     expect((await store.listConversations()).map((m) => m.id)).toEqual(["live"]);
     expect(legacy.listConversations).not.toHaveBeenCalled();
   });
+
+  // Another replica's delete leaves this pod's file copy behind.
+  it("does not RESURRECT deleted conversations when the table later empties", async () => {
+    const legacy = legacyWith([]);
+    const { db, created } = fakeDb();
+    const store = createPgMetaStore({ db, legacy });
+    created("conv-1");
+    await store.saveMeta(meta());
+    await store.listConversations();
+
+    legacy.listConversations.mockResolvedValue([meta()]);
+    await store.removeConversation("conv-1" as SessionId);
+
+    expect(await store.listConversations()).toEqual([]);
+    expect(await store.listConversations()).toEqual([]);
+    expect(legacy.listConversations).not.toHaveBeenCalled();
+  });
+
+  it("seeds at most once, even when the first list found the file store empty", async () => {
+    const legacy = legacyWith([]);
+    const store = createPgMetaStore({ db: fakeDb().db, legacy });
+    await store.listConversations();
+
+    legacy.listConversations.mockResolvedValue([meta({ id: "stale" as SessionId })]);
+
+    expect(await store.listConversations()).toEqual([]);
+    expect(legacy.listConversations).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("failure behaviour", () => {
