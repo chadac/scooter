@@ -331,6 +331,10 @@ in
         no separate gate is needed here. Relaying an answer to a broker that never
         mounted the route would turn a security decision into a 404 nobody sees.
 
+        A verb's JSON answer may carry `agent_message`, contrib-rendered prose the
+        agent-host prompts the agent with, since nothing else tells it the card was
+        answered.
+
         The platform learns only how to REACH the contrib — never what is being
         approved. The prose a human reads is rendered by the contrib and arrives
         already-formed; the UI's half of the declaration (which option to grey) is

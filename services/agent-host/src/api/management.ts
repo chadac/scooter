@@ -223,6 +223,16 @@ export const DEFAULT_APPROVAL_OPTIONS: ReadonlyArray<{ optionId: string; name: s
   { optionId: "deny", name: "Deny", kind: "reject_once" },
 ];
 
+/** The contrib-rendered `agent_message` in a verb's answer, which the agent is prompted with. */
+export function approvalAgentMessage(body: string): string | undefined {
+  try {
+    const msg = (JSON.parse(body) as { agent_message?: unknown } | null)?.agent_message;
+    return typeof msg === "string" && msg.trim() ? msg : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** A conversation's pending broker approvals, by sandbox key; [] on error. */
 export async function fetchPendingApprovals(
   brokerUrl: string,

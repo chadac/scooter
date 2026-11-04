@@ -102,6 +102,24 @@ def approval_message(req: PermissionRequest) -> str:
     return "\n".join(lines)
 
 
+def decision_message(req: PermissionRequest) -> str | None:
+    """What the agent is told once a human decides, or None while still pending."""
+    if req.status == RequestStatus.ACTIVE:
+        return (
+            f"Your AWS request {req.request_id} for {req.target_account} was approved by "
+            f"{req.approved_by or 'a human'}. The credentials are live: run "
+            f"`aws --profile {req.target_account} ...`."
+        )
+    if req.status == RequestStatus.DENIED:
+        reason = f" Reason: {req.deny_reason}" if req.deny_reason else ""
+        return (
+            f"Your AWS request {req.request_id} for {req.target_account} was denied by "
+            f"{req.denied_by or 'a human'}.{reason} Don't re-request the same scope; "
+            "ask the user how to proceed."
+        )
+    return None
+
+
 APPROVAL_KIND = "aws.permissions"
 
 

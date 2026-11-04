@@ -110,9 +110,25 @@ def test_request_approve_status_flow(tmp_path):
 
         r = client.post(f"/aws/aws/{rid}/approve", json={"approver": "alice@x"})
         assert r.status_code == 200 and r.json()["status"] == "active"
+        assert "approved by alice@x" in r.json()["agent_message"]
+        assert "aws --profile dev" in r.json()["agent_message"]
+        # The agent's own status view carries no wake-up prose.
+        assert "agent_message" not in client.get(f"/aws/aws/{rid}").json()
         r = client.get(f"/aws/aws/{rid}")
         assert r.json()["status"] == "active"
         assert r.json()["credentials"]["session_token"]
+
+
+def test_deny_tells_the_agent_who_denied_and_why(tmp_path):
+    app = _app(tmp_path)
+    app.dependency_overrides[authenticate] = _identity("conv-1")
+    with TestClient(app) as client:
+        r = client.post("/aws/aws/request", json={"target_account": "dev", "policy_document": POLICY, "justification": "read"})
+        rid = r.json()["request_id"]
+        r = client.post(f"/aws/aws/{rid}/deny", json={"approver": "alice@x", "reason": "too broad"})
+        assert r.status_code == 200 and r.json()["status"] == "denied"
+        msg = r.json()["agent_message"]
+        assert "denied by alice@x" in msg and "too broad" in msg
 
 
 def test_pending_route_lists_a_named_conversations_pending_requests(tmp_path):

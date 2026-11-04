@@ -22,6 +22,7 @@ import {
   createManagementApi,
   raiseApprovalInterrupt,
   fetchPendingApprovals,
+  approvalAgentMessage,
   type ApprovalContrib,
 } from "./api/management.js";
 import { createSessionManager, isPlaceholderTitle, sandboxKey } from "./session/manager.js";
@@ -977,7 +978,7 @@ export async function main(
 
   /** Relay the user's answer to the contrib's broker half (POST
    *  <brokerPrefix>/{requestId}/{optionId}) with the approver's identity, throwing on a
-   *  failed relay and feeding the failure back into the conversation. */
+   *  failed relay and feeding the failure, or the answer's `agent_message`, to the agent. */
   const resolveApprovalForBroker = async (
     sessionId: string,
     contrib: string,
@@ -1025,6 +1026,12 @@ export async function main(
         .catch((e) => hostLog.errorWith("failed to feed the approval failure to the agent", e));
       throw new Error(`broker rejected ${contrib} '${optionId}' for ${requestId}: ${res.status} ${body.slice(0, 500)}`);
     }
+    // The agent is not waiting on the card, so wake it with the outcome.
+    const message = approvalAgentMessage(await res.text().catch(() => ""));
+    if (!message) return;
+    void sessions
+      .prompt(sessionId as SessionId, message, undefined, undefined, undefined, undefined, undefined, "broker")
+      .catch((e) => hostLog.errorWith("failed to tell the agent its approval was answered", e, { contrib, request_id: requestId }));
   };
 
   // Background jobs (run_background): the job's output stays on the workspace PVC, and the
