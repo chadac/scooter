@@ -121,6 +121,33 @@ describe("a prompt to a conversation that is still waking up", () => {
     }
   });
 
+  it("a Stop while the sandbox is still coming up ends the run, and the agent never sees it", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cold-stop-"));
+    try {
+      let release!: () => void;
+      const ready = new Promise<void>((r) => (release = r));
+      const { agent, sessions, logged } = harness(root, async (ref) => {
+        await ready;
+        return ref;
+      });
+      const conv = await sessions.start("thread-stop");
+      await sessions.suspend(conv.id);
+
+      const sent = sessions.promptByThread("thread-stop" as never, "never mind", undefined);
+      await vi.waitFor(async () => expect(userTexts(await logged(conv.id))).toEqual(["never mind"]));
+      await sessions.get(conv.id)?.bridge?.cancel(undefined, true);
+      await sent;
+
+      const events = await logged(conv.id);
+      expect(events.at(-1)).toMatchObject({ type: "RUN_FINISHED", cancelled: true });
+      release();
+      await vi.waitFor(() => expect(sessions.get(conv.id)?.status).toBe("running"));
+      expect(agent.prompts, "a stopped message is never sent").toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("fails the queued run visibly when the sandbox cannot be resumed, and the next send revives afresh", async () => {
     const root = mkdtempSync(join(tmpdir(), "cold-fail-"));
     try {

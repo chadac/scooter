@@ -710,6 +710,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   // Per-run mutable mapping state for translating ACP updates -> AG-UI events.
   interface RunState {
     runId: RunId;
+    /** Ends the run as cancelled; set only until its prompt is sent. */
+    abortSetup?: () => void;
     /** The thread this run belongs to, required on RUN_STARTED/FINISHED. */
     threadId: ThreadId;
     // The currently-open assistant text message, if any.
@@ -1230,8 +1232,26 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       return { runId, retryable: st.retryable === true };
     };
 
+    // A Stop during setup has no agent turn to cancel, so end the run here.
+    st.abortSetup = () => {
+      if (st.ended || st.terminated) return;
+      st.ended = true;
+      st.terminated = true;
+      st.cancelled = true;
+      emit({ type: "RUN_FINISHED", threadId: input.threadId, runId, cancelled: true });
+      signalWedged();
+    };
+
     try {
-      if (!started) await self.start();
+      if (!started) {
+        const starting = self.start();
+        // Raced so a Stop or the setup watchdog frees the pump.
+        await Promise.race([starting, wedged]);
+        if (st.terminated) {
+          starting.catch(() => {});
+          return endedBeforeSend();
+        }
+      }
       // Resolve the provider for this run's context and point acpClient/acpSessionId at its
       // ready client.
       const resolving = resolveForRun(runContextFor(input), () => st.terminated === true);
@@ -1242,6 +1262,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       // Raced so the setup watchdog frees the pump.
       await Promise.race([resolving, wedged]);
       if (st.terminated) return endedBeforeSend();
+      st.abortSetup = undefined;
       debug("[bridge] prompt: sending to goose, session=%s", acpSessionId);
       // Seed new sessions fully, returning ones with missed turns.
       let historyPreamble = "";
@@ -1886,6 +1907,11 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       // Mark the running turn cancelled, kill its active tool call, then tell the agent to
       // stop; queued prompts stay queued.
       const run = currentRun;
+      if (run?.abortSetup) {
+        if (userInitiated) emit({ type: "CANCEL_REQUESTED", threadId: run.threadId, runId: run.runId });
+        run.abortSetup();
+        return;
+      }
       if (!run || !acpClient) return;
       // Bind the client and session now, since a watchdog's cancel can still be in flight
       // after the pump's retry resolved a fresh session.

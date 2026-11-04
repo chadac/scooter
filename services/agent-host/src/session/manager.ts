@@ -670,26 +670,39 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     return humanTriggerFromLog(await collectEvents(store.readEvents(root.id)));
   };
 
+  // Each conversation's last meta write, so writes land in call order.
+  const metaWrites = new Map<SessionId, Promise<unknown>>();
   // Returns the persist promise so callers that need durability can await it.
-  const saveMeta = (e: Entry): Promise<void> =>
-    endedIds.has(e.id)
-      ? Promise.resolve()
-      : store.saveMeta?.({
-          id: e.id,
-          threadId: e.threadId,
-          title: e.title,
-          createdAt: e.createdAt,
-          lastActivityAt: e.lastActivityAt,
-          model: e.model,
-          modelSetBy: e.modelSetBy,
-          owner: e.owner,
-          parentId: e.parentId,
-          userTitled: e.userTitled,
-          starred: e.starred,
-          visibility: e.visibility,
-          pendingQueue: e.pendingQueue,
-          ...(e.parentId ? {} : { sandboxRef: e.sandbox.name }),
-        }) ?? Promise.resolve();
+  const saveMeta = (e: Entry): Promise<void> => {
+    if (endedIds.has(e.id) || !store.saveMeta) return Promise.resolve();
+    // Snapshot now: a later write must not persist an earlier state.
+    const meta: ConversationMeta = {
+      id: e.id,
+      threadId: e.threadId,
+      title: e.title,
+      createdAt: e.createdAt,
+      lastActivityAt: e.lastActivityAt,
+      model: e.model,
+      modelSetBy: e.modelSetBy,
+      owner: e.owner,
+      parentId: e.parentId,
+      userTitled: e.userTitled,
+      starred: e.starred,
+      visibility: e.visibility,
+      pendingQueue: e.pendingQueue,
+      ...(e.parentId ? {} : { sandboxRef: e.sandbox.name }),
+    };
+    const prev = metaWrites.get(e.id);
+    const write = prev
+      ? prev.then(() => (endedIds.has(e.id) ? undefined : store.saveMeta!(meta)))
+      : store.saveMeta(meta);
+    const tail = write.catch(() => {});
+    metaWrites.set(e.id, tail);
+    void tail.then(() => {
+      if (metaWrites.get(e.id) === tail) metaWrites.delete(e.id);
+    });
+    return write;
+  };
 
   // The router and other replicas write these without telling this one.
   const refreshRouterMeta = async (e: Entry): Promise<void> => {
