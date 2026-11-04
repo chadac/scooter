@@ -199,6 +199,14 @@ class SetupAbandonedError extends Error {
   }
 }
 
+// The sandbox never came up; retrying cannot help.
+class SandboxUnavailableError extends Error {
+  constructor(cause: unknown) {
+    super(`The sandbox could not be started: ${errorText(cause)}`);
+    this.name = "SandboxUnavailableError";
+  }
+}
+
 /** Rewrite a known raw agent/API error (context overflow) into a clearer user-facing
  *  message; anything unrecognized passes through. */
 export function clarifyRunError(raw: string): string {
@@ -400,6 +408,8 @@ export interface BridgeDeps {
   /** The deployment's model catalog (GET /models), needed for per-provider resolution; absent
    *  means every provider gets the conversation model as-is. */
   modelCatalog?: ModelCatalog;
+  /** Gates start() on provisioning; a rejection fails the run. */
+  sandboxReady?: () => Promise<void>;
   /** The ACP client, or an async factory that creates one on first start(), wrapped into a
    *  one-entry provider registry; mutually exclusive with `acpProviders`. */
   acpClient?: AcpClient | (() => Promise<AcpClient>);
@@ -504,6 +514,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   /** The session that served the previous run. */
   let lastRunReady: ReadySession | undefined;
   let started = false;
+  // Shared by concurrent start() calls.
+  let starting: Promise<void> | undefined;
   // The run queue: a bridge has one agent session, so runs are serialized through an
   // inspectable queue that orders by priority and can force-interrupt the current run,
   // and each run fully completes (text closed, RUN_FINISHED emitted) before the next
@@ -698,6 +710,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   // Per-run mutable mapping state for translating ACP updates -> AG-UI events.
   interface RunState {
     runId: RunId;
+    /** Ends the run as cancelled; set only until its prompt is sent. */
+    abortSetup?: () => void;
     /** The thread this run belongs to, required on RUN_STARTED/FINISHED. */
     threadId: ThreadId;
     // The currently-open assistant text message, if any.
@@ -1218,8 +1232,26 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       return { runId, retryable: st.retryable === true };
     };
 
+    // A Stop during setup has no agent turn to cancel, so end the run here.
+    st.abortSetup = () => {
+      if (st.ended || st.terminated) return;
+      st.ended = true;
+      st.terminated = true;
+      st.cancelled = true;
+      emit({ type: "RUN_FINISHED", threadId: input.threadId, runId, cancelled: true });
+      signalWedged();
+    };
+
     try {
-      if (!started) await self.start();
+      if (!started) {
+        const starting = self.start();
+        // Raced so a Stop or the setup watchdog frees the pump.
+        await Promise.race([starting, wedged]);
+        if (st.terminated) {
+          starting.catch(() => {});
+          return endedBeforeSend();
+        }
+      }
       // Resolve the provider for this run's context and point acpClient/acpSessionId at its
       // ready client.
       const resolving = resolveForRun(runContextFor(input), () => st.terminated === true);
@@ -1230,6 +1262,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       // Raced so the setup watchdog frees the pump.
       await Promise.race([resolving, wedged]);
       if (st.terminated) return endedBeforeSend();
+      st.abortSetup = undefined;
       debug("[bridge] prompt: sending to goose, session=%s", acpSessionId);
       // Seed new sessions fully, returning ones with missed turns.
       let historyPreamble = "";
@@ -1393,13 +1426,17 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           const raw = errorText(err);
           // Replaying a turn that already ran tools re-sends the user's message on top of work it
           // may have finished (a commit, a PR edit), so only a turn that never started is retried.
-          const replaySafe = !st.sawActivity;
+          const noSandbox = err instanceof SandboxUnavailableError;
+          const replaySafe = !st.sawActivity && !noSandbox;
           log.warn("acp prompt rejected", { run_id: runId, error: raw, saw_activity: st.sawActivity === true, retry: replaySafe });
           emit({
             type: "RUN_ERROR",
-            message: replaySafe
-              ? clarifyRunError(raw)
-              : `${clarifyRunError(raw)} The turn was interrupted after it had started working, so it was not retried automatically; send a message to continue.`,
+            message: noSandbox
+              ? `${raw} Nothing was sent to the agent; send the message again to retry.`
+              : replaySafe
+                ? clarifyRunError(raw)
+                : `${clarifyRunError(raw)} The turn was interrupted after it had started working, so it was not retried automatically; send a message to continue.`,
+            ...(noSandbox ? { code: "sandbox_unavailable" } : {}),
           });
           st.retryable = replaySafe; // the ACP call threw (init/session/stream) before any work — transient; pump retries
           // A dead remote session fails identically on every retry, so drop the cached session
@@ -1834,10 +1871,19 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
 
     async start() {
       if (started) return;
-      // Establish the first session for a default (interactive) context; the run loop
-      // re-resolves per run.
-      await resolveForRun(defaultRunContext());
-      started = true;
+      starting ??= (async () => {
+        // Nothing may touch the pod before it is provisioned.
+        await deps.sandboxReady?.().catch((err: unknown) => {
+          throw new SandboxUnavailableError(err);
+        });
+        // Establish the first session for a default (interactive) context; the run loop
+        // re-resolves per run.
+        await resolveForRun(defaultRunContext());
+        started = true;
+      })().finally(() => {
+        starting = undefined;
+      });
+      return starting;
     },
 
     prompt(input: PromptInput, opts?: PromptOptions): Promise<RunId> {
@@ -1861,6 +1907,11 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       // Mark the running turn cancelled, kill its active tool call, then tell the agent to
       // stop; queued prompts stay queued.
       const run = currentRun;
+      if (run?.abortSetup) {
+        if (userInitiated) emit({ type: "CANCEL_REQUESTED", threadId: run.threadId, runId: run.runId });
+        run.abortSetup();
+        return;
+      }
       if (!run || !acpClient) return;
       // Bind the client and session now, since a watchdog's cancel can still be in flight
       // after the pump's retry resolved a fresh session.

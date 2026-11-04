@@ -71,8 +71,9 @@ describe("concurrent revive", () => {
       expect(provisioner.resume, "one revive must resume the sandbox once").toHaveBeenCalledTimes(1);
       expect(bridges.length - before, "concurrent prompts must share one bridge").toBe(1);
       const live = bridges[bridges.length - 1];
-      expect(live.started).toBe(1);
-      expect(live.prompts.sort()).toEqual(["review", "review comment"]);
+      expect(live.prompts).toEqual(["review", "review comment"]);
+      // The prompts return once queued; the revive's start() lands behind them.
+      await vi.waitFor(() => expect(live.started).toBe(1));
       expect(sessions.get(conv.id)?.status).toBe("running");
       await new Promise((r) => setTimeout(r, 20));
       await store.flush?.(conv.id);

@@ -874,10 +874,10 @@ export async function main(
     // pod instead of replaying the local store.
     selfPod: podName,
     handoffGraceMs: Number(process.env.HANDOFF_GRACE_MS ?? 5_000),
-    bridgeFactory: ({ conversationId, sandbox, model, pickedProvider, owner }) => {
+    bridgeFactory: ({ conversationId, sandbox, model, pickedProvider, owner, sandboxReady }) => {
       // Exec + ACP client are connected lazily/asynchronously; the bridge is
       // created synchronously and starts the connection in start().
-      const bridge = makeBridge(conversationId, sandbox, config, model, metrics, owner, pickedProvider);
+      const bridge = makeBridge(conversationId, sandbox, config, model, metrics, owner, pickedProvider, sandboxReady);
       // The agent titles the conversation by emitting <title>…</title> as its
       // first action; the bridge extracts it -> set it on the conversation.
       bridge.onTitle((title) => sessions.setTitle(conversationId, title));
@@ -1867,6 +1867,7 @@ export async function main(
     metrics: MetricsSink,
     owner?: string,
     pickedProvider?: string,
+    sandboxReady?: () => Promise<void>,
   ) {
     // Tool calls run as local subprocesses in fake mode and exec into the sandbox pod via
     // the K8s exec API otherwise.
@@ -2108,6 +2109,7 @@ export async function main(
 
     const bridge = createSessionBridge({
       conversationId,
+      sandboxReady,
       config: {
         cwd,
         skillsDir: config.skillsDir,
