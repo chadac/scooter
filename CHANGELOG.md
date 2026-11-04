@@ -17,6 +17,12 @@ content tags and also gain `vX.Y.Z`; the flake is published to
 - **The right panel has two tabs.** "Sandbox" becomes "Session", which stacks
   Services, Subagents and each contrib panel as collapsible sections, next to
   Approvals. (#1102)
+- **CI's fast checks run as three parallel jobs**, so they take less time per
+  PR. (#1096)
+- **CI no longer re-runs on `main`.** The merge queue already tested the commit;
+  the `main` badge now shows that run's verdict. (#1100)
+- **CI's Nix matrix jobs share the work with on-prem runners**, alternating
+  entries with ubuntu-latest. (#1104)
 
 ### Bug fixes
 
@@ -40,6 +46,11 @@ content tags and also gain `vX.Y.Z`; the flake is published to
 - **CI comments appear on fork PRs.** They are now posted by chadac-bot. (#1106)
 - **A new sandbox is Ready only once its PATH works**, so an early command no
   longer fails with `command not found`. (#1087)
+- **Pending questions reach the Slack thread.** The broker routed the
+  question notice to Slack's API and it 404'd, and webhooks calls to the
+  agent-host had no token, so answer buttons refused every click. (#1108)
+- **Older Slack conversations get their questions too.** A conversation with
+  no stored Slack link now finds its thread from the webhooks mapping. (#1109)
 
 ## v1.0.2
 
