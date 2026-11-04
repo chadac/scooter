@@ -38,6 +38,9 @@ const SUBAGENT_LIFETIME_S = 90;
 /** Wrap `s` so `sh -c` sees it as one literal argument, whatever it contains. */
 const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
+/** One ACP session update, as the connection takes it. */
+type SessionUpdate = Parameters<AgentSideConnection["sessionUpdate"]>[0]["update"];
+
 class FakeAgent implements Agent {
   constructor(private conn: AgentSideConnection) {}
 
@@ -53,6 +56,14 @@ class FakeAgent implements Agent {
   private sessionModel = new Map<string, string>();
   /** Offered MCP servers per session, by name. */
   private mcp = new Map<string, Map<string, { url: string; headers: Record<string, string> }>>();
+
+  /** Names the session on its first reply, as a real agent would. */
+  private async emitTitleOnce(sessionId: string, text: string, u: (update: SessionUpdate) => Promise<unknown>): Promise<void> {
+    if (this.titled.has(sessionId)) return;
+    this.titled.add(sessionId);
+    await u({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `<title>${text.slice(0, 40).trim()}</title>` } });
+    await sleep(40);
+  }
 
   async initialize(_p: InitializeRequest): Promise<InitializeResponse> {
     return { protocolVersion: PROTOCOL_VERSION, agentCapabilities: { loadSession: false } };
@@ -113,7 +124,7 @@ class FakeAgent implements Agent {
     const textBlocks = params.prompt.filter((b) => b.type === "text").map((b) => b.text);
     const userText = (textBlocks.at(-1) ?? "").trim() || "(no text)";
 
-    const u = (update: Parameters<AgentSideConnection["sessionUpdate"]>[0]["update"]) =>
+    const u = (update: SessionUpdate) =>
       this.conn.sessionUpdate({ sessionId, update });
 
     // A "??<question>" message is a test directive: raise an `ask-user.questions` request (the
@@ -189,6 +200,8 @@ class FakeAgent implements Agent {
         args = {};
       }
       const out = await this.callTool(sessionId, server ?? "", tool ?? "", args);
+      // Else the title Stop hook adds a second reply.
+      await this.emitTitleOnce(sessionId, userText, u);
       await u({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: `call ${server} ${tool}: ${out}` } });
       return { stopReason: "end_turn" };
     }
@@ -196,6 +209,7 @@ class FakeAgent implements Agent {
     // A "~model" message is a test directive: report the GOOSE_MODEL this process was launched with.
     if (userText.startsWith("~model")) {
       // The session's model; GOOSE_MODEL is fixed at launch.
+      await this.emitTitleOnce(sessionId, userText, u);
       const reply = `model=${this.sessionModel.get(sessionId) ?? process.env.GOOSE_MODEL ?? "(default)"}`;
       for (const word of reply.split(" ")) {
         await u({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: word + " " } });
@@ -207,6 +221,7 @@ class FakeAgent implements Agent {
     // A "~images" message is a test directive: report how many image content blocks reached this prompt.
     if (userText.startsWith("~images")) {
       const count = params.prompt.filter((b) => b.type === "image").length;
+      await this.emitTitleOnce(sessionId, userText, u);
       const reply = `images=${count}`;
       for (const word of reply.split(" ")) {
         await u({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: word + " " } });
@@ -323,15 +338,7 @@ class FakeAgent implements Agent {
     await sleep(200);
 
     // The first reply in a session emits a <title> marker derived from the user's request.
-    if (!this.titled.has(sessionId)) {
-      this.titled.add(sessionId);
-      const titleText = (isCommand ? command : userText).slice(0, 40).trim();
-      await u({
-        sessionUpdate: "agent_message_chunk",
-        content: { type: "text", text: `<title>${titleText}</title>` },
-      });
-      await sleep(40);
-    }
+    await this.emitTitleOnce(sessionId, isCommand ? command : userText, u);
 
     // 3. the reply (streamed), reporting the command output (proves exec ran)
     const reply = isCommand
