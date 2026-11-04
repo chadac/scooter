@@ -8,6 +8,8 @@
 
 import type { AguiEvent } from "../bridge.js";
 import { formatError, logger } from "../log.js";
+import type { ResourceMapping } from "../agent/agentTools.js";
+import type { ResourceLookup } from "../agent/resourceMapping.js";
 import type { ConversationLink } from "./manager.js";
 import type { SessionId } from "../types.js";
 
@@ -59,12 +61,20 @@ export interface AwaitingInputNotifierDeps {
   /** Broker base URL and the agent-host's auth headers, or null when there is no broker. */
   broker: () => Promise<{ url: string; headers: Record<string, string> } | null>;
   listLinks: (id: SessionId) => Promise<ConversationLink[]>;
+  /** The webhooks thread mapping, for a conversation whose link was never stored. */
+  resourceLookup?: Pick<ResourceLookup, "lookup">;
   publicUrl?: string;
   fetch?: typeof fetch;
 }
 
 // A re-raise after a revive appends the same interrupt again; tell contribs once.
 const SEEN_MAX = 4096;
+
+/** A webhooks mapping in link shape, the same shape the broker gives its tools. */
+function mappingLink(m: ResourceMapping): ConversationLink {
+  const ref = m.source === "slack" && m.slackChannel ? { channel: m.slackChannel, threadTs: m.slackTs } : undefined;
+  return { source: m.source, resourceType: m.resourceType, url: m.resourceId, ...(ref ? { ref } : {}) };
+}
 
 /** Returns the onAppend callback; null when no contrib wants to hear. */
 export function createAwaitingInputNotifier(
@@ -91,10 +101,13 @@ export function createAwaitingInputNotifier(
       return null;
     });
     if (!broker) return;
-    const links = await deps.listLinks(id).catch((e) => {
+    const stored = await deps.listLinks(id).catch((e) => {
       log.warn("could not read links for a pending question", { conversation_id: id, error: formatError(e) });
       return [] as ConversationLink[];
     });
+    // Appended after the stored links so a real link wins, as in the broker's tools.
+    const mapped = await Promise.all(names.map((s) => deps.resourceLookup?.lookup(id, s)));
+    const links = [...stored, ...mapped.filter((m) => m !== undefined).map(mappingLink)];
     const conversationUrl = deps.publicUrl
       ? `${deps.publicUrl.replace(/\/$/, "")}/?thread=${encodeURIComponent(id)}`
       : undefined;

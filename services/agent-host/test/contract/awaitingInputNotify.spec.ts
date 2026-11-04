@@ -117,3 +117,31 @@ describe("createAwaitingInputNotifier", () => {
     expect(none.calls).toHaveLength(0);
   });
 });
+
+describe("createAwaitingInputNotifier with the webhooks mapping", () => {
+  // A Slack-started conversation whose link push failed still has its thread mapped.
+  it("adds the mapped thread after the stored links", async () => {
+    const bodies: AwaitingInputNotice[] = [];
+    const looked: string[] = [];
+    const notify = createAwaitingInputNotifier({
+      targets: { slack: { path: "/slack/awaiting-input" } },
+      broker: async () => ({ url: "http://broker", headers: {} }),
+      listLinks: async () => [],
+      resourceLookup: {
+        lookup: async (_id, source) => {
+          looked.push(source);
+          return { source, resourceType: "thread", resourceId: "C9:3.4", slackChannel: "C9", slackTs: "3.4" };
+        },
+      },
+      fetch: (async (_url: string, init: RequestInit) => {
+        bodies.push(JSON.parse(init.body as string));
+        return new Response("", { status: 200 });
+      }) as unknown as typeof fetch,
+    });
+    await notify!(id, interrupt("q1"));
+    expect(looked).toEqual(["slack"]);
+    expect(bodies[0].links).toEqual([
+      { source: "slack", resourceType: "thread", url: "C9:3.4", ref: { channel: "C9", threadTs: "3.4" } },
+    ]);
+  });
+});

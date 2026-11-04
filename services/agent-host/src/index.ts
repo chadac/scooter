@@ -719,6 +719,10 @@ export async function main(
       else if (event.type === "PERMISSION_RESOLVED") void awaitingInput.set(id, null);
     });
   }
+  // Fallback target discovery from the webhooks conversation_map when a conversation's link
+  // has no structured `ref`, wired only when a DSN is available.
+  const webhooksDsn = webhooksResourceDsn();
+  const resourceLookup = webhooksDsn ? createResourceLookup({ dsn: webhooksDsn }) : undefined;
   const notifyAwaitingInput = createAwaitingInputNotifier({
     targets: parseAwaitingInputNotify(process.env.AWAITING_INPUT_NOTIFY_JSON),
     broker: async () => {
@@ -726,6 +730,7 @@ export async function main(
       return url ? { url, headers: await sharedBrokerAuthHeaders() } : null;
     },
     listLinks: async (id) => (await store.listLinks?.(id)) ?? [],
+    resourceLookup,
     publicUrl: process.env.PUBLIC_URL || undefined,
   });
   if (notifyAwaitingInput) store.onAppend?.((id, { event }) => void notifyAwaitingInput(id, event));
@@ -1121,10 +1126,6 @@ export async function main(
 
   // The broker base URL for the agent-tools; unset, calls fail with a clear error.
   const brokerUrl = (process.env.BROKER_URL ?? "").replace(/\/$/, "");
-  // Fallback target discovery from the webhooks conversation_map when a conversation's link
-  // has no structured `ref`, wired only when a DSN is available.
-  const webhooksDsn = webhooksResourceDsn();
-  const resourceLookup = webhooksDsn ? createResourceLookup({ dsn: webhooksDsn }) : undefined;
 
   // Identity resolution, composed as layers over the base resolver (base -> [ALB signature
   // verify] -> [sub->email store + static map]), with verification before the store so an
