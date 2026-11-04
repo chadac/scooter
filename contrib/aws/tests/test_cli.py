@@ -185,8 +185,8 @@ def test_request_reports_auto_approval(monkeypatch, tmp_path, capsys):
     assert "AUTO-APPROVED" in out and "waiting" not in out.lower()
 
 
-def test_request_pending_tells_agent_to_poll_status(monkeypatch, tmp_path, capsys):
-    """A pending request tells the agent to poll `scooter-aws status <id>` and not to re-request."""
+def test_request_pending_tells_agent_it_will_be_messaged(monkeypatch, tmp_path, capsys):
+    """A pending request says a message will come, names the status command, and forbids re-requesting."""
     monkeypatch.setattr(cli, "_call", lambda *a, **k: (201, {"request_id": "req-9", "status": "pending"}))
     monkeypatch.delenv("CONVERSATION_URL", raising=False)
     pol = tmp_path / "p.json"
@@ -196,5 +196,5 @@ def test_request_pending_tells_agent_to_poll_status(monkeypatch, tmp_path, capsy
     assert rc == 0
     out = capsys.readouterr().out.lower()
     assert "scooter-aws status req-9" in out
-    assert "active" in out and "poll" in out
+    assert "you will get a message" in out and "don't poll" in out
     assert "not" in out and "another request" in out

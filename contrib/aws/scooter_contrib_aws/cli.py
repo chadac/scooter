@@ -209,14 +209,14 @@ def cli_main(argv: list[str] | None = None) -> int:
             if body.get("status") == "active":
                 print(f"requested: {rid} — AUTO-APPROVED by the account's approval rules. Credentials are ready; use `aws --profile {args.profile} …`.")
             else:
-                # Requesting neither pauses the agent nor notifies it on grant, so it is told to wait and poll.
+                # The agent-host messages the agent when a human decides, so no polling.
                 msg = (
                     f"requested: {rid} (status: {body['status']}). A human must approve this "
-                    f"in this conversation — you are NOT notified automatically.\n"
-                    f"WAIT for it: poll every ~15-30s with `scooter-aws status {rid}` until it "
-                    f"shows \"status\": \"active\" (can take minutes), THEN use "
-                    f"`aws --profile {args.profile} …`. Do NOT create another request for this "
-                    f"account while this one is pending."
+                    f"in this conversation. You will get a message when they approve or deny "
+                    f"it, so don't poll: carry on or end your turn. Once approved, use "
+                    f"`aws --profile {args.profile} …`; `scooter-aws status {rid}` shows where "
+                    f"it stands. Do NOT create another request for this account while this one "
+                    f"is pending."
                 )
                 if conv_url:
                     msg += f"\nShare this link so a human can approve: {conv_url}"

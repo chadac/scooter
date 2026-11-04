@@ -14,7 +14,7 @@ from typing import Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
-from .models import APPROVAL_KIND, PermissionRequest, RequestStatus, StsCredentials, approval_data, approval_message
+from .models import APPROVAL_KIND, PermissionRequest, RequestStatus, StsCredentials, approval_data, approval_message, decision_message
 from .service import PermissionService, RequestError
 from scooter_broker_lib.types import AuthDependency, Identity, Provider, Transport
 
@@ -44,6 +44,15 @@ def _request_view(req: PermissionRequest, creds: StsCredentials | None = None) -
             "region": creds.region,
             "expires_at": creds.expires_at,
         }
+    return out
+
+
+def _decision_view(req: PermissionRequest) -> dict[str, Any]:
+    """An approve/deny answer; the agent-host prompts the agent with `agent_message`."""
+    out = _request_view(req)
+    message = decision_message(req)
+    if message:
+        out["agent_message"] = message
     return out
 
 
@@ -184,7 +193,7 @@ class AwsPermissions(Transport):
                 req = await _svc().approve(request_id=request_id, approver=approver)
             except RequestError as e:
                 raise HTTPException(status_code=400, detail={"errors": e.reasons})
-            return _request_view(req)
+            return _decision_view(req)
 
         @router.post("/aws/{request_id}/deny")
         async def deny(request_id: str, identity: Identity = Depends(authed), body: dict = Body(default={})):
@@ -194,7 +203,7 @@ class AwsPermissions(Transport):
                 req = await _svc().deny(request_id=request_id, approver=approver, reason=body.get("reason"))
             except RequestError as e:
                 raise HTTPException(status_code=400, detail={"errors": e.reasons})
-            return _request_view(req)
+            return _decision_view(req)
 
         @router.get("/aws/audit")
         async def audit(identity: Identity = Depends(authed), target_account: str | None = None):

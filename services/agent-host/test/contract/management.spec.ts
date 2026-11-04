@@ -8,7 +8,7 @@ import { describe, it, expect, vi } from "vitest";
 import { PassThrough } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import { createManagementApi, SANDBOX_SOURCE, raiseApprovalInterrupt, fetchPendingApprovals } from "../../src/api/management.js";
+import { createManagementApi, SANDBOX_SOURCE, raiseApprovalInterrupt, fetchPendingApprovals, approvalAgentMessage } from "../../src/api/management.js";
 import { UserSkillError, type UserSkillStore } from "../../src/session/userSkillStore.js";
 import { createMemoryUserHookSettingsStore, type UserHookSettingsStore } from "../../src/hooks/userHookSettingsStore.js";
 import type { HookDef } from "../../src/hooks/types.js";
@@ -1323,6 +1323,20 @@ describe("management API", () => {
       } finally {
         vi.unstubAllGlobals();
       }
+    });
+  });
+
+  describe("approvalAgentMessage (what the agent is told after an answer)", () => {
+    it("returns the contrib's agent_message", () => {
+      expect(approvalAgentMessage(JSON.stringify({ status: "active", agent_message: "approved" }))).toBe("approved");
+    });
+
+    it("is undefined when the answer has none, it is blank, or the body is not JSON", () => {
+      expect(approvalAgentMessage(JSON.stringify({ status: "pending" }))).toBeUndefined();
+      expect(approvalAgentMessage(JSON.stringify({ agent_message: "  " }))).toBeUndefined();
+      expect(approvalAgentMessage(JSON.stringify({ agent_message: 7 }))).toBeUndefined();
+      expect(approvalAgentMessage("null")).toBeUndefined();
+      expect(approvalAgentMessage("<html>")).toBeUndefined();
     });
   });
 

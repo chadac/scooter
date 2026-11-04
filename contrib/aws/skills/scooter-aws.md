@@ -91,21 +91,22 @@ Deny. So:
 
 ## After you request: how to WAIT for approval
 
-Requesting does **not** pause you and you are **not** auto-notified when a human
-approves — a write request comes back `pending` and you must **poll** until it's
-`active`. Do this:
+Requesting does **not** pause you, but you **are** notified: when a human
+approves or denies the card, a message from the broker arrives in this
+conversation saying which, and wakes you if your turn has ended. A write
+request comes back `pending`, so:
 
 1. Post the approval link (above) so a human knows to act.
-2. Poll the request until it flips to `active`:
-   ```bash
-   scooter-aws status <request_id>     # -> "status": "pending" | "active" | "denied"
-   ```
-   Check every ~15–30s. It stays `pending` until a human approves — that can take
-   minutes. Keep waiting; don't give up after one check.
-3. When it's `active`, the credentials are ready — just run `aws --profile
-   <account-alias> …` (the profile pulls them; you don't copy tokens).
-4. If it goes `denied`, read the reason, adjust the scope, and ask the human —
-   don't silently re-request the same thing.
+2. Carry on with work that doesn't need AWS, or end your turn. Don't poll in a
+   loop; the message will come.
+3. When it says **approved**, the credentials are ready: just run `aws
+   --profile <account-alias> ...` (the profile pulls them; you don't copy
+   tokens).
+4. When it says **denied**, read the reason, adjust the scope, and ask the
+   human. Don't silently re-request the same thing.
+
+To check a request yourself (say, after a restart), run `scooter-aws status
+<request_id>`, which prints `"status": "pending" | "active" | "denied"`.
 
 ## Need MORE permissions than you asked for? — `escalate`
 
