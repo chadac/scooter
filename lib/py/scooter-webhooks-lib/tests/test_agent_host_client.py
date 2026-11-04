@@ -507,3 +507,23 @@ async def test_answer_interrupt_reports_the_refusal(monkeypatch):
     _patch_answer(monkeypatch, 403, {"error": "only the conversation's owner can answer"}, {})
     err = await ahc.answer_interrupt("c-1", "i-1", answered_by="u-2", option_id="allow")
     assert err == "only the conversation's owner can answer"
+
+
+# The conversation-router refuses an agent-host call that carries no service token.
+async def test_every_agent_host_call_carries_the_service_token(monkeypatch):
+    monkeypatch.setattr(ahc, "_sa_token", lambda: "sa-token")
+    seen: dict[str, str | None] = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen[req.url.path] = req.headers.get("authorization")
+        return httpx.Response(200, json={"id": "u-1", "status": "running"})
+
+    _patch_get(monkeypatch, handler)
+    await ahc.push_link("c1", source="slack", resource_type="thread")
+    await ahc.get_conversation_status("c1")
+    await ahc.user_id_for_email("u@example.com")
+    assert seen == {
+        "/conversations/c1/links": "Bearer sa-token",
+        "/conversations/c1": "Bearer sa-token",
+        "/users/by-email": "Bearer sa-token",
+    }

@@ -23,11 +23,12 @@ def slack() -> Provider:
     return Provider(
         name="slack",
         credential=StaticTokenSource(token=settings.slack_bot_token),
+        # Routes match in order, so the proxy's catch-all path goes last.
         transports=[
-            HttpProxy(upstream=UPSTREAM, methods=("GET", "POST")),
+            AwaitingInputNotice(upstream=UPSTREAM),
             # The agent tools share the proxy's upstream so the two cannot drift.
             McpTools(server=slack_mcp_server(), upstream=UPSTREAM),
-            AwaitingInputNotice(upstream=UPSTREAM),
+            HttpProxy(upstream=UPSTREAM, methods=("GET", "POST")),
         ],
         enabled=bool(settings.slack_bot_token),
     )

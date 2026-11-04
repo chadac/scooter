@@ -57,10 +57,7 @@ def _conversations_url() -> str:
 
 async def _create_conversation(owner: str | None) -> str | None:
     """Ask the server for a conversation id (POST /conversations), or None on failure; `owner` rides the body because the identity header's name is deployment-configurable."""
-    headers = {"content-type": "application/json"}
-    token = _sa_token()
-    if token:
-        headers["authorization"] = f"Bearer {token}"
+    headers = {"content-type": "application/json", **_auth()}
     body: dict = {}
     if owner:
         body["owner"] = owner
@@ -292,6 +289,12 @@ def _sa_token() -> str | None:
         return None
 
 
+def _auth() -> dict[str, str]:
+    """The bearer header the conversation-router requires on every agent-host call."""
+    token = _sa_token()
+    return {"authorization": f"Bearer {token}"} if token else {}
+
+
 async def _run_and_collect(payload: dict) -> str:
     """POST a RunAgentInput to /agui and return the final assistant text.
 
@@ -302,10 +305,7 @@ async def _run_and_collect(payload: dict) -> str:
     text_parts: list[str] = []
     saw_finished = False
     accepted = False
-    headers = {"Accept": "text/event-stream"}
-    token = _sa_token()
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    headers = {"Accept": "text/event-stream", **_auth()}
     try:
         async with httpx.AsyncClient(timeout=None) as client:
             async with client.stream(
@@ -362,6 +362,7 @@ async def push_link(
             resp = await client.post(
                 f"{base}/conversations/{conversation_id}/links",
                 json=body,
+                headers=_auth(),
             )
             return resp.status_code in (200, 201)
     except httpx.HTTPError as e:
@@ -383,7 +384,7 @@ async def get_conversation_status(conversation_id: str) -> str | None:
     base = _cfg().agent_host_url.rstrip("/")
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(f"{base}/conversations/{conversation_id}")
+            resp = await client.get(f"{base}/conversations/{conversation_id}", headers=_auth())
             if resp.status_code == 404:
                 logger.debug(
                     "conversation not found, no status",
@@ -424,7 +425,7 @@ async def user_id_for_email(email: str) -> str | None:
     base = _cfg().agent_host_url.rstrip("/")
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(f"{base}/users/by-email", params={"email": email})
+            resp = await client.get(f"{base}/users/by-email", params={"email": email}, headers=_auth())
             if resp.status_code != 200:
                 return None
             return resp.json().get("id") or None
@@ -453,10 +454,7 @@ async def answer_interrupt(
 ) -> str | None:
     """Answer a pending question as the Scooter user `answered_by`; None on success, else why it was refused."""
     base = _cfg().agent_host_url.rstrip("/")
-    headers = {"content-type": "application/json"}
-    token = _sa_token()
-    if token:
-        headers["authorization"] = f"Bearer {token}"
+    headers = {"content-type": "application/json", **_auth()}
     body: dict = {"answeredBy": {"id": answered_by, **({"email": email} if email else {})}, "optionId": option_id}
     if result is not None:
         body["result"] = result

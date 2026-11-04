@@ -42,3 +42,35 @@ async def test_the_token_is_injected_not_handed_to_the_agent(monkeypatch):
 
 def test_no_token_disables_the_provider():
     assert not slack().enabled
+
+
+def test_the_proxy_does_not_swallow_the_awaiting_input_route(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-123")
+    sent: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        sent.append(req)
+        return httpx.Response(200, json={"ok": True, "ts": "1.0"})
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: real(*a, transport=httpx.MockTransport(handler), **kw))
+
+    async def approver() -> Identity:
+        return Identity("", "agent-sandbox", "system:serviceaccount:agent-sandbox:agent-host", is_approver=True)
+
+    # Mounted in the provider's order, as the broker app does.
+    provider = slack()
+    app = FastAPI()
+    for t in provider.transports:
+        app.include_router(t.routes(provider, authed=approver), prefix="/slack")
+    notice = {
+        "conversationId": "c1",
+        "links": [{"source": "slack", "ref": {"channel": "C1", "thread_ts": "1.0"}}],
+        "interrupt": {"id": "i1", "message": "Proceed?", "options": []},
+    }
+    r = TestClient(app).post("/slack/awaiting-input", json=notice)
+    assert r.status_code == 200, r.text
+    assert [str(s.url) for s in sent] == ["https://slack.com/api/chat.postMessage"]
