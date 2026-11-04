@@ -4,6 +4,43 @@ Each release's section becomes its GitHub Release notes. Images keep their
 content tags and also gain `vX.Y.Z`; the flake is published to
 [FlakeHub](https://flakehub.com/flake/chadac-me/scooter).
 
+## v1.0.3
+
+### Features
+
+- **Slack threads hear when the agent is waiting.** When a conversation started
+  from Slack asks a question or needs an approval, the question and its options
+  are posted to the thread with an "Answer in Scooter" link. (#1095)
+- **Pending questions can be answered from Slack.** A question one click can
+  answer (a single, single-pick question or a plain approval) gets a button per
+  answer in the thread. Only the conversation's owner can answer. (#1098)
+- **The right panel has two tabs.** "Sandbox" becomes "Session", which stacks
+  Services, Subagents and each contrib panel as collapsible sections, next to
+  Approvals. (#1102)
+
+### Bug fixes
+
+- **CI results reach PRs opened from a fork.** CI-failed and green-again
+  notices now reach the conversation behind a fork PR. (#1099)
+- **A conversation's fenced pod stops all of its runs.** When a pod loses the
+  right to write a conversation, every bridge it had wired to it stops, not just
+  the current one. (#1091)
+- **Idle subagents no longer take down their parent's sandbox.** The
+  controller stopped reading a suspended subagent's shared sandbox as a zombie,
+  and a parent whose subagents are all suspended can now idle-suspend. (#1097)
+- **`scooter-rebuild switch` keeps the sandbox's container config.** The
+  terminal, sshd, the overlay store and the warm-store units survive a rebuild.
+  (#1101)
+- **The agent hears when its PR drops out of the merge queue**, with GitHub's
+  reason and what to do next. (#1103)
+- **A slow sandbox start no longer leaves an invisible run.** Setup has its own
+  5-minute budget, and a run ended during setup never sends its prompt. (#1089)
+- **`view_scheduled_task` shows the whole prompt**, so a long prompt can be
+  edited without losing its hidden part. (#1105)
+- **CI comments appear on fork PRs.** They are now posted by chadac-bot. (#1106)
+- **A new sandbox is Ready only once its PATH works**, so an early command no
+  longer fails with `command not found`. (#1087)
+
 ## v1.0.2
 
 ### Features
