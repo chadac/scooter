@@ -199,6 +199,14 @@ class SetupAbandonedError extends Error {
   }
 }
 
+// The sandbox never came up; retrying cannot help.
+class SandboxUnavailableError extends Error {
+  constructor(cause: unknown) {
+    super(`The sandbox could not be started: ${errorText(cause)}`);
+    this.name = "SandboxUnavailableError";
+  }
+}
+
 /** Rewrite a known raw agent/API error (context overflow) into a clearer user-facing
  *  message; anything unrecognized passes through. */
 export function clarifyRunError(raw: string): string {
@@ -400,6 +408,8 @@ export interface BridgeDeps {
   /** The deployment's model catalog (GET /models), needed for per-provider resolution; absent
    *  means every provider gets the conversation model as-is. */
   modelCatalog?: ModelCatalog;
+  /** Gates start() on provisioning; a rejection fails the run. */
+  sandboxReady?: () => Promise<void>;
   /** The ACP client, or an async factory that creates one on first start(), wrapped into a
    *  one-entry provider registry; mutually exclusive with `acpProviders`. */
   acpClient?: AcpClient | (() => Promise<AcpClient>);
@@ -504,6 +514,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   /** The session that served the previous run. */
   let lastRunReady: ReadySession | undefined;
   let started = false;
+  // Shared by concurrent start() calls.
+  let starting: Promise<void> | undefined;
   // The run queue: a bridge has one agent session, so runs are serialized through an
   // inspectable queue that orders by priority and can force-interrupt the current run,
   // and each run fully completes (text closed, RUN_FINISHED emitted) before the next
@@ -1393,13 +1405,17 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           const raw = errorText(err);
           // Replaying a turn that already ran tools re-sends the user's message on top of work it
           // may have finished (a commit, a PR edit), so only a turn that never started is retried.
-          const replaySafe = !st.sawActivity;
+          const noSandbox = err instanceof SandboxUnavailableError;
+          const replaySafe = !st.sawActivity && !noSandbox;
           log.warn("acp prompt rejected", { run_id: runId, error: raw, saw_activity: st.sawActivity === true, retry: replaySafe });
           emit({
             type: "RUN_ERROR",
-            message: replaySafe
-              ? clarifyRunError(raw)
-              : `${clarifyRunError(raw)} The turn was interrupted after it had started working, so it was not retried automatically; send a message to continue.`,
+            message: noSandbox
+              ? `${raw} Nothing was sent to the agent; send the message again to retry.`
+              : replaySafe
+                ? clarifyRunError(raw)
+                : `${clarifyRunError(raw)} The turn was interrupted after it had started working, so it was not retried automatically; send a message to continue.`,
+            ...(noSandbox ? { code: "sandbox_unavailable" } : {}),
           });
           st.retryable = replaySafe; // the ACP call threw (init/session/stream) before any work — transient; pump retries
           // A dead remote session fails identically on every retry, so drop the cached session
@@ -1834,10 +1850,19 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
 
     async start() {
       if (started) return;
-      // Establish the first session for a default (interactive) context; the run loop
-      // re-resolves per run.
-      await resolveForRun(defaultRunContext());
-      started = true;
+      starting ??= (async () => {
+        // Nothing may touch the pod before it is provisioned.
+        await deps.sandboxReady?.().catch((err: unknown) => {
+          throw new SandboxUnavailableError(err);
+        });
+        // Establish the first session for a default (interactive) context; the run loop
+        // re-resolves per run.
+        await resolveForRun(defaultRunContext());
+        started = true;
+      })().finally(() => {
+        starting = undefined;
+      });
+      return starting;
     },
 
     prompt(input: PromptInput, opts?: PromptOptions): Promise<RunId> {

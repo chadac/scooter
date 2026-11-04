@@ -381,6 +381,8 @@ export type BridgeFactory = (args: {
    *  owner-bound provider (the BYO remote agent) can route this conversation to that user's
    *  agent; undefined for an unowned/anonymous conversation. */
   owner?: string;
+  /** Settles once the Sandbox is provisioned; start() awaits it. */
+  sandboxReady?: () => Promise<void>;
 }) => SessionBridge | undefined;
 
 export interface SessionManagerDeps {
@@ -848,36 +850,131 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     provider?: string,
     sender?: MessageSender,
   ): Promise<{ run?: Promise<unknown> }> {
-    // Find the conversation for this thread: in memory (revive if no live bridge), persisted
-    // but not in memory (hydrate on demand and revive so a follow-up continues the existing
-    // conversation), or genuinely new (start one, with the first prompt's model picking the
-    // conversation's model).
-    let entry = [...entries.values()].find((e) => e.threadId === threadId);
-    if (!entry) {
-      entry = await hydrateByThread(threadId);
-    }
-    if (!entry) {
-      // Callers create explicitly via the router and prompt the id returned.
-      throw new UnknownConversationError(threadId);
-    }
-    await applyModelSwitch(entry, model, provider);
-    if (!entry.bridge) {
-      // No live bridge, so revive.
-      await api.revive(entry.id);
-    }
-    touch(entry);
-    // A priority prompt (a webhook @mention) preempts with the "thinking" policy, which
-    // interrupts idle text generation but lets an in-flight tool call finish.
-    return {
-      run: entry.bridge?.prompt(
-        { threadId, text, images, files, source, sender },
-        priority ? { priority, interrupt: "thinking" } : undefined,
-      ),
-    };
+    return inArrivalOrder(threadId, async () => {
+      // Find the conversation for this thread: in memory (revive if no live bridge), persisted
+      // but not in memory (hydrate on demand and revive so a follow-up continues the existing
+      // conversation), or genuinely new (start one, with the first prompt's model picking the
+      // conversation's model).
+      let entry = [...entries.values()].find((e) => e.threadId === threadId);
+      if (!entry) {
+        entry = await hydrateByThread(threadId);
+      }
+      if (!entry) {
+        // Callers create explicitly via the router and prompt the id returned.
+        throw new UnknownConversationError(threadId);
+      }
+      await applyModelSwitch(entry, model, provider);
+      const bridge = await bridgeFor(entry);
+      touch(entry);
+      // A priority prompt (a webhook @mention) preempts with the "thinking" policy, which
+      // interrupts idle text generation but lets an in-flight tool call finish.
+      return {
+        run: bridge?.prompt(
+          { threadId, text, images, files, source, sender },
+          priority ? { priority, interrupt: "thinking" } : undefined,
+        ),
+      };
+    });
   }
+
+  // Each thread's last queueing step; prompts queue strictly behind it.
+  const queueTails = new Map<string, Promise<unknown>>();
+  /** Runs `queue` after earlier ones for `key`, in arrival order. */
+  const inArrivalOrder = <T>(key: string, queue: () => Promise<T>): Promise<T> => {
+    const prev = queueTails.get(key);
+    // Start now when uncontended; deferring reorders it against other requests.
+    const next = prev ? prev.then(queue) : queue();
+    const tail = next.catch(() => {});
+    queueTails.set(key, tail);
+    void tail.then(() => {
+      if (queueTails.get(key) === tail) queueTails.delete(key);
+    });
+    return next;
+  };
 
   // In-flight revive() per conversation, so concurrent callers share one revive.
   const reviving = new Map<SessionId, Promise<Conversation>>();
+  // Per in-flight revive: the bridge, once it accepts prompts.
+  const queueable = new Map<SessionId, Promise<SessionBridge | undefined>>();
+
+  const sameRef = (a: SandboxRef, b: SandboxRef): boolean => a.name === b.name && a.namespace === b.namespace;
+
+  /** Revives only until a bridge accepts prompts, then returns it. */
+  const bridgeFor = async (entry: Entry): Promise<SessionBridge | undefined> => {
+    if (entry.bridge) return entry.bridge;
+    const done = api.revive(entry.id);
+    const ready = queueable.get(entry.id);
+    if (!ready) {
+      await done;
+      return entry.bridge;
+    }
+    // Its own bridge: a failing revive may detach entry.bridge first.
+    const bridge = await Promise.race([ready, done.then(() => entry.bridge)]);
+    // From here a failure surfaces as the queued run's RUN_ERROR.
+    done.catch((err: unknown) => log.warn("revive failed behind a queued prompt", { conversation_id: entry.id, error: formatError(err) }));
+    return bridge;
+  };
+
+  /** Re-enqueue what suspend() drained, skipping messages already logged. */
+  const requeuePending = async (entry: Entry): Promise<void> => {
+    const id = entry.id;
+    // Clear and persist the field first so a failure cannot replay them twice.
+    let pending = entry.pendingQueue ?? [];
+    if (pending.length > 0) {
+      // Skip messages already in the durable log: runPrompt persists the user message before
+      // calling the agent, so an in-flight message would otherwise run twice.
+      try {
+        const tail = (await store.readEventsTail?.(id, 3)) ?? (await collectEvents(store.readEvents(id)));
+        // Match only user turns: TEXT_MESSAGE_CONTENT carries no role, and an assistant reply
+        // quoting the text must not suppress a replay.
+        const userMsgIds = new Set<string>();
+        const loggedUserTexts = new Set<string>();
+        for (const e of tail) {
+          const ev = e as { type?: string; delta?: string; role?: string; messageId?: string; source?: string; text?: string };
+          // Sourced prompts log as SYSTEM_MESSAGE; hook notes are output.
+          if (ev.type === "SYSTEM_MESSAGE" && ev.source !== "hook" && typeof ev.text === "string") {
+            loggedUserTexts.add(ev.text);
+          } else if (ev.type === "TEXT_MESSAGE_START" && ev.role === "user" && ev.messageId) {
+            userMsgIds.add(ev.messageId);
+          } else if (
+            ev.type === "TEXT_MESSAGE_CONTENT" &&
+            typeof ev.delta === "string" &&
+            ev.messageId !== undefined &&
+            userMsgIds.has(ev.messageId)
+          ) {
+            loggedUserTexts.add(ev.delta);
+          }
+        }
+        const before = pending.length;
+        pending = pending.filter((p) => !loggedUserTexts.has(p.text));
+        if (pending.length !== before) {
+          log.warn("revive: skipping already-logged messages (in-flight replay dedupe)", {
+            conversation_id: id,
+            skipped: before - pending.length,
+          });
+        }
+      } catch (err) {
+        // Replaying is the safer default on a read failure: a possible duplicate turn beats
+        // dropping the user's message.
+        log.errorWith("revive: replay dedupe read failed, replaying all", err, { conversation_id: id });
+      }
+    }
+    if (pending.length > 0 || (entry.pendingQueue?.length ?? 0) > 0) {
+      entry.pendingQueue = [];
+      await saveMeta(entry);
+      for (const item of pending) {
+        // A queued message that fails to re-run must not fail the revive.
+        void entry.bridge
+          ?.prompt(
+            { threadId: entry.threadId, text: item.text, source: item.source, sender: item.sender, humanInitiated: item.humanInitiated },
+            item.priority ? { priority: item.priority } : undefined,
+          )
+          .catch((err) => {
+            log.errorWith("re-enqueued message failed", err, { conversation_id: id });
+          });
+      }
+    }
+  };
 
   /** The entry owning `e`'s sandbox: itself or its root. */
   const rootEntry = (e: Entry): Entry => {
@@ -1046,12 +1143,25 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // Single-flight: concurrent callers must share one revive, or each builds its own bridge.
       const inflight = reviving.get(id);
       if (inflight) return inflight;
+      let markQueueable!: (bridge: SessionBridge | undefined) => void;
+      const accepting = new Promise<SessionBridge | undefined>((resolve) => { markQueueable = resolve; });
+      queueable.set(id, accepting);
       const run = (async (): Promise<Conversation> => {
         const entry = entries.get(id);
         if (!entry) throw new Error(`unknown conversation: ${id}`);
         // A tombstoned entry may still be held by a caller that raced the delete.
         if (endedIds.has(id)) throw new Error(`conversation was ended: ${id}`);
-  
+
+        const buildBridge = (sandboxReady?: () => Promise<void>): SessionBridge | undefined => {
+          entry.bridge = bridgeFactory?.({
+            conversationId: id, sandbox: entry.sandbox, model: entry.model, pickedProvider: entry.pickedProvider,
+            owner: entry.owner, sandboxReady,
+          }) ?? entry.bridge;
+          wireEventLog(entry);
+          return entry.bridge;
+        };
+        // Built before provisioning, so prompts queue during the cold start.
+        let early: SessionBridge | undefined;
         if (entry.parentId) {
           // A subagent never provisions; it rides its root's Sandbox.
           let root: Entry | undefined = entry;
@@ -1064,13 +1174,39 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         } else {
           // A placeholder ref with no namespace means the Sandbox is absent, so create rather than
           // resume.
-          entry.sandbox = entry.sandbox.namespace
-            ? await provisioner.resume(entry.sandbox, entry.threadId)
-            : await provisioner.create(sandboxKey(entry.sandbox.name), entry.threadId);
+          const from = entry.sandbox;
+          const provisioning = from.namespace
+            ? provisioner.resume(from, entry.threadId)
+            : provisioner.create(sandboxKey(from.name), entry.threadId);
+          if (from.namespace) {
+            // Resume keeps the ref, so build the bridge now.
+            early = buildBridge(async () => {
+              const ref = await provisioning;
+              if (!sameRef(ref, from)) {
+                throw new Error(`sandbox moved from ${from.namespace}/${from.name} to ${ref.namespace}/${ref.name} while reviving`);
+              }
+            });
+            entry.lastActivityAt = nowMs();
+            await requeuePending(entry);
+            markQueueable(early);
+          }
+          try {
+            entry.sandbox = await provisioning;
+          } catch (err) {
+            // Queued runs fail on the gate; next prompt revives afresh.
+            if (early && entry.bridge === early) entry.bridge = undefined;
+            throw err;
+          }
+          // The gate fails its runs; rebuild on the real ref.
+          if (early && !sameRef(entry.sandbox, from)) {
+            if (entry.bridge === early) entry.bridge = undefined;
+            early = undefined;
+          }
         }
         // end() may have landed during provisioning; destroy the pod just made before any side effect
         // republishes the conversation.
         if (endedIds.has(id)) {
+          if (early && entry.bridge === early) entry.bridge = undefined;
           // A subagent's Sandbox is its root's; never destroy it here.
           if (entry.parentId) throw new Error(`conversation was ended: ${id}`);
           await provisioner.destroy(entry.sandbox).catch((err: unknown) => {
@@ -1080,7 +1216,9 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           });
           throw new Error(`conversation was ended: ${id}`);
         }
-        entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model: entry.model, pickedProvider: entry.pickedProvider, owner: entry.owner }) ?? entry.bridge;
+        // A model switch during provisioning drops the early bridge.
+        const late = !early || entry.bridge !== early;
+        if (late) buildBridge();
         entry.status = "running";
         // Republish sandbox_ref, and this pod as creator_pod since the run now lives here;
         // idempotent, fire-and-forget.
@@ -1091,8 +1229,11 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         // Count the resume as activity so the idle sweep gives the fresh pod a full idle window; set
         // directly rather than touch() so no fire-and-forget saveMeta races the awaited write below.
         entry.lastActivityAt = nowMs();
-        wireEventLog(entry);
         await saveMeta(entry); // awaited so a persist failure propagates
+        if (late) {
+          await requeuePending(entry);
+          markQueueable(entry.bridge);
+        }
         await entry.bridge?.start();
         // Re-raise interrupts the previous pod lost; fire-and-forget.
         if (entry.bridge) {
@@ -1100,63 +1241,6 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
             deps.onRevived?.(id);
           } catch (err) {
             log.errorWith("onRevived hook failed", err, { conversation_id: id });
-          }
-        }
-        // Re-enqueue the messages suspend() drained; clear and persist the field first so a failure
-        // cannot replay them twice.
-        let pending = entry.pendingQueue ?? [];
-        if (pending.length > 0) {
-          // Skip messages already in the durable log: runPrompt persists the user message before
-          // calling the agent, so an in-flight message would otherwise run twice.
-          try {
-            const tail = (await store.readEventsTail?.(id, 3)) ?? (await collectEvents(store.readEvents(id)));
-            // Match only user turns: TEXT_MESSAGE_CONTENT carries no role, and an assistant reply
-            // quoting the text must not suppress a replay.
-            const userMsgIds = new Set<string>();
-            const loggedUserTexts = new Set<string>();
-            for (const e of tail) {
-              const ev = e as { type?: string; delta?: string; role?: string; messageId?: string; source?: string; text?: string };
-              // Sourced prompts log as SYSTEM_MESSAGE; hook notes are output.
-              if (ev.type === "SYSTEM_MESSAGE" && ev.source !== "hook" && typeof ev.text === "string") {
-                loggedUserTexts.add(ev.text);
-              } else if (ev.type === "TEXT_MESSAGE_START" && ev.role === "user" && ev.messageId) {
-                userMsgIds.add(ev.messageId);
-              } else if (
-                ev.type === "TEXT_MESSAGE_CONTENT" &&
-                typeof ev.delta === "string" &&
-                ev.messageId !== undefined &&
-                userMsgIds.has(ev.messageId)
-              ) {
-                loggedUserTexts.add(ev.delta);
-              }
-            }
-            const before = pending.length;
-            pending = pending.filter((p) => !loggedUserTexts.has(p.text));
-            if (pending.length !== before) {
-              log.warn("revive: skipping already-logged messages (in-flight replay dedupe)", {
-                conversation_id: id,
-                skipped: before - pending.length,
-              });
-            }
-          } catch (err) {
-            // Replaying is the safer default on a read failure: a possible duplicate turn beats
-            // dropping the user's message.
-            log.errorWith("revive: replay dedupe read failed, replaying all", err, { conversation_id: id });
-          }
-        }
-        if (pending.length > 0 || (entry.pendingQueue?.length ?? 0) > 0) {
-          entry.pendingQueue = [];
-          await saveMeta(entry);
-          for (const item of pending) {
-            // A queued message that fails to re-run must not fail the revive.
-            void entry.bridge
-              ?.prompt(
-                { threadId: entry.threadId, text: item.text, source: item.source, sender: item.sender, humanInitiated: item.humanInitiated },
-                item.priority ? { priority: item.priority } : undefined,
-              )
-              .catch((err) => {
-                log.errorWith("re-enqueued message failed", err, { conversation_id: id });
-              });
           }
         }
         // Publish phase=Assigned; owner-fenced, fire-and-forget.
@@ -1168,6 +1252,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         return await run;
       } finally {
         if (reviving.get(id) === run) reviving.delete(id);
+        if (queueable.get(id) === accepting) queueable.delete(id);
       }
     },
 
@@ -1340,13 +1425,16 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       const entry = entries.get(id);
       if (!entry) throw new Error(`unknown conversation: ${id}`);
       touch(entry);
-      await applyModelSwitch(entry, model);
-      // Revive whenever there is no live bridge, since a hydrated conversation can be "running"
-      // with no bridge in this process.
-      if (!entry.bridge) await this.revive(id);
-      const opts = priority || interrupt ? { priority, interrupt } : undefined;
-      const humanInitiated = source !== undefined && DERIVED_SOURCES.has(source) ? await inheritedHumanTrigger(entry) : undefined;
-      await entry.bridge?.prompt({ threadId: entry.threadId, text, images, files, source, humanInitiated }, opts);
+      const { run } = await inArrivalOrder(entry.threadId, async () => {
+        await applyModelSwitch(entry, model);
+        // Revive whenever there is no live bridge, since a hydrated conversation can be "running"
+        // with no bridge in this process.
+        const bridge = await bridgeFor(entry);
+        const opts = priority || interrupt ? { priority, interrupt } : undefined;
+        const humanInitiated = source !== undefined && DERIVED_SOURCES.has(source) ? await inheritedHumanTrigger(entry) : undefined;
+        return { run: bridge?.prompt({ threadId: entry.threadId, text, images, files, source, humanInitiated }, opts) };
+      });
+      await run;
     },
 
     async promptByThread(threadId, text, model, priority, owner, images, files, source, provider, sender) {

@@ -182,10 +182,13 @@ describe("recovered (suspended → revived) conversations", () => {
       // The send path the /agui POST takes.
       await sessions.promptByThread("thread-susp-2" as never, "please wake up", undefined);
 
-      expect(sessions.get(conv.id)?.status, "the send must revive the conversation").toBe("running");
       const bridge = bridges.get(conv.id)!;
-      expect(bridge.started, "revive must start a live bridge").toBe(true);
       expect(bridge.prompts, "the message must reach the revived bridge").toContain("please wake up");
+      // The send returns once queued; the revive finishes behind it.
+      await vi.waitFor(() => {
+        expect(sessions.get(conv.id)?.status, "the send must revive the conversation").toBe("running");
+        expect(bridge.started, "revive must start a live bridge").toBe(true);
+      });
 
       await store.flush?.(conv.id);
       const seen: AguiEvent[] = [];
