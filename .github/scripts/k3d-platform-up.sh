@@ -32,6 +32,23 @@ _phase_summary() {
 }
 trap _phase_summary EXIT
 
+# --- flake deps, realised in the background ---------------------------------
+# One build of every flake output needed, overlapping cluster bring-up.
+_deps_out=$(mktemp) _deps_log=$(mktemp)
+(
+  t0=$(date +%s)
+  # A prebuilt store path substitutes from Cachix without evaluating.
+  if [ -n "${K3D_CI_DEPS:-}" ] \
+     && nix build "$K3D_CI_DEPS" --no-link --print-out-paths >"$_deps_out"; then
+    echo "[phase] deps-realise=$(( $(date +%s) - t0 ))s (prebuilt $K3D_CI_DEPS)"
+  else
+    [ -n "${K3D_CI_DEPS:-}" ] && echo "::warning::could not substitute $K3D_CI_DEPS; evaluating locally"
+    nix build .#k3d-ci-deps --no-link --print-out-paths >"$_deps_out"
+    echo "[phase] deps-eval+build=$(( $(date +%s) - t0 ))s"
+  fi
+) >"$_deps_log" 2>&1 &
+_deps_pid=$!
+
 phase "cluster+registry"
 # --- cluster + registry ------------------------------------------------------
 # Before the caches below are mounted, so an emptied one is not in use.
@@ -94,15 +111,16 @@ nix shell nixpkgs#kubectl -c bash -c "
 
 phase "platform-images-push"
 # --- platform images ---------------------------------------------------------
-# attr -> content-tagged registry ref, from the flake; the ref evaluation is
-# timed separately from the blob push.
-_push_eval_t0=$(date +%s)
-# One build for everything this script needs from the flake (refs map, image
-# manifests, copyTo runners, k3d platform manifests), since each separate
-# `nix build` re-evaluates the sandbox-os system.
-deps=$(nix build .#k3d-ci-deps --no-link --print-out-paths)
+_deps_rc=0
+wait "$_deps_pid" || _deps_rc=$?
+cat "$_deps_log"
+if [ "$_deps_rc" -ne 0 ]; then
+  echo "ERROR: building .#k3d-ci-deps failed (exit $_deps_rc)"
+  exit 1
+fi
+deps=$(tail -n1 "$_deps_out")
+echo "[phase] deps-wait=$(( $(date +%s) - _PHASE_LAST ))s"
 refs="$deps/image-refs.json"
-echo "[phase] image-refs-eval=$(( $(date +%s) - _push_eval_t0 ))s"
 
 push_attrs=(
   agent-host-image
