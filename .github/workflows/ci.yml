@@ -1088,14 +1088,24 @@ jobs:
       matrix: ${{ fromJSON(needs.e2e-full-distribute.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v5
-      - uses: nixbuild/nix-quick-install-action@v30
+      # Unset max-jobs is 1, serialising ~150 small per-commit image builds.
+      - uses: nixbuild/nix-quick-install-action@v35
         if: ${{ !startsWith(runner.name, 'onprem') }}
+        with:
+          nix_version: 2.34.7
+          nix_conf: |
+            max-jobs = auto
+            http-connections = 64
+            max-substitution-jobs = 32
       # No authToken: self-hosted runners get no secrets, and a shard only needs to pull.
       - uses: cachix/cachix-action@v15
         with:
           name: scooter
           # onprem: the cache is already set system-wide (untrusted users can't add it).
           skipAddingSubstituter: ${{ startsWith(runner.name, 'onprem') }}
+
+      - name: pin nixpkgs# to the flake lock
+        run: .github/scripts/pin-nixpkgs.sh
 
       # One script so the `flake focus full` job stands up an identical cluster.
       - name: bring up k3d + the platform
@@ -1890,8 +1900,15 @@ jobs:
         with:
           # Full history: the control step builds a worktree at the PR's base commit.
           fetch-depth: 0
-      - uses: nixbuild/nix-quick-install-action@v30
+      # Unset max-jobs is 1, serialising ~150 small per-commit image builds.
+      - uses: nixbuild/nix-quick-install-action@v35
         if: ${{ !startsWith(runner.name, 'onprem') }}
+        with:
+          nix_version: 2.34.7
+          nix_conf: |
+            max-jobs = auto
+            http-connections = 64
+            max-substitution-jobs = 32
       - uses: cachix/cachix-action@v15
         with:
           name: scooter
@@ -1907,6 +1924,9 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
           FULL_TARGET: "1"
         run: .github/scripts/flake-focus-pattern.sh
+
+      - name: pin nixpkgs# to the flake lock
+        run: .github/scripts/pin-nixpkgs.sh
 
       - name: bring up k3d + the platform
         run: .github/scripts/k3d-platform-up.sh
