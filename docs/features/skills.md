@@ -60,6 +60,22 @@ Disabled skills count toward the total — a disabled skill is one toggle away f
 prompt, and finding out you are over budget at the moment you enable one is the worst
 time to learn it.
 
+## Skills in the sandbox and skill sources
+
+With the `skills` contrib enabled, a conversation also loads the skills in its own
+sandbox, at `~/.scooter/skills/<name>/SKILL.md`. You or the agent can write one there,
+and it's offered from the next message.
+
+Settings → **Skill sources** installs skill packages there in every conversation of yours:
+
+- **skills.sh**: anything `npx skills add` accepts, such as `vercel-labs/agent-skills`.
+- **GitHub repo**: `owner/repo`, optionally with a `/path` and an `@ref`. Every `SKILL.md`
+  under it becomes a skill. Private repos work, because the sandbox clones with its own
+  git access.
+
+A source can be limited to named skills. A built-in or personal skill with the same name
+always wins. In the sandbox, `scooter-skills status` shows any source that failed to install.
+
 ## Where they reach the agent
 
 Personal skills travel every path a built-in does, so the agent behaves the same however

@@ -27,6 +27,7 @@
     ./marimo/contrib.nix
     ./personalization/contrib.nix
     ./shares/contrib.nix
+    ./skills/contrib.nix
     ./slack/contrib.nix
     ./ssh/contrib.nix
   ];

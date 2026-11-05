@@ -1363,18 +1363,20 @@ let
     let m = builtins.filter (e: e.name == "SKILL_PROVIDERS_JSON") (hostEnvOf extra);
     in if m == [ ] then [ ] else builtins.fromJSON (builtins.head m).value;
   echoProvider = enable: { contribs.echo.enable = nixpkgsLib.mkForce enable; };
+  providerIds = extra: map (p: p.id) (providersOf extra);
+  providerById = extra: id: builtins.filter (p: p.id == id) (providersOf extra);
   providerProblems =
-    (if providersOf { } == [ ] then [ ] else [ "SKILL_PROVIDERS_JSON has undeclared providers" ])
-    ++ (let r = providersOf { scooter.agent.skillProviders.team = { command = "x"; timeout = 90; }; }; in
+    (if providerIds { } == [ "skills.sandbox" ] then [ ]
+     else [ "SKILL_PROVIDERS_JSON is not just the skills contrib's: ${builtins.toJSON (providerIds { })}" ])
+    ++ (let r = providerById { scooter.agent.skillProviders.team = { command = "x"; timeout = 90; }; } "team"; in
         if r != [ ] && (builtins.head r).timeoutSec == 90 && (builtins.head r).waitSec == 90 then [ ]
         else [ "a provider with no `wait` does not wait its whole timeout" ])
-    ++ (if providersOf { scooter.agent.skillProviders.team = { command = "x"; enable = false; }; } == [ ] then [ ]
+    ++ (if providerById { scooter.agent.skillProviders.team = { command = "x"; enable = false; }; } "team" == [ ] then [ ]
         else [ "a provider still renders with enable = false" ])
-    ++ (let r = providersOf (echoProvider true); in
-        if map (p: p.id) r == [ "echo.hello" ] && nixpkgsLib.hasInfix "echo-provided-skill-marker" (builtins.head r).command
-        then [ ]
+    ++ (let r = providerById (echoProvider true) "echo.hello"; in
+        if r != [ ] && nixpkgsLib.hasInfix "echo-provided-skill-marker" (builtins.head r).command then [ ]
         else [ "an enabled contrib's provider is not in SKILL_PROVIDERS_JSON as <contrib>.<id>" ])
-    ++ (if providersOf (echoProvider false) == [ ] then [ ]
+    ++ (if providerById (echoProvider false) "echo.hello" == [ ] then [ ]
         else [ "a disabled contrib's provider is in SKILL_PROVIDERS_JSON" ]);
 
   # The UI pod serves the DEPLOYMENT's contrib manifest, mounted from a ConfigMap, so a

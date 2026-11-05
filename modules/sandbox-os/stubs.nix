@@ -46,4 +46,7 @@
 
   # contrib/gcp's CLIs, authenticated the same way.
   google-cloud-sdk = { package = pkgs.google-cloud-sdk; bins = [ "gcloud" "gsutil" "bq" ]; };
+
+  # Node for skills.sh sources, fetched on first sync.
+  scooter-skills-node = { package = pkgs.nodejs; bins = [ "node" "npm" "npx" ]; };
 }
