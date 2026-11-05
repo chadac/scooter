@@ -226,6 +226,8 @@
     commits.enable = true;
     # Per-user SSH key: a broker-backed ssh-agent in each sandbox, a Settings tab.
     ssh.enable = true;
+    # Per-user skill sources, installed into each sandbox; a Settings tab.
+    skills.enable = true;
 
     # Datadog provider: proxies /datadog/* -> https://api.<site> with the two keys
     # injected from a Secret in the broker namespace.

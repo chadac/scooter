@@ -236,6 +236,10 @@
             # commits switches on the git-identity poller in the sandbox.
             assert builtins.elem "contrib/commits/sandbox.nix" (derive [ ]).treeRelative;
             assert shipped.nixos.config.programs.scooterGitIdentity.enable;
+            # skills ships the scooter-skills CLI its skill provider runs.
+            assert builtins.elem "contrib/skills/sandbox.nix" (derive [ ]).treeRelative;
+            assert lib.any (p: (p.name or "") == "scooter-skills")
+              shipped.nixos.config.environment.systemPackages;
             assert shipped.nixos.config.systemd.services ? "scooter-aws-config";
             assert skillCfg.environment.etc ? "scooter/skills/echo-skill";
             assert builtins.elem "skill-dirs/module.nix"
@@ -397,6 +401,7 @@
             contrib-personalization = contribs.packages.personalization.broker;
             contrib-shares = contribs.packages.shares.broker;
             contrib-ssh = contribs.packages.ssh.broker;
+            contrib-skills = contribs.packages.skills.broker;
 
             # nix build .#contribs-all -> every variant of every contrib
             contribs-all = contribsAll;
@@ -553,6 +558,7 @@
             contrib-personalization = contribs.packages.personalization.broker;
             contrib-shares = contribs.packages.shares.broker;
             contrib-ssh = contribs.packages.ssh.broker;
+            contrib-skills = contribs.packages.skills.broker;
             # Every shipped handler and provider imports in its service's runtime env.
             webhooks-entrypoints = import ./nix/check-entrypoints.nix {
               inherit pkgs; name = "webhooks-entrypoints"; package = p.scooter-webhooks; bin = "agent-webhooks"; group = "scooter_webhooks.handlers";

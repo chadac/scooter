@@ -77,6 +77,17 @@
         ],
         "name": "marimo-0.25.1"
       },
+      "scooter-skills-node": {
+        "attr": "scooter-skills-node",
+        "drv": "/nix/store/i2p2vcalxpyikyrihlf83ccvyn73rfg4-nodejs-24.21.0.drv",
+        "output": "out",
+        "bins": [
+          "node",
+          "npm",
+          "npx"
+        ],
+        "name": "nodejs-24.21.0"
+      },
       "scooter-vscode-ahp": {
         "attr": "scooter-vscode-ahp",
         "drv": "/nix/store/pin00qz3df2fpnbyhc0cimbgd21hxynf-scooter-vscode-ahp-0.0.0.drv",
@@ -172,6 +183,17 @@
         ],
         "name": "marimo-0.25.1"
       },
+      "scooter-skills-node": {
+        "attr": "scooter-skills-node",
+        "drv": "/nix/store/pbpcbj48qdzmxzlj4p4mnfy226dq09h7-nodejs-24.21.0.drv",
+        "output": "out",
+        "bins": [
+          "node",
+          "npm",
+          "npx"
+        ],
+        "name": "nodejs-24.21.0"
+      },
       "scooter-vscode-ahp": {
         "attr": "scooter-vscode-ahp",
         "drv": "/nix/store/3bi963j5ab3v4zgkhmfc0j604zbjd4bg-scooter-vscode-ahp-0.0.0.drv",
@@ -266,6 +288,17 @@
           "marimo"
         ],
         "name": "marimo-0.25.1"
+      },
+      "scooter-skills-node": {
+        "attr": "scooter-skills-node",
+        "drv": "/nix/store/a7mzwdph5vkavini0lj77xph53qhgjlf-nodejs-24.21.0.drv",
+        "output": "out",
+        "bins": [
+          "node",
+          "npm",
+          "npx"
+        ],
+        "name": "nodejs-24.21.0"
       },
       "scooter-vscode-ahp": {
         "attr": "scooter-vscode-ahp",
