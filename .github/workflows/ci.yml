@@ -1090,8 +1090,15 @@ jobs:
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - id: build
         name: nix build .#k3d-ci-deps (skipped when Cachix has it)
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
         run: |
           set -euo pipefail
+          # Without the token nothing is pushed, so shards build locally anyway.
+          if [ -z "$CACHIX_AUTH_TOKEN" ]; then
+            echo "::notice::no CACHIX_AUTH_TOKEN (fork PR); shards will build locally"
+            exit 0
+          fi
           deps=$(nix eval --raw .#k3d-ci-deps.outPath)
           # Building a cached path would download every image closure.
           if nix path-info --store https://scooter.cachix.org "$deps" >/dev/null 2>&1; then
