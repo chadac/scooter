@@ -35,18 +35,13 @@ trap _phase_summary EXIT
 # --- flake deps, realised in the background ---------------------------------
 # One build of every flake output needed, overlapping cluster bring-up.
 _deps_out=$(mktemp) _deps_log=$(mktemp)
-(
+{ (
   t0=$(date +%s)
-  # A prebuilt store path substitutes from Cachix without evaluating.
-  if [ -n "${K3D_CI_DEPS:-}" ] \
-     && nix build "$K3D_CI_DEPS" --no-link --print-out-paths >"$_deps_out"; then
-    echo "[phase] deps-realise=$(( $(date +%s) - t0 ))s (prebuilt $K3D_CI_DEPS)"
-  else
-    [ -n "${K3D_CI_DEPS:-}" ] && echo "::warning::could not substitute $K3D_CI_DEPS; evaluating locally"
-    nix build .#k3d-ci-deps --no-link --print-out-paths >"$_deps_out"
-    echo "[phase] deps-eval+build=$(( $(date +%s) - t0 ))s"
-  fi
-) >"$_deps_log" 2>&1 &
+  drv=$(nix eval --raw .#k3d-ci-deps.drvPath)
+  t1=$(date +%s)
+  nix build "$drv^*" --no-link --print-out-paths >"$_deps_out"
+  echo "[phase] deps-eval=$((t1 - t0))s deps-build=$(( $(date +%s) - t1 ))s"
+) 2>&1 | while IFS= read -r l; do printf "%(%T)T %s\n" -1 "$l"; done >"$_deps_log"; } &
 _deps_pid=$!
 
 phase "cluster+registry"
