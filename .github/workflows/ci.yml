@@ -1088,8 +1088,15 @@ jobs:
       matrix: ${{ fromJSON(needs.e2e-full-distribute.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v5
-      - uses: nixbuild/nix-quick-install-action@v30
+      # Unset max-jobs is 1, serialising ~150 small per-commit image builds.
+      - uses: nixbuild/nix-quick-install-action@v35
         if: ${{ !startsWith(runner.name, 'onprem') }}
+        with:
+          nix_version: 2.34.7
+          nix_conf: |
+            max-jobs = auto
+            http-connections = 64
+            max-substitution-jobs = 32
       # No authToken: self-hosted runners get no secrets, and a shard only needs to pull.
       - uses: cachix/cachix-action@v15
         with:
@@ -1893,8 +1900,15 @@ jobs:
         with:
           # Full history: the control step builds a worktree at the PR's base commit.
           fetch-depth: 0
-      - uses: nixbuild/nix-quick-install-action@v30
+      # Unset max-jobs is 1, serialising ~150 small per-commit image builds.
+      - uses: nixbuild/nix-quick-install-action@v35
         if: ${{ !startsWith(runner.name, 'onprem') }}
+        with:
+          nix_version: 2.34.7
+          nix_conf: |
+            max-jobs = auto
+            http-connections = 64
+            max-substitution-jobs = 32
       - uses: cachix/cachix-action@v15
         with:
           name: scooter
