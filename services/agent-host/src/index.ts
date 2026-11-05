@@ -75,6 +75,7 @@ import {
   sdkPrompt,
   loadSkills,
   personalSkill,
+  pickProvidedSkills,
   shadowedNames,
   type Skill,
 } from "./agent/skills.js";
@@ -85,6 +86,7 @@ import { createJobManager, noticeTail, type JobStatus, type JobRegistry } from "
 import { createPgJobStore } from "./session/jobStore.js";
 import { createPgUserSkillStore } from "./session/userSkillStore.js";
 import { createHookRunner, parseHooks } from "./hooks/runner.js";
+import { createSkillProviderRegistry, parseSkillProviders, type SkillProviderDef } from "./agent/skillProviders.js";
 import type { HookDef, HookRunner } from "./hooks/types.js";
 import { createPgUserHookSettingsStore } from "./hooks/userHookSettingsStore.js";
 import { createMemoryIdentityRegistry, createPgIdentityRegistry } from "./session/identityRegistry.js";
@@ -165,6 +167,8 @@ export interface AgentHostConfig {
   blockingTools?: Record<string, BlockingTool>;
   /** Deployment hooks, from AGENT_HOOKS_JSON. */
   hooks?: HookDef[];
+  /** Skill providers, from SKILL_PROVIDERS_JSON. */
+  skillProviders?: SkillProviderDef[];
   /** Stop-hook continuations per turn, from AGENT_HOOKS_MAX_STOP_BLOCKS. */
   maxStopBlocks?: number;
   /** Suspend conversations idle longer than this many ms, 0 for off. */
@@ -246,6 +250,7 @@ export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
     skillsDir: process.env.SKILLS_DIR ?? "/etc/agent-sandbox/skills",
     blockingTools: parseBlockingTools(process.env.BLOCKING_TOOLS_JSON, (m) => hostLog.warn(m)),
     hooks: parseHooks(process.env.AGENT_HOOKS_JSON, (m) => hostLog.warn(m)),
+    skillProviders: parseSkillProviders(process.env.SKILL_PROVIDERS_JSON, (m) => hostLog.warn(m)),
     maxStopBlocks: Number(process.env.AGENT_HOOKS_MAX_STOP_BLOCKS ?? "") || 3,
     observability: {
       // Off unless OTEL_METRICS_ENABLED=1; the OTLP endpoint comes from the standard
@@ -1108,6 +1113,34 @@ export async function main(
     return rows.map((r) => personalSkill({ name: r.name, description: r.description, body: r.body }));
   };
 
+  // The fake sandbox runs no providers.
+  const skillProviders = config.fakeSandbox ? [] : (config.skillProviders ?? []);
+  hostLog.info("skill providers", { providers: skillProviders.map((p) => p.id) });
+  const skillProviderRegistry = createSkillProviderRegistry({
+    providers: skillProviders,
+    sandboxFor: (id) => sessions.get(id)?.sandbox,
+    connect: (ref) => connectSandbox(ref),
+  });
+
+  const lastDropped = new Map<string, string>();
+  /** Personal skills plus provided ones; never throws. */
+  const userSkillsFor = async (conversationId: string, owner?: string): Promise<Skill[]> => {
+    const [personal, files] = await Promise.all([
+      personalSkillsFor(owner),
+      skillProviderRegistry.skills(conversationId, owner),
+    ]);
+    if (!files.length) return personal;
+    const taken = new Set([...loadSkills(config.skillsDir).map((s) => s.name), ...personal.map((s) => s.name)]);
+    const { skills, dropped } = pickProvidedSkills(files, taken);
+    // Logged when it changes, since this runs on every message.
+    const droppedKey = JSON.stringify(dropped);
+    if (dropped.length && lastDropped.get(conversationId) !== droppedKey) {
+      hostLog.info("left out provided skills", { conversation_id: conversationId, dropped: dropped.slice(0, 20) });
+    }
+    lastDropped.set(conversationId, droppedKey);
+    return [...personal, ...skills];
+  };
+
   // Resume the pod, then cancel any deferred stop.
   const healingResume = (id: SessionId, sb: SandboxRef) => {
     const resume = resumeUnlessEnded(sessions, provisioner, id, sb, conversationRegistry);
@@ -1915,7 +1948,7 @@ export async function main(
     mkdirSync(cwd, { recursive: true });
     // Rewritten per client build so a rebuilt session sees current skills.
     const prepareSkills = async (): Promise<void> => {
-      const personal = await personalSkillsFor(owner);
+      const personal = await userSkillsFor(conversationId, owner);
       // Provider-specific: goose reads .goosehints with every body inlined; the
       // SDK discovers .claude/skills itself and gets no bodies in its prompt.
       const skillCount = usingClaude
@@ -2141,7 +2174,7 @@ export async function main(
       provider: usingClaude ? "claude" : "goose",
       owner,
       // Same source as the in-pod write, so BYO matches cloud.
-      personalSkills: () => personalSkillsFor(owner),
+      personalSkills: () => userSkillsFor(conversationId, owner),
       acpProviders,
       resolveMcpServers,
       // Per-provider model resolution: the conversation's choice when the run's provider

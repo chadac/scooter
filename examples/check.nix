@@ -1358,6 +1358,25 @@ let
     ++ (if !(builtins.elem "echo.ping" (hookIds (echoHook false))) then [ ]
         else [ "a disabled contrib's hook is in AGENT_HOOKS_JSON" ]);
 
+  # Skill providers: none by default, wait capped, contrib namespacing and gating.
+  providersOf = extra:
+    let m = builtins.filter (e: e.name == "SKILL_PROVIDERS_JSON") (hostEnvOf extra);
+    in if m == [ ] then [ ] else builtins.fromJSON (builtins.head m).value;
+  echoProvider = enable: { contribs.echo.enable = nixpkgsLib.mkForce enable; };
+  providerProblems =
+    (if providersOf { } == [ ] then [ ] else [ "SKILL_PROVIDERS_JSON has undeclared providers" ])
+    ++ (let r = providersOf { scooter.agent.skillProviders.team = { command = "x"; timeout = 90; }; }; in
+        if r != [ ] && (builtins.head r).timeoutSec == 90 && (builtins.head r).waitSec == 90 then [ ]
+        else [ "a provider with no `wait` does not wait its whole timeout" ])
+    ++ (if providersOf { scooter.agent.skillProviders.team = { command = "x"; enable = false; }; } == [ ] then [ ]
+        else [ "a provider still renders with enable = false" ])
+    ++ (let r = providersOf (echoProvider true); in
+        if map (p: p.id) r == [ "echo.hello" ] && nixpkgsLib.hasInfix "echo-provided-skill-marker" (builtins.head r).command
+        then [ ]
+        else [ "an enabled contrib's provider is not in SKILL_PROVIDERS_JSON as <contrib>.<id>" ])
+    ++ (if providersOf (echoProvider false) == [ ] then [ ]
+        else [ "a disabled contrib's provider is in SKILL_PROVIDERS_JSON" ]);
+
   # The UI pod serves the DEPLOYMENT's contrib manifest, mounted from a ConfigMap, so a
   # contrib left off here shows no settings tab even though the image's built-in
   # manifest (built from the repo's list) has one.
@@ -1454,7 +1473,7 @@ let
     ++ (if imageDrv forkedLib "conversation-router" == imageDrv platform "conversation-router" then [ ]
         else [ "scooter.packages.scooter-lib override changed conversation-router, which does not use it" ]);
 
-  allProblems = packageProblems ++ uploadsProblems ++ sysTaskProblems ++ askUserProblems ++ hookProblems ++ disabledContribProblems ++ settingsTabProblems ++ uiManifestProblems ++ conversationUiProblems ++ contribApiProblems ++ dirSkillProblems ++ legacyRootProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ imagegenProblems ++ atProblems ++ googleProblems ++ ghOwnersProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems' ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ contribCoverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ volumeProblems ++ approvalProblems ++ awaitingNotifyProblems ++ stage2Problems ++ contribDbProblems ++ contribGrantProblems ++ retireProblems ++ initGrantProblems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems ++ conversationServiceProblems ++ selfAccessProblems ++ npProblems ++ sandboxOriginProblems ++ enforceProblems;
+  allProblems = packageProblems ++ uploadsProblems ++ sysTaskProblems ++ askUserProblems ++ hookProblems ++ providerProblems ++ disabledContribProblems ++ settingsTabProblems ++ uiManifestProblems ++ conversationUiProblems ++ contribApiProblems ++ dirSkillProblems ++ legacyRootProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ imagegenProblems ++ atProblems ++ googleProblems ++ ghOwnersProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems' ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ contribCoverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ volumeProblems ++ approvalProblems ++ awaitingNotifyProblems ++ stage2Problems ++ contribDbProblems ++ contribGrantProblems ++ retireProblems ++ initGrantProblems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems ++ conversationServiceProblems ++ selfAccessProblems ++ npProblems ++ sandboxOriginProblems ++ enforceProblems;
 in
 if allProblems == [ ]
 then "ok: deployments = ${haveDeps}; datadog + airtable + brave + kagi + duckduckgo (three search providers, each with its own tool) + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every scooter.* namespace and every shipped contrib's own options; skills gated on the contrib being built; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; the renamed root (agentSandbox.*) fails the render; contribs reach the platform eval and configuring an unshipped one fails the render; deploy-time Jobs are spec-hash named; a scooter.packages override reaches exactly the images that use it\n"

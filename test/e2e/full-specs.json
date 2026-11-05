@@ -26,6 +26,7 @@
   "sessions.spec.ts",
   "settings-skills.spec.ts",
   "settings-tabs.spec.ts",
+  "skill-providers.spec.ts",
   "stop-run.spec.ts",
   "suspended-recovery.spec.ts",
   "suspended-web-service.spec.ts",

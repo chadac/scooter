@@ -511,6 +511,14 @@ in
             `${name}.<id>`. Same schema as `scooter.agent.hooks`.
           '';
         };
+        options.skillProviders = mkOption {
+          type = types.attrsOf (types.submodule (import ./skill-provider-module.nix { inherit lib; }));
+          default = { };
+          description = ''
+            Skill providers this contrib adds, keyed by id; the agent-host sees them as
+            `${name}.<id>`. Same schema as `scooter.agent.skillProviders`.
+          '';
+        };
       };
     };
 

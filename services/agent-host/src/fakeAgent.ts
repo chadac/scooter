@@ -7,6 +7,8 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -32,6 +34,26 @@ import { fakeMediaImages } from "./fakeMedia.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Every skill the host wrote into `cwd`, for goose or the SDK. */
+function skillsText(cwd: string | undefined): string {
+  if (!cwd) return "";
+  const read = (f: string) => {
+    try {
+      return readFileSync(f, "utf8");
+    } catch {
+      return "";
+    }
+  };
+  const dir = join(cwd, ".claude", "skills");
+  let names: string[] = [];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    // No SDK skills directory.
+  }
+  return [read(join(cwd, ".goosehints")), ...names.map((n) => read(join(dir, n, "SKILL.md")))].join("\n");
+}
+
 /** How long a `~subagent` child stays running, which must outlast the spec asserting on it since the host end()s a subagent as soon as it completes. */
 const SUBAGENT_LIFETIME_S = 90;
 
@@ -54,6 +76,8 @@ class FakeAgent implements Agent {
   }
   /** The per-session model from newSession. */
   private sessionModel = new Map<string, string>();
+  /** The per-session cwd, where the host writes the skills. */
+  private sessionCwd = new Map<string, string>();
   /** Offered MCP servers per session, by name. */
   private mcp = new Map<string, Map<string, { url: string; headers: Record<string, string> }>>();
 
@@ -79,6 +103,7 @@ class FakeAgent implements Agent {
       ).mcpServers ?? [];
     const reqModel = (p as { model?: string }).model;
     if (typeof reqModel === "string" && reqModel) this.sessionModel.set(sessionId, reqModel);
+    if (typeof p.cwd === "string" && p.cwd) this.sessionCwd.set(sessionId, p.cwd);
     const servers = new Map<string, { url: string; headers: Record<string, string> }>();
     for (const srv of offered) {
       if (typeof srv.url !== "string" || !srv.name) continue;
@@ -215,6 +240,15 @@ class FakeAgent implements Agent {
         await u({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: word + " " } });
         await sleep(10);
       }
+      return { stopReason: "end_turn" };
+    }
+
+    // "~hints <text>": report whether this session's skills contain <text>.
+    if (userText.startsWith("~hints")) {
+      await this.emitTitleOnce(sessionId, userText, u);
+      const needle = userText.slice("~hints".length).trim();
+      const reply = skillsText(this.sessionCwd.get(sessionId)).includes(needle) ? "hints=present" : "hints=absent";
+      await u({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: reply } });
       return { stopReason: "end_turn" };
     }
 

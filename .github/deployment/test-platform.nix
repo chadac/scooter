@@ -47,6 +47,8 @@ prefix:
   # and its direct-to-pod path. No DNS or certificate: test/e2e/support/sandboxEdge.mjs
   # plays the wildcard Ingress and Chromium resolves `*.sandbox.e2e.test` to it.
   ingress.sandboxDomain = "sandbox.e2e.test";
+  # echo's sample provider, since echo ships to no cluster (skill-providers.spec.ts).
+  agent.skillProviders.echo-sample.command = builtins.readFile ../../contrib/echo/skill-provider.sh;
   # e2e configures no credentials; drop contribs needing one.
   contribs = testContribs;
 }

@@ -36,6 +36,12 @@
       timeout = "2m";
     };
 
+    # The fixture for skill providers: one skill, rendered as `echo.hello`.
+    agent.skillProviders.hello = {
+      command = builtins.readFile ./skill-provider.sh;
+      description = "A sample skill, for the provider seam's tests.";
+    };
+
     # Never ship, since echo's factory returns enabled=true unconditionally.
     enable = false;
   };

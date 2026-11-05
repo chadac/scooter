@@ -201,6 +201,67 @@ export function checkPersonalBudget(
   return null;
 }
 
+// --- provided skills: fill gaps, never shadow other skills.
+
+/** Most provided skills one conversation offers. */
+export const MAX_PROVIDED_SKILLS = 50;
+/** Longest SKILL.md a provided skill may have. */
+export const MAX_PROVIDED_SKILL_BYTES = 32 * 1024;
+/** Total provided skill budget; goose inlines every body. */
+export const MAX_PROVIDED_TOTAL_BYTES = 128 * 1024;
+
+/** A SKILL.md as a skill provider reports it. */
+export interface ProvidedSkillFile {
+  name: string;
+  content: string;
+  /** Its sandbox directory, holding its scripts and references. */
+  dir?: string;
+}
+
+/** A provided SKILL.md as a `Skill`, noting any sandbox directory. */
+export function providedSkill(f: ProvidedSkillFile): Skill {
+  if (!f.dir) return { name: f.name, text: f.content, description: skillDescription(f.name, f.content) };
+  const note =
+    `> In Scooter this skill's directory is \`${f.dir}\`, in your sandbox. ` +
+    "Resolve its relative paths (scripts, references) against that directory.";
+  const fm = f.content.match(/^---\n[\s\S]*?\n---\n?/);
+  const text = fm ? `${fm[0]}\n${note}\n\n${f.content.slice(fm[0].length)}` : `${note}\n\n${f.content}`;
+  return { name: f.name, text, description: skillDescription(f.name, f.content) };
+}
+
+/** Provided skills to offer, and why each other was dropped. */
+export function pickProvidedSkills(
+  files: readonly ProvidedSkillFile[],
+  taken: ReadonlySet<string>,
+): { skills: Skill[]; dropped: Array<{ name: string; reason: string }> } {
+  const skills: Skill[] = [];
+  const dropped: Array<{ name: string; reason: string }> = [];
+  let total = 0;
+  for (const f of [...files].sort((a, b) => a.name.localeCompare(b.name))) {
+    const bytes = Buffer.byteLength(f.content, "utf8");
+    const reason = !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(f.name)
+      ? "invalid name"
+      : taken.has(f.name)
+        ? "a deployment or personal skill has this name"
+        : skills.some((s) => s.name === f.name)
+          ? "an earlier provider has this name"
+          : bytes > MAX_PROVIDED_SKILL_BYTES
+          ? `over ${MAX_PROVIDED_SKILL_BYTES} bytes`
+          : skills.length >= MAX_PROVIDED_SKILLS
+            ? `more than ${MAX_PROVIDED_SKILLS} provided skills`
+            : total + bytes > MAX_PROVIDED_TOTAL_BYTES
+              ? `provided skills over ${MAX_PROVIDED_TOTAL_BYTES} bytes in total`
+              : null;
+    if (reason) {
+      dropped.push({ name: f.name, reason });
+      continue;
+    }
+    total += bytes;
+    skills.push(providedSkill(f));
+  }
+  return { skills, dropped };
+}
+
 /** Assemble the full `.goosehints` content: identity + each skill's body. */
 export function assembleHints(skills: Skill[], identity: AgentIdentity = DEFAULT_IDENTITY): string {
   const parts = [identityPrompt(identity)];
@@ -301,7 +362,20 @@ export function parseFrontmatter(md: string): Record<string, string | string[]> 
   if (!m) return {};
   const out: Record<string, string | string[]> = {};
   let listKey: string | null = null;
+  // An open `>` / `|` block scalar being collected.
+  let block: { key: string; sep: string; lines: string[] } | null = null;
+  const closeBlock = () => {
+    if (block) out[block.key] = block.lines.join(block.sep).trim();
+    block = null;
+  };
   for (const raw of m[1].split("\n")) {
+    if (block) {
+      if (/^\s/.test(raw) || raw.trim() === "") {
+        block.lines.push(raw.trim());
+        continue;
+      }
+      closeBlock();
+    }
     // A `- item` line continues the list opened by the last `key:` with no value.
     const item = raw.match(/^\s*-\s+(.*)$/);
     if (item && listKey) {
@@ -311,15 +385,32 @@ export function parseFrontmatter(md: string): Record<string, string | string[]> 
     const kv = raw.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
     if (!kv) continue;
     const [, key, val] = kv;
-    if (val.trim() === "") {
+    const v = val.trim();
+    listKey = null;
+    if (v === "") {
       listKey = key;
       out[key] = [];
+    } else if (/^[>|][-+]?$/.test(v)) {
+      block = { key, sep: v.startsWith(">") ? " " : "\n", lines: [] };
     } else {
-      listKey = null;
-      out[key] = val.trim();
+      out[key] = unquote(v);
     }
   }
+  closeBlock();
   return out;
+}
+
+/** A YAML scalar unquoted, or as written if unparseable. */
+function unquote(v: string): string {
+  if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) {
+    try {
+      return JSON.parse(v) as string;
+    } catch {
+      return v.slice(1, -1);
+    }
+  }
+  if (v.length >= 2 && v.startsWith("'") && v.endsWith("'")) return v.slice(1, -1).replace(/''/g, "'");
+  return v;
 }
 
 /** The description the SDK matches on, never empty since a skill without one is dropped, falling back through triggers to the first prose line to the name. */

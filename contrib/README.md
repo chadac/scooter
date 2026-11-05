@@ -389,6 +389,39 @@ agent half (gated, frontmatter first, note present, unpinned source fails, a
 deployment-level entry ships), and `dev-env-contrib-sandbox` asserts the sandbox
 half (installed whole, baked copy identical, re-declaring module present).
 
+### Contributing skills at runtime (`agent.skillProviders`)
+
+`skills` and `skillDirs` are fixed when the image is built. A skill provider decides
+a conversation's skills while it runs: a bash script, run in the sandbox before each
+agent run, that prints the skills to offer.
+
+```nix
+contribs.my-skills.agent.skillProviders.dump = {
+  command = "my-skills dump";   # stdin: {"conversation_id", "owner"}
+  timeout = 300;                # killed after this; its last answer is kept
+  wait = 20;                    # a message waits this long; a later one gets the rest
+};
+```
+
+The script prints `{"skills": [{"name", "content", "dir"?}]}`, where `content` is a
+whole SKILL.md and `dir` is the sandbox directory its relative paths resolve
+against. A deployment declares its own under `scooter.agent.skillProviders`.
+
+- **Never shadows.** A deployment or personal skill with the same name wins, then the
+  provider whose id sorts first.
+- **Budgets.** Every provider counts toward one budget: 50 skills and 128 KiB in
+  total, at most 32 KiB per skill. Goose inlines every body into its prompt.
+- **Failures.** A failing or slow provider keeps its last answer, so a pod blip never
+  drops skills mid-conversation. A sandbox where the command is missing (exit 127)
+  isn't asked again.
+- **Changes.** The agent-host re-runs a provider at most every 10 seconds. A changed
+  answer rebuilds the session like any other skills change.
+
+`contrib/echo/skill-provider.sh` is the fixture. `examples/check.nix` asserts the
+rendering, `skillProviders.spec.ts` runs the script through the agent-host's merge, and
+`test/e2e/skill-providers.spec.ts` checks on the k3d stack that its skill reaches the
+agent.
+
 ### Contributing agent tools (`mcp_tools.py`)
 
 A contrib owns the agent's typed tools for its integration. Declare them on your

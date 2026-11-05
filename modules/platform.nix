@@ -207,6 +207,22 @@ let
     ++ lib.concatLists (lib.mapAttrsToList (name: c: enabledRows "${name}." c.agent.hooks)
       (lib.filterAttrs (_: c: c.enable) config.contribs));
 
+  # Deployment skill providers plus enabled contribs', for SKILL_PROVIDERS_JSON.
+  skillProviders =
+    let
+      row = id: p: {
+        inherit id;
+        inherit (p) command description;
+        timeoutSec = p.timeout;
+        waitSec = if p.wait == null then p.timeout else p.wait;
+      };
+      enabledRows = prefix: ps:
+        lib.mapAttrsToList (id: row "${prefix}${id}") (lib.filterAttrs (_: p: p.enable) ps);
+    in
+    enabledRows "" cfg.agent.skillProviders
+    ++ lib.concatLists (lib.mapAttrsToList (name: c: enabledRows "${name}." c.agent.skillProviders)
+      (lib.filterAttrs (_: c: c.enable) config.contribs));
+
   # Each enabled contrib's resourceType spellings -> the stored one.
   linkTypeAliases = lib.mapAttrs (_: c: c.links.typeAliases)
     (lib.filterAttrs (_: c: c.enable && c.links.typeAliases != { }) config.contribs);
@@ -710,6 +726,20 @@ in
           Conversation hooks, keyed by id: bash scripts run in each conversation's sandbox
           at fixed points in a turn, speaking Claude Code's hook protocol. A contrib adds its
           own under `contribs.<name>.agent.hooks` (ids `<name>.<id>`).
+        '';
+      };
+
+      skillProviders = mkOption {
+        type = types.attrsOf (types.submodule (import ../contrib/skill-provider-module.nix { inherit lib; }));
+        default = { };
+        example = literalExpression ''
+          { team-skills.command = "cat /etc/team-skills.json"; }
+        '';
+        description = ''
+          Skill providers, keyed by id: bash scripts run in each conversation's sandbox
+          before every agent run, each printing skills to offer next to the deployment's
+          and the user's own. A contrib adds its own under
+          `contribs.<name>.agent.skillProviders` (ids `<name>.<id>`).
         '';
       };
 
@@ -1767,6 +1797,8 @@ in
                 ++ lib.optional (agentHooks != [ ])
                   # Conversation hooks the agent-host runs in each sandbox.
                   { name = "AGENT_HOOKS_JSON"; value = builtins.toJSON agentHooks; }
+                ++ lib.optional (skillProviders != [ ])
+                  { name = "SKILL_PROVIDERS_JSON"; value = builtins.toJSON skillProviders; }
                 ++ [ { name = "AGENT_HOOKS_MAX_STOP_BLOCKS"; value = toString cfg.agent.maxStopBlocks; } ]
                 ++ lib.optional (blockingTools != { })
                   # Agent tools that block on the user's answer, tool -> { kind, title, dismissed }.
