@@ -9,6 +9,7 @@ import { describe, it, expect, vi } from "vitest";
 import { firstValueFrom, take, toArray } from "rxjs";
 
 import { createIntegrityAgent, describeSendError, SendError } from "./integrityAgent.js";
+import { stateFeed, type TopicEvent } from "./stateFeed.js";
 import type { RunAgentInput } from "@ag-ui/client";
 
 // A scripted integrity stream whose inner events are @ag-ui/core BaseEvents.
@@ -83,6 +84,22 @@ describe("IntegrityAgent", () => {
     expect(types).toContain("TOOL_CALL_START");
     expect(types).toContain("REASONING_MESSAGE_CONTENT");
     agent.dispose();
+  });
+
+  it("hands state topics on the stream to the state feed, and reports the stream ending", async () => {
+    const heard: TopicEvent[] = [];
+    const stopReading = stateFeed.subscribe("c1", "sandbox", (e) => void heard.push(e));
+    const frames = [
+      { kind: "synced" },
+      { kind: "topic", topic: "sandbox", data: { ready: true } },
+      { kind: "event", event: { type: "RUN_STARTED", threadId: "c1", runId: "r1" } },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    await firstValueFrom(agent.run(EMPTY_INPUT).pipe(take(1)));
+    await vi.waitFor(() => expect(heard.at(-1)).toEqual({ kind: "down" }));
+    expect(heard.slice(0, 2)).toEqual([{ kind: "open" }, { kind: "data", data: { ready: true } }]);
+    agent.dispose();
+    stopReading();
   });
 
   it("REPLAY through the base applier keeps the tool call in fromAgUiMessages (refresh path)", async () => {

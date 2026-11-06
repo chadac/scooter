@@ -109,7 +109,7 @@ describe("pollWhileVisible", () => {
 describe("the UI's repeating polls are visibility-gated", () => {
   // A bare setInterval here is the regression this module exists to prevent.
   const sources = {
-    "SandboxPanel.tsx": "the sandbox status + web-services poll",
+    "conversationState.ts": "the state stream's while-down fallback",
   };
 
   for (const [file, what] of Object.entries(sources)) {
@@ -117,6 +117,19 @@ describe("the UI's repeating polls are visibility-gated", () => {
       const src = readFileSync(new URL(`./${file}`, import.meta.url), "utf8");
       expect(src).toContain("pollWhileVisible");
       expect(src, "a raw setInterval re-polls hidden tabs").not.toMatch(/setInterval\(/);
+    });
+  }
+
+  // The conversation state stream pushes these.
+  const pushed = {
+    "SandboxPanel.tsx": "sandbox status and services",
+    "LinkedResources.tsx": "linked resources",
+    "../../../contrib/shares/ui/Panel.tsx": "the Shares section",
+  };
+  for (const [file, what] of Object.entries(pushed)) {
+    it(`${file}: ${what} is pushed, not polled`, () => {
+      const src = readFileSync(new URL(`./${file}`, import.meta.url), "utf8");
+      expect(src, "a poll coming back is the regression").not.toMatch(/pollWhileVisible|setInterval\(/);
     });
   }
 

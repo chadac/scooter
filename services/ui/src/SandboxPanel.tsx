@@ -1,8 +1,7 @@
 /**
  * The Session tab's body: the current conversation's pod lifecycle status with a Start
  * button when down, its resource allotment and size picker, a collapsible Services
- * section, then the caller's further sections. Status is fetched directly for the current conversation rather than read
- * off the sessions store, and services are enumerable only while the pod is running.
+ * section, then the caller's further sections. State arrives on the `sandbox` topic.
  */
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
@@ -10,7 +9,6 @@ import { RotateCw } from "lucide-react";
 
 import {
   resumeConversation,
-  loadSandboxReady,
   loadSandboxInfo,
   restartSandbox,
   suspendConversation,
@@ -26,7 +24,7 @@ import {
 } from "./client.js";
 import { agentHostConfig } from "./config.js";
 import { useSessions, currentConversation } from "./sessions.js";
-import { pollWhileVisible } from "./visiblePoll.js";
+import { useConversationTopic } from "./conversationState.js";
 import { ServiceRows } from "./ServicesPanel.js";
 import { PanelSection } from "./PanelSection.js";
 import { Button } from "@/components/ui/button";
@@ -36,81 +34,48 @@ const BASE_URL = (import.meta.env.VITE_AGENT_HOST_URL ?? "").replace(/\/$/, "");
 
 export type SandboxState = "running" | "suspended" | "ended" | "starting" | "unknown";
 
-/** Whether a services poll returned the same list, field by field. */
-export const sameServices = (a: WebService[], b: WebService[]) =>
-  a.length === b.length &&
-  a.every((x, i) => {
-    const y = b[i];
-    return (
-      x.name === y.name &&
-      x.displayName === y.displayName &&
-      x.url === y.url &&
-      x.running === y.running
-    );
-  });
+/** The `sandbox` topic, as agent-host publishes it. */
+export interface SandboxTopic {
+  status: string;
+  ready: boolean;
+  services: WebService[];
+}
+
+const NO_SERVICES: WebService[] = [];
 
 /** Live pod status for the current conversation, a resume action with progress, and the service list with controls. */
 export function useSandboxStatus() {
   const { currentId } = useSessions();
-  const [serverStatus, setServerStatus] = useState<string | undefined>(undefined);
-  const [ready, setReady] = useState(false);
+  const sandbox = useConversationTopic<SandboxTopic>("sandbox");
+  const serverStatus = sandbox && sandbox.status !== "unknown" ? sandbox.status : undefined;
+  // False while ContainerCreating, though status says "running".
+  const ready = sandbox?.ready ?? false;
+  const services = sandbox?.services ?? NO_SERVICES;
   const [starting, setStarting] = useState(false);
-  const [services, setServices] = useState<WebService[]>([]);
   const [busy, setBusy] = useState<Record<string, boolean>>({});
 
-  // `ready` stays false while the pod is still ContainerCreating even though the status is "running".
-  const refreshStatus = useCallback(async () => {
-    const res = await currentConversation()?.ifCreated(
-      (id) => loadSandboxReady({ baseUrl: BASE_URL }, id),
-      { status: "unknown", ready: false },
-    );
-    if (!res) return;
-    if (res.status && res.status !== "unknown") setServerStatus(res.status);
-    setReady(res.ready);
-  }, [currentId]);
-
-  const refreshServices = useCallback(async (refresh = false) => {
-    const svcs = await currentConversation()?.ifCreated(
-      (id) => loadWebServices({ baseUrl: BASE_URL }, id, { refresh }),
-      [] as Awaited<ReturnType<typeof loadWebServices>>,
-    );
-    // Keep the previous array when the poll returns the same services, since a fresh reference re-renders every consumer each tick.
-    if (svcs) setServices((prev) => (sameServices(prev, svcs) ? prev : svcs));
-  }, [currentId]);
-
-  // Declared before the poll effect so the reset lands before the new conversation is read.
   useEffect(() => {
-    setServerStatus(undefined); // reset on conversation switch
-    setReady(false);
+    setStarting(false); // reset on conversation switch
   }, [currentId]);
-
-  // A down pod has no services, and comes back only via Start, which refreshes directly.
-  const down = serverStatus === "suspended" || serverStatus === "ended";
-
-  useEffect(() => {
-    const read = () => {
-      void refreshStatus();
-      if (!down) void refreshServices();
-    };
-    read();
-    return pollWhileVisible(read, down ? 30_000 : 4_000);
-  }, [refreshStatus, refreshServices, down]);
 
   // The resume is done only when the pod is actually ready.
   useEffect(() => {
     if (serverStatus === "running" && ready) setStarting(false);
   }, [serverStatus, ready]);
 
-  // Nothing in the pod tells the host about a newly declared service, so the list is re-read on demand too.
+  // The host pushes what a forced re-read finds.
   const [rescanning, setRescanning] = useState(false);
   const rescanServices = useCallback(async () => {
     setRescanning(true);
     try {
-      await refreshServices(true);
+      await currentConversation()?.ifCreated(
+        (id) => loadWebServices({ baseUrl: BASE_URL }, id, { refresh: true }),
+        [] as Awaited<ReturnType<typeof loadWebServices>>,
+      );
     } finally {
       setRescanning(false);
     }
-  }, [refreshServices]);
+  }, [currentId]);
 
   const startSandbox = useCallback(async () => {
     const conv = currentConversation();
@@ -120,20 +85,14 @@ export function useSandboxStatus() {
     const res = await conv
       .withId((id) => resumeConversation({ baseUrl: BASE_URL }, id))
       .catch(() => null);
-    if (!res) {
-      setStarting(false);
-      return;
-    }
-    await refreshStatus();
-    await refreshServices();
-  }, [currentId, refreshStatus, refreshServices]);
+    if (!res) setStarting(false);
+  }, [currentId]);
 
   const act = async (name: string, fn: typeof startWebService) => {
     setBusy((b) => ({ ...b, [name]: true }));
     await currentConversation()
       ?.withId((id) => fn({ baseUrl: BASE_URL }, id, name))
       .catch(() => undefined);
-    await refreshServices();
     setBusy((b) => ({ ...b, [name]: false }));
   };
 
@@ -156,7 +115,6 @@ export function useSandboxStatus() {
     rescanning,
     conversationId: currentId ?? undefined,
     startSandbox,
-    refreshStatus,
     startService: (name: string) => void act(name, startWebService),
     stopService: (name: string) => void act(name, stopWebService),
     hasConversation: !!currentId,
@@ -632,7 +590,6 @@ export function SandboxPanel() {
         }
         setSizePendingRestart(false);
         setInfoNonce((n) => n + 1);
-        void s.refreshStatus();
       });
   };
 
@@ -644,7 +601,6 @@ export function SandboxPanel() {
       .ifCreated((id) => suspendConversation({ baseUrl: BASE_URL }, id), "no conversation" as string | null)
       .then((err) => {
         if (err) setLifecycleError(err);
-        void s.refreshStatus();
       });
   };
 

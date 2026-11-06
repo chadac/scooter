@@ -743,6 +743,14 @@ ui.panel = {
   reaches the broker at `/<name>/conversation/<id>/<rest>`, after the agent-host has
   checked the user may see that conversation. It resolves null before the
   conversation exists on the server. `api` needs `services.broker.enable`.
+- **Staying fresh without polling.** Read the section's data with
+  `useContribTopic("<name>", { load })`. `load` (usually a `conversationFetch`) runs
+  when the conversation state stream connects, and again each time the broker half
+  calls `scooter_broker_lib.state.publish_state(settings.agent_host_url,
+  conversation_id, "<name>")` after a change. Passing `data` to `publish_state` sends
+  the new value itself instead of a refetch. Keep it small (64 KiB at most), and only
+  send what anyone who can see the conversation may read. Set
+  `fallbackPollMs` to keep calling `load` while the stream is down.
 - **Failure is contained.** A missing entry, a chunk that fails to load or a render
   that throws shows an error card in that section only.
 

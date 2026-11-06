@@ -33,7 +33,7 @@ import posixpath
 import re
 import zipfile
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Awaitable, Callable
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import Response
@@ -191,8 +191,14 @@ def create_shares_router(
     public_base_url: str = "",
     frame_ancestors: str = "'self'",
     now: Callable[[], str] = lambda: "",
+    on_change: Callable[[str], Awaitable[None]] | None = None,
 ) -> APIRouter:
     router = APIRouter()
+
+    # Tells open Shares sections to refetch.
+    async def _changed(conversation_id: str) -> None:
+        if on_change is not None:
+            await on_change(conversation_id)
 
     def _url(uuid: str) -> str:
         base = public_base_url.rstrip("/")
@@ -222,6 +228,7 @@ def create_shares_router(
             description=(body.get("description") or "").strip(),
             visibility=visibility, files=files, entry_point=entry_point, now_iso=now(),
         )
+        await _changed(owner)
         return {**share.summary(), "url": _url(share.uuid), "entry_point": entry_point}
 
     @router.put("/shares/{uuid}")
@@ -241,6 +248,7 @@ def create_shares_router(
             raise HTTPException(status_code=404, detail="share not found") from None
         except PermissionError as e:
             raise HTTPException(status_code=403, detail=str(e)) from e
+        await _changed(owner)
         return {**share.summary(), "url": _url(share.uuid), "entry_point": entry_point}
 
     async def _listing(owner: str) -> dict:
@@ -279,6 +287,7 @@ def create_shares_router(
             raise HTTPException(status_code=404, detail="share not found") from None
         if not ok:
             raise HTTPException(status_code=404, detail="share not found")
+        await _changed(identity.conversation_id)
         return Response(status_code=204)
 
     # --- serving (unauthenticated capability URL) ---------------------------
@@ -323,6 +332,7 @@ class Shares:
     store: ShareStore
     public_base_url: str = ""
     frame_ancestors: str = "'self'"
+    on_change: Callable[[str], Awaitable[None]] | None = None
     name: str = field(default="shares", init=False)
 
     def routes(self, provider: Provider, authed: AuthDependency) -> APIRouter:
@@ -331,4 +341,5 @@ class Shares:
             authed=authed,
             public_base_url=self.public_base_url,
             frame_ancestors=self.frame_ancestors,
+            on_change=self.on_change,
         )

@@ -40,6 +40,8 @@ import { formatError, logger } from "../log.js";
 import type { AccessCheck } from "../session/access.js";
 import { isVisibility } from "../session/visibility.js";
 import { serviceUrl, type SandboxOrigins } from "../proxy/sandboxOrigin.js";
+import { createStateHub, sandboxWatcher, type StateHub } from "../session/stateHub.js";
+import { mountStateStream } from "./stateStream.js";
 import { EMPTY_CHECKSUM, chainAll } from "../agui/integrity.js";
 import { DERIVED_SOURCES, HUMAN_TRIGGER_SOURCES } from "../acp/remoteAgentRegistry.js";
 import type { HookDef } from "../hooks/types.js";
@@ -170,6 +172,8 @@ export interface ManagementDeps {
   userHookSettings?: UserHookSettingsStore;
   /** The /contrib-api relay for contrib settings tabs; absent means the routes are not mounted. */
   contribApi?: ContribApiDeps;
+  /** Absent builds one with the built-in `sandbox` watcher. */
+  stateHub?: StateHub;
   /** The deployment skills' names, so the settings form can warn that a personal skill of the same name replaces one. */
   builtinSkillNames?: () => string[];
   /** Summarize older turns and continue on summary+recent; null when too short to compact, throws on summarizer failure. */
@@ -315,6 +319,20 @@ export function createManagementApi(deps: ManagementDeps): Router {
   const { sessions, store, server } = deps;
   const models = deps.models ?? { available: [] };
   const r = createRouter(deps.resolveUser);
+  // Probes start only once a tab subscribes.
+  const stateHub =
+    deps.stateHub ??
+    createStateHub([
+      sandboxWatcher({
+        status: async (id) => sessions.get(id)?.status ?? "unknown",
+        ready: async (id) => {
+          // Refreshing may find the pod gone; the next tick reports it.
+          await sessions.refreshSandbox?.(id as SessionId);
+          return deps.webServices ? deps.webServices.ready(id) : false;
+        },
+        services: (id) => listWebServices(id),
+      }),
+    ]);
 
   // Every /conversations/:id route answers 404 for a private conversation the caller may not
   // see: the same answer as a missing one, so its existence does not leak.
@@ -568,6 +586,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
     }
     if (!sessions.get(ctx.params.id)) return { status: 404, json: { error: "not found" } };
     await sessions.suspend(ctx.params.id);
+    stateHub.nudge(ctx.params.id);
     return { json: view(sessions.get(ctx.params.id)!) };
   });
 
@@ -580,6 +599,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
     if (error === 403) return { status: 403, json: { error: "not your conversation" } };
     try {
       const result = await sessions.restartSandbox(conv!.id as SessionId);
+      stateHub.nudge(conv!.id);
       return { json: result };
     } catch (e) {
       if ((e as { code?: number }).code === 409) return { status: 409, json: { error: (e as Error).message } };
@@ -590,6 +610,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
   r.post("/conversations/:id/resume", async (ctx) => {
     if (!sessions.get(ctx.params.id)) return { status: 404, json: { error: "not found" } };
     await sessions.revive(ctx.params.id);
+    stateHub.nudge(ctx.params.id);
     return { json: view(sessions.get(ctx.params.id)!) };
   });
 
@@ -846,6 +867,10 @@ export function createManagementApi(deps: ManagementDeps): Router {
     live = true;
     // Mark the end of the initial replay so the client knows it is caught up.
     send({ kind: "synced" });
+    // State topics share this connection; browsers cap HTTP/1.1 connections per host.
+    const unsubState = stateHub.subscribe(id, (f) => {
+      if (f.kind === "topic") send(f);
+    });
 
       // This stream only carries live events for a conversation this pod runs, so when
       // another pod owns it end the stream after replay (and re-check periodically) so the
@@ -874,6 +899,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
       clearInterval(heartbeat);
       clearInterval(ownershipTimer);
       unsub?.();
+      unsubState();
     });
   });
 
@@ -1052,17 +1078,24 @@ export function createManagementApi(deps: ManagementDeps): Router {
     return { json: { ready, status: conv.status } };
   });
 
-  r.get("/conversations/:id/web-services", async (ctx) => {
-    const id = await resolveLiveConvId(ctx.params.id);
-    if (!id || !deps.webServices) return { json: { services: [] } };
-    // ?refresh=1 re-reads the in-pod manifest, since nothing in the pod signals a `scooter-rebuild`.
-    const force = ctx.query.get("refresh") === "1";
+  mountStateStream(r, {
+    hub: stateHub,
+    resolve: async (id) => {
+      if (!sessions.get(id) && !(await sessions.getBySandboxKey(id))) await sessions.ensureReadable(id);
+      return resolveConvId(id);
+    },
+    fromService,
+  });
+
+  // Shared by GET /web-services and the `sandbox` topic.
+  const listWebServices = async (id: string, force = false) => {
+    if (!deps.webServices) return [];
     // An unlisted service is a backend another one frames (marimo's server); it stays proxied.
     const services = (await deps.webServices.list(id, { force })).filter((s) => s.visibleInMenu !== false);
     // One size read for the whole list; absent (fake mode / no broker) leaves every `fit`
     // undefined, which the UI renders as no warning.
     const size = deps.sandboxResources ? await deps.sandboxResources(id).catch(() => undefined) : undefined;
-    const withState = await Promise.all(
+    return Promise.all(
       services.map(async (s) => ({
         name: s.name,
         displayName: s.displayName,
@@ -1075,7 +1108,17 @@ export function createManagementApi(deps: ManagementDeps): Router {
         fitShort: s.resources ? fitSummary(s.resources, size) : undefined,
       })),
     );
-    return { json: { services: withState } };
+  };
+
+  r.get("/conversations/:id/web-services", async (ctx) => {
+    const id = await resolveLiveConvId(ctx.params.id);
+    if (!id || !deps.webServices) return { json: { services: [] } };
+    // ?refresh=1 re-reads the in-pod manifest, since nothing in the pod signals a `scooter-rebuild`.
+    const force = ctx.query.get("refresh") === "1";
+    const services = await listWebServices(id, force);
+    // A forced re-read may find services watchers have not seen.
+    if (force) stateHub.nudge(id);
+    return { json: { services } };
   });
 
   // The sandbox's current resource allotment for the Sandbox tab; an absent getter yields
@@ -1134,6 +1177,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
     } catch (e) {
       return { status: 502, json: { error: `start failed: ${(e as Error).message}` } };
     }
+    stateHub.nudge(id);
     return { status: 202, json: { ok: true } };
   });
 
@@ -1148,6 +1192,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
     } catch (e) {
       return { status: 502, json: { error: `stop failed: ${(e as Error).message}` } };
     }
+    stateHub.nudge(id);
     return { status: 202, json: { ok: true } };
   });
 

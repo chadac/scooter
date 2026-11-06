@@ -8,6 +8,7 @@
  */
 
 import { currentConversation, useCurrentUser, useSessions } from "../sessions.js";
+import { useConversationTopic, type TopicOptions } from "../conversationState.js";
 
 export { Button } from "@/components/ui/button";
 export { Spinner } from "@/components/ui/spinner";
@@ -74,6 +75,13 @@ export function conversationFetch(contrib: string, path: string): Promise<Respon
   if (!url) return Promise.resolve(null);
   return fetch(url, { credentials: "same-origin" });
 }
+
+/** This contrib's state-stream topic; see contrib/README.md. */
+export function useContribTopic<T>(contrib: string, opts: TopicOptions<T> = {}): T | undefined {
+  return useConversationTopic<T>(`contrib:${contrib}`, opts);
+}
+
+export type { TopicOptions };
 
 /** Changes when the user opens another conversation, for a panel's effect deps. */
 export function useConversationKey(): string {

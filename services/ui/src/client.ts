@@ -72,28 +72,6 @@ export interface ConversationLink {
   title?: string;
 }
 
-/** Load a conversation's external resource links for the linked-resources panel. */
-export async function loadLinks(
-  config: AgentHostConfig,
-  conversationId: string,
-): Promise<ConversationLink[]> {
-  try {
-    const res = await fetch(
-      `${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(conversationId)}/links`,
-      { headers: config.token ? { Authorization: `Bearer ${config.token}` } : undefined },
-    );
-    if (!res.ok) {
-      // A non-OK response is logged so an empty links panel that is really an error stays diagnosable.
-      console.warn(`[client] loadLinks ${conversationId}: HTTP ${res.status}`);
-      return [];
-    }
-    return ((await res.json()) as { links?: ConversationLink[] }).links ?? [];
-  } catch (e) {
-    console.warn(`[client] loadLinks ${conversationId} failed:`, e);
-    return [];
-  }
-}
-
 /** A web service running in the conversation's sandbox, reverse-proxied at /c/<id>/<name>/. */
 export interface WebService {
   name: string;
@@ -379,23 +357,6 @@ export async function loadConversationStatus(
     return ((await res.json()) as { status?: string }).status ?? null;
   } catch {
     return null;
-  }
-}
-
-/** Fetch the conversation's status and actual pod readiness, since the status can be "running" while the pod is still starting. */
-export async function loadSandboxReady(
-  config: AgentHostConfig,
-  conversationId: string,
-): Promise<{ status: string; ready: boolean }> {
-  try {
-    const res = await fetch(
-      `${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(conversationId)}/ready`,
-      { headers: config.token ? { Authorization: `Bearer ${config.token}` } : undefined },
-    );
-    if (!res.ok) return { status: "unknown", ready: false };
-    return (await res.json()) as { status: string; ready: boolean };
-  } catch {
-    return { status: "unknown", ready: false };
   }
 }
 

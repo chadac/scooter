@@ -2,20 +2,16 @@
  * Linked-resources panel — the external resources (GitHub PR / GitLab MR / Slack
  * thread / Jira ticket) a conversation came from, shown under a collapsible tab.
  *
- * The links are pushed to the agent-host by the webhooks service on create and
- * served at GET /conversations/:id/links. We poll lightly so a link that arrives
- * after the conversation opens still appears.
+ * The links arrive on the conversation-list stream, via the session store.
  */
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 
-import { loadLinks, type ConversationLink } from "./client.js";
-import { useSessions, currentConversation } from "./sessions.js";
+import type { ConversationLink } from "./client.js";
+import { useSessions } from "./sessions.js";
 import { SourceBadge } from "./sourceIcon.js";
 import { Button } from "@/components/ui/button";
-
-const BASE_URL = (import.meta.env.VITE_AGENT_HOST_URL ?? "").replace(/\/$/, "");
 
 function linkLabel(l: ConversationLink): string {
   if (l.title) return l.title;
@@ -75,29 +71,11 @@ export function LinkedResourcesPanel({ links }: { links: ConversationLink[] }) {
   );
 }
 
+const NO_LINKS: ConversationLink[] = [];
+
 export function LinkedResources() {
-  // The effect keys off the server id, not the session key, which is a local placeholder that does not change when the real id arrives.
-  useSessions();
-  const serverId = currentConversation()?.serverId();
-  const [links, setLinks] = useState<ConversationLink[]>([]);
-
-  useEffect(() => {
-    setLinks([]); // clear when switching conversations
-    // Before creation there is nothing to fetch and no reason to start the interval.
-    if (serverId === undefined) return;
-    let cancelled = false;
-    const refresh = () =>
-      void loadLinks({ baseUrl: BASE_URL }, serverId).then((ls) => {
-        if (!cancelled) setLinks(ls);
-      });
-    refresh();
-    const t = setInterval(refresh, 10000); // a late-arriving link still shows
-    return () => {
-      cancelled = true;
-      clearInterval(t);
-    };
-  }, [serverId]);
-
+  const { sessions, currentId } = useSessions();
+  const current = sessions.find((x) => x.id === currentId);
   // Keyed by conversation so the remount drops a manual toggle per thread.
-  return <LinkedResourcesPanel key={serverId ?? "new"} links={links} />;
+  return <LinkedResourcesPanel key={currentId ?? "new"} links={current?.links ?? NO_LINKS} />;
 }

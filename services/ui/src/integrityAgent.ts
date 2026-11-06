@@ -13,6 +13,7 @@ import { Observable, Subject, type Subscription, catchError, EMPTY } from "rxjs"
 
 import type { AgentHostConfig } from "./client.js";
 import { AWAITING_ID, hasId, type MaybeConversationId } from "./conversation.js";
+import { stateFeed } from "./stateFeed.js";
 import { ATTR, record } from "./telemetry.js";
 
 /** A POST /agui the server refused (`status` set) or that never reached it (`status` null), so the message was not delivered. */
@@ -59,8 +60,10 @@ export interface ResumeEntry {
 }
 
 interface IntegrityFrame {
-  kind: "event" | "synced";
+  kind: "event" | "synced" | "topic";
   event?: Record<string, unknown>;
+  topic?: string;
+  data?: unknown;
 }
 
 /** A pending interrupt parsed from the log's RUN_FINISHED(outcome=interrupt), mirroring the bridge's AguiInterrupt shape. */
@@ -535,6 +538,10 @@ export class IntegrityAgent extends AbstractAgent {
     onEvent: (e: BaseEvent) => void,
     onSynced?: () => void,
   ): Promise<ConnectionOutcome> {
+    // Topics name the conversation this connection was opened for.
+    const id = this.cfg.conversationId;
+    const stateId = hasId(id) ? id : undefined;
+    let fedState = false;
     try {
       // Firefox makes identical stored GETs wait on a never-ending stream.
       const res = await this.doFetch(url, { headers, cache: "no-store", signal: controller.signal });
@@ -577,7 +584,13 @@ export class IntegrityAgent extends AbstractAgent {
           }
           // `synced` marks the end of replay, after which live events follow.
           if (frame.kind === "synced") {
+            if (stateId && !fedState) {
+              stateFeed.open(stateId);
+              fedState = true;
+            }
             onSynced?.();
+          } else if (frame.kind === "topic" && frame.topic && stateId) {
+            stateFeed.frame(stateId, { kind: "topic", topic: frame.topic, data: frame.data });
           } else if (frame.kind === "event" && frame.event) {
             onEvent(frame.event as unknown as BaseEvent);
           }
@@ -586,6 +599,8 @@ export class IntegrityAgent extends AbstractAgent {
       return "closed";
     } catch {
       return "error"; // network drop / abort
+    } finally {
+      if (stateId && fedState) stateFeed.down(stateId);
     }
   }
 

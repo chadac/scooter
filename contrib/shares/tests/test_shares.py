@@ -163,6 +163,25 @@ async def test_list_and_delete_owner_scoped(store):
     assert alice.get(f"/s/{uuid}/").status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_every_change_tells_the_conversation_to_refetch(store):
+    changed: list[str] = []
+
+    async def on_change(conversation_id: str) -> None:
+        changed.append(conversation_id)
+
+    app = FastAPI()
+    app.include_router(create_shares_router(store, authed=lambda: _identity("conv-alice"), on_change=on_change))
+    c = TestClient(app)
+    uuid = c.post("/shares", json=_inline("one")).json()["uuid"]
+    c.put(f"/shares/{uuid}", json=_inline("two"))
+    assert c.delete(f"/shares/{uuid}").status_code == 204
+    assert changed == ["conv-alice", "conv-alice", "conv-alice"]
+    # A refused change publishes nothing.
+    assert c.delete(f"/shares/{uuid}").status_code == 404
+    assert len(changed) == 3
+
+
 def _relay_client(store, relayed_user="alice"):
     """The agent-host relaying a UI request, as the broker core authenticates it."""
     app = FastAPI()

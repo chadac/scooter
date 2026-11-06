@@ -6,9 +6,9 @@
  * user may see this conversation.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 
-import { conversationFetch, useConversationKey, type PanelProps } from "@/src/contrib/sdk";
+import { conversationFetch, useContribTopic, type PanelProps } from "@/src/contrib/sdk";
 
 /** One published share as this section shows it. */
 export interface ShareView {
@@ -52,28 +52,14 @@ async function loadShares(): Promise<ShareView[]> {
   }
 }
 
-/** The section body, polling every 10s while mounted. */
-export default function Panel({ setCount }: PanelProps) {
-  const key = useConversationKey();
-  const [shares, setShares] = useState<ShareView[]>([]);
+const NO_SHARES: ShareView[] = [];
 
-  useEffect(() => {
-    let cancelled = false;
-    const refresh = () =>
-      void loadShares().then((rows) => {
-        if (cancelled) return;
-        setShares(rows);
-        setCount(rows.length);
-      });
-    setShares([]); // clear when switching conversations
-    setCount(null);
-    refresh();
-    const t = setInterval(refresh, 10000);
-    return () => {
-      cancelled = true;
-      clearInterval(t);
-    };
-  }, [key, setCount]);
+/** Refetched whenever the broker half publishes a change. */
+export default function Panel({ setCount }: PanelProps) {
+  const value = useContribTopic("shares", { load: loadShares, fallbackPollMs: 10_000 });
+  const shares = value ?? NO_SHARES;
+  // null until the first read, so the badge hides.
+  useEffect(() => setCount(value ? value.length : null), [value, setCount]);
 
   return <SharesList shares={shares} />;
 }
