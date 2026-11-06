@@ -28,8 +28,7 @@ test.describe("whole-UI consistency through a normal turn", () => {
     // Running: the run bar is up, the composer offers Stop, nothing else changed state.
     // A 20s sleep keeps the run in flight across the full target's ready-pod wait, so the
     // run bar is actually visible when the assertion polls.
-    await chat.send("!sleep 20");
-    await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
+    await chat.startLongRun(20);
     // The run bar becoming visible does not guarantee the user message has rendered yet, so
     // poll for its text before snapshotting.
     await expect
@@ -135,8 +134,7 @@ test.describe("whole-UI consistency around the QUEUE", () => {
     await chat.open();
     // A 20s sleep keeps the run in flight across the queueing window on the full target,
     // where the exec first waits for a ready pod.
-    await chat.send("!sleep 20");
-    await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
+    await chat.startLongRun(20);
     const start = await step(page, "run started");
     await chat.sendWhileRunning("drains into the thread");
     await expect(chat.queuedMessages()).toHaveCount(1, { timeout: 20_000 });
@@ -163,8 +161,7 @@ test.describe("whole-UI consistency around the QUEUE", () => {
     await chat.open();
     // The run must outlive open→send→queue→snapshot→reload→re-derive, and nothing waits for
     // the sleep to finish.
-    await chat.send("!sleep 60");
-    await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
+    await chat.startLongRun(60);
     await chat.sendWhileRunning("survives with full state");
     const pre = await step(page, "before reload");
 

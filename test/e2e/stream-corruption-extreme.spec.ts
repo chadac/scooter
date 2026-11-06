@@ -43,8 +43,7 @@ fastOnly("needs the SSE fault proxy to corrupt stream frames")("extreme stream c
     await chat.open();
     await chat.completeTurn("baseline before terminal duplication");
     // Keep the in-flight window just long enough to queue behind, without padding the runtime.
-    await chat.send("!sleep 3");
-    await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
+    await chat.startLongRun(3);
     await chat.sendWhileRunning("queued behind a duplicated terminal");
     await expect(chat.queuedMessages()).toHaveCount(1, { timeout: 20_000 });
 

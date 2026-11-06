@@ -136,8 +136,7 @@ fastOnly("needs the SSE fault proxy to corrupt stream frames")("integrity stream
     // A run draining behind a queued turn needs more than the 60s suite default.
     test.setTimeout(180_000);
     await chat.open();
-    await chat.send("!sleep 4");
-    await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
+    await chat.startLongRun(4);
     await chat.sendWhileRunning("queued through the corruption");
     await expect(chat.queuedMessages()).toHaveCount(1, { timeout: 20_000 });
 

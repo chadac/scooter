@@ -110,8 +110,7 @@ test.describe("queue durability across refresh + drain", () => {
   test("a queued message DRAINS + executes after the run finishes (its reply lands)", async ({ chat, page }) => {
     await chat.open();
     // A short sleep, long enough to queue behind.
-    await chat.send("!sleep 3");
-    await expect(page.locator('[data-testid="run-status-bar"]')).toBeVisible({ timeout: 30_000 });
+    await chat.startLongRun(3);
     const before = await chat.assistantMessages().count();
     await chat.sendWhileRunning("run me after the sleep");
 
