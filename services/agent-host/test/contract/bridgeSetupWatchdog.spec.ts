@@ -4,7 +4,7 @@ import { describe, it, expect } from "vitest";
 
 import { createSessionBridge, type AguiEvent } from "../../src/bridge.js";
 import type { AcpClient } from "../../src/acp/client.js";
-import type { OfferedMcpServer } from "../../src/agent/mcpServerRegistry.js";
+import type { Skill } from "../../src/agent/skills.js";
 import { errorText } from "../../src/log.js";
 import { createFakeAcpAgent } from "../fakes/fakeAcpAgent.js";
 import { createFakeSandboxApi } from "../fakes/fakeSandboxApi.js";
@@ -18,12 +18,7 @@ const CONFIG = {
   sandbox: { name: "s", namespace: "ns" },
 };
 
-const server = (name: string): OfferedMcpServer => ({
-  type: "http",
-  name: `sandbox-${name}`,
-  url: `http://127.0.0.1:9700/mcp`,
-  headers: [],
-});
+const skill = (name: string): Skill => ({ name, text: `# ${name}`, description: name });
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -103,13 +98,13 @@ describe("bridge setup watchdog (setupTimeoutMs)", () => {
       deathRetryMax: 1,
       deathRetryBaseMs: 10,
       // Call 2 hangs, then answers a set that would rebuild.
-      resolveMcpServers: async () => {
+      personalSkills: async () => {
         calls++;
         if (calls === 2) {
           await sleep(300);
-          return [server("late")];
+          return [skill("late")];
         }
-        return [server("alpha")];
+        return [skill("alpha")];
       },
     });
     const events = collect(bridge);
