@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -21,7 +22,10 @@ const StarredFolderID = "starred"
 // foldersChannel carries each folder change's owner.
 const foldersChannel = "conversation_folders_changed"
 
-const maxFolderName = 100
+const (
+	maxFolderName = 100
+	maxFolderIcon = 40
+)
 
 var (
 	errFolderNameTaken = errors.New("folder name taken")
@@ -32,8 +36,16 @@ var (
 type Folder struct {
 	ID       string  `json:"id"`
 	Name     string  `json:"name"`
+	Icon     string  `json:"icon,omitempty"`
 	Kind     string  `json:"kind"`
 	Position float64 `json:"position"`
+}
+
+// FolderPatch is a PATCH body: nil keeps a field, "" clears Icon.
+type FolderPatch struct {
+	Name     *string  `json:"name"`
+	Icon     *string  `json:"icon"`
+	Position *float64 `json:"position"`
 }
 
 // FolderList is the GET /folders body.
@@ -46,7 +58,7 @@ type FolderList struct {
 type folderStore interface {
 	Folders(ctx context.Context, owner string) (FolderList, error)
 	CreateFolder(ctx context.Context, owner, name string) (Folder, error)
-	UpdateFolder(ctx context.Context, owner, id string, name *string, position *float64) error
+	UpdateFolder(ctx context.Context, owner, id string, p FolderPatch) error
 	DeleteFolder(ctx context.Context, owner, id string) error
 	// PlaceConversation files a conversation; folderID "" unfiles it.
 	PlaceConversation(ctx context.Context, owner, convID, folderID string) error
@@ -115,10 +127,7 @@ func serveFolders(w http.ResponseWriter, r *http.Request, id string, fs folderSt
 			err = fs.DeleteFolder(ctx, owner, id)
 			break
 		}
-		var body struct {
-			Name     *string  `json:"name"`
-			Position *float64 `json:"position"`
-		}
+		var body FolderPatch
 		if decodeBody(r, &body) != nil {
 			writeJSONError(w, http.StatusBadRequest, "invalid JSON body")
 			return
@@ -131,7 +140,15 @@ func serveFolders(w http.ResponseWriter, r *http.Request, id string, fs folderSt
 			}
 			body.Name = &name
 		}
-		err = fs.UpdateFolder(ctx, owner, id, body.Name, body.Position)
+		if body.Icon != nil {
+			icon, msg := folderIcon(*body.Icon)
+			if msg != "" {
+				writeJSONError(w, http.StatusBadRequest, msg)
+				return
+			}
+			body.Icon = &icon
+		}
+		err = fs.UpdateFolder(ctx, owner, id, body)
 	default:
 		w.Header().Set("Allow", "GET, POST, PATCH, DELETE")
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -163,6 +180,18 @@ func folderName(raw string) (string, string) {
 	}
 	return name, ""
 }
+
+// folderIcon validates a Lucide icon name, or says why not.
+func folderIcon(raw string) (string, string) {
+	icon := strings.TrimSpace(raw)
+	if len(icon) > maxFolderIcon || !iconName.MatchString(icon) {
+		return "", "icon must be a Lucide icon name, like \"briefcase\""
+	}
+	return icon, ""
+}
+
+// iconName is kebab-case, as Lucide names its icons.
+var iconName = regexp.MustCompile(`^[a-z0-9-]*$`)
 
 // servePlacement serves PUT …/folder and PATCH …/starred.
 func servePlacement(w http.ResponseWriter, r *http.Request, convID string, store metaReader, fs folderStore) {
@@ -273,14 +302,14 @@ func (s *WriteStore) Folders(ctx context.Context, owner string) (FolderList, err
 		Placements: map[string]string{},
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, name, position FROM conversation_folders
+		SELECT id, name, COALESCE(icon, ''), position FROM conversation_folders
 		WHERE owner = $1 AND kind = 'user' ORDER BY position, created_at`, owner)
 	if err != nil {
 		return out, err
 	}
 	for rows.Next() {
 		f := Folder{Kind: "user"}
-		if err := rows.Scan(&f.ID, &f.Name, &f.Position); err != nil {
+		if err := rows.Scan(&f.ID, &f.Name, &f.Icon, &f.Position); err != nil {
 			rows.Close()
 			return out, err
 		}
@@ -321,11 +350,12 @@ func (s *WriteStore) CreateFolder(ctx context.Context, owner, name string) (Fold
 	return f, folderErr(err)
 }
 
-// UpdateFolder renames and/or repositions a user folder.
-func (s *WriteStore) UpdateFolder(ctx context.Context, owner, id string, name *string, position *float64) error {
+// UpdateFolder applies a patch to a user folder.
+func (s *WriteStore) UpdateFolder(ctx context.Context, owner, id string, p FolderPatch) error {
 	tag, err := s.pool.Exec(ctx, `
-		UPDATE conversation_folders SET name = COALESCE($3, name), position = COALESCE($4, position)
-		WHERE id = $1 AND owner = $2 AND kind = 'user'`, id, owner, name, position)
+		UPDATE conversation_folders SET name = COALESCE($3, name), position = COALESCE($4, position),
+		       icon = CASE WHEN $5::text IS NULL THEN icon ELSE NULLIF($5, '') END
+		WHERE id = $1 AND owner = $2 AND kind = 'user'`, id, owner, p.Name, p.Position, p.Icon)
 	if err == nil && tag.RowsAffected() == 0 {
 		return errFolderNotFound
 	}

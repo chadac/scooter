@@ -5,10 +5,11 @@
  */
 
 import { useState } from "react";
-import { Check, Folder as FolderIcon, FolderInput, FolderPlus, Lock, LockOpen, Pencil, Star, Trash2 } from "lucide-react";
+import { Check, FolderInput, FolderPlus, Lock, LockOpen, Pencil, Star, Trash2 } from "lucide-react";
 import { Popover } from "radix-ui";
 import { flushSync } from "react-dom";
 
+import { FolderGlyph } from "./FolderGlyph.js";
 import { folderOf, folderStore, moveTo, STARRED, useFolders } from "./folders.js";
 import { displayTitle } from "./pageTitle.js";
 import { sessionStore, useSessions, type Session } from "./sessions.js";
@@ -226,11 +227,7 @@ function MoveTo({ session: s }: { session: Session }) {
           />
           {options.map((f) => (
             <button key={f.id} type="button" className={item} onClick={() => pick(f.id)}>
-              {f.id === STARRED ? (
-                <Star fill="currentColor" className="size-3.5 text-warning" />
-              ) : (
-                <FolderIcon className="size-3.5 text-muted-foreground" />
-              )}
+              <FolderGlyph builtin={f.id === STARRED} icon={f.icon} className={f.id === STARRED ? undefined : "text-muted-foreground"} />
               <span className="flex-1 truncate">{f.name}</span>
               {current === f.id && <Check className="size-3.5" />}
             </button>

@@ -193,6 +193,36 @@ test.describe("session selector & titles", () => {
     await expect(page.locator(folders.recent).locator(sidebar.item).filter({ hasText: /file me away/i })).toHaveCount(1);
   });
 
+  test("a folder's New conversation is filed there, and collapsing keeps only the open one", async ({ chat, page, request, baseURL }) => {
+    const base = baseURL ?? "http://localhost:5173";
+    const name = `e2e-new-in-${Date.now()}`;
+    const folder = (await (await request.post(`${base}/folders`, { data: { name } })).json()) as { id: string };
+    await chat.open();
+    await chat.send("already in the folder");
+    await chat.waitForReply(/dummy agent/i);
+    await page.locator(header.moveButton).click();
+    await page.getByRole("textbox", { name: "Filter folders" }).fill(name);
+    await page.keyboard.press("Enter");
+
+    const section = page.locator(folders.section(folder.id));
+    const items = section.locator(sidebar.item);
+    await expect(items.filter({ hasText: /already in the folder/i })).toHaveCount(1, { timeout: 10_000 });
+    await section.getByTestId("folder-new-session").click();
+    await chat.send("started in the folder");
+    await chat.waitForReply(/dummy agent/i);
+    await expect(items.filter({ hasText: /started in the folder/i })).toHaveCount(1, { timeout: 10_000 });
+
+    // Collapsed, the folder shows only the open conversation.
+    await section.locator(folders.header).getByRole("button").first().click();
+    await expect(items).toHaveCount(1);
+    await expect(items).toContainText(/started in the folder/i);
+    await section.locator(folders.header).getByRole("button").first().click();
+
+    // Filing is server state, so it survives a reload.
+    await page.reload();
+    await expect(items.filter({ hasText: /started in the folder/i })).toHaveCount(1, { timeout: 30_000 });
+  });
+
   test("new-session button starts a fresh conversation", async ({ chat, page }) => {
     await chat.open();
     await chat.send("first conversation");

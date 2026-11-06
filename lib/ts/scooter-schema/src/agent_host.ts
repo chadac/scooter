@@ -47,6 +47,7 @@ export const conversationFolders = pgTable("conversation_folders", {
 	owner: text().notNull(),
 	kind: text().default('user').notNull(),
 	name: text().notNull(),
+	icon: text(),
 	position: doublePrecision().notNull(),
 	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
 	createdAt: bigint("created_at", { mode: "number" }).notNull(),
@@ -55,6 +56,7 @@ export const conversationFolders = pgTable("conversation_folders", {
 	uniqueIndex("conversation_folders_one_starred").using("btree", table.owner.asc().nullsLast().op("text_ops")).where(sql`(kind = 'starred'::text)`),
 	check("conversation_folders_kind_check", sql`kind = ANY (ARRAY['starred'::text, 'user'::text])`),
 	check("conversation_folders_name_check", sql`(length(name) >= 1) AND (length(name) <= 100)`),
+	check("conversation_folders_icon_check", sql`icon ~ '^[a-z0-9-]{1,40}$'::text`),
 ]);
 
 export const userSkills = pgTable("user_skills", {

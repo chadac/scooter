@@ -58,6 +58,7 @@ class ConversationEvents(Base):
 class ConversationFolders(Base):
     __tablename__ = 'conversation_folders'
     __table_args__ = (
+        CheckConstraint("icon ~ '^[a-z0-9-]{1,40}$'::text", name='conversation_folders_icon_check'),
         CheckConstraint("kind = ANY (ARRAY['starred'::text, 'user'::text])", name='conversation_folders_kind_check'),
         CheckConstraint('length(name) >= 1 AND length(name) <= 100', name='conversation_folders_name_check'),
         PrimaryKeyConstraint('id', name='conversation_folders_pkey'),
@@ -71,6 +72,7 @@ class ConversationFolders(Base):
     name: Mapped[str] = mapped_column(Text, nullable=False)
     position: Mapped[float] = mapped_column(Double(53), nullable=False)
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    icon: Mapped[Optional[str]] = mapped_column(Text)
 
     user_conversation_metadata: Mapped[list['UserConversationMetadata']] = relationship('UserConversationMetadata', back_populates='folder')
 

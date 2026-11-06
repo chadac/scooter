@@ -24,6 +24,8 @@ export type FolderState = {
   /** Server conversation id → folder id. */
   placements: Record<string, string>;
   collapsed: Record<string, boolean>;
+  /** Unsent conversation key → the folder it was started in. */
+  drafts: Record<string, string>;
 };
 
 const COLLAPSED_KEY = "scooter.folders.collapsed.v1";
@@ -36,7 +38,7 @@ const loadCollapsed = (): Record<string, boolean> => {
   }
 };
 
-let state: FolderState = { folders: [STARRED_FOLDER], placements: {}, collapsed: loadCollapsed() };
+let state: FolderState = { folders: [STARRED_FOLDER], placements: {}, collapsed: loadCollapsed(), drafts: {} };
 const listeners = new Set<() => void>();
 
 const set = (next: FolderState) => {
@@ -94,6 +96,22 @@ export const folderStore = {
     return write({ ...state, folders }, () => updateFolder(agentHostConfig, id, { name: n }));
   },
 
+  /** Set a folder's Lucide icon; "" restores the folder glyph. */
+  setIcon(id: string, icon: string): Promise<boolean> {
+    if (id === STARRED) return Promise.resolve(false);
+    const i = icon.trim();
+    const folders = state.folders.map((f) => (f.id === id ? { ...f, icon: i || undefined } : f));
+    return write({ ...state, folders }, () => updateFolder(agentHostConfig, id, { icon: i }));
+  },
+
+  /** Start a conversation in `folderId`; null means Recent. */
+  newIn(folderId: string | null): string {
+    const key = sessionStore.startFresh();
+    const { [key]: _, ...rest } = state.drafts;
+    set({ ...state, drafts: folderId ? { ...rest, [key]: folderId } : rest });
+    return key;
+  },
+
   /** Delete a folder; its conversations go back to Recent. */
   remove(id: string): Promise<boolean> {
     if (id === STARRED) return Promise.resolve(false);
@@ -147,17 +165,36 @@ export function moveTo(s: Session, folderId: string | null): Promise<boolean> {
 
 /** The conversation's folder id, or null for Recent. */
 export const folderOf = (s: Session): string | null => {
-  const f = state.placements[serverKeyOf(s)];
+  const f = state.placements[serverKeyOf(s)] ?? state.drafts[s.id];
   return f && state.folders.some((x) => x.id === f) ? f : null;
 };
 
+// File drafts once sent; forget discarded ones.
+sessionStore.subscribe(() => {
+  const keys = Object.keys(state.drafts);
+  if (keys.length === 0) return;
+  const { sessions } = sessionStore.get();
+  const drafts = { ...state.drafts };
+  const sent: [Session, string][] = [];
+  for (const key of keys) {
+    const s = sessions.find((x) => x.id === key);
+    if (s && serverIdOf(s) === undefined) continue;
+    if (s) sent.push([s, drafts[key]]);
+    delete drafts[key];
+  }
+  if (sent.length === 0 && Object.keys(drafts).length === keys.length) return;
+  // Drop drafts first: filing re-emits sessions, re-entering here.
+  set({ ...state, drafts });
+  for (const [s, folderId] of sent) void moveTo(s, folderId);
+});
+
 export const useFolders = () => useSyncExternalStore(folderStore.subscribe, folderStore.get, folderStore.get);
 
-export type FolderSection = { id: string; name: string; builtin: boolean; rows: SidebarRow[] };
+export type FolderSection = { id: string; name: string; icon?: string; builtin: boolean; rows: SidebarRow[] };
 
 /** Section the rows; subagents follow parents, duplicates render once. */
 export function buildFolders(rows: SidebarRow[], fs: FolderState): { folders: FolderSection[]; recent: SidebarRow[] } {
-  const sections: FolderSection[] = fs.folders.map((f) => ({ id: f.id, name: f.name, builtin: f.kind === "starred", rows: [] }));
+  const sections: FolderSection[] = fs.folders.map((f) => ({ id: f.id, name: f.name, icon: f.icon, builtin: f.kind === "starred", rows: [] }));
   const byId = new Map(sections.map((s) => [s.id, s.rows]));
   const recent: SidebarRow[] = [];
   const seen = new Set<string>();
@@ -165,10 +202,21 @@ export function buildFolders(rows: SidebarRow[], fs: FolderState): { folders: Fo
   let bucket: SidebarRow[] | undefined = recent;
   for (const r of rows) {
     const key = serverKeyOf(r.session);
-    if (r.depth === 0) bucket = seen.has(key) ? undefined : (byId.get(fs.placements[key]) ?? recent);
+    if (r.depth === 0) bucket = seen.has(key) ? undefined : (byId.get(fs.placements[key] ?? fs.drafts[r.session.id]) ?? recent);
     if (!bucket || seen.has(key)) continue;
     seen.add(key);
     bucket.push(r);
   }
   return { folders: sections, recent };
+}
+
+/** `currentId`'s row and its ancestors; empty if absent. */
+export function currentBranch(rows: SidebarRow[], currentId: string): SidebarRow[] {
+  const at = rows.findIndex((r) => r.session.id === currentId);
+  if (at < 0) return [];
+  const branch = [rows[at]];
+  for (let i = at - 1; i >= 0 && branch[0].depth > 0; i--) {
+    if (rows[i].depth < branch[0].depth) branch.unshift(rows[i]);
+  }
+  return branch;
 }

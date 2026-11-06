@@ -74,15 +74,29 @@ func TestPgFolders(t *testing.T) {
 		t.Errorf("filing a missing conversation is not found: %v", err)
 	}
 
-	name, pos := "Personal", 0.5
-	if err := s.UpdateFolder(ctx, "alice", home.ID, &name, &pos); err != nil {
+	name, icon, pos := "Personal", "house", 0.5
+	if err := s.UpdateFolder(ctx, "alice", home.ID, FolderPatch{Name: &name, Icon: &icon, Position: &pos}); err != nil {
 		t.Fatal(err)
 	}
 	list, _ = s.Folders(ctx, "alice")
-	if got := list.Folders[1]; got.ID != home.ID || got.Name != "Personal" {
-		t.Errorf("rename+reorder: folders = %+v", list.Folders)
+	if got := list.Folders[1]; got.ID != home.ID || got.Name != "Personal" || got.Icon != "house" {
+		t.Errorf("rename+icon+reorder: folders = %+v", list.Folders)
 	}
-	if err := s.UpdateFolder(ctx, "bob", home.ID, &name, nil); !errors.Is(err, errFolderNotFound) {
+	// A patch without an icon keeps it; an empty one clears it.
+	if err := s.UpdateFolder(ctx, "alice", home.ID, FolderPatch{Position: &pos}); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ = s.Folders(ctx, "alice"); list.Folders[1].Icon != "house" {
+		t.Errorf("icon dropped by an unrelated patch: %+v", list.Folders[1])
+	}
+	clear := ""
+	if err := s.UpdateFolder(ctx, "alice", home.ID, FolderPatch{Icon: &clear}); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ = s.Folders(ctx, "alice"); list.Folders[1].Icon != "" {
+		t.Errorf("icon not cleared: %+v", list.Folders[1])
+	}
+	if err := s.UpdateFolder(ctx, "bob", home.ID, FolderPatch{Name: &name}); !errors.Is(err, errFolderNotFound) {
 		t.Errorf("renaming someone else's folder is not found: %v", err)
 	}
 

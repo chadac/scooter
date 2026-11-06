@@ -7,10 +7,11 @@
  */
 
 import { memo, useEffect, useState, type ReactNode } from "react";
-import { Bot, ChevronRight, CornerDownRight, Folder as FolderIcon, FolderPlus, Lock, MoreHorizontal, Plus, Star } from "lucide-react";
-import { DropdownMenu } from "radix-ui";
+import { Bot, ChevronRight, CornerDownRight, FolderPlus, Lock, MoreHorizontal, Plus, Star } from "lucide-react";
+import { DropdownMenu, Popover } from "radix-ui";
 
-import { buildFolders, folderStore, moveTo, useFolders, type FolderSection } from "./folders.js";
+import { FolderGlyph, IconPicker } from "./FolderGlyph.js";
+import { buildFolders, currentBranch, folderStore, moveTo, useFolders, type FolderSection } from "./folders.js";
 import {
   sessionStore,
   useSessions,
@@ -234,12 +235,16 @@ function FolderSectionView({
   labelMode,
 }: {
   section: FolderSection;
+  /** Collapsed still shows the branch to the open conversation. */
   open: boolean;
   currentId: string;
   labelMode: LabelMode;
 }) {
   const builtin = f.builtin;
   const [renaming, setRenaming] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [picking, setPicking] = useState(false);
+  const shown = open ? f.rows : currentBranch(f.rows, currentId);
   const top = f.rows.filter((r) => r.depth === 0);
   const dots = f.rows.map((r) => turnDot(r.session)).filter((d): d is TurnDot => !!d);
   const rollup = DOT_RANK.find((d) => dots.includes(d));
@@ -266,11 +271,29 @@ function FolderSectionView({
           className="flex min-w-0 flex-1 items-center gap-1.5 text-start"
         >
           <ChevronRight aria-hidden className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
-          {builtin ? (
-            <Star fill="currentColor" className="size-3.5 shrink-0 text-warning" aria-hidden />
-          ) : (
-            <FolderIcon className="size-3.5 shrink-0" aria-hidden />
-          )}
+          <Popover.Root open={picking} onOpenChange={setPicking}>
+            <Popover.Anchor asChild>
+              <span className="flex">
+                <FolderGlyph builtin={builtin} icon={f.icon} />
+              </span>
+            </Popover.Anchor>
+            <Popover.Portal>
+              <Popover.Content
+                align="start"
+                sideOffset={6}
+                onClick={(e) => e.stopPropagation()}
+                className="z-50 rounded-md border bg-popover p-2 text-popover-foreground shadow-md"
+              >
+                <IconPicker
+                  current={f.icon}
+                  onPick={(icon) => {
+                    void folderStore.setIcon(f.id, icon);
+                    setPicking(false);
+                  }}
+                />
+              </Popover.Content>
+            </Popover.Portal>
+          </Popover.Root>
           {renaming ? (
             <input
               autoFocus
@@ -292,14 +315,24 @@ function FolderSectionView({
           )}
         </button>
         {!open && rollup && <StatusDot dot={rollup} />}
-        <span className="min-w-4 text-end text-[11px] tabular-nums">{top.length || ""}</span>
+        {/* Count and actions share a slot, so dots line up. */}
+        <span className="relative flex w-5 shrink-0 justify-end">
+          <span
+            className={cn(
+              "text-[11px] tabular-nums",
+              !builtin && "group-focus-within/folder:invisible group-hover/folder:invisible",
+              menuOpen && "invisible",
+            )}
+          >
+            {top.length || ""}
+          </span>
         {!builtin && (
-          <DropdownMenu.Root>
+          <DropdownMenu.Root open={menuOpen} onOpenChange={setMenuOpen}>
             <DropdownMenu.Trigger asChild>
               <button
                 type="button"
                 aria-label={`${f.name} folder actions`}
-                className="flex size-5 items-center justify-center rounded opacity-0 hover:bg-accent group-hover/folder:opacity-100 data-[state=open]:opacity-100"
+                className="absolute inset-y-0 end-0 my-auto flex size-5 items-center justify-center rounded opacity-0 hover:bg-accent focus-visible:opacity-100 group-hover/folder:opacity-100 data-[state=open]:opacity-100"
               >
                 <MoreHorizontal className="size-3.5" />
               </button>
@@ -317,6 +350,12 @@ function FolderSectionView({
                   Rename
                 </DropdownMenu.Item>
                 <DropdownMenu.Item
+                  onSelect={() => setTimeout(() => setPicking(true))}
+                  className="cursor-pointer rounded px-2 py-1 outline-none data-[highlighted]:bg-accent"
+                >
+                  {f.icon ? "Change icon" : "Set icon"}
+                </DropdownMenu.Item>
+                <DropdownMenu.Item
                   onSelect={() => {
                     if (top.length === 0 || window.confirm(`Delete "${f.name}"? Its ${top.length} conversation(s) move to Recent.`))
                       void folderStore.remove(f.id);
@@ -329,15 +368,16 @@ function FolderSectionView({
             </DropdownMenu.Portal>
           </DropdownMenu.Root>
         )}
+        </span>
       </div>
-      {open && (
+      {shown.length > 0 || open ? (
         <div className="ps-3">
-          {f.rows.length === 0 && (
+          {open && f.rows.length === 0 && (
             <p className="px-2 py-1 text-xs text-muted-foreground">
               {builtin ? "Star a conversation to pin it here." : "Drag conversations here."}
             </p>
           )}
-          {f.rows.map(({ session: s, depth, childCount }) => (
+          {shown.map(({ session: s, depth, childCount }) => (
             <SessionRow
               key={s.id}
               session={s}
@@ -347,8 +387,18 @@ function FolderSectionView({
               labelMode={labelMode}
             />
           ))}
+          {open && (
+            <button
+              type="button"
+              data-testid="folder-new-session"
+              onClick={() => folderStore.newIn(f.id)}
+              className="flex h-6 w-full items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground/80 hover:bg-accent/60 hover:text-foreground"
+            >
+              <Plus className="size-3.5" aria-hidden /> New conversation
+            </button>
+          )}
         </div>
-      )}
+      ) : null}
     </DropZone>
   );
 }
@@ -362,7 +412,7 @@ function NewFolder() {
         type="button"
         data-testid="new-folder"
         onClick={() => setEditing(true)}
-        className="flex h-7 w-full items-center gap-1.5 rounded-md px-1 ps-5 text-[13px] text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+        className="flex h-7 w-full items-center gap-1.5 rounded-md px-1 ps-2.5 text-[13px] text-muted-foreground hover:bg-accent/60 hover:text-foreground"
       >
         <FolderPlus className="size-3.5" aria-hidden /> New folder
       </button>
@@ -381,7 +431,7 @@ function NewFolder() {
         if (e.key === "Enter") e.currentTarget.blur();
         if (e.key === "Escape") setEditing(false);
       }}
-      className="ms-5 h-7 w-[calc(100%-1.25rem)] rounded-md border border-input bg-background px-2 text-[13px]"
+      className="ms-1.5 h-7 w-[calc(100%-0.375rem)] rounded-md border border-input bg-background px-2 text-[13px]"
     />
   );
 }
@@ -428,7 +478,7 @@ export const Sidebar = memo(function Sidebar() {
           variant="default"
           size="sm"
           data-testid="new-session"
-          onClick={() => sessionStore.startFresh()}
+          onClick={() => folderStore.newIn(null)}
           className="w-full justify-center gap-1.5"
         >
           <Plus className="size-4" aria-hidden /> New conversation
@@ -585,7 +635,7 @@ export const Sidebar = memo(function Sidebar() {
             <FolderSectionView
               key={f.id}
               section={f}
-              open={searching || !fstate.collapsed[f.id] || f.rows.some((r) => r.session.id === currentId)}
+              open={searching || !fstate.collapsed[f.id]}
               currentId={currentId}
               labelMode={labelMode}
             />

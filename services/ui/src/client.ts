@@ -257,6 +257,8 @@ export async function renameConversation(
 export interface ConversationFolder {
   id: string;
   name: string;
+  /** A Lucide icon name shown instead of the folder glyph. */
+  icon?: string;
   kind: "starred" | "user";
   position: number;
 }
@@ -303,7 +305,7 @@ export async function createFolder(config: AgentHostConfig, name: string): Promi
 export async function updateFolder(
   config: AgentHostConfig,
   id: string,
-  patch: { name?: string; position?: number },
+  patch: { name?: string; icon?: string; position?: number },
 ): Promise<boolean> {
   return (await folderRequest(config, "updateFolder", foldersUrl(config, id), "PATCH", patch)) !== null;
 }

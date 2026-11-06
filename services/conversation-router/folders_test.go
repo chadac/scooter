@@ -13,6 +13,7 @@ type fakeFolders struct {
 	owner, convID, folderID string
 	unstarred               bool
 	created                 string
+	patch                   FolderPatch
 	err                     error
 }
 
@@ -24,7 +25,8 @@ func (f *fakeFolders) CreateFolder(_ context.Context, owner, name string) (Folde
 	f.owner, f.created = owner, name
 	return Folder{ID: "f1", Name: name, Kind: "user", Position: 1}, f.err
 }
-func (f *fakeFolders) UpdateFolder(_ context.Context, owner, id string, _ *string, _ *float64) error {
+func (f *fakeFolders) UpdateFolder(_ context.Context, owner, id string, p FolderPatch) error {
+	f.patch = p
 	f.owner, f.folderID = owner, id
 	return f.err
 }
@@ -103,6 +105,27 @@ func TestServeFolders(t *testing.T) {
 		serveFolders(w, folderReq("POST", "/folders", `{"name":"Work"}`, "alice"), "", &fakeFolders{err: errFolderNameTaken})
 		if w.Code != 409 {
 			t.Fatalf("got %d", w.Code)
+		}
+	})
+	t.Run("PATCH validates the icon", func(t *testing.T) {
+		for body, want := range map[string]int{
+			`{"icon":" chart-column "}`:                  204,
+			`{"icon":""}`:                                204,
+			`{"icon":"two words"}`:                       400,
+			`{"icon":"Briefcase"}`:                       400,
+			`{"icon":"` + strings.Repeat("a", 41) + `"}`: 400,
+		} {
+			f := &fakeFolders{}
+			w := httptest.NewRecorder()
+			serveFolders(w, folderReq("PATCH", "/folders/f1", body, "alice"), "f1", f)
+			if w.Code != want {
+				t.Errorf("%s: got %d, want %d", body, w.Code, want)
+			}
+		}
+		f := &fakeFolders{}
+		serveFolders(httptest.NewRecorder(), folderReq("PATCH", "/folders/f1", `{"icon":" chart-column "}`, "alice"), "f1", f)
+		if f.patch.Icon == nil || *f.patch.Icon != "chart-column" || f.patch.Name != nil {
+			t.Errorf("patch = %+v", f.patch)
 		}
 	})
 	t.Run("Starred can't be changed", func(t *testing.T) {

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { FolderList } from "./client.js";
-import { buildFolders, folderOf, folderStore, moveTo, positionBetween, STARRED, type FolderState } from "./folders.js";
+import { buildFolders, currentBranch, folderOf, folderStore, moveTo, positionBetween, STARRED, type FolderState } from "./folders.js";
 import { conversationFor, sessionStore, setConversationMinter, type Session, type SidebarRow } from "./sessions.js";
 
 const STARRED_FOLDER = { id: STARRED, name: "Starred", kind: "starred" as const, position: 0 };
@@ -50,6 +50,7 @@ describe("buildFolders: each conversation renders in exactly one section", () =>
     folders: [STARRED_FOLDER, WORK],
     placements,
     collapsed: {},
+    drafts: {},
   });
 
   it("routes by placement, Starred first, and everything unfiled to Recent", () => {
@@ -148,7 +149,17 @@ describe("folder edits", () => {
     expect(await folderStore.rename(STARRED, "Faves")).toBe(false);
     expect(await folderStore.remove(STARRED)).toBe(false);
     expect(await folderStore.reorder(STARRED, WORK.id)).toBe(false);
+    expect(await folderStore.setIcon(STARRED, "star")).toBe(false);
     expect(calls).toHaveLength(0);
+  });
+
+  it("setting an icon sends it, and an empty one clears it", async () => {
+    const calls = stubFetch({ folders: [STARRED_FOLDER, WORK], placements: {} });
+    await folderStore.setIcon(WORK.id, " briefcase ");
+    expect(folderStore.get().folders[1].icon).toBe("briefcase");
+    await folderStore.setIcon(WORK.id, "");
+    expect(folderStore.get().folders[1].icon).toBeUndefined();
+    expect(calls.map((c) => c.body)).toEqual([JSON.stringify({ icon: "briefcase" }), JSON.stringify({ icon: "" })]);
   });
 
   it("reordering sends one position between the new neighbours", async () => {
@@ -186,5 +197,41 @@ describe("folder edits", () => {
     releaseSlow();
     await first;
     expect(folderStore.get().folders.map((f) => f.id)).toEqual([STARRED, HOME.id]);
+  });
+});
+
+describe("currentBranch: what a collapsed folder still shows", () => {
+  const row = (id: string, depth = 0): SidebarRow => ({
+    session: { id, title: id, createdAt: 1, lastActivityAt: 1 },
+    depth,
+    childCount: 0,
+  });
+  const rows = [row("a"), row("b"), row("b1", 1), row("b2", 1), row("b2x", 2), row("c")];
+  const ids = (id: string) => currentBranch(rows, id).map((r) => r.session.id);
+
+  it("is just the conversation when it is top level", () => expect(ids("c")).toEqual(["c"]));
+  it("keeps a subagent's ancestors, not its siblings", () => expect(ids("b2x")).toEqual(["b", "b2", "b2x"]));
+  it("is empty when the conversation is elsewhere", () => expect(ids("zzz")).toEqual([]));
+});
+
+describe("newIn: a conversation started inside a folder", () => {
+  it("shows in the folder at once and is filed there when first sent", async () => {
+    const calls = stubFetch({ folders: [STARRED_FOLDER, WORK], placements: {} });
+    setConversationMinter(async () => "srv-new");
+    const key = folderStore.newIn(WORK.id);
+    expect(sessionStore.get().currentId).toBe(key);
+    expect(folderOf(current(key))).toBe(WORK.id);
+    expect(calls).toHaveLength(0);
+
+    await conversationFor(current(key)).ensureCreated();
+    expect(calls).toEqual([expect.objectContaining({ method: "PUT", url: expect.stringContaining("/conversations/srv-new/folder") })]);
+    expect(folderStore.get().placements).toEqual({ "srv-new": WORK.id });
+    expect(folderStore.get().drafts).toEqual({});
+  });
+
+  it("the main New conversation button takes a reused draft back out", () => {
+    const key = folderStore.newIn(WORK.id);
+    expect(folderStore.newIn(null)).toBe(key);
+    expect(folderOf(current(key))).toBeNull();
   });
 });

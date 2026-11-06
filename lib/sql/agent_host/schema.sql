@@ -110,6 +110,8 @@ CREATE TABLE "conversation_folders" (
   "owner"      text   NOT NULL,
   "kind"       text   NOT NULL DEFAULT 'user' CHECK ("kind" IN ('starred', 'user')),
   "name"       text   NOT NULL CHECK (length("name") BETWEEN 1 AND 100),
+  -- An optional Lucide icon name shown instead of the folder glyph.
+  "icon"       text   CHECK ("icon" ~ '^[a-z0-9-]{1,40}$'),
   -- Fractional, so a reorder rewrites one row.
   "position"   double precision NOT NULL,
   "created_at" bigint NOT NULL,
