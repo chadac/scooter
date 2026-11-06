@@ -50,3 +50,11 @@
   # Node for contribs' npm packages, fetched on first use.
   scooter-node = { package = pkgs.nodejs; bins = [ "node" "npm" "npx" ]; };
 }
+# contrib/docker's tools; dockerd and crun build only on Linux.
+// pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+  docker = { package = pkgs.docker; bins = [ "docker" "dockerd" ]; };
+  crun = pkgs.crun;
+  k3d = pkgs.k3d;
+  kubectl = { package = pkgs.kubectl; output = "out"; };
+}
+

@@ -13,6 +13,7 @@
     ./code-server/contrib.nix
     ./commits/contrib.nix
     ./datadog/contrib.nix
+    ./docker/contrib.nix
     ./duckduckgo/contrib.nix
     ./echo/contrib.nix
     ./files/contrib.nix

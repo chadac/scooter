@@ -145,6 +145,25 @@
         ],
         "name": "code-server-4.141.0"
       },
+      "crun": {
+        "attr": "crun",
+        "drv": "/nix/store/dbsq0nh3y70wr2ix0bps0jd2gdqhzb0z-crun-1.30.1.drv",
+        "output": "out",
+        "bins": [
+          "crun"
+        ],
+        "name": "crun-1.30.1"
+      },
+      "docker": {
+        "attr": "docker",
+        "drv": "/nix/store/ngga00n51c8s83bq7179vh6w6xxyazqc-docker-29.9.2.drv",
+        "output": "out",
+        "bins": [
+          "docker",
+          "dockerd"
+        ],
+        "name": "docker-29.9.2"
+      },
       "gh": {
         "attr": "gh",
         "drv": "/nix/store/3w6hc10jizi1x77sd3z76s2mgxrpdghx-gh-2.103.3.drv",
@@ -173,6 +192,24 @@
           "bq"
         ],
         "name": "google-cloud-sdk-583.0.0"
+      },
+      "k3d": {
+        "attr": "k3d",
+        "drv": "/nix/store/hb0ld4vk74ya599isbffh29qv6ijbgar-k3d-5.9.0.drv",
+        "output": "out",
+        "bins": [
+          "k3d"
+        ],
+        "name": "k3d-5.9.0"
+      },
+      "kubectl": {
+        "attr": "kubectl",
+        "drv": "/nix/store/mwrxm0vssbp14726dpym1ivrl84aly8a-kubectl-1.37.1.drv",
+        "output": "out",
+        "bins": [
+          "kubectl"
+        ],
+        "name": "kubectl-1.37.1"
       },
       "marimo": {
         "attr": "marimo",
@@ -251,6 +288,25 @@
         ],
         "name": "code-server-4.141.0"
       },
+      "crun": {
+        "attr": "crun",
+        "drv": "/nix/store/q4avppbxnjdldx4gq5mbx0fc31365cma-crun-1.30.1.drv",
+        "output": "out",
+        "bins": [
+          "crun"
+        ],
+        "name": "crun-1.30.1"
+      },
+      "docker": {
+        "attr": "docker",
+        "drv": "/nix/store/kzmr38b20q1fdy3q9kvsjps6dicxzcww-docker-29.9.2.drv",
+        "output": "out",
+        "bins": [
+          "docker",
+          "dockerd"
+        ],
+        "name": "docker-29.9.2"
+      },
       "gh": {
         "attr": "gh",
         "drv": "/nix/store/l0j0vwm6mh1bbq6hbp608h5iy467z3ck-gh-2.103.3.drv",
@@ -279,6 +335,24 @@
           "bq"
         ],
         "name": "google-cloud-sdk-583.0.0"
+      },
+      "k3d": {
+        "attr": "k3d",
+        "drv": "/nix/store/5wqn0zgiklw7flgn34ca4f0fxlr6mzf1-k3d-5.9.0.drv",
+        "output": "out",
+        "bins": [
+          "k3d"
+        ],
+        "name": "k3d-5.9.0"
+      },
+      "kubectl": {
+        "attr": "kubectl",
+        "drv": "/nix/store/cqsiprwk16bb1wfq0kfzl3skcfv35ji8-kubectl-1.37.1.drv",
+        "output": "out",
+        "bins": [
+          "kubectl"
+        ],
+        "name": "kubectl-1.37.1"
       },
       "marimo": {
         "attr": "marimo",

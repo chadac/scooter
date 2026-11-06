@@ -379,6 +379,12 @@ min total. Add it when the flake needs contention to fire, not by default.
   comment that restates the code. No history (what the code used to do, why another
   approach was rejected, PR numbers, measurements): that goes in the PR body. A
   file or class header may run to a short paragraph when the invariant needs it.
+- **Stubbed packages are shims until first run.** Anything in
+  `modules/sandbox-os/stubs.nix` realizes itself through `nix-store` and the nix
+  cache on first call. A systemd unit that runs one needs `config.nix.package` in
+  its `path`, and must run it once before entering a namespace without network.
+  To test the cold path, delete the real outputs from the store first: a warm
+  store hides both failures.
 
 ## Layout
 

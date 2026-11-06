@@ -616,6 +616,8 @@ jobs:
               - 'test/cluster/scooter-converge.spec.ts'
               - 'test/cluster/nix-build-sandbox.spec.ts'
               - 'test/cluster/userns-migration.spec.ts'
+              - 'test/cluster/sandbox-docker.spec.ts'
+              - 'contrib/docker/**'
               # The warm-seed unit lives in the sandbox image and the warm-store spec
               # needs only that image.
               - 'test/cluster/warm-store.spec.ts'
@@ -818,7 +820,7 @@ jobs:
           SANDBOX_RUNTIME_CLASS: crun
           CI: "1"
           KEEP_TEST_PODS: "1"
-        run: nix develop --command bash -c 'npm install && npm run test:cluster -- nix-build-sandbox userns-migration'
+        run: nix develop --command bash -c 'npm install && npm run test:cluster -- nix-build-sandbox userns-migration sandbox-docker'
 
       - name: dump pod state on failure
         if: failure()

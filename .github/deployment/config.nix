@@ -12,6 +12,7 @@
     code-server.enable = true;
     commits.enable = true;
     datadog.enable = true;
+    docker.enable = true;
     duckduckgo.enable = true;
     files.enable = true;
     gcp.enable = true;
