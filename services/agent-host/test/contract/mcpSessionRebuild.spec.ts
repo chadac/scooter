@@ -182,6 +182,38 @@ describe("bridge — sandbox MCP servers change under a live conversation", () =
     await bridge.stop();
   });
 
+  it("starts at once on a cold sandbox and picks its servers up on a later run", async () => {
+    const exec = createSandboxExecBackend(createFakeSandboxApi());
+    const rec = recordingProvider(exec);
+    // A pod still starting: the resolve hangs until released.
+    let release!: (s: OfferedMcpServer[]) => void;
+    let calls = 0;
+    const bridge = createSessionBridge({
+      config: { ...BRIDGE_CONFIG, mcpServers: [server("static", 1234)] },
+      exec,
+      acpProviders: [rec.provider],
+      mcpResolveWaitMs: 20,
+      resolveMcpServers: () => {
+        calls++;
+        return new Promise((r) => (release = r));
+      },
+    });
+
+    await bridge.prompt({ threadId: "t1", text: "one" });
+    expect(rec.sessions()[0].map((s) => s.name)).toEqual(["sandbox-static"]);
+
+    await bridge.prompt({ threadId: "t1", text: "two" });
+    expect(calls, "a slow resolve is shared, not stacked").toBe(1);
+    expect(rec.clients(), "no answer yet, so no rebuild").toBe(1);
+
+    release([server("static", 1234), server("kubernetes", 9700)]);
+    await bridge.prompt({ threadId: "t1", text: "three" });
+    expect(rec.clients(), "the sandbox's servers rebuild the session").toBe(2);
+    expect(rec.sessions()[1].map((s) => s.name)).toEqual(["sandbox-static", "sandbox-kubernetes"]);
+
+    await bridge.stop();
+  });
+
   it("does NOT rebuild a provider that brings its own MCP set", async () => {
     // BYO's own set never matches the resolver's fingerprint.
     const exec = createSandboxExecBackend(createFakeSandboxApi());

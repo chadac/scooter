@@ -454,6 +454,9 @@ export interface BridgeDeps {
   // Pre-prompt setup budget in ms (default 300_000; 0 disables).
   setupTimeoutMs?: number;
 
+  /** Max ms a run waits on resolveMcpServers (default 1_000). */
+  mcpResolveWaitMs?: number;
+
   /** Liveness probe cadence for a run in flight: the run is force-terminated only when
    *  `acpClient.isAlive()` reports the agent process dead, never on silence alone
    *  (default 30_000; 0 disables). */
@@ -1611,18 +1614,38 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     provider: deps.pickedProvider,
   });
 
-  /** The resolver's set, or undefined (use the static set) if it fails. */
-  const resolveOrStatic = async (): Promise<OfferedMcpServer[] | undefined> => {
-    if (!deps.resolveMcpServers) return undefined;
-    try {
-      return await deps.resolveMcpServers(conversationId);
-    } catch (err) {
-      log.warn("could not resolve sandbox MCP servers; starting the session without them", {
-        conversation_id: conversationId,
-        error: formatError(err),
+  // Undefined until the sandbox first answers.
+  let mcpKnown: OfferedMcpServer[] | undefined;
+  // One resolve in flight; a slow one is shared, not stacked.
+  let mcpResolving: Promise<void> | undefined;
+  const mcpResolveWaitMs = deps.mcpResolveWaitMs ?? 1_000;
+
+  /** A failed resolve keeps the last known set. */
+  const refreshMcp = (): Promise<void> => {
+    const resolve = deps.resolveMcpServers;
+    if (!resolve) return Promise.resolve();
+    mcpResolving ??= resolve(conversationId)
+      .then((servers) => {
+        mcpKnown = servers;
+      }, (err: unknown) => {
+        log.warn("could not resolve sandbox MCP servers; using the last known set", {
+          conversation_id: conversationId,
+          error: formatError(err),
+        });
+      })
+      .finally(() => {
+        mcpResolving = undefined;
       });
-      return undefined;
-    }
+    return mcpResolving;
+  };
+
+  /** Bounded wait, so a cold pod never blocks a run. */
+  const currentMcp = async (): Promise<OfferedMcpServer[] | undefined> => {
+    const refreshing = refreshMcp();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([refreshing, new Promise<void>((r) => (timer = setTimeout(r, mcpResolveWaitMs)))]);
+    clearTimeout(timer);
+    return mcpKnown;
   };
 
   // Lazily ready one client per provider (initialize, newSession, hooks wired once), cached
@@ -1651,7 +1674,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       // resolver, falling back to the static `config.mcpServers`.
       const resolved = provider.mcpServersFor
         ? provider.mcpServersFor(conversationId)
-        : ((await resolveOrStatic()) ?? (deps.config.mcpServers as OfferedMcpServer[] | undefined));
+        : ((await currentMcp()) ?? (deps.config.mcpServers as OfferedMcpServer[] | undefined));
       const mcpServers = resolved;
       // Remember what this session was created with, so a later run can tell whether the
       // sandbox's set changed.
@@ -1770,18 +1793,11 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       debug("[bridge] dropSessionIfMcpChanged: cached session had failed (%s)", formatError(err));
       return;
     }
-    let next: string;
-    try {
-      next = fingerprintOffered(await deps.resolveMcpServers(conversationId));
-    } catch (err) {
-      log.warn("could not resolve MCP servers; keeping the current agent session", {
-        conversation_id: conversationId,
-        error: formatError(err),
-      });
-      return;
-    }
+    // The sandbox never answered: keep the session.
+    const known = await currentMcp();
+    if (!known) return;
     // An ended run must not close the retry's session.
-    if (next === settled.mcpFingerprint || abandoned?.()) return;
+    if (fingerprintOffered(known) === settled.mcpFingerprint || abandoned?.()) return;
     log.info("sandbox MCP servers changed; rebuilding the agent session", {
       conversation_id: conversationId,
       provider: providerId,
