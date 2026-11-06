@@ -12,7 +12,6 @@ import {
   setConversationMinter,
   visibleSessions,
   nestSubagents,
-  splitSections,
   type Session,
   type SidebarRow,
 } from "./sessions.js";
@@ -295,6 +294,8 @@ describe("per-conversation model (model-switch scoping)", () => {
 });
 
 describe("favoriting pins a conversation to the top of the list", () => {
+  // Stars come from the folder store, which mirrors them in by server key.
+  const star = (...keys: string[]) => sessionStore.setStarredKeys(new Set(keys));
   // Unique ids avoid cross-test accumulation in the singleton store, and `only` restricts the assertion to them.
   const only = (...ids: string[]) => sessionStore.get().sessions.filter((s) => ids.includes(s.id)).map((s) => s.id);
 
@@ -307,7 +308,7 @@ describe("favoriting pins a conversation to the top of the list", () => {
     expect(only("star-new", "star-mid", "star-old")).toEqual(["star-new", "star-mid", "star-old"]);
 
     // Starring the oldest moves it to the top despite being least recent.
-    sessionStore.setStarred("star-old", true);
+    star("star-old");
     expect(only("star-new", "star-mid", "star-old")).toEqual(["star-old", "star-new", "star-mid"]);
   });
 
@@ -317,35 +318,35 @@ describe("favoriting pins a conversation to the top of the list", () => {
       { id: "imm-b", title: "B", createdAt: 2_000, lastActivityAt: 2_000 },
       { id: "imm-c", title: "C", createdAt: 1_000, lastActivityAt: 1_000 },
     ]);
-    sessionStore.setStarred("imm-c", true);
-    sessionStore.setStarred("imm-b", true);
+    star("imm-c", "imm-b");
     // Both starred rows sort above imm-a, most recently active first.
     expect(only("imm-a", "imm-b", "imm-c")).toEqual(["imm-b", "imm-c", "imm-a"]);
   });
 
   it("un-starring drops a conversation back into recency order", () => {
     sessionStore.mergeFromServer([
-      { id: "un-a", title: "A", createdAt: 3_000, lastActivityAt: 3_000, starred: true },
+      { id: "un-a", title: "A", createdAt: 3_000, lastActivityAt: 3_000 },
       { id: "un-b", title: "B", createdAt: 2_000, lastActivityAt: 2_000 },
       { id: "un-c", title: "C", createdAt: 1_000, lastActivityAt: 1_000 },
     ]);
+    star("un-a");
     expect(only("un-a", "un-b", "un-c")).toEqual(["un-a", "un-b", "un-c"]);
-    sessionStore.setStarred("un-a", false);
+    star();
     expect(only("un-a", "un-b", "un-c")).toEqual(["un-a", "un-b", "un-c"]); // a @3000 is still most recent
   });
 
-  it("a server merge that only flips a star re-orders (not skipped by the no-op guard)", () => {
+  it("a server merge keeps the folder store's stars", () => {
     sessionStore.mergeFromServer([
       { id: "poll-a", title: "A", createdAt: 3_000, lastActivityAt: 3_000 },
       { id: "poll-b", title: "B", createdAt: 1_000, lastActivityAt: 1_000 },
     ]);
-    expect(only("poll-a", "poll-b")).toEqual(["poll-a", "poll-b"]);
-    // The next poll reports b as starred.
+    star("poll-b");
     sessionStore.mergeFromServer([
       { id: "poll-a", title: "A", createdAt: 3_000, lastActivityAt: 3_000 },
-      { id: "poll-b", title: "B", createdAt: 1_000, lastActivityAt: 1_000, starred: true },
+      { id: "poll-b", title: "B", createdAt: 1_000, lastActivityAt: 1_000 },
     ]);
     expect(only("poll-a", "poll-b")).toEqual(["poll-b", "poll-a"]);
+    star();
   });
 });
 
@@ -425,14 +426,13 @@ describe("user rename + starring", () => {
     expect(of("c")?.userTitled).toBe(true);
   });
 
-  it("setStarred toggles the flag, and a server merge carries it", () => {
+  it("setStarredKeys mirrors the folder store's stars by server key", () => {
     sessionStore.mergeFromServer([{ id: "c", title: "X" }]);
     expect(of("c")?.starred).toBeFalsy();
-    sessionStore.setStarred("c", true);
+    sessionStore.setStarredKeys(new Set(["c"]));
     expect(of("c")?.starred).toBe(true);
-    // The server confirms it on the next merge.
-    sessionStore.mergeFromServer([{ id: "c", title: "X", starred: true }]);
-    expect(of("c")?.starred).toBe(true);
+    sessionStore.setStarredKeys(new Set());
+    expect(of("c")?.starred).toBeFalsy();
   });
 });
 
@@ -518,68 +518,6 @@ describe("nestSubagents (sidebar hierarchy)", () => {
   it("top-level-only list is unchanged (all depth 0)", () => {
     const rows = nestSubagents([s("a"), s("b")]);
     expect(rows.map((r) => r.depth)).toEqual([0, 0]);
-  });
-});
-
-describe("splitSections (Starred / Recent — a conversation appears in exactly ONE)", () => {
-  const row = (s: Partial<Session> & { id: string }, depth = 0): SidebarRow => ({
-    session: { title: s.id, createdAt: 1, lastActivityAt: 1, ...s },
-    depth,
-    childCount: 0,
-  });
-  const ids = (rows: SidebarRow[]) => rows.map((r) => r.session.id);
-
-  it("routes a starred conversation to Starred and everything else to Recent", () => {
-    const { starred, recent } = splitSections([
-      row({ id: "a", starred: true }),
-      row({ id: "b" }),
-      row({ id: "c" }),
-    ]);
-    expect(ids(starred)).toEqual(["a"]);
-    expect(ids(recent)).toEqual(["b", "c"]);
-  });
-
-  it("renders a DOUBLE-HELD conversation once, in Starred — the reported bug", () => {
-    // The list can hold the same conversation twice (a locally keyed row next to the server's own row), and `starred` is a per-row flag.
-    const { starred, recent } = splitSections([
-      row({ id: "local-key", serverId: "conv-1", starred: true }),
-      row({ id: "conv-1", serverId: "conv-1" }),
-      row({ id: "other" }),
-    ]);
-    expect(ids(starred)).toEqual(["local-key"]);
-    expect(ids(recent)).toEqual(["other"]);
-  });
-
-  it("puts the conversation in Starred even when the unstarred copy comes first", () => {
-    // Routing is per conversation, not by whichever row the walk reaches first.
-    const { starred, recent } = splitSections([
-      row({ id: "conv-2", serverId: "conv-2" }),
-      row({ id: "local-key-2", serverId: "conv-2", starred: true }),
-    ]);
-    expect(ids(starred)).toEqual(["conv-2"]);
-    expect(recent).toEqual([]);
-  });
-
-  it("subagent rows inherit their parent's section", () => {
-    const { starred, recent } = splitSections([
-      row({ id: "p1", starred: true }),
-      row({ id: "c1", parentId: "p1" }, 1),
-      row({ id: "p2" }),
-      row({ id: "c2", parentId: "p2" }, 1),
-    ]);
-    expect(ids(starred)).toEqual(["p1", "c1"]);
-    expect(ids(recent)).toEqual(["p2", "c2"]);
-  });
-
-  it("a dropped duplicate parent takes its subagent rows with it (no orphans)", () => {
-    const { starred, recent } = splitSections([
-      row({ id: "p-key", serverId: "p", starred: true }),
-      row({ id: "kid", serverId: "kid", parentId: "p" }, 1),
-      row({ id: "p", serverId: "p" }),
-      row({ id: "kid-again", serverId: "kid", parentId: "p" }, 1),
-    ]);
-    expect(ids(starred)).toEqual(["p-key", "kid"]);
-    expect(recent).toEqual([]);
   });
 });
 
@@ -1000,19 +938,6 @@ describe("hover hold on a row's action tiles", () => {
     expect(order(), "the hover still holds").toContain("h-8");
     sessionStore.clearHover(b.id);
     expect(order()).not.toContain("h-8");
-  });
-
-  it("a queued server frame cannot undo a star the user toggled after it", () => {
-    // Star, the server's echo queues behind the hover hold, then unstar: the replayed
-    // echo must not star the row again.
-    sessionStore.mergeFromServer([{ id: "h-21", title: "keep" }], { fullList: false });
-    const row = sessionStore.get().sessions.find((x) => x.serverId === "h-21")!;
-    sessionStore.setHover(row.id);
-    sessionStore.setStarred(row.id, true);
-    sessionStore.mergeFromServer([{ id: "h-21", starred: true }], { fullList: false });
-    sessionStore.setStarred(row.id, false);
-    sessionStore.clearHover(row.id);
-    expect(sessionStore.get().sessions.find((x) => x.id === row.id)?.starred).toBe(false);
   });
 
   it("keeps a live hover hold when only the rename row has gone stale", () => {

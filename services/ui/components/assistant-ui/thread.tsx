@@ -28,6 +28,7 @@ import { InlineRunStatus, ContextFillBar } from "@/src/RunStatusBar";
 import { QueuedMessages } from "@/src/QueuedMessages";
 import { attachStickToBottom } from "@/src/stickToBottom";
 import { useRenaming } from "@/src/sessions";
+import { useTypingElsewhere } from "@/src/typingElsewhere";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -333,9 +334,11 @@ const ThreadSuggestionItem: FC = () => {
 };
 
 const Composer: FC = () => {
-  // The composer grabs focus when a run starts and when the thread auto-scrolls to new output;
-  // during an inline rename that blur commits the half-typed title, so it holds off until done.
+  // The composer grabs focus on run start and auto-scroll; that would commit a half-typed
+  // rename, or close a popover the user is typing in, so it holds off.
   const renaming = useRenaming();
+  const typingElsewhere = useTypingElsewhere();
+  const hold = renaming || typingElsewhere;
   return (
     <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
       <ComposerPrimitive.AttachmentDropzone asChild>
@@ -350,8 +353,8 @@ const Composer: FC = () => {
             className="aui-composer-input placeholder:text-muted-foreground max-h-32 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-base outline-none"
             rows={1}
             autoFocus
-            unstable_focusOnRunStart={!renaming}
-            unstable_focusOnScrollToBottom={!renaming}
+            unstable_focusOnRunStart={!hold}
+            unstable_focusOnScrollToBottom={!hold}
             aria-label="Message input"
           />
           <ComposerAction />

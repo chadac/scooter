@@ -24,7 +24,7 @@ export default defineConfig({
         changeOrigin: true,
       },
       ...Object.fromEntries(
-        ["/agui", "/sessions", "/conversations", "/models", "/whoami", "/scheduled-tasks", "/user-skills", "/users", "/contrib-api"].map((p) => [
+        ["/agui", "/sessions", "/conversations", "/models", "/whoami", "/scheduled-tasks", "/user-skills", "/users", "/folders", "/contrib-api"].map((p) => [
           p,
           { target: process.env.AGENT_HOST_URL ?? "http://localhost:8080", changeOrigin: true },
         ]),

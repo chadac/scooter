@@ -4,30 +4,16 @@
  * started in this browser), while the server must be addressed by `serverId`.
  */
 
-import { deleteConversation, renameConversation, setConversationStarred, setConversationVisibility } from "./client.js";
+import { deleteConversation, renameConversation, setConversationVisibility } from "./client.js";
 import { agentHostConfig } from "./config.js";
 import { conversationFor, sessionStore, type Session } from "./sessions.js";
 
 /** The server's id for a session, or undefined when the server has never created it. */
-const serverIdOf = (s: Session): string | undefined =>
+export const serverIdOf = (s: Session): string | undefined =>
   conversationFor(s).serverId();
 
 /** Whether the conversation exists server-side; false for an unsent "New chat". */
 export const isServerBacked = (s: Session): boolean => serverIdOf(s) !== undefined;
-
-/** Star or unstar; `starred` is server-owned, so a never-created conversation has nothing to star. */
-export async function toggleStar(s: Session): Promise<void> {
-  const id = serverIdOf(s);
-  if (id === undefined) return;
-  const next = !s.starred;
-  sessionStore.setStarred(s.id, next); // optimistic, by local key
-  const updated = await setConversationStarred(agentHostConfig, id, next);
-  if (updated) return;
-  // Revert the optimistic star unless the user has toggled again since.
-  if (sessionStore.get().sessions.find((x) => x.id === s.id)?.starred === next) {
-    sessionStore.setStarred(s.id, !next);
-  }
-}
 
 /** Commit an inline rename; the local title applies either way, the durable write only once the conversation exists server-side. */
 export async function commitRename(s: Session, title: string): Promise<void> {

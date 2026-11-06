@@ -253,26 +253,70 @@ export async function renameConversation(
   }
 }
 
-/** Star or unstar a conversation, returning the updated view or null on error. */
-export async function setConversationStarred(
-  config: AgentHostConfig,
-  conversationId: string,
-  starred: boolean,
-): Promise<ConversationView | null> {
+/** One sidebar folder; the built-in Starred always comes first. */
+export interface ConversationFolder {
+  id: string;
+  name: string;
+  kind: "starred" | "user";
+  position: number;
+}
+
+/** GET /folders: folders, and conversation id → folder id. */
+export interface FolderList {
+  folders: ConversationFolder[];
+  placements: Record<string, string>;
+}
+
+const foldersUrl = (config: AgentHostConfig, id?: string) =>
+  `${config.baseUrl.replace(/\/$/, "")}/folders${id ? `/${encodeURIComponent(id)}` : ""}`;
+
+/** Send one folder request, resolving to the response or null on error. */
+async function folderRequest(config: AgentHostConfig, label: string, url: string, method: string, body?: unknown): Promise<Response | null> {
   try {
-    const res = await fetch(
-      `${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(conversationId)}/starred`,
-      { method: "PATCH", headers: { ...authHeaders(config), "content-type": "application/json" }, body: JSON.stringify({ starred }) },
-    );
-    if (!res.ok) {
-      console.warn(`[client] setConversationStarred ${conversationId}: HTTP ${res.status}`);
-      return null;
-    }
-    return (await res.json()) as ConversationView;
+    const res = await fetch(url, {
+      method,
+      cache: "no-store",
+      headers: { ...authHeaders(config), ...(body === undefined ? {} : { "content-type": "application/json" }) },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (res.ok) return res;
+    console.warn(`[client] ${label}: HTTP ${res.status}`);
   } catch (e) {
-    console.warn(`[client] setConversationStarred ${conversationId} failed:`, e);
-    return null;
+    console.warn(`[client] ${label} failed:`, e);
   }
+  return null;
+}
+
+/** Fetch the caller's folders, or null on error. */
+export async function fetchFolders(config: AgentHostConfig): Promise<FolderList | null> {
+  const res = await folderRequest(config, "fetchFolders", foldersUrl(config), "GET");
+  return res ? ((await res.json()) as FolderList) : null;
+}
+
+/** Create a folder, returning it or null on error (a taken name included). */
+export async function createFolder(config: AgentHostConfig, name: string): Promise<ConversationFolder | null> {
+  const res = await folderRequest(config, "createFolder", foldersUrl(config), "POST", { name });
+  return res ? ((await res.json()) as ConversationFolder) : null;
+}
+
+/** Rename and/or reposition a folder; true on success. */
+export async function updateFolder(
+  config: AgentHostConfig,
+  id: string,
+  patch: { name?: string; position?: number },
+): Promise<boolean> {
+  return (await folderRequest(config, "updateFolder", foldersUrl(config, id), "PATCH", patch)) !== null;
+}
+
+/** Delete a folder, returning its conversations to Recent; true on success. */
+export async function deleteFolder(config: AgentHostConfig, id: string): Promise<boolean> {
+  return (await folderRequest(config, "deleteFolder", foldersUrl(config, id), "DELETE")) !== null;
+}
+
+/** File a conversation, or unfile it with null; true on success. */
+export async function placeConversation(config: AgentHostConfig, conversationId: string, folderId: string | null): Promise<boolean> {
+  const url = `${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(conversationId)}/folder`;
+  return (await folderRequest(config, "placeConversation", url, "PUT", { folderId })) !== null;
 }
 
 /** Make a conversation private or shared; `confirm` acknowledges that going shared exposes it. Returns the updated view, or null on error. */
