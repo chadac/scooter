@@ -179,8 +179,6 @@ type WriteStore struct {
 	pool *pgxpool.Pool
 	// awaiting fills AwaitingInputAt on RETURNING rows, nil when no contrib provides it.
 	awaiting *AwaitingStore
-	// statics are the deployment's static folders, after Starred.
-	statics []StaticFolder
 }
 
 // buildWritePoolConfig pins the pool read-write, overriding the role's read-only default.

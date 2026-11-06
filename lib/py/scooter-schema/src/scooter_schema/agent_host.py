@@ -55,39 +55,6 @@ class ConversationEvents(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(True), nullable=False, server_default=text('now()'))
 
 
-class ConversationFolders(Base):
-    __tablename__ = 'conversation_folders'
-    __table_args__ = (
-        CheckConstraint("(kind = 'static'::text) = (static_id IS NOT NULL)", name='conversation_folders_static_id'),
-        CheckConstraint("icon ~ '^[a-z0-9-]{1,40}$'::text", name='conversation_folders_icon_check'),
-        CheckConstraint("kind = ANY (ARRAY['starred'::text, 'static'::text, 'user'::text])", name='conversation_folders_kind_check'),
-        CheckConstraint('length(name) >= 1 AND length(name) <= 100', name='conversation_folders_name_check'),
-        CheckConstraint('lifetime_hours >= 0', name='conversation_folders_lifetime_hours_check'),
-        CheckConstraint("static_id ~ '^[a-z][a-z0-9-]{0,62}$'::text", name='conversation_folders_static_id_check'),
-        ForeignKeyConstraint(['parent_id'], ['conversation_folders.id'], ondelete='CASCADE', name='conversation_folders_parent'),
-        PrimaryKeyConstraint('id', name='conversation_folders_pkey'),
-        Index('conversation_folders_by_parent', 'parent_id'),
-        Index('conversation_folders_name', 'owner', postgresql_where="(kind = 'user'::text)", unique=True),
-        Index('conversation_folders_one_starred', 'owner', postgresql_where="(kind = 'starred'::text)", unique=True),
-        Index('conversation_folders_static', 'owner', 'static_id', postgresql_where="(kind = 'static'::text)", unique=True)
-    )
-
-    id: Mapped[str] = mapped_column(Text, primary_key=True)
-    owner: Mapped[str] = mapped_column(Text, nullable=False)
-    kind: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'user'::text"))
-    name: Mapped[str] = mapped_column(Text, nullable=False)
-    position: Mapped[float] = mapped_column(Double(53), nullable=False)
-    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    static_id: Mapped[Optional[str]] = mapped_column(Text)
-    parent_id: Mapped[Optional[str]] = mapped_column(Text)
-    icon: Mapped[Optional[str]] = mapped_column(Text)
-    lifetime_hours: Mapped[Optional[int]] = mapped_column(Integer)
-
-    parent: Mapped[Optional['ConversationFolders']] = relationship('ConversationFolders', remote_side=[id], back_populates='parent_reverse')
-    parent_reverse: Mapped[list['ConversationFolders']] = relationship('ConversationFolders', remote_side=[parent_id], back_populates='parent')
-    user_conversation_metadata: Mapped[list['UserConversationMetadata']] = relationship('UserConversationMetadata', back_populates='folder')
-
-
 class ConversationJobs(Base):
     __tablename__ = 'conversation_jobs'
     __table_args__ = (
@@ -156,6 +123,26 @@ class Identities(Base):
     scooter_user: Mapped[Optional[str]] = mapped_column(Text)
 
 
+class StaticFolders(Base):
+    __tablename__ = 'static_folders'
+    __table_args__ = (
+        CheckConstraint('conversation_lifetime_hours >= 0', name='static_folders_conversation_lifetime_hours_check'),
+        CheckConstraint("icon ~ '^[a-z0-9-]{1,40}$'::text", name='static_folders_icon_check'),
+        CheckConstraint("id ~ '^[a-z][a-z0-9-]{0,62}$'::text", name='static_folders_id_check'),
+        CheckConstraint('length(name) >= 1 AND length(name) <= 100', name='static_folders_name_check'),
+        PrimaryKeyConstraint('id', name='static_folders_pkey')
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    service_account: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    icon: Mapped[Optional[str]] = mapped_column(Text)
+    conversation_lifetime_hours: Mapped[Optional[int]] = mapped_column(Integer)
+
+    conversation_folders: Mapped[list['ConversationFolders']] = relationship('ConversationFolders', back_populates='static')
+
+
 class UserHookSettings(Base):
     __tablename__ = 'user_hook_settings'
     __table_args__ = (
@@ -184,6 +171,40 @@ class UserSkills(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('true'))
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
+class ConversationFolders(Base):
+    __tablename__ = 'conversation_folders'
+    __table_args__ = (
+        CheckConstraint("(kind = 'static'::text) = (static_id IS NOT NULL)", name='conversation_folders_static_id'),
+        CheckConstraint('conversation_lifetime_hours >= 0', name='conversation_folders_conversation_lifetime_hours_check'),
+        CheckConstraint("icon ~ '^[a-z0-9-]{1,40}$'::text", name='conversation_folders_icon_check'),
+        CheckConstraint("kind = ANY (ARRAY['starred'::text, 'static'::text, 'user'::text])", name='conversation_folders_kind_check'),
+        CheckConstraint('length(name) >= 1 AND length(name) <= 100', name='conversation_folders_name_check'),
+        ForeignKeyConstraint(['parent_id'], ['conversation_folders.id'], ondelete='CASCADE', name='conversation_folders_parent'),
+        ForeignKeyConstraint(['static_id'], ['static_folders.id'], ondelete='CASCADE', name='conversation_folders_static_folder'),
+        PrimaryKeyConstraint('id', name='conversation_folders_pkey'),
+        Index('conversation_folders_by_parent', 'parent_id'),
+        Index('conversation_folders_name', 'owner', postgresql_where="(kind = 'user'::text)", unique=True),
+        Index('conversation_folders_one_starred', 'owner', postgresql_where="(kind = 'starred'::text)", unique=True),
+        Index('conversation_folders_static', 'static_id', 'owner', postgresql_where="(kind = 'static'::text)", unique=True)
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    owner: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'user'::text"))
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    position: Mapped[float] = mapped_column(Double(53), nullable=False)
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    static_id: Mapped[Optional[str]] = mapped_column(Text)
+    parent_id: Mapped[Optional[str]] = mapped_column(Text)
+    icon: Mapped[Optional[str]] = mapped_column(Text)
+    conversation_lifetime_hours: Mapped[Optional[int]] = mapped_column(Integer)
+
+    parent: Mapped[Optional['ConversationFolders']] = relationship('ConversationFolders', remote_side=[id], back_populates='parent_reverse')
+    parent_reverse: Mapped[list['ConversationFolders']] = relationship('ConversationFolders', remote_side=[parent_id], back_populates='parent')
+    static: Mapped[Optional['StaticFolders']] = relationship('StaticFolders', back_populates='conversation_folders')
+    user_conversation_metadata: Mapped[list['UserConversationMetadata']] = relationship('UserConversationMetadata', back_populates='folder')
 
 
 class UserConversationMetadata(Base):

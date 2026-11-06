@@ -14,7 +14,7 @@ export const conversationFolders = pgTable("conversation_folders", {
 	parentId: text("parent_id"),
 	name: text().notNull(),
 	icon: text(),
-	lifetimeHours: integer("lifetime_hours"),
+	conversationLifetimeHours: integer("conversation_lifetime_hours"),
 	position: doublePrecision().notNull(),
 	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
 	createdAt: bigint("created_at", { mode: "number" }).notNull(),
@@ -22,18 +22,37 @@ export const conversationFolders = pgTable("conversation_folders", {
 	index("conversation_folders_by_parent").using("btree", table.parentId.asc().nullsLast().op("text_ops")),
 	uniqueIndex("conversation_folders_name").using("btree", sql`owner`, sql`COALESCE(parent_id, ''::text)`, sql`lower(name)`).where(sql`(kind = 'user'::text)`),
 	uniqueIndex("conversation_folders_one_starred").using("btree", table.owner.asc().nullsLast().op("text_ops")).where(sql`(kind = 'starred'::text)`),
-	uniqueIndex("conversation_folders_static").using("btree", table.owner.asc().nullsLast().op("text_ops"), table.staticId.asc().nullsLast().op("text_ops")).where(sql`(kind = 'static'::text)`),
+	uniqueIndex("conversation_folders_static").using("btree", table.staticId.asc().nullsLast().op("text_ops"), table.owner.asc().nullsLast().op("text_ops")).where(sql`(kind = 'static'::text)`),
 	foreignKey({
 			columns: [table.parentId],
 			foreignColumns: [table.id],
 			name: "conversation_folders_parent"
 		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.staticId],
+			foreignColumns: [staticFolders.id],
+			name: "conversation_folders_static_folder"
+		}).onDelete("cascade"),
 	check("conversation_folders_kind_check", sql`kind = ANY (ARRAY['starred'::text, 'static'::text, 'user'::text])`),
-	check("conversation_folders_static_id_check", sql`static_id ~ '^[a-z][a-z0-9-]{0,62}$'::text`),
 	check("conversation_folders_name_check", sql`(length(name) >= 1) AND (length(name) <= 100)`),
 	check("conversation_folders_icon_check", sql`icon ~ '^[a-z0-9-]{1,40}$'::text`),
-	check("conversation_folders_lifetime_hours_check", sql`lifetime_hours >= 0`),
+	check("conversation_folders_conversation_lifetime_hours_check", sql`conversation_lifetime_hours >= 0`),
 	check("conversation_folders_static_id", sql`(kind = 'static'::text) = (static_id IS NOT NULL)`),
+]);
+
+export const staticFolders = pgTable("static_folders", {
+	id: text().primaryKey().notNull(),
+	serviceAccount: text("service_account").notNull(),
+	name: text().notNull(),
+	icon: text(),
+	conversationLifetimeHours: integer("conversation_lifetime_hours"),
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	createdAt: bigint("created_at", { mode: "number" }).notNull(),
+}, (table) => [
+	check("static_folders_id_check", sql`id ~ '^[a-z][a-z0-9-]{0,62}$'::text`),
+	check("static_folders_name_check", sql`(length(name) >= 1) AND (length(name) <= 100)`),
+	check("static_folders_icon_check", sql`icon ~ '^[a-z0-9-]{1,40}$'::text`),
+	check("static_folders_conversation_lifetime_hours_check", sql`conversation_lifetime_hours >= 0`),
 ]);
 
 export const conversations = pgTable("conversations", {

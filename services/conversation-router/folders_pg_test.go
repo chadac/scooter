@@ -190,7 +190,7 @@ func TestPgFolderChangesNotifyTheirOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if owner, ok := folderNotifyOwner(n.Payload); !ok || owner != "alice" {
+	if match, ok := folderNotifyMatch(n.Payload); !ok || !match(&sseSub{callerOwner: "alice"}) || match(&sseSub{callerOwner: "bob"}) {
 		t.Errorf("payload %q, want owner alice", n.Payload)
 	}
 }
@@ -319,68 +319,48 @@ func TestPgNestedFolders(t *testing.T) {
 
 func TestPgFolderLifetimes(t *testing.T) {
 	pool := startPG(t)
-	week, forever := 168, 0
-	s := &WriteStore{pool: pool, statics: []StaticFolder{{ID: "design", Name: "Design", LifetimeHours: &forever}}}
+	week := 168
+	s := &WriteStore{pool: pool}
 	ctx := context.Background()
-	insertConv(t, pool, "c1", "", "")
 
 	done, _ := s.CreateFolder(ctx, "alice", "Done", "")
-	if err := s.UpdateFolder(ctx, "alice", done.ID, FolderPatch{LifetimeHours: optionalInt{Set: true, Value: &week}}); err != nil {
+	if err := s.UpdateFolder(ctx, "alice", done.ID, FolderPatch{ConversationLifetimeHours: optionalInt{Set: true, Value: &week}}); err != nil {
 		t.Fatal(err)
 	}
 	list, _ := s.Folders(ctx, "alice")
-	if got := list.Folders[2]; got.ID != done.ID || got.LifetimeHours == nil || *got.LifetimeHours != week {
+	if got := list.Folders[1]; got.ID != done.ID || got.ConversationLifetimeHours == nil || *got.ConversationLifetimeHours != week {
 		t.Errorf("lifetime not saved: %+v", list.Folders)
 	}
 	// An unrelated patch keeps it; an explicit null clears it.
 	name := "Finished"
 	_ = s.UpdateFolder(ctx, "alice", done.ID, FolderPatch{Name: &name})
-	if list, _ = s.Folders(ctx, "alice"); list.Folders[2].LifetimeHours == nil {
+	if list, _ = s.Folders(ctx, "alice"); list.Folders[1].ConversationLifetimeHours == nil {
 		t.Errorf("lifetime dropped by a rename")
 	}
-	_ = s.UpdateFolder(ctx, "alice", done.ID, FolderPatch{LifetimeHours: optionalInt{Set: true}})
-	if list, _ = s.Folders(ctx, "alice"); list.Folders[2].LifetimeHours != nil {
-		t.Errorf("lifetime not cleared: %+v", list.Folders[2])
+	_ = s.UpdateFolder(ctx, "alice", done.ID, FolderPatch{ConversationLifetimeHours: optionalInt{Set: true}})
+	if list, _ = s.Folders(ctx, "alice"); list.Folders[1].ConversationLifetimeHours != nil {
+		t.Errorf("lifetime not cleared: %+v", list.Folders[1])
 	}
 
-	// A static row carries its configured lifetime; resync updates it.
-	if err := s.PlaceConversation(ctx, "alice", "c1", "design"); err != nil {
-		t.Fatal(err)
-	}
-	var hours *int
-	_ = pool.QueryRow(ctx, `SELECT lifetime_hours FROM conversation_folders WHERE static_id = 'design'`).Scan(&hours)
-	if hours == nil || *hours != 0 {
-		t.Errorf("static row lifetime = %v", hours)
-	}
-	s.statics[0].LifetimeHours = &week
-	if err := s.SyncStaticFolders(ctx); err != nil {
-		t.Fatal(err)
-	}
-	_ = pool.QueryRow(ctx, `SELECT lifetime_hours FROM conversation_folders WHERE static_id = 'design'`).Scan(&hours)
-	if hours == nil || *hours != week {
-		t.Errorf("resynced lifetime = %v", hours)
-	}
-	// A removed static folder loses its lifetime and placements.
-	s.statics = nil
-	_ = s.SyncStaticFolders(ctx)
-	_ = pool.QueryRow(ctx, `SELECT lifetime_hours FROM conversation_folders WHERE static_id = 'design'`).Scan(&hours)
-	if hours != nil {
-		t.Errorf("an unconfigured static folder still has lifetime %v", *hours)
-	}
-	if list, _ = s.Folders(ctx, "alice"); len(list.Placements) != 0 || len(list.Folders) != 2 {
-		t.Errorf("unconfigured static folder still listed: %+v", list)
-	}
 }
 
 func TestPgStaticFolders(t *testing.T) {
 	pool := startPG(t)
-	s := &WriteStore{pool: pool, statics: []StaticFolder{{ID: "design", Name: "Design", Icon: "pencil-ruler"}}}
+	s := &WriteStore{pool: pool}
 	ctx := context.Background()
 	insertConv(t, pool, "c1", "", "")
+	week := 168
+	design := StaticFolder{ID: "design", Name: "Design", Icon: "pencil-ruler", ConversationLifetimeHours: &week}
+	if err := s.PutStaticFolder(ctx, "sa-kanban", design); err != nil {
+		t.Fatal(err)
+	}
 
 	list, _ := s.Folders(ctx, "alice")
 	if len(list.Folders) != 2 || list.Folders[1].ID != "design" || !list.Folders[1].Static || !list.Folders[0].Static {
 		t.Fatalf("Starred then static: %+v", list.Folders)
+	}
+	if h := list.Folders[1].ConversationLifetimeHours; h == nil || *h != week {
+		t.Errorf("static lifetime = %v", h)
 	}
 	if err := s.PlaceConversation(ctx, "alice", "c1", "design"); err != nil {
 		t.Fatal(err)
@@ -398,5 +378,35 @@ func TestPgStaticFolders(t *testing.T) {
 	}
 	if err := s.PlaceConversation(ctx, "alice", "c1", rowID); !errors.Is(err, errFolderNotFound) {
 		t.Errorf("a static folder is filed by its static id only: %v", err)
+	}
+
+	// Only the registering service may change or remove it.
+	design.Name = "Stolen"
+	if err := s.PutStaticFolder(ctx, "sa-other", design); !errors.Is(err, errStaticTaken) {
+		t.Errorf("another service's PUT: %v", err)
+	}
+	if err := s.DeleteStaticFolder(ctx, "sa-other", "design"); !errors.Is(err, errStaticTaken) {
+		t.Errorf("another service's DELETE: %v", err)
+	}
+	design.Name = "Designs"
+	if err := s.PutStaticFolder(ctx, "sa-kanban", design); err != nil {
+		t.Fatal(err)
+	}
+	if statics, _ := s.StaticFolders(ctx); len(statics) != 1 || statics[0].Name != "Designs" {
+		t.Errorf("update not saved: %+v", statics)
+	}
+
+	// Removing it unfiles its conversations.
+	if err := s.DeleteStaticFolder(ctx, "sa-kanban", "design"); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ = s.Folders(ctx, "alice"); len(list.Placements) != 0 || len(list.Folders) != 1 {
+		t.Errorf("removed static folder still listed: %+v", list)
+	}
+	if err := s.DeleteStaticFolder(ctx, "sa-kanban", "design"); !errors.Is(err, errFolderNotFound) {
+		t.Errorf("second delete: %v", err)
+	}
+	if err := s.PlaceConversation(ctx, "alice", "c1", "design"); !errors.Is(err, errFolderNotFound) {
+		t.Errorf("filed into a removed static folder: %v", err)
 	}
 }

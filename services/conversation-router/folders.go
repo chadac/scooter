@@ -52,16 +52,8 @@ type Folder struct {
 	// ParentID is the enclosing folder; empty at the top level.
 	ParentID string  `json:"parentId,omitempty"`
 	Position float64 `json:"position"`
-	// LifetimeHours: idle hours before deletion; 0 forever, nil inherits.
-	LifetimeHours *int `json:"lifetimeHours,omitempty"`
-}
-
-// StaticFolder is one deployment-configured folder, from STATIC_FOLDERS_JSON.
-type StaticFolder struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	Icon          string `json:"icon,omitempty"`
-	LifetimeHours *int   `json:"lifetimeHours,omitempty"`
+	// ConversationLifetimeHours: idle hours before deletion; 0 forever, nil inherits.
+	ConversationLifetimeHours *int `json:"conversationLifetimeHours,omitempty"`
 }
 
 // FolderPatch is a PATCH body: nil keeps a field, "" clears Icon.
@@ -71,8 +63,8 @@ type FolderPatch struct {
 	Position *float64 `json:"position"`
 	// ParentID moves the folder; "" is the top level.
 	ParentID *string `json:"parentId"`
-	// LifetimeHours set to null inherits again.
-	LifetimeHours optionalInt `json:"lifetimeHours"`
+	// ConversationLifetimeHours set to null inherits again.
+	ConversationLifetimeHours optionalInt `json:"conversationLifetimeHours"`
 }
 
 // optionalInt tells an explicit null apart from an absent field.
@@ -104,8 +96,8 @@ type folderStore interface {
 	PlaceConversation(ctx context.Context, owner, convID, folderID string) error
 	// Unstar unfiles a conversation only from Starred.
 	Unstar(ctx context.Context, owner, convID string) error
-	// IsStatic reports a configured static folder's wire id.
-	IsStatic(id string) bool
+	// IsStatic reports whether id names a static folder.
+	IsStatic(ctx context.Context, id string) (bool, error)
 }
 
 // FolderRoute matches /folders and /folders/<id>.
@@ -162,7 +154,13 @@ func serveFolders(w http.ResponseWriter, r *http.Request, id string, fs folderSt
 			return
 		}
 	case id != "" && (r.Method == http.MethodPatch || r.Method == http.MethodDelete):
-		if id == StarredFolderID || fs.IsStatic(id) {
+		static := id == StarredFolderID
+		if !static {
+			if static, err = fs.IsStatic(ctx, id); err != nil {
+				break
+			}
+		}
+		if static {
 			writeJSONError(w, http.StatusConflict, "static folders can't be renamed, moved or deleted")
 			return
 		}
@@ -218,8 +216,8 @@ func cleanPatch(p *FolderPatch) string {
 		}
 		p.Icon = &icon
 	}
-	if p.LifetimeHours.Value != nil {
-		return lifetimeMsg(*p.LifetimeHours.Value)
+	if p.ConversationLifetimeHours.Value != nil {
+		return lifetimeMsg(*p.ConversationLifetimeHours.Value)
 	}
 	return ""
 }
@@ -250,48 +248,13 @@ func folderIcon(raw string) (string, string) {
 // lifetimeMsg says why a lifetime is out of range, or "".
 func lifetimeMsg(h int) string {
 	if h < 0 || h > maxLifetimeHours {
-		return fmt.Sprintf("lifetimeHours must be 0 (forever) to %d", maxLifetimeHours)
+		return fmt.Sprintf("conversationLifetimeHours must be 0 (forever) to %d", maxLifetimeHours)
 	}
 	return ""
 }
 
 // iconName is kebab-case, as Lucide names its icons.
 var iconName = regexp.MustCompile(`^[a-z0-9-]*$`)
-
-// staticID matches the conversation_folders.static_id check.
-var staticID = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
-
-// parseStaticFolders reads STATIC_FOLDERS_JSON; "" means none.
-func parseStaticFolders(raw string) ([]StaticFolder, error) {
-	if strings.TrimSpace(raw) == "" {
-		return nil, nil
-	}
-	var out []StaticFolder
-	if err := json.Unmarshal([]byte(raw), &out); err != nil {
-		return nil, err
-	}
-	seen := map[string]bool{StarredFolderID: true}
-	for i, f := range out {
-		name, msg := folderName(f.Name)
-		if msg == "" && f.Icon != "" {
-			_, msg = folderIcon(f.Icon)
-		}
-		if msg == "" && f.LifetimeHours != nil {
-			msg = lifetimeMsg(*f.LifetimeHours)
-		}
-		switch {
-		case !staticID.MatchString(f.ID):
-			return nil, fmt.Errorf("static folder %q: id must match %s", f.ID, staticID)
-		case seen[f.ID]:
-			return nil, fmt.Errorf("static folder %q: id is taken", f.ID)
-		case msg != "":
-			return nil, fmt.Errorf("static folder %q: %s", f.ID, msg)
-		}
-		seen[f.ID] = true
-		out[i].Name = name
-	}
-	return out, nil
-}
 
 // servePlacement serves PUT …/folder and PATCH …/starred.
 func servePlacement(w http.ResponseWriter, r *http.Request, convID string, store metaReader, fs folderStore) {
@@ -371,86 +334,56 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// runFolderListener tells an owner's list streams to refetch folders.
+// runFolderListener tells the changed owners' list streams to refetch folders.
 func runFolderListener(ctx context.Context, store *Store, hub *sseHub) {
 	if store == nil {
 		return
 	}
 	frame := sseData([]byte(`{"kind":"folders"}`))
 	listenLoop(ctx, logger("folders-listen"), foldersChannel, store.NewListenConn, func(payload string) {
-		if owner, ok := folderNotifyOwner(payload); ok {
-			hub.deliver(frame, func(s *sseSub) bool { return s.callerOwner == owner })
+		if match, ok := folderNotifyMatch(payload); ok {
+			hub.deliver(frame, match)
 		}
 	})
 }
 
-// folderNotifyOwner parses a payload; "" is the anonymous owner.
-func folderNotifyOwner(payload string) (string, bool) {
+// folderNotifyMatch picks streams: one owner's, or all for statics.
+func folderNotifyMatch(payload string) (func(*sseSub) bool, bool) {
 	var c struct {
 		Owner *string `json:"owner"`
+		All   bool    `json:"all"`
 	}
-	if err := json.Unmarshal([]byte(payload), &c); err != nil || c.Owner == nil {
-		return "", false
+	switch {
+	case json.Unmarshal([]byte(payload), &c) != nil:
+		return nil, false
+	case c.All:
+		return func(*sseSub) bool { return true }, true
+	case c.Owner == nil:
+		return nil, false
 	}
-	return *c.Owner, true
-}
-
-// IsStatic reports whether id names a configured static folder.
-func (s *WriteStore) IsStatic(id string) bool {
-	_, ok := s.static(id)
-	return ok
-}
-
-func (s *WriteStore) static(id string) (StaticFolder, bool) {
-	for _, f := range s.statics {
-		if f.ID == id {
-			return f, true
-		}
-	}
-	return StaticFolder{}, false
-}
-
-func (s *WriteStore) staticIDs() []string {
-	ids := make([]string, 0, len(s.statics))
-	for _, f := range s.statics {
-		ids = append(ids, f.ID)
-	}
-	return ids
-}
-
-// SyncStaticFolders copies configured lifetimes to rows, for agent-host's reap.
-func (s *WriteStore) SyncStaticFolders(ctx context.Context) error {
-	for _, f := range s.statics {
-		// Skips unchanged rows, so a boot notifies nobody.
-		_, err := s.pool.Exec(ctx, `
-			UPDATE conversation_folders SET lifetime_hours = $2
-			WHERE kind = 'static' AND static_id = $1 AND lifetime_hours IS DISTINCT FROM $2::int`,
-			f.ID, f.LifetimeHours)
-		if err != nil {
-			return err
-		}
-	}
-	_, err := s.pool.Exec(ctx, `
-		UPDATE conversation_folders SET lifetime_hours = NULL
-		WHERE kind = 'static' AND NOT (static_id = ANY($1)) AND lifetime_hours IS NOT NULL`, s.staticIDs())
-	return err
+	owner := *c.Owner
+	return func(s *sseSub) bool { return s.callerOwner == owner }, true
 }
 
 // Folders reads the caller's folders and visible placements.
 func (s *WriteStore) Folders(ctx context.Context, owner string) (FolderList, error) {
 	forever := 0
 	out := FolderList{
-		Folders:    []Folder{{ID: StarredFolderID, Name: "Starred", Kind: "starred", Static: true, LifetimeHours: &forever}},
+		Folders:    []Folder{{ID: StarredFolderID, Name: "Starred", Kind: "starred", Static: true, ConversationLifetimeHours: &forever}},
 		Placements: map[string]string{},
 	}
-	for i, f := range s.statics {
+	statics, err := s.StaticFolders(ctx)
+	if err != nil {
+		return out, err
+	}
+	for i, f := range statics {
 		out.Folders = append(out.Folders, Folder{
 			ID: f.ID, Name: f.Name, Icon: f.Icon, Kind: "static", Static: true,
-			Position: float64(i + 1), LifetimeHours: f.LifetimeHours,
+			Position: float64(i + 1), ConversationLifetimeHours: f.ConversationLifetimeHours,
 		})
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, name, COALESCE(icon, ''), COALESCE(parent_id, ''), lifetime_hours, position
+		SELECT id, name, COALESCE(icon, ''), COALESCE(parent_id, ''), conversation_lifetime_hours, position
 		FROM conversation_folders
 		WHERE owner = $1 AND kind = 'user' ORDER BY position, created_at`, owner)
 	if err != nil {
@@ -458,7 +391,7 @@ func (s *WriteStore) Folders(ctx context.Context, owner string) (FolderList, err
 	}
 	for rows.Next() {
 		f := Folder{Kind: "user"}
-		if err := rows.Scan(&f.ID, &f.Name, &f.Icon, &f.ParentID, &f.LifetimeHours, &f.Position); err != nil {
+		if err := rows.Scan(&f.ID, &f.Name, &f.Icon, &f.ParentID, &f.ConversationLifetimeHours, &f.Position); err != nil {
 			rows.Close()
 			return out, err
 		}
@@ -468,15 +401,13 @@ func (s *WriteStore) Folders(ctx context.Context, owner string) (FolderList, err
 	if err := rows.Err(); err != nil {
 		return out, err
 	}
-	// Unconfigured static folders drop out; their conversations show unfiled.
 	rows, err = s.pool.Query(ctx, `
 		SELECT p.conversation_id,
 		       CASE f.kind WHEN 'starred' THEN $2 WHEN 'static' THEN f.static_id ELSE f.id END
 		FROM user_conversation_metadata p
 		JOIN conversation_folders f ON f.id = p.folder_id
 		JOIN conversations c ON c.id = p.conversation_id
-		WHERE p.owner = $1 AND (c.visibility <> 'private' OR c.owner = $1)
-		  AND (f.kind <> 'static' OR f.static_id = ANY($3))`, owner, StarredFolderID, s.staticIDs())
+		WHERE p.owner = $1 AND (c.visibility <> 'private' OR c.owner = $1)`, owner, StarredFolderID)
 	if err != nil {
 		return out, err
 	}
@@ -577,9 +508,9 @@ func (s *WriteStore) UpdateFolder(ctx context.Context, owner, id string, p Folde
 			UPDATE conversation_folders SET name = COALESCE($3, name), position = COALESCE($4, position),
 			       icon = CASE WHEN $5::text IS NULL THEN icon ELSE NULLIF($5, '') END,
 			       parent_id = CASE WHEN $6::text IS NULL THEN parent_id ELSE NULLIF($6, '') END,
-			       lifetime_hours = CASE WHEN $7 THEN $8::int ELSE lifetime_hours END
+			       conversation_lifetime_hours = CASE WHEN $7 THEN $8::int ELSE conversation_lifetime_hours END
 			WHERE id = $1 AND owner = $2 AND kind = 'user'`,
-			id, owner, p.Name, p.Position, p.Icon, p.ParentID, p.LifetimeHours.Set, p.LifetimeHours.Value)
+			id, owner, p.Name, p.Position, p.Icon, p.ParentID, p.ConversationLifetimeHours.Set, p.ConversationLifetimeHours.Value)
 		if err == nil && tag.RowsAffected() == 0 {
 			return errFolderNotFound
 		}
@@ -677,12 +608,14 @@ func (s *WriteStore) PlaceConversation(ctx context.Context, owner, convID, folde
 			return err
 		}
 		folderID, kind = id, "starred"
-	} else if f, ok := s.static(folderID); ok {
-		id, err := s.ensureStatic(ctx, owner, f)
+	} else if folderID != "" {
+		id, err := s.ensureStatic(ctx, owner, folderID)
 		if err != nil {
 			return err
 		}
-		folderID, kind = id, "static"
+		if id != "" {
+			folderID, kind = id, "static"
+		}
 	}
 	return s.placementTx(ctx, convID, func(tx pgx.Tx) error {
 		if folderID == "" {
@@ -745,20 +678,23 @@ func (s *WriteStore) ensureStarred(ctx context.Context, owner string) (string, e
 	return id, err
 }
 
-// ensureStatic returns the owner's row for a static folder, creating it.
-func (s *WriteStore) ensureStatic(ctx context.Context, owner string, f StaticFolder) (string, error) {
+// ensureStatic returns the owner's static folder row, or "".
+func (s *WriteStore) ensureStatic(ctx context.Context, owner, staticID string) (string, error) {
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO conversation_folders (id, owner, kind, static_id, name, icon, lifetime_hours, position, created_at)
-		VALUES ($1, $2, 'static', $3, $4, NULLIF($5, ''), $6, 0, $7)
-		ON CONFLICT (owner, static_id) WHERE kind = 'static' DO NOTHING`,
-		uuid.NewString(), owner, f.ID, f.Name, f.Icon, f.LifetimeHours, time.Now().UnixMilli())
+		INSERT INTO conversation_folders (id, owner, kind, static_id, name, position, created_at)
+		SELECT $1, $2, 'static', id, name, 0, $4 FROM static_folders WHERE id = $3
+		ON CONFLICT (static_id, owner) WHERE kind = 'static' DO NOTHING`,
+		uuid.NewString(), owner, staticID, time.Now().UnixMilli())
 	if err != nil {
 		return "", err
 	}
 	var id string
 	err = s.pool.QueryRow(ctx,
 		`SELECT id FROM conversation_folders WHERE owner = $1 AND kind = 'static' AND static_id = $2`,
-		owner, f.ID).Scan(&id)
+		owner, staticID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
 	return id, err
 }
 

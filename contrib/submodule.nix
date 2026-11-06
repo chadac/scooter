@@ -78,40 +78,6 @@ let
     };
   };
 
-  # A fixed sidebar folder every user gets; see contrib/static-folders.nix.
-  staticFolderModule = {
-    options = {
-      id = mkOption {
-        type = types.str;
-        example = "${name}-design";
-        description = ''
-          The folder's id, `${name}` or starting with `${name}-`. Users' filings are
-          stored against it, so renaming it empties the folder.
-        '';
-      };
-      name = mkOption {
-        type = types.str;
-        example = "Design";
-        description = "The folder's name in the sidebar.";
-      };
-      icon = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        example = "pencil-ruler";
-        description = "A folder icon name from services/ui/src/FolderGlyph.tsx; others show the folder glyph.";
-      };
-      lifetimeHours = mkOption {
-        type = types.nullOr types.ints.unsigned;
-        default = null;
-        example = 24;
-        description = ''
-          How long a conversation filed here may sit idle before it is deleted, in
-          hours. 0 keeps it forever; null uses `scooter.retentionMaxAgeMs`.
-        '';
-      };
-    };
-  };
-
   # One contrib settings page. `entry` is a string, not a path, so reading the
   # registry never copies a .tsx into the store.
   settingsTabModule = {
@@ -813,21 +779,6 @@ in
         see there for how a directory reaches the agent and the sandbox.
       '';
       type = types.attrsOf (types.submodule ../modules/skills/dir.nix);
-    };
-
-    folders = mkOption {
-      type = types.listOf (types.submodule staticFolderModule);
-      default = [ ];
-      example = literalExpression ''
-        [{ id = "${name}-design"; name = "Design"; icon = "pencil-ruler"; lifetimeHours = 0; }]
-      '';
-      description = ''
-        Static folders this contrib adds to every user's sidebar, below Starred.
-        Users file conversations in them but can't rename, move, nest in or
-        delete them. A folder's `lifetimeHours` sets how long the conversations
-        in it are kept. Gone when the contrib is disabled; its conversations
-        then show unfiled.
-      '';
     };
 
     systemTasks = mkOption {

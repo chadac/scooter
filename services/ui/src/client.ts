@@ -245,7 +245,7 @@ export interface ConversationFolder {
   /** Ordered among siblings. */
   position: number;
   /** Idle hours before deletion; 0 is forever, absent inherits. */
-  lifetimeHours?: number;
+  conversationLifetimeHours?: number;
 }
 
 /** GET /folders: folders, and conversation id → folder id. */
@@ -290,7 +290,7 @@ export async function createFolder(config: AgentHostConfig, name: string, parent
 export async function updateFolder(
   config: AgentHostConfig,
   id: string,
-  patch: { name?: string; icon?: string; position?: number; parentId?: string; lifetimeHours?: number | null },
+  patch: { name?: string; icon?: string; position?: number; parentId?: string; conversationLifetimeHours?: number | null },
 ): Promise<boolean> {
   return (await folderRequest(config, "updateFolder", foldersUrl(config, id), "PATCH", patch)) !== null;
 }

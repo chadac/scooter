@@ -600,25 +600,31 @@ option's description.
 `pythonDeps` dependency, as below), never its SQL. There are no foreign keys
 across databases.
 
-### Static sidebar folders (`folders`)
+### Static sidebar folders (`/static-folders`)
 
-A contrib can add folders that every user has, listed below Starred:
+A contrib's service can add folders that every user has, listed below Starred.
+Allow its ServiceAccount with
+`scooter.conversationController.folderServices = [ "<sa>" ]`, then call the
+router with its projected token (audience `scooter-router`):
 
-```nix
-folders = [{
-  id = "mycontrib-design";   # `<contrib>` or `<contrib>-…`
-  name = "Design";
-  icon = "palette";          # optional; a name from services/ui/src/FolderGlyph.tsx
-  lifetimeHours = 0;         # optional; 0 keeps conversations forever
-}];
+```
+PUT /static-folders/mycontrib-inbox
+{"name": "Inbox", "icon": "inbox", "conversationLifetimeHours": 0}
 ```
 
-Users file conversations in them but can't rename, move, delete or nest
-folders in them. `lifetimeHours` sets how long a conversation filed there may
-sit idle before agent-host deletes it; null leaves `scooter.retentionMaxAgeMs`
-in charge. The router reads the list from `STATIC_FOLDERS_JSON`, built by
-contrib/static-folders.nix from enabled contribs only. When a contrib is
-disabled its folders disappear, and their conversations show unfiled.
+- `icon` is optional, a name from services/ui/src/FolderGlyph.tsx.
+- `conversationLifetimeHours` is optional. It's how long a conversation filed
+  there may sit idle before agent-host deletes it; 0 keeps it, and null leaves
+  `scooter.retentionMaxAgeMs` in charge.
+- `PUT` is idempotent, so a service can register its folders on every start.
+  Only the service that registered an id may change it or
+  `DELETE /static-folders/{id}`. `GET /static-folders` lists them all.
+- Users file conversations in a static folder but can't rename, move, delete or
+  nest folders in it. Deleting one unfiles its conversations.
+
+A contrib that keeps folder ids in its own database must reconcile them against
+`GET /folders` or `GET /static-folders`. Folders can disappear, and there are no
+foreign keys across databases.
 
 ### Depending on another contrib
 

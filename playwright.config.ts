@@ -113,8 +113,6 @@ export default defineConfig({
             ]),
             // The MCP endpoint resolves its conversation from a signed token, so without a signing key the fake agent's `~subagent` directive fails.
             CONV_TOKEN_SECRET: "e2e-fake-stack-conv-token-secret",
-            // One static folder, as a contrib would add.
-            STATIC_FOLDERS_JSON: JSON.stringify([{ id: "e2e-design", name: "Design", icon: "palette", lifetimeHours: 0 }]),
           },
           // Wait on the router's /healthz (proxied to agent-host) so the whole chain is serving
           // before tests start.

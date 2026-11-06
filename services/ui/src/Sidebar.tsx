@@ -249,15 +249,15 @@ function DropZone({
 
 /** Lifetimes offered in a folder's menu, in hours. */
 const LIFETIMES: Array<[number, string]> = [
-  [0, "Forever"],
+  [0, "Never"],
   [24, "1 day"],
   [168, "1 week"],
   [720, "30 days"],
 ];
 
-/** "1 day", "3 days", "12 hours" or "forever". */
+/** "1 day", "3 days", "12 hours" or "never". */
 function lifetimeLabel(hours: number): string {
-  if (hours === 0) return "forever";
+  if (hours === 0) return "never";
   if (hours === 168) return "1 week";
   if (hours % 24 === 0) return hours === 24 ? "1 day" : `${hours / 24} days`;
   return hours === 1 ? "1 hour" : `${hours} hours`;
@@ -428,17 +428,17 @@ function FolderSectionView({
             ) : (
               <span className={cn("truncate font-medium", f.static ? "text-foreground" : "text-foreground/90")}>{f.name}</span>
             )}
-            {!f.starred && f.lifetimeHours !== undefined && (
+            {!f.starred && f.conversationLifetimeHours !== undefined && (
               <span
                 data-testid="folder-lifetime"
                 title={
-                  f.lifetimeHours === 0
+                  f.conversationLifetimeHours === 0
                     ? "Conversations here are kept forever"
-                    : `Conversations here are deleted after ${lifetimeLabel(f.lifetimeHours)} idle`
+                    : `Conversations here are deleted after ${lifetimeLabel(f.conversationLifetimeHours)} idle`
                 }
                 className="flex shrink-0 text-muted-foreground/70"
               >
-                {f.lifetimeHours === 0 ? <InfinityIcon className="size-3" aria-hidden /> : <Hourglass className="size-3" aria-hidden />}
+                {f.conversationLifetimeHours === 0 ? <InfinityIcon className="size-3" aria-hidden /> : <Hourglass className="size-3" aria-hidden />}
               </span>
             )}
           </button>
@@ -489,12 +489,12 @@ function FolderSectionView({
                     </DropdownMenu.Item>
                     <DropdownMenu.Sub>
                       <DropdownMenu.SubTrigger className={cn(menuItem, "flex justify-between gap-3")}>
-                        Keep conversations <ChevronRight className="size-3.5" aria-hidden />
+                        Delete conversations after <ChevronRight className="size-3.5" aria-hidden />
                       </DropdownMenu.SubTrigger>
                       <DropdownMenu.Portal>
                         <DropdownMenu.SubContent sideOffset={4} className={menuContent}>
                           <DropdownMenu.RadioGroup
-                            value={f.lifetimeHours === undefined ? "inherit" : String(f.lifetimeHours)}
+                            value={f.conversationLifetimeHours === undefined ? "inherit" : String(f.conversationLifetimeHours)}
                             onValueChange={(v) => void folderStore.setLifetime(f.id, v === "inherit" ? null : Number(v))}
                           >
                             <DropdownMenu.RadioItem value="inherit" className={cn(menuItem, "flex gap-2")}>
@@ -601,7 +601,7 @@ function FolderSectionView({
           </span>
         </div>
         {shown.length > 0 || kids.length > 0 || open ? (
-          <div className="ms-[13px] border-s border-sidebar-border ps-1">
+          <div className="ms-[10px] border-s border-sidebar-border ps-0.5">
             {open && f.rows.length === 0 && f.children.length === 0 && !addingSub && (
               <p className="px-2 py-1 text-xs text-muted-foreground">
                 {f.starred ? "Star a conversation to pin it here." : "Drag conversations here."}
@@ -736,7 +736,7 @@ export const Sidebar = memo(function Sidebar() {
         // Mobile: off-canvas left drawer over the thread, below the h-11 header.
         "fixed bottom-0 left-0 top-11 z-40 w-[86vw] max-w-72 -translate-x-full shadow-xl transition-transform duration-200 ease-out",
         // Desktop (desk, ≥1200px): a static in-flow column.
-        "desk:static desk:h-full desk:w-64 desk:max-w-none desk:translate-x-0 desk:shadow-none desk:transition-none",
+        "desk:static desk:h-full desk:w-72 desk:max-w-none desk:translate-x-0 desk:shadow-none desk:transition-none",
         drawer === "sessions" && "translate-x-0",
       )}
     >

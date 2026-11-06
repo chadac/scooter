@@ -10,9 +10,6 @@
 let
   cfg = config.scooter;
   ccfg = cfg.conversationController;
-  # Enabled contribs' static folders, for STATIC_FOLDERS_JSON.
-  staticFolders = import ../contrib/static-folders.nix { inherit lib; }
-    (lib.filterAttrs (_: c: c.enable) config.contribs);
   # The router's sandbox-host listener. Must differ from the main (8080) and
   # self-access listeners, or the second bind fails and the router crash-loops.
   sandboxPort = 8082;
@@ -157,6 +154,20 @@ in
         exposes private transcripts to the service, so list only services
         already trusted with users' credentials (the broker). Empty disables
         the routes.
+      '';
+    };
+    folderServices = mkOption {
+      type = types.listOf (types.strMatching "[a-z0-9]([-a-z0-9]*[a-z0-9])?");
+      default = [ ];
+      example = [ "kanban" ];
+      description = ''
+        ServiceAccounts (in the platform namespace) that may register static
+        sidebar folders through the router: `GET /static-folders`, and `PUT` or
+        `DELETE /static-folders/{id}` with `{name, icon?, conversationLifetimeHours?}`.
+        Every user sees a static folder below Starred and can file conversations
+        in it, but nobody can rename, move, delete or nest folders in it. Only
+        the service that registered an id may change or remove it; removing it
+        unfiles its conversations. Empty disables the routes.
       '';
     };
     spawnsPerSourcePerHour = mkOption {
@@ -487,8 +498,6 @@ in
                 ]
                 ++ lib.optional (cfg.webhooks.enable && cfg.postgres.sslmode != null) { name = "WEBHOOKS_DB_SSLMODE"; value = cfg.postgres.sslmode; }
                 ++ cfg.contribDbEnv.conversation-router
-                ++ lib.optional (staticFolders != [ ])
-                  { name = "STATIC_FOLDERS_JSON"; value = builtins.toJSON staticFolders; }
                 # The router must read identity exactly as the agent-host does.
                 ++ lib.optional (cfg.auth.mode != "header")
                   { name = "AUTH_MODE"; value = cfg.auth.mode; }
@@ -519,6 +528,9 @@ in
                     value = lib.concatMapStringsSep "," (sa: "system:serviceaccount:${cfg.namespace}:${sa}") ccfg.spawners; }
                   { name = "SPAWNS_PER_SOURCE_PER_HOUR"; value = toString ccfg.spawnsPerSourcePerHour; }
                 ]
+                ++ lib.optional (ccfg.folderServices != [ ])
+                  { name = "STATIC_FOLDER_SERVICE_ACCOUNTS";
+                    value = lib.concatMapStringsSep "," (sa: "system:serviceaccount:${cfg.namespace}:${sa}") ccfg.folderServices; }
                 ++ lib.optional (ccfg.readers != [ ])
                   { name = "CONVERSATION_READER_SERVICE_ACCOUNTS";
                     value = lib.concatMapStringsSep "," (sa: "system:serviceaccount:${cfg.namespace}:${sa}") ccfg.readers; }

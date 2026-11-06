@@ -12,7 +12,7 @@
  * The newest lib/sql/agent_host migration this build's queries depend on. A contract test
  * (schemaGate.spec.ts) fails when a newer migration is added without bumping this.
  */
-export const EXPECTED_AGENT_HOST_SCHEMA_VERSION = "20261106214545";
+export const EXPECTED_AGENT_HOST_SCHEMA_VERSION = "20261106225502";
 
 /** Postgres SQLSTATEs meaning the schema lacks something the code references. */
 const SCHEMA_MISMATCH_CODES = new Set([

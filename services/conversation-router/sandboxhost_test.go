@@ -99,7 +99,7 @@ func TestMainListenerRefusesSandboxHosts(t *testing.T) {
 	}))
 	defer upstream.Close()
 	cfg := config{sandboxDomain: "scooter.example.com", fallback: mustURL(t, upstream.URL)}
-	h := newRouter(context.Background(), cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	h := newRouter(context.Background(), cfg, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	for _, host := range []string{"5a515e73.scooter.example.com", "foo.scooter.example.com", "a.b.scooter.example.com"} {
 		r := httptest.NewRequest("GET", "http://"+host+"/conversations", nil)

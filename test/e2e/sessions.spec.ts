@@ -293,12 +293,12 @@ test.describe("session selector & titles", () => {
 
     // A lifetime shows on the header and reaches the server.
     await page.locator(folders.folder(a)).getByRole("button", { name: /folder actions/ }).first().click();
-    await page.getByRole("menuitem", { name: /Keep conversations/ }).hover();
+    await page.getByRole("menuitem", { name: /Delete conversations after/ }).hover();
     await page.getByRole("menuitemradio", { name: "1 day" }).click();
     await expect(head(a).getByTestId("folder-lifetime")).toBeVisible();
     const list = async () =>
-      ((await (await request.get(`${base}/folders`)).json()) as { folders: Array<{ id: string; parentId?: string; lifetimeHours?: number }> }).folders;
-    await expect.poll(async () => (await list()).find((f) => f.id === a)?.lifetimeHours).toBe(24);
+      ((await (await request.get(`${base}/folders`)).json()) as { folders: Array<{ id: string; parentId?: string; conversationLifetimeHours?: number }> }).folders;
+    await expect.poll(async () => (await list()).find((f) => f.id === a)?.conversationLifetimeHours).toBe(24);
 
     // Deleting b keeps what's inside: c and d join a.
     await page.locator(folders.folder(b)).getByRole("button", { name: /folder actions/ }).first().click();

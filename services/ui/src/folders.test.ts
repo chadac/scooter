@@ -17,7 +17,7 @@ import {
 } from "./folders.js";
 import { conversationFor, sessionStore, setConversationMinter, type Session, type SidebarRow } from "./sessions.js";
 
-const STARRED_FOLDER = { id: STARRED, name: "Starred", kind: "starred" as const, static: true, position: 0, lifetimeHours: 0 };
+const STARRED_FOLDER = { id: STARRED, name: "Starred", kind: "starred" as const, static: true, position: 0, conversationLifetimeHours: 0 };
 const WORK = { id: "f-work", name: "Work", kind: "user" as const, position: 1 };
 const HOME = { id: "f-home", name: "Home", kind: "user" as const, position: 2 };
 
@@ -278,7 +278,7 @@ describe("nested folders", () => {
   // Work > Scooter > UI, plus Home at the top.
   const SCOOTER = { id: "f-scooter", name: "Scooter", kind: "user" as const, position: 1, parentId: WORK.id };
   const UI = { id: "f-ui", name: "UI", kind: "user" as const, position: 1, parentId: SCOOTER.id };
-  const DESIGN = { id: "design", name: "Design", kind: "static" as const, static: true, position: 1, lifetimeHours: 0 };
+  const DESIGN = { id: "design", name: "Design", kind: "static" as const, static: true, position: 1, conversationLifetimeHours: 0 };
   const tree = [STARRED_FOLDER, DESIGN, WORK, HOME, SCOOTER, UI];
   const load = async (placements: Record<string, string> = {}) => {
     const calls = stubFetch({ folders: tree, placements });
@@ -355,9 +355,9 @@ describe("nested folders", () => {
     expect(effectiveLifetime(UI.id)?.hours).toBe(24);
     expect(effectiveLifetime(HOME.id)).toBeUndefined();
     expect(calls.map((c) => c.body).filter(Boolean)).toEqual([
-      JSON.stringify({ lifetimeHours: 24 }),
-      JSON.stringify({ lifetimeHours: 0 }),
-      JSON.stringify({ lifetimeHours: null }),
+      JSON.stringify({ conversationLifetimeHours: 24 }),
+      JSON.stringify({ conversationLifetimeHours: 0 }),
+      JSON.stringify({ conversationLifetimeHours: null }),
     ]);
     expect(await folderStore.setLifetime(DESIGN.id, 24)).toBe(false);
   });

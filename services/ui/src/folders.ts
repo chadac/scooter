@@ -19,7 +19,7 @@ export const STARRED = "starred";
 /** Folders nest this deep; a top-level folder is depth 1. */
 export const MAX_FOLDER_DEPTH = 3;
 
-const STARRED_FOLDER: ConversationFolder = { id: STARRED, name: "Starred", kind: "starred", static: true, position: 0, lifetimeHours: 0 };
+const STARRED_FOLDER: ConversationFolder = { id: STARRED, name: "Starred", kind: "starred", static: true, position: 0, conversationLifetimeHours: 0 };
 
 export type FolderState = {
   /** Starred, then static folders, then user folders by position. */
@@ -87,7 +87,7 @@ export function canMoveInto(id: string, parentId: string | null): boolean {
 /** The nearest set lifetime and its folder; undefined is the default. */
 export function effectiveLifetime(id: string): { hours: number; from: ConversationFolder } | undefined {
   for (let f = byId(id); f; f = f.parentId ? byId(f.parentId) : undefined) {
-    if (f.lifetimeHours !== undefined && f.lifetimeHours !== null) return { hours: f.lifetimeHours, from: f };
+    if (f.conversationLifetimeHours !== undefined && f.conversationLifetimeHours !== null) return { hours: f.conversationLifetimeHours, from: f };
   }
   return undefined;
 }
@@ -148,8 +148,8 @@ export const folderStore = {
   /** Set idle lifetime hours; 0 is forever, null inherits. */
   setLifetime(id: string, hours: number | null): Promise<boolean> {
     if (!isUser(byId(id))) return Promise.resolve(false);
-    const folders = patched(id, { lifetimeHours: hours ?? undefined });
-    return write({ ...state, folders }, () => updateFolder(agentHostConfig, id, { lifetimeHours: hours }));
+    const folders = patched(id, { conversationLifetimeHours: hours ?? undefined });
+    return write({ ...state, folders }, () => updateFolder(agentHostConfig, id, { conversationLifetimeHours: hours }));
   },
 
   /** Start a conversation in `folderId`; null means Recent. */
@@ -310,7 +310,7 @@ export type FolderSection = {
   static: boolean;
   depth: number;
   /** This folder's own lifetime; undefined inherits. */
-  lifetimeHours?: number;
+  conversationLifetimeHours?: number;
   rows: SidebarRow[];
   children: FolderSection[];
 };
@@ -326,7 +326,7 @@ export function buildFolders(rows: SidebarRow[], fs: FolderState): { folders: Fo
       starred: f.kind === "starred",
       static: !!f.static,
       depth: folderDepth(f.id, fs.folders),
-      lifetimeHours: f.lifetimeHours ?? undefined,
+      conversationLifetimeHours: f.conversationLifetimeHours ?? undefined,
       rows: [],
       children: [],
     });

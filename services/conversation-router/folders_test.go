@@ -44,7 +44,9 @@ func (f *fakeFolders) Unstar(_ context.Context, owner, convID string) error {
 	return f.err
 }
 
-func (f *fakeFolders) IsStatic(id string) bool { return id == "design" }
+func (f *fakeFolders) IsStatic(_ context.Context, id string) (bool, error) {
+	return id == "design", nil
+}
 
 func folderReq(method, path, body, caller string) *http.Request {
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -167,11 +169,11 @@ func TestServeFolders(t *testing.T) {
 	})
 	t.Run("PATCH validates the lifetime", func(t *testing.T) {
 		for body, want := range map[string]int{
-			`{"lifetimeHours":24}`:     204,
-			`{"lifetimeHours":0}`:      204,
-			`{"lifetimeHours":null}`:   204,
-			`{"lifetimeHours":-1}`:     400,
-			`{"lifetimeHours":999999}`: 400,
+			`{"conversationLifetimeHours":24}`:     204,
+			`{"conversationLifetimeHours":0}`:      204,
+			`{"conversationLifetimeHours":null}`:   204,
+			`{"conversationLifetimeHours":-1}`:     400,
+			`{"conversationLifetimeHours":999999}`: 400,
 		} {
 			w := httptest.NewRecorder()
 			serveFolders(w, folderReq("PATCH", "/folders/f1", body, "alice"), "f1", &fakeFolders{})
@@ -180,13 +182,13 @@ func TestServeFolders(t *testing.T) {
 			}
 		}
 		f := &fakeFolders{}
-		serveFolders(httptest.NewRecorder(), folderReq("PATCH", "/folders/f1", `{"lifetimeHours":null}`, "alice"), "f1", f)
-		if !f.patch.LifetimeHours.Set || f.patch.LifetimeHours.Value != nil {
-			t.Errorf("null must clear: %+v", f.patch.LifetimeHours)
+		serveFolders(httptest.NewRecorder(), folderReq("PATCH", "/folders/f1", `{"conversationLifetimeHours":null}`, "alice"), "f1", f)
+		if !f.patch.ConversationLifetimeHours.Set || f.patch.ConversationLifetimeHours.Value != nil {
+			t.Errorf("null must clear: %+v", f.patch.ConversationLifetimeHours)
 		}
 		serveFolders(httptest.NewRecorder(), folderReq("PATCH", "/folders/f1", `{"name":"x"}`, "alice"), "f1", f)
-		if f.patch.LifetimeHours.Set {
-			t.Errorf("absent must keep: %+v", f.patch.LifetimeHours)
+		if f.patch.ConversationLifetimeHours.Set {
+			t.Errorf("absent must keep: %+v", f.patch.ConversationLifetimeHours)
 		}
 	})
 	t.Run("too deep and cycles are 409s", func(t *testing.T) {
@@ -267,41 +269,91 @@ func TestServePlacement(t *testing.T) {
 func TestFolderFramesReachOnlyTheirOwner(t *testing.T) {
 	hub := newSSEHub()
 	alice, bob := hub.subscribe("alice", "all"), hub.subscribe("bob", "all")
-	owner, ok := folderNotifyOwner(`{"owner":"alice"}`)
+	match, ok := folderNotifyMatch(`{"owner":"alice"}`)
 	if !ok {
 		t.Fatal("payload rejected")
 	}
-	hub.deliver(sseData([]byte(`{"kind":"folders"}`)), func(s *sseSub) bool { return s.callerOwner == owner })
+	hub.deliver(sseData([]byte(`{"kind":"folders"}`)), match)
 	if got := recv(alice); !strings.Contains(got, `"folders"`) {
 		t.Errorf("alice got %q", got)
 	}
 	if got := recv(bob); got != "" {
 		t.Errorf("bob got %q", got)
 	}
-	if _, ok := folderNotifyOwner(`{}`); ok {
+	// A static folder change reaches everyone.
+	all, _ := folderNotifyMatch(`{"all":true}`)
+	hub.deliver(sseData([]byte(`{"kind":"folders"}`)), all)
+	if recv(alice) == "" || recv(bob) == "" {
+		t.Error("a static change missed a stream")
+	}
+	if _, ok := folderNotifyMatch(`{}`); ok {
 		t.Error("a payload with no owner is dropped")
 	}
 }
 
-func TestParseStaticFolders(t *testing.T) {
-	got, err := parseStaticFolders(`[{"id":"design","name":" Design ","icon":"pencil","lifetimeHours":0}]`)
-	if err != nil || len(got) != 1 || got[0].Name != "Design" || *got[0].LifetimeHours != 0 {
-		t.Fatalf("got %+v, %v", got, err)
+func TestCleanStatic(t *testing.T) {
+	f := StaticFolder{ID: "kanban-inbox", Name: " Inbox ", Icon: "inbox"}
+	if msg := cleanStatic(&f); msg != "" || f.Name != "Inbox" {
+		t.Fatalf("got %+v, %q", f, msg)
 	}
-	if got, err := parseStaticFolders(""); err != nil || got != nil {
-		t.Errorf("empty: %+v, %v", got, err)
-	}
-	for _, bad := range []string{
-		`[{"id":"starred","name":"Mine"}]`,
-		`[{"id":"Design","name":"Design"}]`,
-		`[{"id":"a","name":"A"},{"id":"a","name":"B"}]`,
-		`[{"id":"a","name":""}]`,
-		`[{"id":"a","name":"A","icon":"Bad Icon"}]`,
-		`[{"id":"a","name":"A","lifetimeHours":-2}]`,
-		`{"id":"a"}`,
+	neg := -2
+	for _, bad := range []StaticFolder{
+		{ID: "starred", Name: "Mine"},
+		{ID: "Design", Name: "Design"},
+		{ID: "a", Name: ""},
+		{ID: "a", Name: "A", Icon: "Bad Icon"},
+		{ID: "a", Name: "A", ConversationLifetimeHours: &neg},
 	} {
-		if _, err := parseStaticFolders(bad); err == nil {
-			t.Errorf("accepted %s", bad)
+		if msg := cleanStatic(&bad); msg == "" {
+			t.Errorf("accepted %+v", bad)
 		}
+	}
+}
+
+// fakeStatics records one static folder call.
+type fakeStatics struct {
+	account, id string
+	put         StaticFolder
+	err         error
+}
+
+func (f *fakeStatics) StaticFolders(context.Context) ([]StaticFolder, error) { return nil, f.err }
+func (f *fakeStatics) PutStaticFolder(_ context.Context, account string, sf StaticFolder) error {
+	f.account, f.put = account, sf
+	return f.err
+}
+func (f *fakeStatics) DeleteStaticFolder(_ context.Context, account, id string) error {
+	f.account, f.id = account, id
+	return f.err
+}
+
+func TestServeStaticFolders(t *testing.T) {
+	kanban := ServiceCaller(func(context.Context, *http.Request) (string, bool) { return "sa-kanban", true })
+	refuse := ServiceCaller(func(context.Context, *http.Request) (string, bool) { return "", false })
+	serve := func(method, path, body string, caller ServiceCaller, fs *fakeStatics) int {
+		w := httptest.NewRecorder()
+		id, _ := StaticFolderRoute(path)
+		serveStaticFolders(w, httptest.NewRequest(method, path, strings.NewReader(body)), id, caller, fs)
+		return w.Code
+	}
+	fs := &fakeStatics{}
+	if code := serve("PUT", "/static-folders/inbox", `{"name":"Inbox"}`, nil, fs); code != http.StatusForbidden {
+		t.Errorf("no allowlist: %d", code)
+	}
+	if code := serve("PUT", "/static-folders/inbox", `{"name":"Inbox"}`, refuse, fs); code != http.StatusForbidden {
+		t.Errorf("unproven caller: %d", code)
+	}
+	if code := serve("PUT", "/static-folders/inbox", `{"name":"Inbox"}`, kanban, fs); code != http.StatusNoContent ||
+		fs.account != "sa-kanban" || fs.put.ID != "inbox" || fs.put.Name != "Inbox" {
+		t.Errorf("PUT: %d %+v", code, fs)
+	}
+	if code := serve("PUT", "/static-folders/inbox", `{"name":""}`, kanban, fs); code != http.StatusBadRequest {
+		t.Errorf("bad body: %d", code)
+	}
+	if code := serve("DELETE", "/static-folders/inbox", "", kanban, &fakeStatics{err: errStaticTaken}); code != http.StatusConflict {
+		t.Errorf("another service's folder: %d", code)
+	}
+	if code := serve("POST", "/static-folders", "", kanban, fs); code != http.StatusMethodNotAllowed {
+		t.Errorf("POST: %d", code)
 	}
 }
