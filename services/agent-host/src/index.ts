@@ -1009,6 +1009,18 @@ export async function main(
       `${brokerUrl}${prefix}/${encodeURIComponent(requestId)}/${encodeURIComponent(optionId)}`,
       { method: "POST", headers: await brokerAuthHeaders(), body: JSON.stringify({ approver }) },
     );
+    // 409: the request was already decided or replaced, so the agent has nothing to fix.
+    if (res.status === 409) {
+      const body = await res.text().catch(() => "");
+      hostLog.info("approval answered for a request no longer awaiting one", {
+        conversation_id: sessionId,
+        contrib,
+        request_id: requestId,
+        decision: optionId,
+        body: body.slice(0, 500),
+      });
+      return;
+    }
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       // `errors` under `detail` is the shape scooter_broker_lib raises RequestError as.

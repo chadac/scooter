@@ -92,6 +92,18 @@ class RequestError(Exception):
         self.reasons = reasons
 
 
+class NotPending(RequestError):
+    """An approve/deny for a request that no longer awaits an answer."""
+
+    def __init__(self, req: PermissionRequest, superseded_by: str | None = None) -> None:
+        reason = f"Request '{req.request_id}' is {req.status.value}, not pending"
+        if superseded_by:
+            reason += f"; it was replaced by '{superseded_by}'"
+        super().__init__([reason])
+        self.status = req.status
+        self.superseded_by = superseded_by
+
+
 class PermissionService:
     def __init__(
         self,
@@ -101,6 +113,7 @@ class PermissionService:
         account_registry: dict[str, dict],
         config: ServiceConfig,
         on_request=None,  # async (PermissionRequest) -> None that asks the host to raise the approval interrupt
+        on_withdraw=None,  # async (PermissionRequest) -> None that asks the host to drop a superseded interrupt
         authorizer: Authorizer | None = None,  # per-account approve/deny gate; None means NoopAuthorizer
     ) -> None:
         self._store = store
@@ -108,6 +121,7 @@ class PermissionService:
         self._registry = account_registry
         self._config = config
         self._on_request = on_request
+        self._on_withdraw = on_withdraw
         self._authz: Authorizer = authorizer or NoopAuthorizer()
         # request_id -> StsCredentials, in-memory only.
         self._creds: dict[str, StsCredentials] = {}
@@ -239,6 +253,30 @@ class PermissionService:
                     },
                 )
 
+    async def _withdraw(self, req: PermissionRequest) -> None:
+        # Best effort: a card left behind is answered with a harmless NotPending.
+        if self._on_withdraw is not None:
+            try:
+                await self._on_withdraw(req)
+            except Exception:
+                logger.exception(
+                    "on_withdraw notify failed",
+                    extra={
+                        "conversation_id": req.conversation_id,
+                        "request_id": req.request_id,
+                        "target_account": req.target_account,
+                    },
+                )
+
+    async def _not_pending(self, req: PermissionRequest) -> NotPending:
+        """The refusal for answering `req`, naming the request that replaced it."""
+        superseded_by = None
+        if req.status == RequestStatus.SUPERSEDED:
+            newer = [r for r in await self._siblings(req) if r.requested_at > req.requested_at]
+            if newer:
+                superseded_by = max(newer, key=lambda r: r.requested_at).request_id
+        return NotPending(req, superseded_by)
+
     # --- approver identity -------------------------------------------------
     def resolve_approver(self, approver, *, fallback: str) -> str:
         """Turn the request body's `approver` (an identity dict or a plain string) into the principal the FGA check and approved_by use."""
@@ -342,10 +380,20 @@ class PermissionService:
         ]
 
     async def _supersede_pending_siblings(self, req: PermissionRequest) -> None:
-        """Mark not-yet-active siblings SUPERSEDED, a pure status flip since they hold no IAM role yet."""
+        """Mark not-yet-active siblings SUPERSEDED and withdraw their interrupts; they hold no IAM role yet."""
         for sib in await self._siblings(req):
             if sib.status in (RequestStatus.PENDING, RequestStatus.APPROVED):
                 await self._store.update(sib.request_id, status=RequestStatus.SUPERSEDED)
+                logger.info(
+                    "superseded pending request",
+                    extra={
+                        "conversation_id": sib.conversation_id,
+                        "request_id": sib.request_id,
+                        "superseded_by": req.request_id,
+                        "target_account": sib.target_account,
+                    },
+                )
+                await self._withdraw(sib)
 
     async def _supersede_active_siblings(self, req: PermissionRequest) -> None:
         """Tear down and supersede older active siblings so one grant is live per (conversation, account); a teardown failure is logged, never fails the new grant."""
@@ -383,7 +431,7 @@ class PermissionService:
         if req is None:
             raise RequestError([f"Unknown request '{request_id}'"])
         if req.status != RequestStatus.PENDING:
-            raise RequestError([f"Request is {req.status.value}, not pending"])
+            raise await self._not_pending(req)
         unmet = self._unmet(req, self._obligations(req))
         satisfied = await self._eligible(approver, unmet)
         if not satisfied:
@@ -402,6 +450,9 @@ class PermissionService:
         req = await self._store.get(request_id)
         if req is None:
             raise RequestError([f"Unknown request '{request_id}'"])
+        # Denying an active grant would orphan its role; revoke tears it down instead.
+        if req.status != RequestStatus.PENDING:
+            raise await self._not_pending(req)
         # Anyone eligible for any obligation may deny it all.
         if not await self._eligible(approver, self._obligations(req)):
             raise RequestError([f"'{approver}' is not authorized to deny request '{request_id}'"])
@@ -421,7 +472,7 @@ class PermissionService:
     async def can_approve(self, *, request_id: str, approver: str) -> bool:
         """Would approve() accept `approver` now? Fails closed."""
         req = await self._store.get(request_id)
-        if req is None:
+        if req is None or req.status != RequestStatus.PENDING:
             return False
         if any(a["approver"] == approver for a in req.approvals):
             return False

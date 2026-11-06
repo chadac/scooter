@@ -15,7 +15,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 from .models import APPROVAL_KIND, PermissionRequest, RequestStatus, StsCredentials, approval_data, approval_message, decision_message
-from .service import PermissionService, RequestError
+from .service import NotPending, PermissionService, RequestError
 from scooter_broker_lib.types import AuthDependency, Identity, Provider, Transport
 
 logger = logging.getLogger(__name__)
@@ -54,6 +54,22 @@ def _decision_view(req: PermissionRequest) -> dict[str, Any]:
     if message:
         out["agent_message"] = message
     return out
+
+
+def _refused(verb: str, request_id: str, approver: str, e: RequestError) -> HTTPException:
+    """Log why an approve/deny was refused; 409 when the request no longer awaits one."""
+    extra = {"request_id": request_id, "approver": approver, "verb": verb, "reasons": e.reasons}
+    if isinstance(e, NotPending):
+        logger.info(
+            "answer for a request that is not pending",
+            extra={**extra, "status": e.status.value, "superseded_by": e.superseded_by},
+        )
+        return HTTPException(
+            status_code=409,
+            detail={"status": e.status.value, "superseded_by": e.superseded_by, "errors": e.reasons},
+        )
+    logger.warning("answer refused", extra=extra)
+    return HTTPException(status_code=400, detail={"errors": e.reasons})
 
 
 @dataclass
@@ -192,7 +208,7 @@ class AwsPermissions(Transport):
             try:
                 req = await _svc().approve(request_id=request_id, approver=approver)
             except RequestError as e:
-                raise HTTPException(status_code=400, detail={"errors": e.reasons})
+                raise _refused("approve", request_id, approver, e)
             return _decision_view(req)
 
         @router.post("/aws/{request_id}/deny")
@@ -202,7 +218,7 @@ class AwsPermissions(Transport):
             try:
                 req = await _svc().deny(request_id=request_id, approver=approver, reason=body.get("reason"))
             except RequestError as e:
-                raise HTTPException(status_code=400, detail={"errors": e.reasons})
+                raise _refused("deny", request_id, approver, e)
             return _decision_view(req)
 
         @router.get("/aws/audit")

@@ -10,7 +10,7 @@ import pytest
 
 from scooter_contrib_aws.iam import IamProvisioner
 from scooter_contrib_aws.models import RequestStatus, StsCredentials
-from scooter_contrib_aws.service import PermissionService, ServiceConfig, RequestError
+from scooter_contrib_aws.service import NotPending, PermissionService, ServiceConfig, RequestError
 from scooter_contrib_aws.store import PermissionStore
 from scooter_broker_lib.store import StoreConfig
 
@@ -89,7 +89,7 @@ WRITE = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "s
 READ = {"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Action": "s3:GetObject", "Resource": "arn:aws:s3:::b/*"}]}
 
 
-async def make_service(tmp_path, iam=None):
+async def make_service(tmp_path, iam=None, on_withdraw=None):
     cfg = StoreConfig()
     cfg.dsn = f"sqlite+aiosqlite:///{tmp_path / 'broker.db'}"
     store = PermissionStore(cfg)
@@ -99,6 +99,7 @@ async def make_service(tmp_path, iam=None):
         iam=iam or FakeIam(),
         account_registry=REGISTRY,
         config=ServiceConfig(broker_principal_arn="arn:...:broker"),
+        on_withdraw=on_withdraw,
     )
     return svc
 
@@ -369,6 +370,57 @@ async def test_new_request_supersedes_a_pending_sibling_immediately(tmp_path):
     g1, _ = await svc.status(request_id=r1.request_id, conversation_id="c1")
     assert g1.status == RequestStatus.SUPERSEDED, f"pending sibling not superseded: {g1.status}"
     assert r2.status == RequestStatus.PENDING
+
+
+async def test_superseding_a_pending_sibling_withdraws_its_interrupt(tmp_path):
+    withdrawn: list[str] = []
+
+    async def on_withdraw(req):
+        withdrawn.append(req.request_id)
+
+    svc = await make_service(tmp_path, on_withdraw=on_withdraw)
+    r1 = await svc.request(conversation_id="c1", target_account="dev", justification="read", policy_document=READ)
+    assert withdrawn == []
+    await svc.request(conversation_id="c1", target_account="dev", justification="read+write",
+                      policy_document=WRITE, parent_request_id=r1.request_id)
+    assert withdrawn == [r1.request_id]
+
+
+async def test_a_failing_withdraw_does_not_fail_the_new_request(tmp_path):
+    async def on_withdraw(req):
+        raise RuntimeError("agent-host down")
+
+    svc = await make_service(tmp_path, on_withdraw=on_withdraw)
+    await svc.request(conversation_id="c1", target_account="dev", justification="read", policy_document=READ)
+    r2 = await svc.request(conversation_id="c1", target_account="dev", justification="+write", policy_document=WRITE)
+    assert r2.status == RequestStatus.PENDING
+
+
+async def test_answering_a_superseded_request_names_its_replacement(tmp_path):
+    svc = await make_service(tmp_path)
+    r1 = await svc.request(conversation_id="c1", target_account="dev", justification="read", policy_document=READ)
+    r2 = await svc.request(conversation_id="c1", target_account="dev", justification="+write", policy_document=WRITE)
+    for answer in (svc.approve(request_id=r1.request_id, approver="a"),
+                   svc.deny(request_id=r1.request_id, approver="a", reason="stale")):
+        with pytest.raises(NotPending) as exc:
+            await answer
+        assert exc.value.status == RequestStatus.SUPERSEDED
+        assert exc.value.superseded_by == r2.request_id
+    g1, _ = await svc.status(request_id=r1.request_id, conversation_id="c1")
+    assert g1.status == RequestStatus.SUPERSEDED, "a stale deny must not overwrite superseded"
+    assert await svc.can_approve(request_id=r1.request_id, approver="a") is False
+    assert await svc.can_approve(request_id=r2.request_id, approver="a") is True
+
+
+async def test_deny_refuses_an_active_request(tmp_path):
+    iam = FakeIam()
+    svc = await make_service(tmp_path, iam=iam)
+    req = await svc.request(conversation_id="c1", target_account="dev", justification="x", policy_document=READ)
+    active = await svc.approve(request_id=req.request_id, approver="a")
+    with pytest.raises(NotPending):
+        await svc.deny(request_id=req.request_id, approver="a")
+    assert active.iam_role_arn in iam.roles
+    assert (await svc.status(request_id=req.request_id, conversation_id="c1"))[0].status == RequestStatus.ACTIVE
 
 
 async def test_active_sibling_kept_until_new_one_is_approved_then_torn_down(tmp_path):

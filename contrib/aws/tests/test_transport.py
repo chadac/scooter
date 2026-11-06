@@ -119,6 +119,23 @@ def test_request_approve_status_flow(tmp_path):
         assert r.json()["credentials"]["session_token"]
 
 
+def test_answering_a_superseded_request_is_a_409_naming_its_replacement(tmp_path):
+    app = _app(tmp_path)
+    app.dependency_overrides[authenticate] = _identity("conv-1")
+    with TestClient(app) as client:
+        body = {"target_account": "dev", "policy_document": POLICY, "justification": "read"}
+        old = client.post("/aws/aws/request", json=body).json()["request_id"]
+        new = client.post("/aws/aws/escalate", json={**body, "parent_request_id": old}).json()["request_id"]
+        for verb in ("approve", "deny"):
+            r = client.post(f"/aws/aws/{old}/{verb}", json={"approver": "alice@x"})
+            assert r.status_code == 409, r.text
+            detail = r.json()["detail"]
+            assert detail["status"] == "superseded" and detail["superseded_by"] == new
+        assert client.post(f"/aws/aws/{new}/approve", json={"approver": "alice@x"}).status_code == 200
+        r = client.post(f"/aws/aws/{new}/approve", json={"approver": "alice@x"})
+        assert r.status_code == 409 and r.json()["detail"]["status"] == "active"
+
+
 def test_deny_tells_the_agent_who_denied_and_why(tmp_path):
     app = _app(tmp_path)
     app.dependency_overrides[authenticate] = _identity("conv-1")

@@ -161,6 +161,35 @@ async def notify_host(req) -> None:
         delay *= 2
 
 
+async def withdraw_host(req) -> None:
+    """Tell the agent-host to drop a superseded request's approval interrupt.
+
+    One attempt and never raises: a card left behind answers with a harmless 409.
+    """
+    if not settings.aws_agent_host_url:
+        return
+    import httpx
+
+    url = (
+        f"{settings.aws_agent_host_url.rstrip('/')}"
+        f"/conversations/{req.conversation_id}/approvals/aws/{req.request_id}"
+    )
+    extra = {"conversation_id": req.conversation_id, "request_id": req.request_id}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.delete(url, headers=router_headers())
+    except httpx.HTTPError as e:
+        logger.warning("withdraw errored; card stays up", extra={**extra, "error": format_error(e)})
+        return
+    if resp.status_code >= 300:
+        logger.warning(
+            "withdraw refused; card stays up",
+            extra={**extra, "status": resp.status_code, "body": resp.text[:500]},
+        )
+        return
+    logger.info("withdrew approval interrupt", extra={**extra, "status": resp.status_code})
+
+
 @register_provider
 def aws(ctx: BrokerContext) -> Provider:
     registry = _load_registry()
@@ -181,6 +210,9 @@ def aws(ctx: BrokerContext) -> Provider:
     async def _notify_host(req) -> None:
         await notify_host(req)
 
+    async def _withdraw_host(req) -> None:
+        await withdraw_host(req)
+
     # The per-account approver gate on approve/deny, built by the app.
     authorizer = ctx.authorizer
 
@@ -194,6 +226,7 @@ def aws(ctx: BrokerContext) -> Provider:
             approver_claim=settings.aws_approver_claim,
         ),
         on_request=_notify_host,
+        on_withdraw=_withdraw_host,
         authorizer=authorizer,
     )
     # approve/deny require an approver identity, which auth recognizes via approver_service_accounts.

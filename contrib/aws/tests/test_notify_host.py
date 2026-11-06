@@ -218,3 +218,27 @@ async def test_sends_the_router_service_token(monkeypatch):
     await aws_provider.notify_host(_Req())
 
     assert seen[0].headers["authorization"] == "Bearer svc-token"
+
+
+# --- withdraw: dropping a superseded request's card -------------------------
+
+@pytest.mark.asyncio
+async def test_withdraw_deletes_the_request_card_on_the_short_id_url(monkeypatch):
+    seen = _mock_httpx(monkeypatch, lambda req, n: httpx.Response(200, json={"withdrawn": True}))
+
+    await aws_provider.withdraw_host(_Req())
+
+    assert [(r.method, r.url.path) for r in seen] == [("DELETE", "/conversations/k3f9zq/approvals/aws/req-abc123")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("handler", [
+    lambda req, n: httpx.Response(503),
+    lambda req, n: (_ for _ in ()).throw(httpx.ConnectError("refused")),
+])
+async def test_withdraw_never_raises_and_does_not_retry(monkeypatch, handler):
+    seen = _mock_httpx(monkeypatch, handler)
+
+    await aws_provider.withdraw_host(_Req())
+
+    assert len(seen) == 1
