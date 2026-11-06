@@ -124,11 +124,12 @@ export class Chat {
   }
 
   /** Start a long in-flight run (the fake agent runs a real `sleep <sec>` in the sandbox) and
-   *  wait until the UI shows the working state, so a subsequent sendWhileRunning() queues. */
+   *  wait until its sleep tool call is running, so a subsequent sendWhileRunning() queues. */
   async startLongRun(sec = 20) {
     await this.send(`!sleep ${sec}`);
+    // Until a tool runs, a mid-run message preempts at once.
     // On the full target the run first waits for a ready sandbox pod, which can be a cold boot.
-    await expect(this.page.locator('[data-testid="run-status-bar"]')).toBeVisible({
+    await expect(this.page.locator('[data-testid="provider-tool-running"]')).toBeVisible({
       timeout: process.env.E2E_TARGET === "full" ? 90_000 : 30_000,
     });
   }

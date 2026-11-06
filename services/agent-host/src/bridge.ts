@@ -285,8 +285,8 @@ export interface PromptInput {
 }
 
 /** How a priority prompt preempts the running turn: "timeout" waits priorityInterruptMs
- *  then cancels, "thinking" cancels at the next tool-call boundary, and "tool-call"
- *  cancels immediately. */
+ *  then cancels, "thinking" cancels at the next tool-call boundary once the prompt is
+ *  sent, and "tool-call" cancels immediately. */
 export type InterruptPolicy = "timeout" | "thinking" | "tool-call";
 
 /** Per-prompt options for the bridge's run queue. */
@@ -712,6 +712,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     runId: RunId;
     /** Ends the run as cancelled; set only until its prompt is sent. */
     abortSetup?: () => void;
+    /** Set once the first prompt is sent to the agent. */
+    promptSent?: boolean;
     /** The thread this run belongs to, required on RUN_STARTED/FINISHED. */
     threadId: ThreadId;
     // The currently-open assistant text message, if any.
@@ -1362,6 +1364,11 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         const client = acpClient!;
         const sessionId = acpSessionId!;
         const promptCall = client.prompt({ sessionId, prompt: turnBlocks });
+        // A "thinking" interrupt deferred through setup applies once sent.
+        if (stopBlocks === 0) {
+          st.promptSent = true;
+          applyPreemption();
+        }
         const raced = await Promise.race([
           promptCall.then((r) => ({ abandoned: false as const, stopReason: r.stopReason })),
           wedged.then(() => ({ abandoned: true as const })),
@@ -1501,6 +1508,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       return;
     }
     if (head.interrupt === "thinking") {
+      // Still in setup: wait for the send, or the run's prompt is lost.
+      if (!currentRun.promptSent) return;
       if (currentRun.inFlightTools === 0) {
         void self.cancel().catch(() => {}); // idle thinking — preempt now
       } else {
