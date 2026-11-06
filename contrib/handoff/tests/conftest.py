@@ -25,6 +25,8 @@ class FakeRouter:
         self.transcripts: dict[str, list[dict]] = {}
         self.spawns: list[tuple[str, dict]] = []
         self.spawn_status = 201
+        # False mimics a router without the broker in conversationController.readers.
+        self.owned_enabled = True
 
     def add(self, cid: str, *, title: str = "", owner: str = "alice", at: int = 1000,
             visibility: str = "shared", messages: list[tuple[str, str]] = (), parent: str | None = None) -> None:
@@ -36,8 +38,25 @@ class FakeRouter:
         row = self.rows.get(cid)
         return row if row and row["visibility"] == "shared" else None
 
+    def _owned(self, source: str) -> list[dict] | None:
+        src = self.rows.get(source)
+        if not self.owned_enabled or src is None:
+            return None
+        if src["visibility"] != "private":
+            return []
+        return [r for r in self.rows.values() if src["owner"] and r["owner"] == src["owner"]]
+
     def handler(self, request: httpx.Request) -> httpx.Response:
         parts = request.url.path.strip("/").split("/")
+        if request.method == "GET" and len(parts) >= 3 and parts[0] == "conversations" and parts[2] == "owned":
+            owned = self._owned(parts[1])
+            if owned is None:
+                return httpx.Response(404, json={"error": "unknown source conversation"})
+            if len(parts) == 3:
+                return httpx.Response(200, json=owned)
+            if len(parts) == 5 and parts[4] == "messages" and parts[3] in {r["id"] for r in owned}:
+                return httpx.Response(200, json={"messages": self.transcripts[parts[3]], "fromSeq": 1, "done": True})
+            return httpx.Response(404, json={"error": "not owned"})
         if request.method == "GET" and parts == ["conversations"]:
             return httpx.Response(200, json=[r for r in self.rows.values() if r["visibility"] == "shared"])
         if request.method == "POST" and len(parts) == 3 and parts[2] == "spawns":

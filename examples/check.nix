@@ -576,6 +576,7 @@ let
     module = { ... }: {
       imports = [ ./kubenix-config.nix ];
       scooter.conversationController.spawners = [ "agent-broker" ];
+      scooter.conversationController.readers = [ "agent-broker" ];
     };
   };
   spawnRouterEnv =
@@ -621,6 +622,11 @@ let
     ++ (if spawnEnvVal "CONVERSATION_SPAWNER_SERVICE_ACCOUNTS" == "system:serviceaccount:${spawnPlatform.config.scooter.namespace}:agent-broker"
           && spawnEnvVal "SPAWNS_PER_SOURCE_PER_HOUR" == "10" then [ ]
         else [ "spawners: router.env.CONVERSATION_SPAWNER_SERVICE_ACCOUNTS / SPAWNS_PER_SOURCE_PER_HOUR not rendered from conversationController.spawners" ])
+    # Owned reads are off by default too.
+    ++ (if routerEnvVal "CONVERSATION_READER_SERVICE_ACCOUNTS" == "" then [ ]
+        else [ "router.env.CONVERSATION_READER_SERVICE_ACCOUNTS set with no readers configured" ])
+    ++ (if spawnEnvVal "CONVERSATION_READER_SERVICE_ACCOUNTS" == "system:serviceaccount:${spawnPlatform.config.scooter.namespace}:agent-broker" then [ ]
+        else [ "readers: router.env.CONVERSATION_READER_SERVICE_ACCOUNTS not rendered from conversationController.readers" ])
     ++ (if builtins.match ".*:agent-broker.*" (spawnEnvVal "WEBHOOKS_SERVICE_ACCOUNT") == null then [ ]
         else [ "spawners: the broker landed on the owner-asserting allowlist (WEBHOOKS_SERVICE_ACCOUNT)" ])
     ++ (if builtins.any (e: e.name == "AUTH_MODE" && e.value == "alb-oidc") albRouterEnv then [ ]
@@ -1286,6 +1292,8 @@ let
         else [ "enabling handoff did not route its approval cards to /handoff/spawns" ])
     ++ (if builtins.any (e: e.name == "HANDOFF_REQUIRE_APPROVAL" && e.value == "true") handoffBrokerEnv then [ ]
         else [ "handoff spawns did not default to needing approval (HANDOFF_REQUIRE_APPROVAL)" ])
+    ++ (if builtins.any (e: e.name == "CONVERSATION_READER_SERVICE_ACCOUNTS" && nixpkgsLib.hasSuffix ":agent-broker" e.value) handoffRouterEnv then [ ]
+        else [ "enabling handoff did not add the broker to conversationController.readers" ])
     ++ (if schedImageOf (sysEval { contribs.handoff.enable = nixpkgsLib.mkForce true; scooter.systemTasks.broker-health.enable = false; }) == publishedSchedImage then [ ]
         else [ "with handoff enabled the scheduler image differs from the published one" ])
     ++ (if (sysEchoTuned.echo-greet.interval_seconds or null) == 14400 then [ ]

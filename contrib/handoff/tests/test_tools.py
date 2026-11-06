@@ -49,11 +49,11 @@ async def test_spawn_sends_the_brief_from_the_calling_conversation(router, links
     ]
 
 
-async def test_a_private_source_gets_no_read_hint(router, links):
+async def test_a_private_source_still_gets_a_read_hint(router, links):
     router.add("src", visibility="private")
     r = await handoff_spawn(brief="go", ctx=ctx("src"))
     assert not r.is_error
-    assert "handoff_read" not in router.spawns[0][1]["prompt"]
+    assert 'handoff_read(conversation_id="src")' in router.spawns[0][1]["prompt"], "the same owner can read it"
 
 
 async def test_router_refusal_is_reported_with_any_created_id(router, links):
@@ -69,8 +69,9 @@ async def test_spawn_needs_a_brief(router, links):
 
 
 async def test_search_hides_this_conversation_and_newly_private_ones(router, links, store, agent_host):
-    for cid in ("here", "other", "gone"):
+    for cid in ("here", "other"):
         router.add(cid, title=cid, messages=[("user", "the router 503 bug")])
+    router.add("gone", owner="bob", messages=[("user", "the router 503 bug")])
     await reindex(store, agent_host)
     router.rows["gone"]["visibility"] = "private"
     r = await handoff_search(query="router 503", ctx=ctx("here"))
@@ -87,3 +88,38 @@ async def test_read_returns_text_messages_and_refuses_private(router, links):
     assert out["messages"][1]["text"].endswith(" …") and out["next_before"] is None and out["title"] == "T"
     r = await handoff_read(conversation_id="c2", ctx=ctx("x"))
     assert r.is_error and "private" in r.text
+
+
+async def test_search_finds_own_private_conversations_but_not_others(router, links):
+    router.add("here", visibility="private")
+    router.add("mine", title="mine", visibility="private", messages=[("user", "router 503 in staging")])
+    router.add("bobs", owner="bob", visibility="private", messages=[("user", "router 503 for bob")])
+    hits = json.loads((await handoff_search(query="router 503", ctx=ctx("here"))).text)
+    assert [h["conversation_id"] for h in hits] == ["mine"]
+
+
+async def test_search_is_shared_only_without_owned_reads(router, links, store, agent_host):
+    router.owned_enabled = False
+    router.add("here")
+    router.add("shared", messages=[("user", "router 503")])
+    router.add("mine", visibility="private", messages=[("user", "router 503")])
+    await reindex(store, agent_host)
+    hits = json.loads((await handoff_search(query="router 503", ctx=ctx("here"))).text)
+    assert [h["conversation_id"] for h in hits] == ["shared"]
+
+
+async def test_read_reaches_own_private_conversations_only(router, links):
+    router.add("here", visibility="private")
+    router.add("mine", title="Mine", visibility="private", messages=[("user", "q"), ("assistant", "a")])
+    router.add("bobs", owner="bob", visibility="private", messages=[("user", "secret")])
+    out = json.loads((await handoff_read(conversation_id="mine", ctx=ctx("here"))).text)
+    assert [m["text"] for m in out["messages"]] == ["q", "a"] and out["title"] == "Mine"
+    r = await handoff_read(conversation_id="bobs", ctx=ctx("here"))
+    assert r.is_error and "private" in r.text
+
+
+async def test_a_shared_conversation_reaches_none_of_its_owners_private_ones(router, links):
+    router.add("here")
+    router.add("mine", visibility="private", messages=[("user", "router 503")])
+    assert (await handoff_search(query="router 503", ctx=ctx("here"))).text == "No conversation matches."
+    assert (await handoff_read(conversation_id="mine", ctx=ctx("here"))).is_error

@@ -87,6 +87,8 @@ func main() {
 	var trusted TrustedCaller
 	// Verifies spawn callers; nil disables POST /conversations/{id}/spawns.
 	var spawner TrustedCaller
+	// Verifies owned-read callers; nil disables GET /conversations/{id}/owned.
+	var reader TrustedCaller
 	// The apiserver credentials, for the self-access TokenReview; nil in dev mode.
 	var kubeCfg *rest.Config
 	if devModeEnabled() {
@@ -119,6 +121,7 @@ func main() {
 		cfg.fallback = FallbackURL(cfg.clusterIPService, cfg.namespace, cfg.upstreamPort)
 		trusted = buildTrustedCaller(kubeCfg, log)
 		spawner = buildSpawner(kubeCfg, log)
+		reader = buildReader(kubeCfg, log)
 	}
 
 	// Optional read-only Postgres handle on the agent_host database, from which GET /conversations is served.
@@ -216,7 +219,7 @@ func main() {
 	go runAwaitingListener(ctx, store, links, hub)
 	go runFolderListener(ctx, store, hub)
 
-	handler := newRouter(ctx, cfg, resolver, creator, trusted, spawner, store, writeStore, links, hub)
+	handler := newRouter(ctx, cfg, resolver, creator, trusted, spawner, reader, store, writeStore, links, hub)
 	mainGate, sandboxGate := buildGateways(kubeCfg, log)
 	srv := &http.Server{Addr: cfg.listenAddr, Handler: guarded(mainGate, handler)}
 	if self := buildSelfServer(kubeCfg, cfg, store, handler, log); self != nil {
@@ -269,17 +272,20 @@ func main() {
 }
 
 // newRouter builds the HTTP handler: resolve the target, reverse-proxy, and on a dial failure to the owner IP retry once via the fallback Service.
-func newRouter(shutdownCtx context.Context, cfg config, resolver ownerResolver, creator ConversationCreator, trusted, spawner TrustedCaller, store *Store, writeStore *WriteStore, links *LinkStore, hub *sseHub) http.Handler {
+func newRouter(shutdownCtx context.Context, cfg config, resolver ownerResolver, creator ConversationCreator, trusted, spawner, reader TrustedCaller, store *Store, writeStore *WriteStore, links *LinkStore, hub *sseHub) http.Handler {
 	fallback := cfg.fallback
 	// A typed-nil *Store in an interface is not nil.
 	var parents parentLookup
+	var owned ownedListing
 	if store != nil {
-		parents = store
+		parents, owned = store, store
 	}
 	limiter := newSpawnLimiter(atoi(env("SPAWNS_PER_SOURCE_PER_HOUR", "10")), time.Hour)
 	var h http.HandlerFunc
 	// The first message re-enters this handler to be routed.
-	deliver := internalDeliver(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { h(w, r) }), identityConfigFromEnv())
+	self := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { h(w, r) })
+	deliver := internalDeliver(self, identityConfigFromEnv())
+	get := internalGet(self, identityConfigFromEnv())
 	h = func(w http.ResponseWriter, r *http.Request) {
 		// Only the router's sandbox listener may mark a request as host-routed.
 		r.Header.Del(SandboxHostHeader)
@@ -297,6 +303,11 @@ func newRouter(shutdownCtx context.Context, cfg config, resolver ownerResolver, 
 		// Spawn is served here too (see spawn.go).
 		if sourceID, ok := ConversationSpawn(r.Method, r.URL.Path); ok {
 			serveConversationSpawn(w, r, creator, parents, sourceID, spawner, limiter, deliver)
+			return
+		}
+		// So are owned reads (see ownedread.go).
+		if sourceID, targetID, ok := OwnedRead(r.Method, r.URL.Path); ok {
+			serveOwnedRead(w, r, owned, sourceID, targetID, reader, get)
 			return
 		}
 		// Subagent create is served here too (see subagent.go).
@@ -591,6 +602,22 @@ func buildSpawner(kubeCfg *rest.Config, log *slog.Logger) TrustedCaller {
 		return nil
 	}
 	log.Info("conversation spawns enabled", slog.Int("spawner_service_accounts", len(allowed)))
+	return newTrustedCaller(review, allowed)
+}
+
+// buildReader verifies owned-read callers, or returns nil when none are allowed.
+func buildReader(kubeCfg *rest.Config, log *slog.Logger) TrustedCaller {
+	allowed := readerServiceAccounts()
+	if len(allowed) == 0 {
+		return nil
+	}
+	audiences := env("WEBHOOKS_TOKEN_AUDIENCE", "agent-host") + "," + env("ROUTER_TOKEN_AUDIENCE", "scooter-router")
+	review, err := newTokenReviewer(kubeCfg, audiences)
+	if err != nil {
+		log.Warn("TokenReview client init failed: owned reads are refused", errAttr(err))
+		return nil
+	}
+	log.Info("owned reads enabled", slog.Int("reader_service_accounts", len(allowed)))
 	return newTrustedCaller(review, allowed)
 }
 

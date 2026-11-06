@@ -1,7 +1,8 @@
 """The router, which owns conversations: list, read, spawn and link them.
 
 The broker calls AGENT_HOST_URL (the router) with its router token and no user, so it
-sees shared conversations only; a private one answers 404.
+sees shared conversations only; a private one answers 404. The owned routes reach a
+private source conversation's owner's own conversations, private ones included.
 """
 
 from __future__ import annotations
@@ -55,6 +56,29 @@ class AgentHost:
         """The folded page before seq `before`; None when unknown or private."""
         async with self._client() as c:
             r = await c.get(f"/conversations/{conversation_id}/messages", params={"before": before, "limit": limit})
+        if r.status_code == 404:
+            return None
+        r.raise_for_status()
+        return r.json()
+
+    async def owned(self, source_id: str) -> list[dict[str, Any]]:
+        """The list rows of every conversation the source's owner owns; [] when not enabled."""
+        async with self._client() as c:
+            r = await c.get(f"/conversations/{source_id}/owned")
+        if r.status_code == 404:
+            return []
+        r.raise_for_status()
+        return r.json()
+
+    async def owned_messages(
+        self, source_id: str, conversation_id: str, *, before: int, limit: int,
+    ) -> dict[str, Any] | None:
+        """Like messages, for a conversation the source's owner owns; None when not theirs."""
+        async with self._client() as c:
+            r = await c.get(
+                f"/conversations/{source_id}/owned/{conversation_id}/messages",
+                params={"before": before, "limit": limit},
+            )
         if r.status_code == 404:
             return None
         r.raise_for_status()

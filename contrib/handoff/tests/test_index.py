@@ -10,7 +10,7 @@ async def test_indexes_shared_conversations_only(store, agent_host, router):
     router.add("c3", parent="c1", messages=[("user", "router 503 subagent")])
     result = await reindex(store, agent_host)
     assert result["indexed"] == 1
-    assert await store.indexed() == {"c1": 1000}
+    assert await store.indexed("shared") == {"c1": 1000}
     assert [h.conversation_id for h in await store.search("router", 5)] == ["c1"]
     assert await store.search("secret", 5) == [], "tool output is never indexed"
 
@@ -29,7 +29,7 @@ async def test_a_conversation_made_private_leaves_the_index(store, agent_host, r
     await reindex(store, agent_host)
     router.rows["c1"]["visibility"] = "private"
     assert (await reindex(store, agent_host))["removed"] == 1
-    assert await store.indexed() == {}
+    assert await store.indexed("shared") == {}
 
 
 async def test_a_backlog_spreads_over_passes(store, agent_host, router, monkeypatch):
@@ -38,5 +38,5 @@ async def test_a_backlog_spreads_over_passes(store, agent_host, router, monkeypa
         router.add(f"c{i}", at=1000 + i, messages=[("user", "x")])
     first = await reindex(store, agent_host)
     assert (first["indexed"], first["pending"]) == (2, 1)
-    assert set(await store.indexed()) == {"c1", "c2"}, "newest first"
+    assert set(await store.indexed("shared")) == {"c1", "c2"}, "newest first"
     assert (await reindex(store, agent_host))["indexed"] == 1

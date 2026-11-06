@@ -5,16 +5,19 @@
 -- (`just db-migrate handoff`). The row models in scooter_contrib_handoff/store.py
 -- mirror it, and tests/test_db.py holds them together.
 
--- A shared conversation the search index has folded in.
+-- A conversation the search index has folded in. A private one is searchable only
+-- from a conversation with the same owner.
 CREATE TABLE "handoff_conversations" (
   "conversation_id"  character varying NOT NULL,
   "title"            text NOT NULL,
   "owner"            character varying NULL,
+  "visibility"       character varying NOT NULL DEFAULT 'shared',
   "last_activity_at" bigint NOT NULL,
   PRIMARY KEY ("conversation_id")
 );
+CREATE INDEX "ix_handoff_conversations_owner" ON "handoff_conversations" ("owner");
 
--- One indexed user or assistant message of a shared conversation.
+-- One indexed user or assistant message.
 CREATE TABLE "handoff_messages" (
   "conversation_id" character varying NOT NULL,
   "seq"             integer NOT NULL,

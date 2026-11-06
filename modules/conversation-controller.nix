@@ -138,6 +138,24 @@ in
         Empty disables the route.
       '';
     };
+    readers = mkOption {
+      type = types.listOf (types.strMatching "[a-z0-9]([-a-z0-9]*[a-z0-9])?");
+      default = [ ];
+      example = [ "agent-broker" ];
+      description = ''
+        ServiceAccounts (in the platform namespace) that may call
+        `GET /conversations/{id}/owned` and
+        `GET /conversations/{id}/owned/{target}/messages` on the router. They
+        list the conversations owned by that conversation's owner, private
+        ones included, and read one of them. The owner always comes from the
+        source conversation, and a target owned by anyone else answers 404,
+        so a reader sees only what that user could see of their own. Only a
+        private source qualifies, since other users may drive a shared one. This
+        exposes private transcripts to the service, so list only services
+        already trusted with users' credentials (the broker). Empty disables
+        the routes.
+      '';
+    };
     spawnsPerSourcePerHour = mkOption {
       type = types.ints.positive;
       default = 10;
@@ -496,6 +514,9 @@ in
                     value = lib.concatMapStringsSep "," (sa: "system:serviceaccount:${cfg.namespace}:${sa}") ccfg.spawners; }
                   { name = "SPAWNS_PER_SOURCE_PER_HOUR"; value = toString ccfg.spawnsPerSourcePerHour; }
                 ]
+                ++ lib.optional (ccfg.readers != [ ])
+                  { name = "CONVERSATION_READER_SERVICE_ACCOUNTS";
+                    value = lib.concatMapStringsSep "," (sa: "system:serviceaccount:${cfg.namespace}:${sa}") ccfg.readers; }
                 ++ lib.optional (cfg.auth.sessionCheckUrl != null)
                   { name = "AUTH_SESSION_CHECK_URL"; value = cfg.auth.sessionCheckUrl; }
                 ++ lib.optional (cfg.auth.sandboxSessionCheckUrl != null)

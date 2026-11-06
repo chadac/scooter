@@ -28,10 +28,8 @@ class Spawner:
     async def spawn(self, source_id: str, *, brief: str, title: str, model: str) -> dict:
         """Spawn and link both ways; returns the new conversation's id, url and visibility."""
         try:
-            # Only a shared source is readable through handoff_read.
-            shared = await self.agent_host.conversation(source_id) is not None
             made = await self.agent_host.spawn(
-                source_id, prompt=self._prompt(brief, source_id, shared=shared),
+                source_id, prompt=self._prompt(brief, source_id),
                 title=title, model=model, source=HANDOFF_SOURCE,
             )
         except SpawnError as e:
@@ -46,8 +44,9 @@ class Spawner:
         await post_link(self.agent_host.url, new_id, Link("handoff", "conversation", self.url(source_id), "Handed off from"))
         return {"conversation_id": new_id, "url": self.url(new_id), "visibility": made.get("visibility")}
 
-    def _prompt(self, brief: str, source_id: str, *, shared: bool) -> str:
-        lines = [brief, "", "---", f"Handed off from conversation {source_id} ({self.url(source_id)})."]
-        if shared:
-            lines.append(f'Read its history with handoff_read(conversation_id="{source_id}") if the brief leaves a gap.')
-        return "\n".join(lines)
+    def _prompt(self, brief: str, source_id: str) -> str:
+        # The same owner can read the source, private or not.
+        return "\n".join([
+            brief, "", "---", f"Handed off from conversation {source_id} ({self.url(source_id)}).",
+            f'Read its history with handoff_read(conversation_id="{source_id}") if the brief leaves a gap.',
+        ])

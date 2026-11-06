@@ -17,6 +17,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from scooter_broker_lib.store import StoreConfig, open_sessions
 
+SHARED, PRIVATE = "shared", "private"
 _SNIPPET_CHARS = 240
 # Candidate messages read per query, before grouping by conversation.
 _CANDIDATES = 200
@@ -31,7 +32,8 @@ class _Conversation(_Base):
 
     conversation_id: Mapped[str] = mapped_column(String, primary_key=True)
     title: Mapped[str] = mapped_column(Text)
-    owner: Mapped[str | None] = mapped_column(String, nullable=True)
+    owner: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    visibility: Mapped[str] = mapped_column(String, default=SHARED)
     last_activity_at: Mapped[int] = mapped_column(BigInteger)
 
 
@@ -108,21 +110,27 @@ class HandoffStore:
         self._engine: AsyncEngine
         self._engine, self._session = open_sessions(config)
 
-    async def indexed(self) -> dict[str, int]:
-        """conversation id -> the activity time it was indexed at."""
+    async def indexed(self, visibility: str, owner: str | None = None) -> dict[str, int]:
+        """conversation id -> the activity time it was indexed at, for one visibility (and owner)."""
+        stmt = select(_Conversation.conversation_id, _Conversation.last_activity_at).where(
+            _Conversation.visibility == visibility
+        )
+        if owner is not None:
+            stmt = stmt.where(_Conversation.owner == owner)
         async with self._session() as s:
-            rows = (await s.execute(select(_Conversation.conversation_id, _Conversation.last_activity_at))).all()
+            rows = (await s.execute(stmt)).all()
         return {cid: at for cid, at in rows}
 
     async def replace_conversation(
-        self, conversation_id: str, *, title: str, owner: str | None, last_activity_at: int,
+        self, conversation_id: str, *, title: str, owner: str | None, visibility: str, last_activity_at: int,
         messages: list[tuple[str, str]],
     ) -> None:
         """Swap in a conversation's current messages, as (role, text) in order."""
         async with self._session() as s, s.begin():
             await s.execute(delete(_Message).where(_Message.conversation_id == conversation_id))
             await s.merge(_Conversation(
-                conversation_id=conversation_id, title=title, owner=owner, last_activity_at=last_activity_at,
+                conversation_id=conversation_id, title=title, owner=owner, visibility=visibility,
+                last_activity_at=last_activity_at,
             ))
             s.add_all(
                 _Message(conversation_id=conversation_id, seq=i, role=role, text=body)
@@ -191,12 +199,14 @@ class HandoffStore:
                 update(_SpawnRequest).where(_SpawnRequest.id == request_id).values(status=status, spawned_id=spawned_id)
             )
 
-    async def search(self, query: str, limit: int, *, exclude: set[str] = frozenset()) -> list[Hit]:
-        """Best-matching conversations, one hit each, best first."""
+    async def search(
+        self, query: str, limit: int, *, owner: str | None = None, exclude: set[str] = frozenset(),
+    ) -> list[Hit]:
+        """Best-matching shared conversations, plus `owner`'s private ones, one hit each, best first."""
         if self._engine.dialect.name == "postgresql":
-            matches = await self._search_fts(query)
+            matches = await self._search_fts(query, owner)
         else:
-            matches = await self._search_like(query)
+            matches = await self._search_like(query, owner)
         best: dict[str, tuple[float, str]] = {}
         for cid, score, snippet in matches:
             if cid not in exclude and (cid not in best or score > best[cid][0]):
@@ -223,26 +233,35 @@ class HandoffStore:
         hits.sort(key=lambda h: (h.score, h.last_activity_at), reverse=True)
         return hits[:limit]
 
-    async def _search_fts(self, query: str) -> list[tuple[str, float, str]]:
+    async def _search_fts(self, query: str, owner: str | None) -> list[tuple[str, float, str]]:
         stmt = text(
             """
             SELECT m.conversation_id, ts_rank(to_tsvector('english', m.text), q) AS score,
                    ts_headline('english', m.text, q, 'MaxWords=35, MinWords=12') AS snippet
-            FROM handoff_messages m, websearch_to_tsquery('english', :query) q
+            FROM handoff_messages m
+            JOIN handoff_conversations c ON c.conversation_id = m.conversation_id,
+                 websearch_to_tsquery('english', :query) q
             WHERE to_tsvector('english', m.text) @@ q
+              AND (c.visibility = 'shared' OR c.owner = :owner)
             ORDER BY score DESC
             LIMIT :candidates
             """
         )
         async with self._session() as s:
-            rows = (await s.execute(stmt, {"query": query, "candidates": _CANDIDATES})).all()
+            rows = (await s.execute(stmt, {"query": query, "owner": owner, "candidates": _CANDIDATES})).all()
         return [(cid, float(score), snippet) for cid, score, snippet in rows]
 
-    async def _search_like(self, query: str) -> list[tuple[str, float, str]]:
+    async def _search_like(self, query: str, owner: str | None) -> list[tuple[str, float, str]]:
         terms = _terms(query)
         if not terms:
             return []
-        stmt = select(_Message.conversation_id, _Message.text)
+        stmt = (
+            select(_Message.conversation_id, _Message.text)
+            .join(_Conversation, _Conversation.conversation_id == _Message.conversation_id)
+        )
+        # `owner == None` would compile to IS NULL, so no owner means shared only.
+        visible = _Conversation.visibility == SHARED
+        stmt = stmt.where(visible | (_Conversation.owner == owner) if owner else visible)
         for t in terms:
             stmt = stmt.where(func.lower(_Message.text).contains(t))
         async with self._session() as s:

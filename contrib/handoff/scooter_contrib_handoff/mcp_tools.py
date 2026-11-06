@@ -1,4 +1,4 @@
-"""handoff's agent tools: spawn a conversation, search and read shared ones.
+"""handoff's agent tools: spawn a conversation, search and read earlier ones.
 
 The source conversation always comes from the verified conversation token, never an
 argument, and the router derives the new conversation's owner and visibility from it.
@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 
+import httpx
 from fastmcp import FastMCP
 
 from scooter_broker_lib.mcp import ToolContext, ToolContextDep, ToolResult
@@ -16,6 +17,7 @@ from scooter_broker_lib.owner import OwnerResolver
 
 from .agent_host import AgentHost
 from .host import Cards, NoCards
+from .index import refresh_owned
 from .spawn import SpawnFailed, Spawner
 from .store import HandoffStore, Refused
 
@@ -102,35 +104,45 @@ async def handoff_spawn(
 
 @mcp.tool
 async def handoff_search(query: str, limit: int = 10, ctx: ToolContext = ToolContextDep) -> ToolResult:
-    """Search past SHARED conversations by what was said in them (full-text, English
-    stemming; quotes, OR and -word work). Returns one hit per conversation with a
-    snippet; read one with handoff_read. Private conversations and subagents are never
-    indexed, and the index trails live activity by a few minutes.
+    """Search past conversations by what was said in them: every shared one and, from
+    a private conversation, this user's own private ones. Full-text with English
+    stemming; quotes, OR and -word work. Returns one hit per conversation with a
+    snippet; read one with handoff_read. Subagents are never indexed, and shared conversations trail live
+    activity by a few minutes.
     """
     if _store is None or _agent_host is None:
         return ToolResult.error("handoff is not configured here")
     if not query.strip():
         return ToolResult.error("query is required")
     limit = max(1, min(limit, 25))
-    hits = await _store.search(query, limit * 2, exclude={ctx.identity.conversation_id})
-    # The live list catches a newly private conversation.
-    shared = {row["id"] for row in await _agent_host.shared()}
+    source_id = ctx.identity.conversation_id
+    owned = await _agent_host.owned(source_id) if source_id else []
+    owner = next((row.get("owner") for row in owned if row.get("id") == source_id), None)
+    if owner:
+        try:
+            await refresh_owned(_store, _agent_host, source_id, owned, owner)
+        except httpx.HTTPError as e:
+            logger.warning("owned refresh failed", extra={"conversation_id": source_id, "error": str(e)})
+    hits = await _store.search(query, limit * 2, owner=owner, exclude={source_id})
+    # The live lists catch a conversation re-scoped since it was indexed.
+    readable = {row["id"] for row in await _agent_host.shared()} | {row["id"] for row in owned}
     out = [
         {
             "conversation_id": h.conversation_id, "title": h.title, "owner": h.owner,
             "last_activity_ms": h.last_activity_at, "url": conversation_url(h.conversation_id),
             "snippet": h.snippet, "score": h.score,
         }
-        for h in hits if h.conversation_id in shared
+        for h in hits if h.conversation_id in readable
     ][:limit]
-    return ToolResult.ok(json.dumps(out, indent=1) if out else "No shared conversation matches.")
+    return ToolResult.ok(json.dumps(out, indent=1) if out else "No conversation matches.")
 
 
 @mcp.tool
 async def handoff_read(
     conversation_id: str, before: int = 0, limit: int = 600, ctx: ToolContext = ToolContextDep
 ) -> ToolResult:
-    """Read a SHARED conversation's user and assistant messages, newest page first.
+    """Read a shared conversation or, from a private conversation, one of this
+    user's own private ones: its user and assistant messages, newest page first.
 
     Each message is clipped to 2000 characters. To page back, pass the returned
     `next_before` as `before`; it is null at the start of the conversation. `limit`
@@ -138,17 +150,24 @@ async def handoff_read(
     """
     if _agent_host is None:
         return ToolResult.error("handoff is not configured here")
-    page = await _agent_host.messages(
-        conversation_id, before=before if before > 0 else 2**53 - 1, limit=max(1, min(limit, 3000)),
-    )
+    before, limit = before if before > 0 else 2**53 - 1, max(1, min(limit, 3000))
+    source_id = ctx.identity.conversation_id
+    page = None
+    if source_id:
+        page = await _agent_host.owned_messages(source_id, conversation_id, before=before, limit=limit)
     if page is None:
-        return ToolResult.error("no such shared conversation (private conversations cannot be read)")
+        page = await _agent_host.messages(conversation_id, before=before, limit=limit)
+    if page is None:
+        return ToolResult.error("no such conversation, or it is someone else's private one")
     messages = [
         {"role": m["role"], "text": _clip(m["content"])}
         for m in page.get("messages", [])
         if m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str) and m["content"].strip()
     ]
-    conv = await _agent_host.conversation(conversation_id) or {}
+    conv = await _agent_host.conversation(conversation_id)
+    if conv is None and source_id:
+        conv = next((row for row in await _agent_host.owned(source_id) if row.get("id") == conversation_id), None)
+    conv = conv or {}
     return ToolResult.ok(json.dumps({
         "title": conv.get("title"), "owner": conv.get("owner"), "url": conversation_url(conversation_id),
         "messages": messages, "next_before": None if page.get("done") else page.get("fromSeq"),
