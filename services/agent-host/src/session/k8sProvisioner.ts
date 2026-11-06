@@ -16,6 +16,7 @@ import {
   CustomObjectsApi,
   setHeaderOptions,
   PatchStrategy,
+  type V1Pod,
 } from "@kubernetes/client-node";
 
 import type { SandboxRef } from "../types.js";
@@ -477,15 +478,21 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
     return { running, overlay, changed: changed.length > 0 };
   };
 
-  /** Deletes the pod so the CR stays Running throughout. */
-  const cyclePod = async (ref: SandboxRef): Promise<void> => {
+  /** The sandbox's pods; the controller strips our label, so also read by name. */
+  const sandboxPods = async (ref: SandboxRef): Promise<V1Pod[]> => {
     const namespace = refNs(ref);
-    const list = () => core.listNamespacedPod({ namespace, labelSelector: `${SANDBOX_NAME_LABEL}=${ref.name}` });
-    const pods = (await list()).items;
+    const pods = (await core.listNamespacedPod({ namespace, labelSelector: `${SANDBOX_NAME_LABEL}=${ref.name}` })).items;
     if (!pods.some((p) => p.metadata?.name === ref.name)) {
       const byName = await core.readNamespacedPod({ namespace, name: ref.name }).catch(() => undefined);
       if (byName) pods.push(byName);
     }
+    return pods;
+  };
+
+  /** Deletes the pod so the CR stays Running throughout. */
+  const cyclePod = async (ref: SandboxRef): Promise<void> => {
+    const namespace = refNs(ref);
+    const pods = await sandboxPods(ref);
     const uids = new Set(pods.map((p) => p.metadata?.uid).filter(Boolean));
     for (const p of pods) {
       if (p.metadata?.name) await core.deleteNamespacedPod({ namespace, name: p.metadata.name }).catch(ignoreDeleteNotFound);
@@ -493,8 +500,8 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
     if (!uids.size) return;
     const deadline = Date.now() + POD_GONE_TIMEOUT_MS;
     for (;;) {
-      const now = await list().catch(() => undefined);
-      if (now && !now.items.some((p) => uids.has(p.metadata?.uid))) return;
+      const now = await sandboxPods(ref).catch(() => undefined);
+      if (now && !now.some((p) => uids.has(p.metadata?.uid))) return;
       if (Date.now() > deadline) {
         log.warn("sandbox pod did not terminate before the deadline; continuing", { sandbox: ref.name, timeout_ms: POD_GONE_TIMEOUT_MS });
         return;
@@ -507,10 +514,8 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
   const waitPodReady = async (ref: SandboxRef): Promise<boolean> => {
     const deadline = Date.now() + POD_READY_TIMEOUT_MS;
     for (;;) {
-      const pods = await core
-        .listNamespacedPod({ namespace: refNs(ref), labelSelector: `${SANDBOX_NAME_LABEL}=${ref.name}` })
-        .catch(() => ({ items: [] as Array<{ metadata?: { deletionTimestamp?: unknown }; status?: { phase?: string; containerStatuses?: Array<{ ready?: boolean }> } }> }));
-      const ready = pods.items.some(
+      const pods = await sandboxPods(ref).catch(() => [] as V1Pod[]);
+      const ready = pods.some(
         (p) => !p.metadata?.deletionTimestamp && p.status?.phase === "Running" && (p.status?.containerStatuses ?? []).every((c) => c.ready),
       );
       if (ready) return true;
@@ -551,8 +556,7 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
 
   /** The running pod's resources; null without a pod. */
   const podResources = async (ref: SandboxRef): Promise<RenderedResources | undefined | null> => {
-    const pods = await core.listNamespacedPod({ namespace: refNs(ref), labelSelector: `${SANDBOX_NAME_LABEL}=${ref.name}` });
-    const pod = pods.items[0];
+    const pod = (await sandboxPods(ref))[0];
     if (!pod) return null; // no pod: nothing to compare against
     const containers = pod.spec?.containers ?? [];
     const c = containers.find((x) => x.name === "sandbox") ?? containers[0];

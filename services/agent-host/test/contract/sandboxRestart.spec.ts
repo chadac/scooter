@@ -23,6 +23,18 @@ function fakeCluster(init: ClusterState, opts: { failImagePatches?: number; fail
   let deletes = 0;
   let uid = 0;
   let failuresLeft = opts.failImagePatches ?? 0;
+  const podLabels: Record<string, string> = { "agents.x-k8s.io/sandbox-name-hash": "1a2b3c4d" };
+  const matches = (selector?: string) =>
+    !selector ||
+    selector.split(",").every((kv) => {
+      const [k, v] = kv.split("=");
+      return podLabels[k] === v;
+    });
+  const pod = () => ({
+    metadata: { name: "conv-abc", uid: state.pod?.uid ?? "pod-0", labels: podLabels },
+    spec: { containers: [{ name: "sandbox", resources: state.pod?.resources }] },
+    status: { phase: "Running", containerStatuses: [{ ready: true }] },
+  });
   const api = {
     getNamespacedCustomObject: async () => ({
       spec: {
@@ -52,16 +64,9 @@ function fakeCluster(init: ClusterState, opts: { failImagePatches?: number; fail
       }
       return {};
     },
-    listNamespacedPod: async () => ({
-      items: state.pod
-        ? [
-            {
-              metadata: { name: "conv-abc", uid: state.pod.uid ?? "pod-0" },
-              spec: { containers: [{ name: "sandbox", resources: state.pod.resources }] },
-              status: { phase: "Running", containerStatuses: [{ ready: true }] },
-            },
-          ]
-        : [],
+    // The controller strips agents.x-k8s.io/sandbox-name, so only a by-name read finds the pod.
+    listNamespacedPod: async (args: { labelSelector?: string }) => ({
+      items: state.pod && matches(args.labelSelector) ? [pod()] : [],
     }),
     deleteNamespacedPod: async () => {
       deletes++;
@@ -69,7 +74,8 @@ function fakeCluster(init: ClusterState, opts: { failImagePatches?: number; fail
       return {};
     },
     readNamespacedPod: async () => {
-      throw Object.assign(new Error("nf"), { code: 404 });
+      if (!state.pod) throw Object.assign(new Error("nf"), { code: 404 });
+      return pod();
     },
   };
   return {

@@ -79,12 +79,8 @@ class FakeCore:
     def list_namespaced_pod(self, namespace, label_selector=None, **_kw):
         if label_selector == k8s_mod.AGENT_HOST_LABEL:
             return client.V1PodList(items=list(self._host_pods))
-        items = [
-            client.V1Pod(metadata=client.V1ObjectMeta(name=n), status=client.V1PodStatus())
-            for n in sorted(self.sandbox_pods)
-            if label_selector == f"{k8s_mod.SANDBOX_NAME_LABEL}={n}"
-        ]
-        return client.V1PodList(items=items)
+        # The controller strips agents.x-k8s.io/* labels, so no selector finds a sandbox pod.
+        return client.V1PodList(items=[])
 
     def delete_namespaced_pod(self, name, namespace, **_kw):
         if name not in self.sandbox_pods:

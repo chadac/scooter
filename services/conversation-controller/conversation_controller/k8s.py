@@ -39,8 +39,6 @@ AGENT_HOST_DEPLOYMENT = "agent-host"  # the Deployment the controller autoscales
 SANDBOX_GROUP = "agents.x-k8s.io"
 SANDBOX_VERSION = "v1beta1"
 SANDBOX_PLURAL = "sandboxes"
-# agent-sandbox's label on the pod it runs for a Sandbox, as in k8sProvisioner.ts.
-SANDBOX_NAME_LABEL = "agents.x-k8s.io/sandbox-name"
 
 # Per-conversation object names derived from the Sandbox name, matching saName/moduleCmName in
 # k8sProvisioner.ts.
@@ -171,13 +169,11 @@ class ControllerK8s:
         """Suspend the Sandbox and delete its leaked pod, never the Sandbox CR itself (that would cascade the workspace PVC)."""
         core, _, _ = _apis()
         self.suspend_sandbox(name)
-        for p in core.list_namespaced_pod(
-            self.namespace, label_selector=f"{SANDBOX_NAME_LABEL}={name}"
-        ).items:
-            try:
-                core.delete_namespaced_pod(p.metadata.name, self.namespace)
-            except client.ApiException as e:
-                _ignore_404(e)
+        # The pod is named after its Sandbox; the controller strips our label.
+        try:
+            core.delete_namespaced_pod(name, self.namespace)
+        except client.ApiException as e:
+            _ignore_404(e)
 
     def list_sandboxes(self) -> list["SandboxRef"]:
         """Every per-conversation Sandbox as a SandboxRef."""
