@@ -42,6 +42,9 @@ export interface AppendFence {
   /** The epoch this pod believes it holds `id` under, or undefined when it has observed no
    *  assignment, which narrows the fence to pod identity. */
   generation(id: SessionId): number | undefined;
+  /** Re-read this pod's claim from the row: its generation when this pod holds `id`.
+   *  A refusal retries once under a newer one, since the cache trails a reassign. */
+  refresh?(id: SessionId): Promise<number | undefined>;
 }
 
 /** The event-log half of ConversationStore, backed by conversation_events. */
@@ -191,16 +194,33 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
             const prevChecksum = at.checksum;
             const seq = at.seq + 1;
             const checksum = chainNext(prevChecksum, event);
-            // Resolved once, so the predicate and the refusal log agree on the epoch presented.
-            const presented = config.fence?.generation(id);
             // INSERT ... SELECT so the fence rides the statement. DO NOTHING makes a retry of a write
             // that committed unseen idempotent; the checksum below tells that from a second writer.
-            const res = await db.execute(sql`
+            const insert = async (gen: number | undefined) =>
+              (
+                await db.execute(sql`
               insert into ${conversationEvents} (conversation_id, seq, event, checksum, prev_checksum)
-              select ${id}::text, ${seq}::bigint, ${JSON.stringify(event)}::jsonb, ${checksum}::text, ${prevChecksum}::text${fenceClause(id, presented)}
+              select ${id}::text, ${seq}::bigint, ${JSON.stringify(event)}::jsonb, ${checksum}::text, ${prevChecksum}::text${fenceClause(id, gen)}
               on conflict (conversation_id, seq) do nothing
-            `);
-            if ((res.rowCount ?? 0) === 0) {
+            `)
+              ).rowCount ?? 0;
+            // Resolved once per attempt, so the predicate and the refusal log agree on the epoch.
+            let presented = config.fence?.generation(id);
+            let inserted = await insert(presented);
+            if (inserted === 0 && presented !== undefined && config.fence?.refresh) {
+              // Reassigning to this same pod bumps the epoch before its notification lands.
+              const fresh = await config.fence.refresh(id);
+              if (fresh !== undefined && fresh > presented) {
+                log.info("append fence: the claim cache trailed the row; retrying under its generation", {
+                  conversation_id: id,
+                  presented_generation: presented,
+                  row_generation: fresh,
+                });
+                presented = fresh;
+                inserted = await insert(presented);
+              }
+            }
+            if (inserted === 0) {
               const existing = await db
                 .select({ checksum: conversationEvents.checksum })
                 .from(conversationEvents)

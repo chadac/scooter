@@ -254,6 +254,46 @@ describe("eventStore — the append fence", () => {
     expect(rows).toHaveLength(1);
   });
 
+  it("a reassign to THIS pod that the claim cache has not seen yet still appends", async () => {
+    // A revive's router reassign bumps the epoch, and the run's first event can beat the notification.
+    const { db, rows, assign } = fakeDb();
+    assign(CONV, { hostPod: "host-1", hostGeneration: 2 });
+    let cached = 1;
+    const fenced: SessionId[] = [];
+    const s = createPgEventStore({
+      db,
+      fence: {
+        pod: "host-1",
+        generation: () => cached,
+        refresh: async () => (cached = 2),
+      },
+      onFenced: (id) => fenced.push(id),
+    });
+
+    await s.appendEvent(CONV, run(1)[0]);
+
+    expect(rows.map((r) => r.seq)).toEqual([1]);
+    expect(fenced, "the pod must not stop its own run").toEqual([]);
+  });
+
+  it("a refresh that finds no newer claim for this pod still refuses", async () => {
+    const { db, rows, assign } = fakeDb();
+    assign(CONV, { hostPod: "host-2", hostGeneration: 2 });
+    const fenced: SessionId[] = [];
+    const refreshes = [undefined, 1];
+    for (const fresh of refreshes) {
+      const s = createPgEventStore({
+        db,
+        fence: { pod: "host-1", generation: () => 1, refresh: async () => fresh },
+        onFenced: (id) => fenced.push(id),
+      });
+      await s.appendEvent(CONV, run(1)[0]);
+    }
+
+    expect(rows).toEqual([]);
+    expect(fenced).toEqual([CONV, CONV]);
+  });
+
   it("an UNCLAIMED row refuses appends: no assignment, no writer", async () => {
     const { db, rows, assign } = fakeDb();
     assign(CONV, { hostPod: null });

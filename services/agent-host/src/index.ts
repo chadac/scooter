@@ -616,6 +616,7 @@ export async function main(
   // The append fence's claim source, late-bound because the ownership tracker is built
   // further down and nothing appends before boot finishes.
   let observedGeneration: ((id: SessionId) => number | undefined) | undefined;
+  let refreshGeneration: ((id: SessionId) => Promise<number | undefined>) | undefined;
   // Late-bound: the tracker and session manager are built later.
   let onAppendFenced: ((id: SessionId) => void) | undefined;
   const podName = process.env.POD_NAME;
@@ -623,7 +624,13 @@ export async function main(
     ? createPgEventStore({
         dsn: agentHostResourceDsn(),
         // Single-replica (no POD_NAME) has no second writer to fence against.
-        fence: podName ? { pod: podName, generation: (id) => observedGeneration?.(id) } : undefined,
+        fence: podName
+          ? {
+              pod: podName,
+              generation: (id) => observedGeneration?.(id),
+              refresh: async (id) => refreshGeneration?.(id),
+            }
+          : undefined,
         onFenced: (id) => onAppendFenced?.(id),
       })
     : undefined;
@@ -867,6 +874,9 @@ export async function main(
   // Hand the tracker's cached epoch to the append fence; undefined narrows the fence to pod
   // identity.
   observedGeneration = (id) => ownership?.guard.observedGeneration?.(id);
+  // The same row read a notification triggers, so a refusal can catch up on an early reassign.
+  refreshGeneration = async (id) =>
+    ownership && (await ownership.guard.confirmOwns(id)) ? ownership.guard.observedGeneration(id) : undefined;
   // The assignment table: the agent_host.conversations row, the same store the guard and the
   // append fence read. Multi-replica without a DSN has no assignment table (see the guard above).
   const conversationRegistry =
