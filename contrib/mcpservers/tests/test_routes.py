@@ -154,3 +154,52 @@ async def test_an_unknown_conversation_gets_none(app):
     await add(app, "alice")
     async with client(app, conv="nobody") as c:
         assert (await c.get("/mcpservers/servers")).json() == {"servers": []}
+
+
+async def report(app, conv: str, body: dict) -> int:
+    async with client(app, conv=conv) as c:
+        return (await c.post("/mcpservers/servers/status", json=body)).status_code
+
+
+async def listing(app, conv: str, user: str = "alice") -> dict:
+    async with client(app, user=user) as c:
+        r = await c.get(f"/mcpservers/conversation/{conv}/servers")
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def test_the_panel_shows_each_server_with_its_last_reported_state(app):
+    await add(app, "alice", name="time", args=["--secret", "s3"])
+    await add(app, "alice", name="fetch", kind="pypi", spec="mcp-server-fetch")
+    await add(app, "alice", name="old", enabled=False)
+    assert (await listing(app, "alice-private"))["reported_at"] is None
+
+    body = {"servers": [{"name": "time", "state": "active"}], "error": "x" * 500}
+    assert await report(app, "alice-private", body) == 200
+    got = await listing(app, "alice-private")
+    assert got["reported_at"] and got["error"] == "x" * 300
+    assert [(s["name"], s["state"]) for s in got["servers"]] == [("time", "active"), ("fetch", None), ("old", None)]
+    assert got["servers"][0]["tool_prefix"] == "mcp__sandbox-time__"
+    assert all("args" not in s for s in got["servers"])
+
+
+async def test_a_report_replaces_the_last_and_stays_with_its_conversation(app):
+    await add(app, "alice", name="time")
+    await report(app, "alice-private", {"servers": [{"name": "time", "state": "active"}]})
+    await report(app, "alice-private", {"servers": [{"name": "time", "state": "failed"}]})
+    assert (await listing(app, "alice-private"))["servers"][0]["state"] == "failed"
+    assert (await listing(app, "alice-shared"))["servers"][0]["state"] is None
+
+
+async def test_only_a_sandbox_reports_and_only_a_wellformed_report(app):
+    async with client(app, user="alice", conv="alice-private") as c:
+        r = await c.post("/mcpservers/servers/status", json={"servers": []})
+    assert r.status_code == 403
+    assert await report(app, "alice-private", {"servers": [{"name": "../x", "state": "active"}]}) == 400
+    assert await report(app, "alice-private", {"servers": [{"name": "time", "state": "ACTIVE; rm"}]}) == 400
+    assert await report(app, "alice-private", {"servers": "nope"}) == 400
+
+
+async def test_an_unknown_conversation_lists_nothing(app):
+    await add(app, "alice", name="time")
+    assert (await listing(app, "nobody"))["servers"] == []

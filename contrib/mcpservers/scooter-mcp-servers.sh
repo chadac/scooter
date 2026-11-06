@@ -36,6 +36,18 @@ record() {  # ERROR (empty on success)
   jq -n --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg e "$1" '{at: $at, error: (if $e == "" then null else $e end)}' > "$STATUS"
 }
 
+# Tell the broker each server's unit state, for the Session tab; best-effort.
+report() {  # ASSIGNED ERROR
+  states='[]'
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    st=$(systemctl is-active "mcp-user@$n" 2>/dev/null || true)
+    states=$(jq -c --arg n "$n" --arg s "${st:-unknown}" '. + [{name: $n, state: $s}]' <<< "$states")
+  done <<< "$(jq -r '.[].name' <<< "$1")"
+  jq -nc --argjson s "$states" --arg e "$2" '{servers: $s, error: (if $e == "" then null else $e end)}' \
+    | agent-broker mcpservers/servers/status -X POST -H 'Content-Type: application/json' -d @- >/dev/null 2>&1 || true
+}
+
 # Write stdin to FILE; succeeds only if it changed.
 replace_if_changed() {
   tmp=$(mktemp "$(dirname "$1")/.tmp.XXXXXX")
@@ -116,6 +128,7 @@ cmd_sync() {
   done <<< "$(jq -c '.[]' <<< "$assigned")"
 
   record ""
+  report "$assigned" "$([ "$rc" = 0 ] || echo "some servers did not start; see journalctl -u 'mcp-user@*'")"
   return $rc
 }
 

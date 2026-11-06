@@ -8,4 +8,5 @@
 owner = "broker"
 
 [contrib_mcpservers.tables]
-mcp_servers = { writers = ["broker"], readers = [] }
+mcp_server_status = { writers = ["broker"], readers = [] }
+mcp_servers       = { writers = ["broker"], readers = [] }
