@@ -90,6 +90,7 @@ import { createSkillProviderRegistry, parseSkillProviders, type SkillProviderDef
 import type { HookDef, HookRunner } from "./hooks/types.js";
 import { createPgUserHookSettingsStore } from "./hooks/userHookSettingsStore.js";
 import { createMemoryIdentityRegistry, createPgIdentityRegistry } from "./session/identityRegistry.js";
+import { conversationTree, createMemoryAuthorStore, createPgAuthorStore, isOwnText, type Author } from "./session/authorStore.js";
 import { mintConvToken } from "./auth/convToken.js";
 import { createMcpEndpoint, resolveConversation } from "./agent/mcpServer.js";
 import { readSandboxFileBase64, IMAGE_MAX_BYTES, type ImageToolsWiring } from "./agent/imageTools.js";
@@ -1068,6 +1069,9 @@ export async function main(
   });
   // Without a database, identities live only in this process.
   const identityRegistry = agentHostDsn ? createPgIdentityRegistry({ dsn: agentHostDsn }) : createMemoryIdentityRegistry();
+  const authorStore = agentHostDsn
+    ? createPgAuthorStore({ dsn: agentHostDsn })
+    : createMemoryAuthorStore({ family: (id) => conversationTree(sessions, id) });
   // Without a database every hook stays on.
   const userHookSettings = agentHostDsn ? createPgUserHookSettingsStore({ dsn: agentHostDsn }) : undefined;
   const hooksLog = logger("hooks");
@@ -1258,7 +1262,11 @@ export async function main(
     get: (id) => sessions.get(id as SessionId),
     currentVisibility: async (id) =>
       (await store.readAccess?.(id as SessionId))?.visibility ?? sessions.get(id as SessionId)?.visibility ?? "shared",
-    makePrivate: (id) => sessions.setVisibility(id as SessionId, "private"),
+    makePrivate: async (id) => {
+      // Others may have reached the sandbox while it was shared.
+      await authorStore.record(id, { kind: "unknown" });
+      await sessions.setVisibility(id as SessionId, "private");
+    },
     resources: resourceToolsWiring?.currentResources,
   };
 
@@ -1467,9 +1475,17 @@ export async function main(
         hostLog.warn("could not record a message sender", { conversation_id: sessionId, provider: input.sender.provider, error: formatError(e) });
       }
     }
+    const author: Author =
+      input.author?.kind === "user"
+        ? input.author
+        : input.author?.kind === "sender" && sender
+          ? { kind: "identity", id: sender.id }
+          : { kind: "unknown" };
     try {
       // Refuse the whole message rather than silently dropping files past the count.
       assertFileCount(input.files, uploadLimits);
+      // Recorded before delivery: unrecorded text would leave the conversation untainted.
+      if (!isOwnText(author, sessions.get(sessionId)?.owner)) await authorStore.record(sessionId, author);
       await sessions.promptByThread(sessionId, input.text, model, input.priority, input.owner, promptImages, promptFiles, input.source, input.provider, sender);
     } catch (err) {
       // The run could not start, so persist a RUN_ERROR to the durable log so a reattaching
@@ -1601,6 +1617,7 @@ export async function main(
       webServices,
       sandboxOrigins,
       identityStore,
+      authorStore,
       assets,
       scheduler: schedulerClient,
       conversationOwner,

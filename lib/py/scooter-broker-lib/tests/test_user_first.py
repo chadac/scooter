@@ -9,8 +9,8 @@ from scooter_broker_lib.types import Credential, Identity
 from scooter_broker_lib.user_secrets import UserGrant
 
 VIEWS = {
-    "priv": {"owner": "alice", "visibility": "private"},
-    "priv-bob": {"owner": "bob", "visibility": "private"},
+    "priv": {"owner": "alice", "visibility": "private", "authors": []},
+    "priv-bob": {"owner": "bob", "visibility": "private", "authors": []},
     "shared": {"owner": "alice", "visibility": "shared"},
 }
 
@@ -56,7 +56,7 @@ async def test_the_deployment_token_when_the_owner_linked_nothing():
 
 
 async def test_the_deployment_token_when_the_user_lookup_fails():
-    VIEWS["priv-carol"] = {"owner": "carol", "visibility": "private"}
+    VIEWS["priv-carol"] = {"owner": "carol", "visibility": "private", "authors": []}
     assert (await source().get(ident("priv-carol"))).value == "app-token"
 
 

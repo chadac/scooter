@@ -39,7 +39,7 @@ class Clock:
 @pytest.fixture
 def views() -> Views:
     return Views({
-        "priv": {"owner": "alice", "visibility": "private"},
+        "priv": {"owner": "alice", "visibility": "private", "authors": []},
         "shared": {"owner": "alice", "visibility": "shared"},
         "legacy": {"owner": "alice"},
     })
@@ -53,6 +53,44 @@ async def test_a_shared_conversation_acts_as_nobody_even_with_an_owner(views):
     r = OwnerResolver(views)
     assert await r.acting_user(ident("shared")) is None
     assert await r.acting_user(ident("shared", owner="alice")) is None
+
+
+async def test_a_private_conversation_written_only_by_its_owner_acts_as_them(views):
+    views.views["mine"] = {"owner": "alice", "visibility": "private", "authors": [{"kind": "user", "author": "alice", "user": "alice"}]}
+    assert await OwnerResolver(views).acting_user(ident("mine")) == "alice"
+
+
+@pytest.mark.parametrize(
+    "author",
+    [
+        {"kind": "user", "author": "bob", "user": "bob"},
+        {"kind": "identity", "author": "i-1", "user": None},
+        {"kind": "identity", "author": "i-2", "user": "bob"},
+        {"kind": "unknown", "author": "", "user": None},
+        {"kind": "identity", "author": "i-3"},
+    ],
+)
+async def test_any_other_author_taints_a_private_conversation(views, author):
+    views.views["tainted"] = {
+        "owner": "alice",
+        "visibility": "private",
+        "authors": [{"kind": "user", "author": "alice", "user": "alice"}, author],
+    }
+    assert await OwnerResolver(views).acting_user(ident("tainted")) is None
+
+
+async def test_an_owners_linked_account_does_not_taint(views):
+    views.views["linked"] = {"owner": "alice", "visibility": "private", "authors": [{"kind": "identity", "author": "i-1", "user": "alice"}]}
+    assert await OwnerResolver(views).acting_user(ident("linked")) == "alice"
+
+
+@pytest.mark.parametrize("authors", [None, "x", [1], {"user": "alice"}])
+async def test_a_view_without_readable_authors_counts_as_tainted(views, authors):
+    view = {"owner": "alice", "visibility": "private"}
+    if authors is not None:
+        view["authors"] = authors
+    views.views["opaque"] = view
+    assert await OwnerResolver(views).acting_user(ident("opaque")) is None
 
 
 async def test_a_view_without_visibility_counts_as_shared(views):
@@ -86,7 +124,7 @@ async def test_a_turn_to_shared_is_seen_after_the_ttl(views):
 async def test_the_agent_host_fetcher_reads_the_conversation_view():
     def handler(req: httpx.Request) -> httpx.Response:
         if req.url.path == "/conversations/priv":
-            return httpx.Response(200, json={"owner": "alice", "visibility": "private"})
+            return httpx.Response(200, json={"owner": "alice", "visibility": "private", "authors": []})
         return httpx.Response(404, json={"error": "not found"})
 
     fetch = agent_host_fetcher("http://agent-host/", transport=httpx.MockTransport(handler))

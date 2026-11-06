@@ -23,30 +23,33 @@ owner = "agent-host"
 
 [agent_host.tables]
 # Asset metadata (bytes on dedicated PVC). Replaces in-memory blob URLs.
-conversation_assets = { writers = ["agent-host"], readers = [] }
+conversation_assets  = { writers = ["agent-host"], readers = [] }
+# Who wrote the text in each conversation. GET /conversations/{id} serves it to the
+# broker, which vends personal credentials only while every author is the owner.
+conversation_authors = { writers = ["agent-host"], readers = [] }
 # The conversation event log. Replaces events.jsonl + the NFS mirror. Deliberately NO readers:
 # these are full transcripts; the router's grant is table-scoped to `conversations` so it can't
 # read them.
-conversation_events = { writers = ["agent-host"], readers = [] }
+conversation_events  = { writers = ["agent-host"], readers = [] }
 # The background-job registry. Was jobs.json on the emptyDir that every rollout wipes.
-conversation_jobs   = { writers = ["agent-host"], readers = [] }
+conversation_jobs    = { writers = ["agent-host"], readers = [] }
 # Conversation metadata: the sidebar list + rehydration fields. THREE writers, one table:
 # agent-host owns the row; conversation-router INSERTs it at create time, writes
 # title/starred for IDLE conversations, claims host_pod on first route, and SELECTs
 # the table for GET /conversations; conversation-controller writes `phase` and
 # (re)assigns host_pod. A writer implies read, so none are also readers.
-conversations       = { writers = ["agent-host", "conversation-router", "conversation-controller"], readers = [] }
+conversations        = { writers = ["agent-host", "conversation-router", "conversation-controller"], readers = [] }
 # One account in one system (scooter, github, gitlab, slack, jira), keyed by the
 # system's stable id. Every inbound message's sender is one of these.
-identities          = { writers = ["agent-host"], readers = [] }
+identities           = { writers = ["agent-host"], readers = [] }
 # Per-user opt-outs from deployment hooks marked `userCanDisable`, set in the settings
 # page and read when a conversation's bridge is built.
-user_hook_settings  = { writers = ["agent-host"], readers = [] }
+user_hook_settings   = { writers = ["agent-host"], readers = [] }
 # Per-user skills authored in the settings page, injected into that user's conversations
 # next to the deployment-wide `agent-skills` ConfigMap. agent-host both serves the CRUD
 # and reads them at conversation start, so it is the only writer and there are no
 # readers: a skill body is user prose about their own repos, not shared config.
-user_skills         = { writers = ["agent-host"], readers = [] }
+user_skills          = { writers = ["agent-host"], readers = [] }
 
 [broker]
 owner = "broker"

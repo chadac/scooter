@@ -86,6 +86,8 @@ CREATE INDEX "conversations_by_sandbox_ref" ON "conversations" ("sandbox_ref");
 
 -- Per-owner filtering for the conversation list.
 CREATE INDEX "conversations_by_owner" ON "conversations" ("owner");
+-- The author check walks a conversation's subagents.
+CREATE INDEX "conversations_by_parent" ON "conversations" ("parent_id");
 
 -- LIVE CONVERSATION-LIST PUSH — a NOTIFY trigger on this table (channel
 -- 'conversations_changed') lets the conversation-router serve GET /conversations/events by
@@ -221,3 +223,15 @@ CREATE UNIQUE INDEX "identities_provider_external_id" ON "identities" ("provider
 
 -- The rule finds an owner's own accounts through this.
 CREATE INDEX "identities_by_scooter_user" ON "identities" ("scooter_user");
+
+-- Who other than the owner wrote text a conversation's agent acts on, one row per author.
+-- kind is identity (an identities.id), user (a users.id) or unknown (author ''): text
+-- whose writer can't be named. The broker vends personal credentials only while every
+-- author in the conversation's tree is its owner.
+CREATE TABLE "conversation_authors" (
+  "conversation_id" text   NOT NULL,
+  "kind"            text   NOT NULL CHECK ("kind" IN ('identity', 'user', 'unknown')),
+  "author"          text   NOT NULL,
+  "first_at"        bigint NOT NULL, -- epoch ms this author first wrote here
+  PRIMARY KEY ("conversation_id", "kind", "author")
+);

@@ -1,10 +1,13 @@
-"""Whose personal credentials a request may use: the owner of a private conversation, else nobody.
+"""Whose personal credentials a request may use: the owner of an untainted private conversation, else nobody.
 
 A shared conversation can be prompted by anyone who can see it, so acting as its
 owner there would let any viewer act as that owner. A private one admits only its
-owner, so the agent in it acts for that one person. Every per-user secret a sandbox
+owner, but it may still hold text someone else wrote: a webhook event, or a message
+from while it was shared. Any author other than the owner taints the conversation's
+tree, and a tainted conversation acts as nobody. Every per-user secret a sandbox
 reaches is opened under `OwnerResolver.grant`, which fails closed: an unknown
-conversation, a failed lookup or a shared conversation all resolve to None.
+conversation, a failed lookup, a shared conversation or a view without its authors
+all resolve to None.
 """
 
 from __future__ import annotations
@@ -33,14 +36,30 @@ ConversationFetcher = Callable[[str], Awaitable["dict[str, Any] | None"]]
 
 @dataclass(frozen=True)
 class ConversationAccess:
-    """The two facts that decide whether a conversation acts as a person."""
+    """The facts that decide whether a conversation acts as a person."""
 
     owner: str | None
     visibility: str
+    # The Scooter user each author is, None for one who is nobody known; None when unknown.
+    author_users: tuple[str | None, ...] | None = None
+
+    @property
+    def tainted(self) -> bool:
+        return self.author_users is None or any(u != self.owner for u in self.author_users)
 
     @property
     def acting_user(self) -> str | None:
-        return self.owner if self.visibility == "private" and self.owner else None
+        if self.visibility != "private" or not self.owner or self.tainted:
+            return None
+        return self.owner
+
+
+def _author_users(view: dict[str, Any]) -> tuple[str | None, ...] | None:
+    """Each author's user from a view's `authors`, None when absent or malformed."""
+    authors = view.get("authors")
+    if not isinstance(authors, list) or not all(isinstance(a, dict) for a in authors):
+        return None
+    return tuple(a.get("user") if isinstance(a.get("user"), str) else None for a in authors)
 
 
 def agent_host_fetcher(agent_host_url: str, *, timeout: float = 10.0, transport: httpx.AsyncBaseTransport | None = None) -> ConversationFetcher:
@@ -86,7 +105,11 @@ class OwnerResolver:
             )
             return None
         access = (
-            ConversationAccess(owner=view.get("owner") or None, visibility=view.get("visibility") or "shared")
+            ConversationAccess(
+                owner=view.get("owner") or None,
+                visibility=view.get("visibility") or "shared",
+                author_users=_author_users(view),
+            )
             if view
             else None
         )
@@ -94,7 +117,7 @@ class OwnerResolver:
         return access
 
     async def acting_user(self, identity: Identity) -> str | None:
-        """The user whose personal credentials this caller may use: a private conversation's owner, else None."""
+        """The user whose personal credentials this caller may use: an untainted private conversation's owner, else None."""
         # The visibility is not in any token, so even an owner-bearing identity is looked up.
         access = await self.access(identity.conversation_id)
         return access.acting_user if access else None

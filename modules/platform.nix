@@ -1449,6 +1449,12 @@ in
             One account in one system (scooter, github, gitlab, slack, jira), keyed by the
             system's stable id. Every inbound message's sender is one of these.'';
         };
+        conversation_authors = {
+          writers = [ "agent-host" ];
+          note = ''
+            Who wrote the text in each conversation. GET /conversations/{id} serves it to the
+            broker, which vends personal credentials only while every author is the owner.'';
+        };
       };
     };
 

@@ -14,6 +14,7 @@ import { createAccessCheck } from "../../src/session/access.js";
 import { createManagementApi } from "../../src/api/management.js";
 import type { Conversation, ConversationStore, SessionManager } from "../../src/session/manager.js";
 import type { AguiServer } from "../../src/agui/server.js";
+import { createMemoryAuthorStore, type AuthorStore } from "../../src/session/authorStore.js";
 
 const fixture = JSON.parse(
   readFileSync(fileURLToPath(new URL("../fixtures/visibility-cases.json", import.meta.url)), "utf8"),
@@ -103,7 +104,7 @@ const conv = (over: Partial<Conversation> = {}): Conversation => ({
 /** A request from the trusted in-cluster service, e.g. the broker. */
 const SERVICE_HEADER = "x-test-service";
 
-function setup(initial: Partial<Conversation> = {}, opts: { readAccessFails?: boolean } = {}) {
+function setup(initial: Partial<Conversation> = {}, opts: { readAccessFails?: boolean; authorStore?: AuthorStore } = {}) {
   const convs = new Map<string, Conversation>([["c1", conv(initial)]]);
   const sessions = {
     get: (id: string) => convs.get(id),
@@ -142,6 +143,7 @@ function setup(initial: Partial<Conversation> = {}, opts: { readAccessFails?: bo
     server: { subscribeSSE: vi.fn(async () => {}) } as unknown as AguiServer,
     answerInterrupt: async () => ({ ok: true }),
     accessCheck,
+    authorStore: opts.authorStore,
   });
   return { api, sessions, convs };
 }
@@ -274,5 +276,45 @@ describe("POST /conversations with visibility", () => {
   it("rejects an unknown value", async () => {
     const { api } = setup();
     expect((await call(api, "POST", "/conversations", { visibility: "hidden" }, "alice")).status).toBe(400);
+  });
+});
+
+describe("conversation authors", () => {
+  it("serves them to the broker, and omits them when the read fails", async () => {
+    const authorStore = createMemoryAuthorStore();
+    await authorStore.record("c1", { kind: "user", id: "alice" });
+    const { api } = setup({ visibility: "private" }, { authorStore });
+    const got = await call(api, "GET", "/conversations/c1", undefined, undefined, { [SERVICE_HEADER]: "1" });
+    expect(got.json.authors).toEqual([{ kind: "user", author: "alice", user: "alice" }]);
+
+    const failing = { ...authorStore, listTree: async () => { throw new Error("db down"); } };
+    const { api: api2 } = setup({ visibility: "private" }, { authorStore: failing });
+    const bad = await call(api2, "GET", "/conversations/c1", undefined, "alice");
+    expect(bad.status).toBe(200);
+    expect(bad.json.authors).toBeUndefined();
+  });
+
+  it("records a service message as unknown on a shared conversation only", async () => {
+    const shared = createMemoryAuthorStore();
+    await call(setup({}, { authorStore: shared }).api, "POST", "/conversations/c1/messages", { text: "hi" }, "bob");
+    expect(await shared.listTree("c1")).toEqual([{ kind: "unknown", author: "", user: null }]);
+
+    const priv = createMemoryAuthorStore();
+    await call(setup({ visibility: "private" }, { authorStore: priv }).api, "POST", "/conversations/c1/messages", { text: "hi" }, "alice");
+    expect(await priv.listTree("c1")).toEqual([]);
+  });
+
+  it("records a shared conversation going private as unknown", async () => {
+    const authorStore = createMemoryAuthorStore();
+    const { api } = setup({}, { authorStore });
+    expect((await call(api, "PATCH", "/conversations/c1/visibility", { visibility: "private" }, "alice")).status).toBe(200);
+    expect(await authorStore.listTree("c1")).toEqual([{ kind: "unknown", author: "", user: null }]);
+  });
+
+  it("refuses the flip when the author write fails", async () => {
+    const failing = { ...createMemoryAuthorStore(), record: async () => { throw new Error("db down"); } };
+    const { api, sessions } = setup({}, { authorStore: failing });
+    await expect(call(api, "PATCH", "/conversations/c1/visibility", { visibility: "private" }, "alice")).rejects.toThrow("db down");
+    expect(sessions.setVisibility).not.toHaveBeenCalled();
   });
 });

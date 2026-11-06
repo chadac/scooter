@@ -28,6 +28,7 @@ import type { AguiServer } from "../agui/server.js";
 import type { WebServiceRegistry } from "../proxy/webServiceProxy.js";
 import type { IdentityStore } from "../auth/identityStore.js";
 import type { AssetStore } from "../session/assetStore.js";
+import type { AuthorStore } from "../session/authorStore.js";
 import { targetError, type ConversationOwnerLookup, type SchedulerClient } from "../agent/schedulerTools.js";
 import { mountContribApi, type ContribApiDeps } from "./contribApi.js";
 import { UserSkillError, type UserSkill, type UserSkillStore } from "../session/userSkillStore.js";
@@ -35,7 +36,7 @@ import type { SandboxResources } from "../session/resources.js";
 import { fitAdvice, fitSummary } from "../session/resourceFit.js";
 import type { SandboxSizePreset } from "../session/resources.js";
 import { PRIORITY_INTERRUPT, type AguiEvent, type ApproverIdentity, type SessionBridge } from "../bridge.js";
-import { logger } from "../log.js";
+import { formatError, logger } from "../log.js";
 import type { AccessCheck } from "../session/access.js";
 import { isVisibility } from "../session/visibility.js";
 import { serviceUrl, type SandboxOrigins } from "../proxy/sandboxOrigin.js";
@@ -151,6 +152,8 @@ export interface ManagementDeps {
   webServices?: WebServiceRegistry;
   /** Per-conversation service origins (SANDBOX_DOMAIN); absent keeps services under /c/<id>/. */
   sandboxOrigins?: SandboxOrigins;
+  /** Who wrote each conversation's text, served to the broker; absent omits `authors`, which it reads as tainted. */
+  authorStore?: AuthorStore;
   /** Identity store for the email-to-user reverse lookup; absent means the lookup route reports no match. */
   identityStore?: IdentityStore;
   /** Uploaded-image store behind GET /conversations/:id/assets/:assetId; absent means images are off. */
@@ -497,7 +500,12 @@ export function createManagementApi(deps: ManagementDeps): Router {
     if (!conv) return { status: 404, json: { error: "not found" } };
     // Star, title and visibility may be written elsewhere; serve the durable values.
     await sessions.refreshRouterMeta(conv.id).catch(() => {});
-    return { json: view(sessions.get(conv.id) ?? conv) };
+    // A failed read omits `authors`, so the broker withholds credentials.
+    const authors = await deps.authorStore?.listTree(conv.id).catch((e: unknown) => {
+      log.warn("could not read conversation authors", { conversation_id: conv!.id, error: formatError(e) });
+      return undefined;
+    });
+    return { json: { ...view(sessions.get(conv.id) ?? conv), ...(authors ? { authors } : {}) } };
   });
 
   r.del("/conversations/:id", async (ctx) => {
@@ -544,6 +552,10 @@ export function createManagementApi(deps: ManagementDeps): Router {
     const current = (await store.readAccess?.(conv.id))?.visibility ?? conv.visibility ?? "shared";
     if (body.visibility === "shared" && current === "private" && body.confirm !== true) {
       return { status: 409, json: { error: "making a private conversation shared needs confirm: true" } };
+    }
+    // Others may have reached the sandbox while it was shared.
+    if (body.visibility === "private" && current === "shared") {
+      await deps.authorStore?.record(conv.id, { kind: "unknown" });
     }
     await sessions.setVisibility(conv.id, body.visibility);
     return { json: view(sessions.get(conv.id)!) };
@@ -622,6 +634,10 @@ export function createManagementApi(deps: ManagementDeps): Router {
     // A sandbox's message always carries a non-human source.
     const fromSandbox = ctx.req.headers[SANDBOX_CALLER_HEADER] === "sandbox";
     const source = body.source || (fromSandbox ? SANDBOX_SOURCE : undefined);
+    // Anyone who can see a shared conversation can reach its services, so the text is nobody's.
+    if (sessions.get(ctx.params.id)?.visibility !== "private") {
+      await deps.authorStore?.record(ctx.params.id, { kind: "unknown" });
+    }
     await sessions.enqueueByThread(ctx.params.id, body.text, source, PRIORITY_INTERRUPT);
     return { status: 202, json: { ok: true } };
   });

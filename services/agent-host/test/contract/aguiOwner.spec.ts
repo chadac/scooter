@@ -117,6 +117,38 @@ describe("/agui sender (trusted-caller gated, like owner)", () => {
   });
 });
 
+// The author decides whether the conversation stays eligible for personal credentials.
+describe("/agui author", () => {
+  const SENDER = { provider: "github", externalId: "29139614", handle: "renovate[bot]", level: 40 };
+  const TEXT = { threadId: "t1", messages: [{ role: "user", content: "hi" }] };
+
+  it("is the verified sender when webhooks names one", async () => {
+    const input = await postAgui({ ...TEXT, source: "github", sender: SENDER, owner: "user-alice" }, true);
+    expect(input?.author).toEqual({ kind: "sender" });
+  });
+
+  it("is the task owner for the verified scheduler", async () => {
+    const input = await postAgui({ ...TEXT, source: "scheduler", owner: "user-alice" }, true);
+    expect(input?.author).toEqual({ kind: "user", id: "user-alice" });
+  });
+
+  it("is unknown for verified text with no sender, even when it names an owner", async () => {
+    expect((await postAgui({ ...TEXT, source: "github", owner: "user-alice" }, true))?.author).toEqual({ kind: "unknown" });
+    // The service's own identity is not the writer.
+    expect((await postAgui({ ...TEXT, source: "slack" }, true, { id: "webhooks-sa", anonymous: false }))?.author).toEqual({ kind: "unknown" });
+  });
+
+  it("is the signed-in prompter from the UI", async () => {
+    const input = await postAgui(TEXT, false, { id: "user-bob", anonymous: false });
+    expect(input?.author).toEqual({ kind: "user", id: "user-bob" });
+  });
+
+  it("is unknown for an anonymous prompter, and ignores a spoofed scheduler owner", async () => {
+    expect((await postAgui(TEXT, undefined, { id: "anonymous", anonymous: true }))?.author).toEqual({ kind: "unknown" });
+    expect((await postAgui({ ...TEXT, source: "scheduler", owner: "user-alice" }, false))?.author).toEqual({ kind: "unknown" });
+  });
+});
+
 describe("parseInboundSender", () => {
   const ok = { provider: "gitlab", externalId: "42", handle: "alice", level: 60 };
 

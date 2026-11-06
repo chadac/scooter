@@ -110,6 +110,25 @@ export interface RunAgentInput {
   source?: string;
   /** Who sent a webhook message, honored only from the TokenReview-verified webhooks caller. */
   sender?: InboundSender;
+  /** Who wrote `text`; "sender" defers to `sender`, which the handler records as an identity. */
+  author?: PromptAuthor;
+}
+
+/** A prompt's writer as the server can tell it, before the sender becomes an identity id. */
+export type PromptAuthor = { kind: "sender" } | { kind: "user"; id: string } | { kind: "unknown" };
+
+/** The scheduler prompts for the task's owner, so its text is theirs. */
+const OWNER_AUTHORED_SOURCES = new Set(["scheduler"]);
+
+/** Who wrote a prompt: the verified sender, an owner-authored service, or the signed-in prompter. */
+export function promptAuthor(p: { verified: boolean; sender?: InboundSender; source?: string; owner?: string; prompter?: string }): PromptAuthor {
+  if (p.verified) {
+    if (p.sender) return { kind: "sender" };
+    if (p.owner && p.source && OWNER_AUTHORED_SOURCES.has(p.source)) return { kind: "user", id: p.owner };
+    // A service relaying text it can't attribute: third-party until proven otherwise.
+    return { kind: "unknown" };
+  }
+  return p.prompter ? { kind: "user", id: p.prompter } : { kind: "unknown" };
 }
 
 /** A webhook message's sender as a contrib reports it: the platform's stable id, plus the
@@ -479,27 +498,29 @@ export function createAguiServer(): AguiServer {
       // ingress identity (the same resolver /whoami uses) owns it, and anonymous leaves it
       // unowned.
       let owner: string | undefined;
-      // Owner and sender are trusted only from the webhooks caller.
-      const verified =
-        (input.owner !== undefined || input.sender !== undefined) &&
-        ownerVerifier !== undefined &&
-        (await ownerVerifier(req).catch(() => false));
+      // Owner and sender are trusted only from the webhooks caller. Always checked, since a
+      // verified caller's unattributed text is not the prompter's.
+      const verified = ownerVerifier !== undefined && (await ownerVerifier(req).catch(() => false));
       // Untrusted or malformed senders are logged and dropped.
       const sender = verified ? parseInboundSender(input.sender) : undefined;
       if (input.sender !== undefined && !sender) {
         withConversation(sessionId, () => log.warn("dropped an untrusted or malformed sender", { verified }));
       }
+      let prompter: string | undefined;
       if (input.owner && verified) {
         owner = input.owner;
       } else {
         const user = await resolveUserSafely(req);
         if (user && !user.anonymous) owner = user.id;
+        // A verified service's own identity says nothing about who wrote its text.
+        if (!verified) prompter = owner;
       }
+      const author = promptAuthor({ verified, sender, source: input.source, owner: input.owner, prompter });
       // If promptHandler throws before the run emits a terminal event, the SSE 200 header
       // is already sent, so emit a RUN_ERROR on this stream and close it rather than let
       // the outer catch end it with an unparseable raw error.
       try {
-        await promptHandler?.(sessionId, { threadId: sessionId, text, model, provider: pickedProvider, priority: input.priority, owner, images, files, source: input.source, sender });
+        await promptHandler?.(sessionId, { threadId: sessionId, text, model, provider: pickedProvider, priority: input.priority, owner, images, files, source: input.source, sender, author });
         // promptHandler drives the run; RUN_FINISHED/RUN_ERROR close the stream.
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

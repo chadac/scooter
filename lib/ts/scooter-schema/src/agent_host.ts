@@ -35,6 +35,7 @@ export const conversations = pgTable("conversations", {
 }, (table) => [
 	index("conversations_by_activity").using("btree", table.lastActivityAt.desc().nullsFirst().op("int8_ops")),
 	index("conversations_by_owner").using("btree", table.owner.asc().nullsLast().op("text_ops")),
+	index("conversations_by_parent").using("btree", table.parentId.asc().nullsLast().op("text_ops")),
 	index("conversations_by_sandbox_ref").using("btree", table.sandboxRef.asc().nullsLast().op("text_ops")),
 	check("conversations_model_set_by_check", sql`model_set_by = ANY (ARRAY['user'::text, 'agent'::text])`),
 	check("conversations_visibility_check", sql`visibility = ANY (ARRAY['shared'::text, 'private'::text])`),
@@ -79,6 +80,17 @@ export const userHookSettings = pgTable("user_hook_settings", {
 	updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
 }, (table) => [
 	primaryKey({ columns: [table.owner, table.hookId], name: "user_hook_settings_pkey"}),
+]);
+
+export const conversationAuthors = pgTable("conversation_authors", {
+	conversationId: text("conversation_id").notNull(),
+	kind: text().notNull(),
+	author: text().notNull(),
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	firstAt: bigint("first_at", { mode: "number" }).notNull(),
+}, (table) => [
+	primaryKey({ columns: [table.kind, table.conversationId, table.author], name: "conversation_authors_pkey"}),
+	check("conversation_authors_kind_check", sql`kind = ANY (ARRAY['identity'::text, 'user'::text, 'unknown'::text])`),
 ]);
 
 export const conversationJobs = pgTable("conversation_jobs", {

@@ -28,6 +28,19 @@ class ConversationAssets(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(True), nullable=False, server_default=text('now()'))
 
 
+class ConversationAuthors(Base):
+    __tablename__ = 'conversation_authors'
+    __table_args__ = (
+        CheckConstraint("kind = ANY (ARRAY['identity'::text, 'user'::text, 'unknown'::text])", name='conversation_authors_kind_check'),
+        PrimaryKeyConstraint('conversation_id', 'kind', 'author', name='conversation_authors_pkey')
+    )
+
+    conversation_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    kind: Mapped[str] = mapped_column(Text, primary_key=True)
+    author: Mapped[str] = mapped_column(Text, primary_key=True)
+    first_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
 class ConversationEvents(Base):
     __tablename__ = 'conversation_events'
     __table_args__ = (
@@ -65,6 +78,7 @@ class Conversations(Base):
         PrimaryKeyConstraint('id', name='conversations_pkey'),
         Index('conversations_by_activity', 'last_activity_at'),
         Index('conversations_by_owner', 'owner'),
+        Index('conversations_by_parent', 'parent_id'),
         Index('conversations_by_sandbox_ref', 'sandbox_ref')
     )
 

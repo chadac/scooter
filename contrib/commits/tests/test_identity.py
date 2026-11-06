@@ -20,8 +20,8 @@ from scooter_contrib_commits.store import CommitIdentityStore, Proposal, Refused
 from scooter_contrib_commits.transport import Commits
 
 VIEWS = {
-    "alice-private": {"owner": "alice", "visibility": "private"},
-    "alice-private-2": {"owner": "alice", "visibility": "private"},
+    "alice-private": {"owner": "alice", "visibility": "private", "authors": []},
+    "alice-private-2": {"owner": "alice", "visibility": "private", "authors": []},
     "alice-shared": {"owner": "alice", "visibility": "shared"},
 }
 

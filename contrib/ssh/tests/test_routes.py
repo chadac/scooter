@@ -19,9 +19,9 @@ from scooter_contrib_ssh.store import SshKeyStore, _Base
 from scooter_contrib_ssh.transport import SshKey
 
 VIEWS = {
-    "alice-private": {"owner": "alice", "visibility": "private"},
+    "alice-private": {"owner": "alice", "visibility": "private", "authors": []},
     "alice-shared": {"owner": "alice", "visibility": "shared"},
-    "bob-private": {"owner": "bob", "visibility": "private"},
+    "bob-private": {"owner": "bob", "visibility": "private", "authors": []},
 }
 
 

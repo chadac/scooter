@@ -13,7 +13,7 @@ from scooter_broker_lib.commit_identity import Person
 from scooter_broker_lib.types import Identity
 
 VIEWS = {
-    "priv": {"owner": "alice", "visibility": "private"},
+    "priv": {"owner": "alice", "visibility": "private", "authors": []},
     "shared": {"owner": "alice", "visibility": "shared"},
 }
 BOT = Person("scooter[bot]", "1+scooter[bot]@users.noreply.github.com")
