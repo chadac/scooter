@@ -965,6 +965,38 @@ describe("management API", () => {
     expect((json as any).services).toEqual([]);
   });
 
+  it("GET /conversations/:id/mcp-servers lists declared servers with their tool prefix and running state", async () => {
+    const declared = [
+      { name: "time", displayName: "Time", description: "Clock", port: 9100, path: "/mcp", unit: "mcp-time", autoStart: true },
+      { name: "fetch", displayName: "fetch", description: "", port: 9101, path: "/mcp", unit: "mcp-fetch", autoStart: true },
+    ];
+    const forced: Array<boolean | undefined> = [];
+    const api = createManagementApi({
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer,
+      answerInterrupt: async () => ({ ok: true }),
+      mcpServers: {
+        list: async (_id: string, opts?: { force?: boolean }) => (forced.push(opts?.force), declared),
+        isRunning: async (_id: string, name: string) => {
+          if (name === "fetch") throw new Error("exec failed");
+          return true;
+        },
+      } as never,
+    });
+    const { status, json } = await call(api, "GET", "/conversations/c1/mcp-servers?refresh=1");
+    expect(status).toBe(200);
+    expect((json as any).servers).toEqual([
+      { name: "time", displayName: "Time", description: "Clock", toolPrefix: "mcp__sandbox-time__", running: true },
+      { name: "fetch", displayName: "fetch", description: "", toolPrefix: "mcp__sandbox-fetch__", running: false },
+    ]);
+    expect(forced).toEqual([true]);
+  });
+
+  it("GET mcp-servers returns [] when the registry is unwired (fake/local mode)", async () => {
+    const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
+    const { json } = await call(api, "GET", "/conversations/c1/mcp-servers");
+    expect((json as any).servers).toEqual([]);
+  });
+
   it("GET /conversations/:id/ready probes actual pod readiness for a running conversation", async () => {
     const api = createManagementApi({
       sessions: fakeSessions(), store: fakeStore([]), server: stubServer,

@@ -26,6 +26,7 @@ import {
 
 import type { AguiServer } from "../agui/server.js";
 import type { WebServiceRegistry } from "../proxy/webServiceProxy.js";
+import { SANDBOX_PREFIX, type McpServerRegistry } from "../agent/mcpServerRegistry.js";
 import type { IdentityStore } from "../auth/identityStore.js";
 import type { AssetStore } from "../session/assetStore.js";
 import type { AuthorStore } from "../session/authorStore.js";
@@ -150,6 +151,8 @@ export interface ManagementDeps {
   authEnforced?: boolean;
   /** In-pod web-service registry powering the UI Services panel; absent in fake/local mode. */
   webServices?: WebServiceRegistry;
+  /** In-pod MCP server registry powering the UI's MCP servers section; absent in fake/local mode. */
+  mcpServers?: McpServerRegistry;
   /** Per-conversation service origins (SANDBOX_DOMAIN); absent keeps services under /c/<id>/. */
   sandboxOrigins?: SandboxOrigins;
   /** Who wrote each conversation's text, served to the broker; absent omits `authors`, which it reads as tainted. */
@@ -1076,6 +1079,23 @@ export function createManagementApi(deps: ManagementDeps): Router {
       })),
     );
     return { json: { services: withState } };
+  });
+
+  r.get("/conversations/:id/mcp-servers", async (ctx) => {
+    const id = await resolveLiveConvId(ctx.params.id);
+    if (!id || !deps.mcpServers) return { json: { servers: [] } };
+    const force = ctx.query.get("refresh") === "1";
+    const declared = await deps.mcpServers.list(id, { force });
+    const servers = await Promise.all(
+      declared.map(async (d) => ({
+        name: d.name,
+        displayName: d.displayName,
+        description: d.description,
+        toolPrefix: `mcp__${SANDBOX_PREFIX}${d.name}__`,
+        running: await deps.mcpServers!.isRunning(id, d.name).catch(() => false),
+      })),
+    );
+    return { json: { servers } };
   });
 
   // The sandbox's current resource allotment for the Sandbox tab; an absent getter yields

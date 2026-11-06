@@ -365,3 +365,28 @@ describe("SandboxPanelView — pending restart", () => {
     expect(html).toContain("conversation c2 is running");
   });
 });
+
+describe("SandboxPanelView — MCP servers", () => {
+  const servers = [
+    { name: "time", displayName: "Time", description: "", toolPrefix: "mcp__sandbox-time__", running: true },
+    { name: "fetch", displayName: "fetch", description: "", toolPrefix: "mcp__sandbox-fetch__", running: false },
+  ];
+
+  it("lists each server with its tool prefix and running state", () => {
+    const html = renderToStaticMarkup(createElement(SandboxPanelView, { ...base, state: "running", mcpServers: servers }));
+    expect(html).toContain('data-testid="right-panel-section-mcp-servers"');
+    expect(html).toContain('data-server="time" data-running="true"');
+    expect(html).toContain('data-server="fetch" data-running="false"');
+    expect(html).toContain("mcp__sandbox-fetch__");
+  });
+
+  it("says none are declared when the list is empty", () => {
+    const html = renderToStaticMarkup(createElement(SandboxPanelView, { ...base, state: "running" }));
+    expect(html).toContain('data-testid="sandbox-no-mcp-servers"');
+  });
+
+  it("is hidden while the sandbox is down, since the pod cannot be read", () => {
+    const html = renderToStaticMarkup(createElement(SandboxPanelView, { ...base, state: "suspended", mcpServers: servers }));
+    expect(html).not.toContain("right-panel-section-mcp-servers");
+  });
+});

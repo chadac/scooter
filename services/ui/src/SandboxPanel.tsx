@@ -1,8 +1,9 @@
 /**
  * The Session tab's body: the current conversation's pod lifecycle status with a Start
- * button when down, its resource allotment and size picker, a collapsible Services
- * section, then the caller's further sections. Status is fetched directly for the current conversation rather than read
- * off the sessions store, and services are enumerable only while the pod is running.
+ * button when down, its resource allotment and size picker, collapsible Services and
+ * MCP servers sections, then the caller's further sections. Status is fetched directly
+ * for the current conversation rather than read off the sessions store, and services and
+ * MCP servers are enumerable only while the pod is running.
  */
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
@@ -20,6 +21,7 @@ import {
   startWebService,
   stopWebService,
   type WebService,
+  type SandboxMcpServer,
   type SandboxResources,
   type SandboxSizePreset,
   type PendingRestart,
@@ -28,6 +30,7 @@ import { agentHostConfig } from "./config.js";
 import { useSessions, currentConversation } from "./sessions.js";
 import { pollWhileVisible } from "./visiblePoll.js";
 import { ServiceRows } from "./ServicesPanel.js";
+import { McpServerRows, useMcpServers } from "./McpServersPanel.js";
 import { PanelSection } from "./PanelSection.js";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -412,7 +415,9 @@ export interface SandboxPanelViewProps {
   /** Re-read the in-pod service manifest to pick up a just-declared service without waiting. */
   onRescanServices?: () => void;
   rescanning?: boolean;
-  /** Further Session-tab sections, rendered after Services. */
+  /** The sandbox's declared MCP servers. */
+  mcpServers?: SandboxMcpServer[];
+  /** Further Session-tab sections, rendered after MCP servers. */
   children?: ReactNode;
 }
 
@@ -420,6 +425,7 @@ export interface SandboxPanelViewProps {
 export function SandboxPanelView({
   state,
   services,
+  mcpServers = [],
   busy,
   conversationId,
   owner,
@@ -574,6 +580,17 @@ export function SandboxPanelView({
           </p>
         )}
       </PanelSection>
+      {state === "running" ? (
+        <PanelSection id="mcp-servers" label="MCP servers" count={mcpServers.length}>
+          {mcpServers.length === 0 ? (
+            <p className="text-xs text-muted-foreground" data-testid="sandbox-no-mcp-servers">
+              No MCP servers declared in this sandbox.
+            </p>
+          ) : (
+            <McpServerRows servers={mcpServers} />
+          )}
+        </PanelSection>
+      ) : null}
       {children}
     </div>
   );
@@ -581,6 +598,7 @@ export function SandboxPanelView({
 
 export function SandboxPanel() {
   const s = useSandboxStatus();
+  const mcp = useMcpServers(s.state === "running");
   const { sessions, currentId } = useSessions();
   const owner = sessions.find((x) => x.id === currentId)?.owner ?? null;
 
@@ -692,8 +710,12 @@ export function SandboxPanel() {
     <SandboxPanelView
       state={s.state}
       services={s.services}
+      mcpServers={mcp.servers}
       busy={s.busy}
-      onRescanServices={s.rescanServices}
+      onRescanServices={() => {
+        void s.rescanServices();
+        void mcp.refresh(true);
+      }}
       rescanning={s.rescanning}
       conversationId={s.conversationId}
       owner={owner}

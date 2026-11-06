@@ -130,6 +130,39 @@ export async function loadWebServices(
   }
 }
 
+/** An MCP server the conversation's sandbox declares, as the Session tab lists it. */
+export interface SandboxMcpServer {
+  name: string;
+  displayName: string;
+  description: string;
+  /** How its tools are named to the agent, e.g. `mcp__sandbox-time__`. */
+  toolPrefix: string;
+  running: boolean;
+}
+
+/** List the sandbox's declared MCP servers with liveness, empty when unreachable. */
+export async function loadMcpServers(
+  config: AgentHostConfig,
+  conversationId: string,
+  opts: { refresh?: boolean } = {},
+): Promise<SandboxMcpServer[]> {
+  try {
+    const res = await fetch(
+      `${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(conversationId)}/mcp-servers` +
+        (opts.refresh ? "?refresh=1" : ""),
+      { headers: config.token ? { Authorization: `Bearer ${config.token}` } : undefined },
+    );
+    if (!res.ok) {
+      console.warn(`[client] loadMcpServers ${conversationId}: HTTP ${res.status}`);
+      return [];
+    }
+    return ((await res.json()) as { servers?: SandboxMcpServer[] }).servers ?? [];
+  } catch (e) {
+    console.warn(`[client] loadMcpServers ${conversationId} failed:`, e);
+    return [];
+  }
+}
+
 /** Manually compact a conversation, resolving { compacted: false } when it is too short and throwing with the server's message on failure. */
 export async function compactConversation(
   config: AgentHostConfig,

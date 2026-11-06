@@ -1615,6 +1615,7 @@ export async function main(
       ownerVerifier,
       serviceCaller: conversationServiceVerifier,
       webServices,
+      mcpServers: sandboxMcpServers,
       sandboxOrigins,
       identityStore,
       authorStore,
