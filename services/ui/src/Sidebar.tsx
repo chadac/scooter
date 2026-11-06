@@ -359,9 +359,11 @@ function FolderSectionView({
           {/* Count and actions share a slot, so dots line up. */}
           <span className="relative flex w-5 shrink-0 justify-end">
             <span
+              data-testid="folder-count"
               className={cn(
                 "text-[11px] tabular-nums",
-                !builtin && "group-focus-within/folder:invisible group-hover/folder:invisible",
+                // Hidden exactly when the actions button shows in its place.
+                !builtin && "group-hover/folder:invisible group-has-[[data-folder-actions]:focus-visible]/folder:invisible",
                 menuOpen && "invisible",
               )}
             >
@@ -372,6 +374,7 @@ function FolderSectionView({
               <DropdownMenu.Trigger asChild>
                 <button
                   type="button"
+                  data-folder-actions
                   aria-label={`${f.name} folder actions`}
                   className="absolute inset-y-0 end-0 my-auto flex size-5 items-center justify-center rounded opacity-0 hover:bg-accent focus-visible:opacity-100 group-hover/folder:opacity-100 data-[state=open]:opacity-100"
                 >

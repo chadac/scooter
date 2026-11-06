@@ -247,6 +247,9 @@ test.describe("session selector & titles", () => {
     const box = (await section(b).boundingBox())!;
     await section(a).locator(folders.header).dragTo(section(b), { targetPosition: { x: 20, y: box.height - 3 } });
     await expect.poll(ours).toEqual(["starred", c, b, a]);
+    // Focus left in the dragged header must not blank its count.
+    await page.mouse.move(900, 900);
+    await expect(section(a).getByTestId("folder-count")).toHaveCSS("visibility", "visible");
 
     await section(a).getByRole("button", { name: /folder actions/ }).click();
     await page.getByRole("menuitem", { name: "Move up" }).click();
