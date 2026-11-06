@@ -4,6 +4,68 @@ Each release's section becomes its GitHub Release notes. Images keep their
 content tags and also gain `vX.Y.Z`; the flake is published to
 [FlakeHub](https://flakehub.com/flake/chadac-me/scooter).
 
+## v1.1.0
+
+### Features
+
+- **MCP servers from Settings.** Users can list npm, PyPI and nixpkgs MCP
+  servers in Settings; each of their sandboxes starts them and offers their
+  tools to the agent. (#1121)
+- **The Session tab lists the conversation's MCP servers**, with whether each
+  is running and the tool prefix it reaches the agent under. (#1132)
+- **Skill providers.** A deployment or contrib can hand conversations skills at
+  runtime, from a script run in the sandbox before each agent run. (#1119)
+- **Sandbox skills and skill sources.** The new `contrib/skills` adds the
+  `scooter-skills` CLI: the agent can write its own skills under
+  `~/.scooter/skills/`, or install them from sources. (#1118)
+- **Handoffs.** The agent can hand a task to a new conversation, search and
+  read past shared conversations, and move files between sandboxes. (#1123)
+- **The agent can recall its user's private conversations too**, when it is
+  working in one of that user's private conversations. (#1124)
+- **A narrow route for services to start conversations.** The broker can open a
+  conversation for the source conversation's owner without the power to act as
+  any user. (#1122)
+- **Docker and k3d in the sandbox.** `contrib/docker` runs a nested dockerd, so
+  the agent can build images, run containers and bring up a local Kubernetes
+  cluster. (#1126)
+- **Sidebar folders.** Conversations can be filed in folders, and Starred is a
+  built-in folder every user has. (#1125)
+- **Folder icons and new conversations in a folder.** A folder can show a
+  Lucide icon, a new conversation can start inside a folder, and the headers
+  are tidier. (#1136)
+- **Folders can be reordered**, by drag or with Move up / Move down in a
+  folder's menu. Starred always stays first. (#1138)
+- **The agent hears when its AWS approval card is answered**, so it no longer
+  has to poll, and wakes up if it had ended its turn. (#1115)
+- **Personal credentials stay out of tainted private conversations.** A private
+  conversation that holds text someone else wrote (a webhook event, a message
+  from while it was shared, a subagent's parent prompt) no longer gets the
+  owner's forge token or SSH key. (#1114)
+- **CI's k3d bring-up is faster**: `nixpkgs#` is pinned, and the deps build
+  overlaps with starting the cluster. (#1120)
+- **The nightly CI run is dispatched by a Scooter scheduled task**, since
+  GitHub's cron fired hours late or not at all. (#1131)
+
+### Bug fixes
+
+- **Deleted conversations stay deleted.** A metadata backfill could put one
+  back from a replica's stale file store. (#1110)
+- **Fake-agent replies to `~call`, `~model` and `~images` get a title**, so they
+  no longer trigger a second reply that made tests flaky. (#1111)
+- **Links, approval cards and the resource map are served to services only.**
+  With auth enforced, those routes now need a service token. (#1112)
+- **A prompt to a suspended conversation is saved before its sandbox revives**,
+  so it shows on reload and isn't lost if the host exits during a cold start.
+  (#1113)
+- **A message sent while a run is starting no longer cancels it**; it waits for
+  the run's prompt to be sent first. (#1128)
+- **Small PyPI MCP servers use far less memory.** uv-nix 0.13.7-nix.2 builds
+  only the libraries a venv can use; `mcp-server-fetch` drops from 3.2 GB to
+  about 690 MB. (#1135)
+- **Conversations start without waiting for the sandbox.** The agent session
+  starts at once, and the sandbox's MCP servers join on a later run when the
+  pod was still starting. (#1137)
+
 ## v1.0.3
 
 ### Features
