@@ -20,3 +20,11 @@ CREATE TABLE "mcp_servers" (
 );
 CREATE INDEX "ix_mcp_servers_owner" ON "mcp_servers" ("owner");
 CREATE UNIQUE INDEX "mcp_servers_owner_name" ON "mcp_servers" ("owner", "name");
+
+-- The last state a conversation's sandbox reported for its servers, one row each.
+CREATE TABLE "mcp_server_status" (
+  "conversation_id" character varying NOT NULL,
+  "report"          text NOT NULL, -- JSON {servers: [{name, state}], error}
+  "reported_at"     character varying NOT NULL,
+  PRIMARY KEY ("conversation_id")
+);

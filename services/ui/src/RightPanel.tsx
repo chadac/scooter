@@ -13,7 +13,6 @@ import { X } from "lucide-react";
 import { mobileNav, useDrawer } from "./mobileNav.js";
 import { InterruptList } from "./InterruptPanel.js";
 import { SandboxPanelView, useSandboxStatus } from "./SandboxPanel.js";
-import { useMcpServers } from "./McpServersPanel.js";
 import { SubagentsPanel, subagentsOf } from "./SubagentsPanel.js";
 import { PanelSection } from "./PanelSection.js";
 import { contribPanels } from "./contribManifest.js";
@@ -76,7 +75,6 @@ function TabButton({
 export function RightPanel() {
   const { interrupts } = useConversationInterrupts();
   const sandbox = useSandboxStatus();
-  const mcp = useMcpServers(sandbox.state === "running");
   const { sessions, currentId } = useSessions();
   const nInterrupts = interrupts.length;
   const subagents = subagentsOf(sessions, currentId);
@@ -159,16 +157,12 @@ export function RightPanel() {
           <SandboxPanelView
             state={sandbox.state}
             services={sandbox.services}
-            mcpServers={mcp.servers}
             busy={sandbox.busy}
             conversationId={sandbox.conversationId}
             onStartSandbox={() => void sandbox.startSandbox()}
             onStartService={sandbox.startService}
             onStopService={sandbox.stopService}
-            onRescanServices={() => {
-              void sandbox.rescanServices();
-              void mcp.refresh(true);
-            }}
+            onRescanServices={sandbox.rescanServices}
             rescanning={sandbox.rescanning}
           >
             {nSubagents > 0 && (

@@ -8,6 +8,7 @@
     db = {
       enable = true;
       tables.mcp_servers = { };
+      tables.mcp_server_status = { };
     };
 
     services.broker = {
@@ -17,6 +18,9 @@
     };
 
     skills."scooter-mcp-servers.md" = ./skills/scooter-mcp-servers.md;
+
+    # The Session tab's section: this conversation's servers and their state.
+    ui.panel = { label = "MCP servers"; entry = "ui/Panel.tsx"; api = true; };
 
     ui.settingsTabs = [{
       id = "mcpservers";

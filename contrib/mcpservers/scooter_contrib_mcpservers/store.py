@@ -58,6 +58,14 @@ class _Server(_Base):
     updated_at: Mapped[str] = mapped_column(String)
 
 
+class _Status(_Base):
+    __tablename__ = "mcp_server_status"
+
+    conversation_id: Mapped[str] = mapped_column(String, primary_key=True)
+    report: Mapped[str] = mapped_column(Text)
+    reported_at: Mapped[str] = mapped_column(String)
+
+
 class InvalidServer(ValueError):
     """A rejected write; the message is shown in the settings form."""
 
@@ -93,8 +101,12 @@ def parse_args(raw: object) -> tuple[str, ...]:
     return tuple(raw)
 
 
+def valid_name(name: object) -> bool:
+    return isinstance(name, str) and bool(_NAME.match(name))
+
+
 def validate(name: str, kind: str, spec: str, args: tuple[str, ...]) -> None:
-    if not _NAME.match(name):
+    if not valid_name(name):
         raise InvalidServer("a name is up to 32 letters, digits, '_' or '-', starting with a letter or digit")
     if kind not in KINDS:
         raise InvalidServer(f"kind must be one of {', '.join(KINDS)}")
@@ -183,3 +195,15 @@ class McpServerStore:
                 return False
             await s.delete(row)
             return True
+
+    async def save_status(self, conversation_id: str, report: dict) -> None:
+        """Replace the conversation's last report."""
+        row = _Status(conversation_id=conversation_id, report=json.dumps(report), reported_at=_now())
+        async with self._session() as s, s.begin():
+            await s.merge(row)
+
+    async def status(self, conversation_id: str) -> tuple[dict, str] | None:
+        """The conversation's last report and when it came, if any."""
+        async with self._session() as s:
+            row = await s.get(_Status, conversation_id)
+            return (json.loads(row.report), row.reported_at) if row else None
