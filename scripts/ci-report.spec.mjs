@@ -97,7 +97,7 @@ describe("tierFor", () => {
     expect(tierFor("pull_request", [], [...bump, "flake.nix"])).toBe("pr");
     expect(tierFor("merge_group", [], [...bump, "flake.nix"])).toBe("full");
     expect(tierFor("push", [], bump)).toBe("full");
-    expect(tierFor("schedule", [], bump)).toBe("full");
+    expect(tierFor("workflow_dispatch", [], bump)).toBe("full");
   });
 });
 

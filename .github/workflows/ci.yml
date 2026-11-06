@@ -23,10 +23,7 @@ on:
   # The merge queue tests each entry on a temporary `gh-readonly-queue/*` ref and
   # needs this trigger for the required checks to run there.
   merge_group:
-  # Nightly: the full nixosTest set including HEAVY_TESTS, plus the flake-detection job.
-  schedule:
-    - cron: "0 7 * * *" # 07:00 UTC daily
-  # Manual trigger for running the nightly-only jobs on demand.
+  # The nightly; a Scooter scheduled task dispatches it at 07:00 UTC.
   workflow_dispatch:
 
 # Cancel superseded runs of the same event on a ref.
@@ -490,8 +487,8 @@ jobs:
       FULL: ${{ needs.tier.outputs.full }}
       # Tests too expensive for per-PR runs (space-separated check names).
       HEAVY_TESTS: "dev-env-scooter-module"
-      # Include heavy tests when: nightly schedule, a release, OR the PR has the label.
-      INCLUDE_HEAVY: ${{ github.event_name == 'schedule' || needs.tier.outputs.release == 'true' || contains(github.event.pull_request.labels.*.name, 'full-nixos-tests') }}
+      # Include heavy tests when: the nightly, a release, OR the PR has the label.
+      INCLUDE_HEAVY: ${{ github.event_name == 'workflow_dispatch' || needs.tier.outputs.release == 'true' || contains(github.event.pull_request.labels.*.name, 'full-nixos-tests') }}
     steps:
       - uses: actions/checkout@v5
       - uses: nixbuild/nix-quick-install-action@v30
@@ -958,7 +955,6 @@ jobs:
     # platform path filter would skip product-code changes the suite must cover.
     needs: tier
     if: >-
-      github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
       needs.tier.outputs.release == 'true' ||
       contains(github.event.pull_request.labels.*.name, 'e2e-full')
@@ -979,7 +975,7 @@ jobs:
         env:
           # A labelled PR stays a single pass: it wants a verdict, and five costs the
           # fleet ~90 min. A sweep of a branch is a `workflow_dispatch` away.
-          SWEEP: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+          SWEEP: ${{ github.event_name == 'workflow_dispatch' }}
           ONE_SHARD: ${{ contains(github.event.pull_request.labels.*.name, 'e2e-one-shard') }}
         run: |
           set -euo pipefail
@@ -1080,7 +1076,7 @@ jobs:
     if: needs.e2e-full-distribute.result == 'success'
     # The self-hosted fleet, for this job only: a shard is ~25 min of k3d and
     # platform deploy, ~60 on a sweep. Safe only because the gate above is
-    # schedule/dispatch/label, or a queued release that changes no code, none of
+    # dispatch/label, or a queued release that changes no code, none of
     # which a fork can trigger; `runs-on` is not a security boundary on its own.
     runs-on: [self-hosted, linux, x64, nix]
     # Bounds a wedged cluster holding a fleet runner all day; the default 360 does not.
@@ -1210,7 +1206,7 @@ jobs:
         if: always()
         run: |
           df -h /nix / 2>/dev/null || df -h / || true
-          if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then du -sh /nix/store 2>/dev/null || true; fi
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then du -sh /nix/store 2>/dev/null || true; fi
           # Whether /nix is the pooled EBS volume or the instance root disk decides
           # whether a store was reused or built cold.
           findmnt -no SOURCE,FSTYPE,SIZE /nix 2>/dev/null || echo "/nix is not a separate mount (root disk)"
@@ -1671,7 +1667,7 @@ jobs:
   # retries=0, so any single failure names the flaky test.
   flake-nightly:
     name: flake detection (e2e ×5, nightly)
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5

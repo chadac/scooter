@@ -326,7 +326,7 @@ behind. A red smoke no longer cancels the stories either; the shard runs both an
 then fails (#751, which fixes a run where a dead `platform-smoke` took every other
 test on its shard down and the comment still reported a clean diff).
 
-On `schedule` and `workflow_dispatch` every test runs ×5 across 8 shards, so the
+On `workflow_dispatch` (the nightly) every test runs ×5 across 8 shards, so the
 night reports a per-test rate rather than one red/green;
 `scripts/e2e-full-flake-report.mjs` renders it into the job's step summary and the
 `e2e-full-flake-report` artifact, separating always-red (5/5) from flaky (n/5). A
