@@ -106,7 +106,7 @@ export function ServerList({ listing }: { listing: Listing }) {
   if (servers.length === 0) {
     return (
       <p className="text-sm text-muted-foreground" data-testid="mcpservers-empty">
-        No MCP servers. Add one under Settings → MCP servers.
+        No MCP servers. Add one in Settings, under MCP servers.
       </p>
     );
   }
