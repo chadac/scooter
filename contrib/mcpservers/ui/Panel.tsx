@@ -6,7 +6,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { Plug } from "lucide-react";
+import { ChevronRight, Plug } from "lucide-react";
 
 import { cn, conversationFetch, useConversationKey, type PanelProps } from "@/src/contrib/sdk";
 
@@ -106,7 +106,9 @@ export function ServerList({ listing }: { listing: Listing }) {
   if (servers.length === 0) {
     return (
       <p className="text-sm text-muted-foreground" data-testid="mcpservers-empty">
-        No MCP servers. Add one in Settings, under MCP servers.
+        No MCP servers. Add one under Settings
+        <ChevronRight className="mx-0.5 inline size-3.5 align-[-2px]" role="img" aria-label="then" />
+        MCP servers.
       </p>
     );
   }
