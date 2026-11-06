@@ -223,6 +223,40 @@ test.describe("session selector & titles", () => {
     await expect(items.filter({ hasText: /started in the folder/i })).toHaveCount(1, { timeout: 30_000 });
   });
 
+  test("folders reorder by drag and by Move up, below Starred, and it sticks", async ({ chat, page, request, baseURL }) => {
+    const base = baseURL ?? "http://localhost:5173";
+    const stamp = Date.now();
+    const mk = async (n: string) =>
+      ((await (await request.post(`${base}/folders`, { data: { name: `e2e-order-${n}-${stamp}` } })).json()) as { id: string }).id;
+    const [a, b, c] = [await mk("a"), await mk("b"), await mk("c")];
+    // dragTo scrolls a long list mid-drag, which loses the drop.
+    await page.setViewportSize({ width: 1280, height: 1600 });
+    await chat.open();
+    const ours = async () =>
+      (await page.locator(folders.header).evaluateAll((els) => els.map((e) => e.getAttribute("data-folder-id")))).filter(
+        (id) => id === "starred" || [a, b, c].includes(id!),
+      );
+    const section = (id: string) => page.locator(folders.section(id));
+    await expect.poll(ours).toEqual(["starred", a, b, c]);
+
+    // Onto Starred: the top of the user's folders, never above Starred.
+    await section(c).locator(folders.header).dragTo(section("starred"));
+    await expect.poll(ours).toEqual(["starred", c, a, b]);
+
+    // The bottom half of a folder drops below it.
+    const box = (await section(b).boundingBox())!;
+    await section(a).locator(folders.header).dragTo(section(b), { targetPosition: { x: 20, y: box.height - 3 } });
+    await expect.poll(ours).toEqual(["starred", c, b, a]);
+
+    await section(a).getByRole("button", { name: /folder actions/ }).click();
+    await page.getByRole("menuitem", { name: "Move up" }).click();
+    await expect.poll(ours).toEqual(["starred", c, a, b]);
+
+    await page.reload();
+    await expect.poll(ours, { timeout: 30_000 }).toEqual(["starred", c, a, b]);
+    for (const id of [a, b, c]) await request.delete(`${base}/folders/${id}`);
+  });
+
   test("new-session button starts a fresh conversation", async ({ chat, page }) => {
     await chat.open();
     await chat.send("first conversation");

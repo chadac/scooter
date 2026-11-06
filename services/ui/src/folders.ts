@@ -120,18 +120,28 @@ export const folderStore = {
     return write({ ...state, folders, placements }, () => deleteFolder(agentHostConfig, id));
   },
 
-  /** Move a user folder before `beforeId`, else last. */
-  reorder(id: string, beforeId?: string): Promise<boolean> {
-    const moving = userFolders().find((f) => f.id === id);
-    if (!moving || id === beforeId) return Promise.resolve(false);
-    const rest = userFolders().filter((f) => f.id !== id);
-    const at = rest.findIndex((f) => f.id === beforeId);
-    const index = at < 0 ? rest.length : at;
+  /** Move a user folder beside `targetId`; after Starred means first. */
+  reorder(id: string, targetId: string, after = false): Promise<boolean> {
+    const all = userFolders();
+    const from = all.findIndex((f) => f.id === id);
+    const rest = all.filter((f) => f.id !== id);
+    const at = targetId === STARRED ? -1 : rest.findIndex((f) => f.id === targetId);
+    const known = at >= 0 || (targetId === STARRED && after);
+    if (from < 0 || id === targetId || !known) return Promise.resolve(false);
+    const index = at + (after ? 1 : 0);
+    if (index === from) return Promise.resolve(false);
     const position = positionBetween(rest[index - 1]?.position, rest[index]?.position);
-    rest.splice(index, 0, { ...moving, position });
+    rest.splice(index, 0, { ...all[from], position });
     return write({ ...state, folders: [STARRED_FOLDER, ...rest] }, () =>
       updateFolder(agentHostConfig, id, { position }),
     );
+  },
+
+  /** Move a user folder one place up (-1) or down (1). */
+  nudge(id: string, by: -1 | 1): Promise<boolean> {
+    const all = userFolders();
+    const next = all[all.findIndex((f) => f.id === id) + by];
+    return next ? folderStore.reorder(id, next.id, by > 0) : Promise.resolve(false);
   },
 
   toggleCollapsed(id: string) {

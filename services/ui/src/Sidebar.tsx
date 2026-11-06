@@ -188,6 +188,8 @@ const SessionRow = memo(function SessionRow({
 
 const CONV_MIME = "application/x-scooter-conversation";
 const FOLDER_MIME = "application/x-scooter-folder";
+// The folder being dragged; dragover can't read the payload.
+let draggingFolder: string | null = null;
 
 // Worst first: a collapsed folder shows its most urgent dot.
 const DOT_RANK: TurnDot[] = ["question", "failed", "active", "unread", "unread-idle"];
@@ -231,10 +233,15 @@ function DropZone({
 function FolderSectionView({
   section: f,
   open,
+  first,
+  last,
   currentId,
   labelMode,
 }: {
   section: FolderSection;
+  /** First or last of the user's folders, for Move up/down. */
+  first?: boolean;
+  last?: boolean;
   /** Collapsed still shows the branch to the open conversation. */
   open: boolean;
   currentId: string;
@@ -244,162 +251,211 @@ function FolderSectionView({
   const [renaming, setRenaming] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [picking, setPicking] = useState(false);
+  const [dropSide, setDropSide] = useState<"before" | "after" | null>(null);
+  // A cancelled drag never fires dragleave here, so clear on dragend.
+  useEffect(() => {
+    if (!dropSide) return;
+    const clear = () => setDropSide(null);
+    document.addEventListener("dragend", clear);
+    return () => document.removeEventListener("dragend", clear);
+  }, [dropSide]);
   const shown = open ? f.rows : currentBranch(f.rows, currentId);
   const top = f.rows.filter((r) => r.depth === 0);
   const dots = f.rows.map((r) => turnDot(r.session)).filter((d): d is TurnDot => !!d);
   const rollup = DOT_RANK.find((d) => dots.includes(d));
   return (
-    <DropZone folderId={f.id} className="mb-1 rounded-md">
-      <div
-        data-testid="folder-header"
-        data-folder-id={f.id}
-        draggable={!builtin && !renaming}
-        onDragStart={(e) => e.dataTransfer.setData(FOLDER_MIME, f.id)}
-        onDragOver={(e) => {
-          if (!builtin && e.dataTransfer.types.includes(FOLDER_MIME)) e.preventDefault();
-        }}
-        onDrop={(e) => {
-          const id = e.dataTransfer.getData(FOLDER_MIME);
-          if (id) void folderStore.reorder(id, f.id);
-        }}
-        className="group/folder flex h-7 items-center gap-1 rounded-md px-1 text-[13px] text-muted-foreground hover:bg-accent/60"
-      >
-        <button
-          type="button"
-          aria-expanded={open}
-          onClick={() => folderStore.toggleCollapsed(f.id)}
-          className="flex min-w-0 flex-1 items-center gap-1.5 text-start"
-        >
-          <ChevronRight aria-hidden className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
-          <Popover.Root open={picking} onOpenChange={setPicking}>
-            <Popover.Anchor asChild>
-              <span className="flex">
-                <FolderGlyph builtin={builtin} icon={f.icon} />
-              </span>
-            </Popover.Anchor>
-            <Popover.Portal>
-              <Popover.Content
-                align="start"
-                sideOffset={6}
-                onClick={(e) => e.stopPropagation()}
-                className="z-50 rounded-md border bg-popover p-2 text-popover-foreground shadow-md"
-              >
-                <IconPicker
-                  current={f.icon}
-                  onPick={(icon) => {
-                    void folderStore.setIcon(f.id, icon);
-                    setPicking(false);
-                  }}
-                />
-              </Popover.Content>
-            </Popover.Portal>
-          </Popover.Root>
-          {renaming ? (
-            <input
-              autoFocus
-              defaultValue={f.name}
-              aria-label="Folder name"
-              onClick={(e) => e.stopPropagation()}
-              onBlur={(e) => {
-                void folderStore.rename(f.id, e.currentTarget.value);
-                setRenaming(false);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") e.currentTarget.blur();
-                if (e.key === "Escape") setRenaming(false);
-              }}
-              className="h-5 min-w-0 flex-1 rounded border border-input bg-background px-1 text-foreground"
-            />
-          ) : (
-            <span className={cn("truncate font-medium", builtin ? "text-foreground" : "text-foreground/90")}>{f.name}</span>
+    <div
+      className="relative"
+      onDragOver={(e) => {
+        if (!draggingFolder || draggingFolder === f.id) return;
+        e.preventDefault();
+        const r = e.currentTarget.getBoundingClientRect();
+        setDropSide(builtin || e.clientY > r.top + r.height / 2 ? "after" : "before");
+      }}
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropSide(null);
+      }}
+      onDrop={(e) => {
+        if (!dropSide || !draggingFolder) return;
+        e.preventDefault();
+        void folderStore.reorder(draggingFolder, f.id, dropSide === "after");
+        setDropSide(null);
+      }}
+    >
+      {dropSide && (
+        <div
+          aria-hidden
+          data-testid="folder-drop-line"
+          className={cn(
+            "pointer-events-none absolute inset-x-1 z-10 h-0.5 rounded bg-primary",
+            dropSide === "before" ? "-top-[3px]" : "-bottom-[3px]",
           )}
-        </button>
-        {!open && rollup && <StatusDot dot={rollup} />}
-        {/* Count and actions share a slot, so dots line up. */}
-        <span className="relative flex w-5 shrink-0 justify-end">
-          <span
-            className={cn(
-              "text-[11px] tabular-nums",
-              !builtin && "group-focus-within/folder:invisible group-hover/folder:invisible",
-              menuOpen && "invisible",
-            )}
+        />
+      )}
+      <DropZone folderId={f.id} className="mb-1 rounded-md">
+        <div
+          data-testid="folder-header"
+          data-folder-id={f.id}
+          draggable={!builtin && !renaming}
+          onDragStart={(e) => {
+            e.dataTransfer.setData(FOLDER_MIME, f.id);
+            e.dataTransfer.effectAllowed = "move";
+            draggingFolder = f.id;
+          }}
+          onDragEnd={() => (draggingFolder = null)}
+          className="group/folder flex h-7 items-center gap-1 rounded-md px-1 text-[13px] text-muted-foreground hover:bg-accent/60"
+        >
+          <button
+            type="button"
+            aria-expanded={open}
+            onClick={() => folderStore.toggleCollapsed(f.id)}
+            className="flex min-w-0 flex-1 items-center gap-1.5 text-start"
           >
-            {top.length || ""}
+            <ChevronRight aria-hidden className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
+            <Popover.Root open={picking} onOpenChange={setPicking}>
+              <Popover.Anchor asChild>
+                <span className="flex">
+                  <FolderGlyph builtin={builtin} icon={f.icon} />
+                </span>
+              </Popover.Anchor>
+              <Popover.Portal>
+                <Popover.Content
+                  align="start"
+                  sideOffset={6}
+                  onClick={(e) => e.stopPropagation()}
+                  className="z-50 rounded-md border bg-popover p-2 text-popover-foreground shadow-md"
+                >
+                  <IconPicker
+                    current={f.icon}
+                    onPick={(icon) => {
+                      void folderStore.setIcon(f.id, icon);
+                      setPicking(false);
+                    }}
+                  />
+                </Popover.Content>
+              </Popover.Portal>
+            </Popover.Root>
+            {renaming ? (
+              <input
+                autoFocus
+                defaultValue={f.name}
+                aria-label="Folder name"
+                onClick={(e) => e.stopPropagation()}
+                onBlur={(e) => {
+                  void folderStore.rename(f.id, e.currentTarget.value);
+                  setRenaming(false);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") e.currentTarget.blur();
+                  if (e.key === "Escape") setRenaming(false);
+                }}
+                className="h-5 min-w-0 flex-1 rounded border border-input bg-background px-1 text-foreground"
+              />
+            ) : (
+              <span className={cn("truncate font-medium", builtin ? "text-foreground" : "text-foreground/90")}>{f.name}</span>
+            )}
+          </button>
+          {!open && rollup && <StatusDot dot={rollup} />}
+          {/* Count and actions share a slot, so dots line up. */}
+          <span className="relative flex w-5 shrink-0 justify-end">
+            <span
+              className={cn(
+                "text-[11px] tabular-nums",
+                !builtin && "group-focus-within/folder:invisible group-hover/folder:invisible",
+                menuOpen && "invisible",
+              )}
+            >
+              {top.length || ""}
+            </span>
+          {!builtin && (
+            <DropdownMenu.Root open={menuOpen} onOpenChange={setMenuOpen}>
+              <DropdownMenu.Trigger asChild>
+                <button
+                  type="button"
+                  aria-label={`${f.name} folder actions`}
+                  className="absolute inset-y-0 end-0 my-auto flex size-5 items-center justify-center rounded opacity-0 hover:bg-accent focus-visible:opacity-100 group-hover/folder:opacity-100 data-[state=open]:opacity-100"
+                >
+                  <MoreHorizontal className="size-3.5" />
+                </button>
+              </DropdownMenu.Trigger>
+              <DropdownMenu.Portal>
+                <DropdownMenu.Content
+                  align="start"
+                  sideOffset={4}
+                  className="z-50 min-w-32 rounded-md border bg-popover p-1 text-sm text-popover-foreground shadow-md"
+                >
+                  <DropdownMenu.Item
+                    onSelect={() => setTimeout(() => setRenaming(true))}
+                    className="cursor-pointer rounded px-2 py-1 outline-none data-[highlighted]:bg-accent"
+                  >
+                    Rename
+                  </DropdownMenu.Item>
+                  <DropdownMenu.Item
+                    onSelect={() => setTimeout(() => setPicking(true))}
+                    className="cursor-pointer rounded px-2 py-1 outline-none data-[highlighted]:bg-accent"
+                  >
+                    {f.icon ? "Change icon" : "Set icon"}
+                  </DropdownMenu.Item>
+                  <DropdownMenu.Item
+                    disabled={first}
+                    onSelect={() => void folderStore.nudge(f.id, -1)}
+                    className="cursor-pointer rounded px-2 py-1 outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[highlighted]:bg-accent"
+                  >
+                    Move up
+                  </DropdownMenu.Item>
+                  <DropdownMenu.Item
+                    disabled={last}
+                    onSelect={() => void folderStore.nudge(f.id, 1)}
+                    className="cursor-pointer rounded px-2 py-1 outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[highlighted]:bg-accent"
+                  >
+                    Move down
+                  </DropdownMenu.Item>
+                  <DropdownMenu.Item
+                    onSelect={() => {
+                      if (top.length === 0 || window.confirm(`Delete "${f.name}"? Its ${top.length} conversation(s) move to Recent.`))
+                        void folderStore.remove(f.id);
+                    }}
+                    className="cursor-pointer rounded px-2 py-1 text-destructive outline-none data-[highlighted]:bg-destructive/10"
+                  >
+                    Delete folder
+                  </DropdownMenu.Item>
+                </DropdownMenu.Content>
+              </DropdownMenu.Portal>
+            </DropdownMenu.Root>
+          )}
           </span>
-        {!builtin && (
-          <DropdownMenu.Root open={menuOpen} onOpenChange={setMenuOpen}>
-            <DropdownMenu.Trigger asChild>
+        </div>
+        {shown.length > 0 || open ? (
+          <div className="ps-3">
+            {open && f.rows.length === 0 && (
+              <p className="px-2 py-1 text-xs text-muted-foreground">
+                {builtin ? "Star a conversation to pin it here." : "Drag conversations here."}
+              </p>
+            )}
+            {shown.map(({ session: s, depth, childCount }) => (
+              <SessionRow
+                key={s.id}
+                session={s}
+                depth={depth}
+                childCount={childCount}
+                active={s.id === currentId}
+                labelMode={labelMode}
+              />
+            ))}
+            {open && (
               <button
                 type="button"
-                aria-label={`${f.name} folder actions`}
-                className="absolute inset-y-0 end-0 my-auto flex size-5 items-center justify-center rounded opacity-0 hover:bg-accent focus-visible:opacity-100 group-hover/folder:opacity-100 data-[state=open]:opacity-100"
+                data-testid="folder-new-session"
+                onClick={() => folderStore.newIn(f.id)}
+                className="flex h-6 w-full items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground/80 hover:bg-accent/60 hover:text-foreground"
               >
-                <MoreHorizontal className="size-3.5" />
+                <Plus className="size-3.5" aria-hidden /> New conversation
               </button>
-            </DropdownMenu.Trigger>
-            <DropdownMenu.Portal>
-              <DropdownMenu.Content
-                align="start"
-                sideOffset={4}
-                className="z-50 min-w-32 rounded-md border bg-popover p-1 text-sm text-popover-foreground shadow-md"
-              >
-                <DropdownMenu.Item
-                  onSelect={() => setTimeout(() => setRenaming(true))}
-                  className="cursor-pointer rounded px-2 py-1 outline-none data-[highlighted]:bg-accent"
-                >
-                  Rename
-                </DropdownMenu.Item>
-                <DropdownMenu.Item
-                  onSelect={() => setTimeout(() => setPicking(true))}
-                  className="cursor-pointer rounded px-2 py-1 outline-none data-[highlighted]:bg-accent"
-                >
-                  {f.icon ? "Change icon" : "Set icon"}
-                </DropdownMenu.Item>
-                <DropdownMenu.Item
-                  onSelect={() => {
-                    if (top.length === 0 || window.confirm(`Delete "${f.name}"? Its ${top.length} conversation(s) move to Recent.`))
-                      void folderStore.remove(f.id);
-                  }}
-                  className="cursor-pointer rounded px-2 py-1 text-destructive outline-none data-[highlighted]:bg-destructive/10"
-                >
-                  Delete folder
-                </DropdownMenu.Item>
-              </DropdownMenu.Content>
-            </DropdownMenu.Portal>
-          </DropdownMenu.Root>
-        )}
-        </span>
-      </div>
-      {shown.length > 0 || open ? (
-        <div className="ps-3">
-          {open && f.rows.length === 0 && (
-            <p className="px-2 py-1 text-xs text-muted-foreground">
-              {builtin ? "Star a conversation to pin it here." : "Drag conversations here."}
-            </p>
-          )}
-          {shown.map(({ session: s, depth, childCount }) => (
-            <SessionRow
-              key={s.id}
-              session={s}
-              depth={depth}
-              childCount={childCount}
-              active={s.id === currentId}
-              labelMode={labelMode}
-            />
-          ))}
-          {open && (
-            <button
-              type="button"
-              data-testid="folder-new-session"
-              onClick={() => folderStore.newIn(f.id)}
-              className="flex h-6 w-full items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground/80 hover:bg-accent/60 hover:text-foreground"
-            >
-              <Plus className="size-3.5" aria-hidden /> New conversation
-            </button>
-          )}
-        </div>
-      ) : null}
-    </DropZone>
+            )}
+          </div>
+        ) : null}
+      </DropZone>
+    </div>
   );
 }
 
@@ -447,6 +503,7 @@ export const Sidebar = memo(function Sidebar() {
   // Each conversation lands in exactly one section.
   const fstate = useFolders();
   const { folders: folderSections, recent: recentRows } = buildFolders(rows, fstate);
+  const userIds = fstate.folders.filter((f) => f.kind === "user").map((f) => f.id);
   const searching = query.trim() !== "" || providerFilter.length > 0;
   const [filtersOpen, setFiltersOpen] = useState(false);
 
@@ -635,6 +692,8 @@ export const Sidebar = memo(function Sidebar() {
             <FolderSectionView
               key={f.id}
               section={f}
+              first={f.id === userIds[0]}
+              last={f.id === userIds.at(-1)}
               open={searching || !fstate.collapsed[f.id]}
               currentId={currentId}
               labelMode={labelMode}

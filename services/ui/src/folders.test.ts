@@ -169,6 +169,31 @@ describe("folder edits", () => {
     expect(calls[0]).toMatchObject({ method: "PATCH", body: JSON.stringify({ position: 0 }) });
   });
 
+  it("reorders below a folder, to the top via Starred, and by nudging", async () => {
+    const PLAY = { ...HOME, id: "f-play", name: "Play", position: 3 };
+    const calls = stubFetch({ folders: [STARRED_FOLDER, WORK, HOME, PLAY], placements: {} });
+    await folderStore.load();
+    const order = () => folderStore.get().folders.map((f) => f.id);
+    await folderStore.reorder(WORK.id, PLAY.id, true);
+    expect(order()).toEqual([STARRED, HOME.id, PLAY.id, WORK.id]);
+    await folderStore.reorder(PLAY.id, STARRED, true);
+    expect(order()).toEqual([STARRED, PLAY.id, HOME.id, WORK.id]);
+    await folderStore.nudge(HOME.id, 1);
+    expect(order()).toEqual([STARRED, PLAY.id, WORK.id, HOME.id]);
+    expect(calls.filter((c) => c.method === "PATCH")).toHaveLength(3);
+  });
+
+  it("a reorder that changes nothing sends nothing", async () => {
+    const calls = stubFetch({ folders: [STARRED_FOLDER, WORK, HOME], placements: {} });
+    await folderStore.load();
+    expect(await folderStore.reorder(WORK.id, HOME.id)).toBe(false);
+    expect(await folderStore.reorder(WORK.id, STARRED, true)).toBe(false);
+    expect(await folderStore.reorder(WORK.id, STARRED)).toBe(false);
+    expect(await folderStore.nudge(WORK.id, -1)).toBe(false);
+    expect(await folderStore.nudge(HOME.id, 1)).toBe(false);
+    expect(calls.filter((c) => c.method === "PATCH")).toHaveLength(0);
+  });
+
   it("positionBetween covers both, one or no neighbours", () => {
     expect(positionBetween(1, 2)).toBe(1.5);
     expect(positionBetween(3, undefined)).toBe(4);
