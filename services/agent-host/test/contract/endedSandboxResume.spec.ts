@@ -62,7 +62,7 @@ describe("resume-on-missing-pod after end()", () => {
     }
   });
 
-  it("still resumes a live conversation's idle-suspended Sandbox", async () => {
+  it("still resumes a running conversation whose pod is gone", async () => {
     const root = mkdtempSync(join(tmpdir(), "live-resume-"));
     try {
       const { provisioner, sessions } = harness(root);
@@ -70,6 +70,22 @@ describe("resume-on-missing-pod after end()", () => {
       expect(sessions.isEnded?.(conv.id)).toBe(false);
       await resumeUnlessEnded(sessions, provisioner, conv.id, conv.sandbox)();
       expect(provisioner.resume).toHaveBeenCalledWith(conv.sandbox);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not resume the Sandbox of a conversation the idle sweep suspended", async () => {
+    const root = mkdtempSync(join(tmpdir(), "suspended-resume-"));
+    try {
+      const { provisioner, sessions } = harness(root);
+      const conv = await sessions.start("thread-suspended-1");
+      const ensure = resumeUnlessEnded(sessions, provisioner, conv.id, conv.sandbox);
+      await sessions.suspend(conv.id);
+
+      // Only revive() may bring it back, since it also claims the row.
+      await expect(ensure()).rejects.toMatchObject({ code: 404 });
+      expect(provisioner.resume).not.toHaveBeenCalled();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

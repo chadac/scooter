@@ -21,19 +21,23 @@ const log = logger("resume-guard");
  * A registry read failure resumes anyway: a stuck turn on a live conversation is worse than a pod
  * the orphan reap collects.
  *
+ * A suspended conversation is refused too: only revive() may resume it, because revive also claims
+ * the row. A bare resume leaves the row Suspended with its Sandbox Running, which the controller
+ * re-suspends as a zombie.
+ *
  * The refusal carries code 404 so pollForReadyPod fails at once instead of polling to its deadline.
  */
 export function resumeUnlessEnded(
-  sessions: Pick<SessionManager, "isEnded">,
+  sessions: Pick<SessionManager, "isEnded" | "get">,
   provisioner: Pick<SandboxProvisioner, "resume">,
   id: SessionId,
   sandbox: SandboxRef,
   registry?: Pick<ConversationRegistry, "get">,
 ): () => Promise<void> {
-  const refuse = (where: string) =>
-    Object.assign(new Error(`conversation was ended (${where}): ${id}; not recreating its sandbox`), { code: 404 });
+  const refuse = (why: string) =>
+    Object.assign(new Error(`conversation ${id} ${why}; not resuming its sandbox`), { code: 404 });
   return async () => {
-    if (sessions.isEnded?.(id)) throw refuse("on this pod");
+    if (sessions.isEnded?.(id)) throw refuse("was ended on this pod");
     if (registry) {
       let exists = true;
       try {
@@ -41,8 +45,9 @@ export function resumeUnlessEnded(
       } catch (err) {
         log.errorWith("conversations row unreadable; resuming anyway", err, { conversation_id: id });
       }
-      if (!exists) throw refuse("no conversations row");
+      if (!exists) throw refuse("has no conversations row");
     }
+    if (sessions.get(id)?.status === "suspended") throw refuse("is suspended; only revive resumes it");
     await provisioner.resume(sandbox);
   };
 }
