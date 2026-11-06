@@ -652,6 +652,7 @@ let
       contribs.aws = lib.mkForce { enable = false; };
       contribs.shares = lib.mkForce { enable = false; };
       contribs.ssh = lib.mkForce { enable = false; };
+      contribs.mcpservers = lib.mkForce { enable = false; };
       contribs.gcp = lib.mkForce { enable = false; };
       contribs.github.userAuth.enable = lib.mkForce false;
       contribs.gitlab.userAuth.enable = lib.mkForce false;
@@ -700,7 +701,11 @@ let
     ++ (if countNamed awsOffBrokerEnv "GITLAB_OAUTH_REDIRECT_URL" == 0 then [ ]
         else [ "gitlab.userAuth off: broker.env.GITLAB_OAUTH_REDIRECT_URL still set — contrib/gitlab/deployment.nix is not gated on userAuth" ])
     ++ (if builtins.all (c: countNamed (c.env or [ ]) "AWS_ENABLED" == 0) awsOffCtrs then [ ]
-        else [ "aws-off: broker.env.AWS_ENABLED present — contrib env is not gated on the contrib's own enable" ]);
+        else [ "aws-off: broker.env.AWS_ENABLED present — contrib env is not gated on the contrib's own enable" ])
+    ++ (if countNamed brokerEnv "MCPSERVERS_ENABLED" == 1 then [ ]
+        else [ "broker.env.MCPSERVERS_ENABLED missing with mcpservers on — the sandbox cannot read the owner's servers" ])
+    ++ (if builtins.all (c: countNamed (c.env or [ ]) "MCPSERVERS_ENABLED" == 0) awsOffCtrs then [ ]
+        else [ "mcpservers-off: broker.env.MCPSERVERS_ENABLED present — contrib env is not gated on the contrib's own enable" ]);
 
   # A contrib's platform module reaches the sandbox pod through the manifest-overlay
   # ConfigMap, and with aws off none of aws's does (an unsatisfiable volume would leave

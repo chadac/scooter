@@ -25,6 +25,7 @@
     ./jira/contrib.nix
     ./kagi/contrib.nix
     ./marimo/contrib.nix
+    ./mcpservers/contrib.nix
     ./personalization/contrib.nix
     ./shares/contrib.nix
     ./skills/contrib.nix

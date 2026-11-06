@@ -77,8 +77,8 @@
         ],
         "name": "marimo-0.25.1"
       },
-      "scooter-skills-node": {
-        "attr": "scooter-skills-node",
+      "scooter-node": {
+        "attr": "scooter-node",
         "drv": "/nix/store/i2p2vcalxpyikyrihlf83ccvyn73rfg4-nodejs-24.21.0.drv",
         "output": "out",
         "bins": [
@@ -183,8 +183,8 @@
         ],
         "name": "marimo-0.25.1"
       },
-      "scooter-skills-node": {
-        "attr": "scooter-skills-node",
+      "scooter-node": {
+        "attr": "scooter-node",
         "drv": "/nix/store/pbpcbj48qdzmxzlj4p4mnfy226dq09h7-nodejs-24.21.0.drv",
         "output": "out",
         "bins": [
@@ -289,8 +289,8 @@
         ],
         "name": "marimo-0.25.1"
       },
-      "scooter-skills-node": {
-        "attr": "scooter-skills-node",
+      "scooter-node": {
+        "attr": "scooter-node",
         "drv": "/nix/store/a7mzwdph5vkavini0lj77xph53qhgjlf-nodejs-24.21.0.drv",
         "output": "out",
         "bins": [

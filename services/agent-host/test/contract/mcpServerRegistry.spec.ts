@@ -13,6 +13,8 @@ import {
   offeredMcpServers,
   fingerprintOffered,
   MCP_MANIFEST_PATH,
+  MCP_RUNTIME_MANIFEST_PATH,
+  mergeMcpManifests,
   type ExecLike,
   type McpServerDescriptor,
 } from "../../src/agent/mcpServerRegistry.js";
@@ -41,8 +43,8 @@ const EMPTY = JSON.stringify({ servers: [] });
 type Req = { command: string; args?: string[] };
 type Res = { stdout: string; stderr: string; exitCode: number };
 
-/** A pod: `download` reads the manifest (null = missing), `systemctl is-active` reports `states`, anything else succeeds. */
-function fakePod(opts: { manifest?: string | null; states?: Record<string, string>; on?: (req: Req) => Res | undefined } = {}) {
+/** A pod: `download` reads the manifests (null = missing), `systemctl is-active` reports `states`, anything else succeeds. */
+function fakePod(opts: { manifest?: string | null; runtime?: string | null; states?: Record<string, string>; on?: (req: Req) => Res | undefined } = {}) {
   const calls: Req[] = [];
   const exec: ExecLike = {
     execute: vi.fn(async (req: Req): Promise<Res> => {
@@ -59,15 +61,19 @@ function fakePod(opts: { manifest?: string | null; states?: Record<string, strin
     download: vi.fn(async (path: string): Promise<string> => {
       const req = { command: "download", args: [path] };
       calls.push(req);
-      expect(path).toBe(MCP_MANIFEST_PATH);
+      expect([MCP_MANIFEST_PATH, MCP_RUNTIME_MANIFEST_PATH]).toContain(path);
       const custom = opts.on?.(req);
       if (custom && custom.exitCode !== 0) throw new Error(`download ${path}: ${custom.stderr}`);
       if (custom) return custom.stdout;
-      if (opts.manifest === null) throw new Error(`download ${path}: No such file or directory`);
-      return opts.manifest ?? MANIFEST;
+      const body = path === MCP_MANIFEST_PATH
+        ? (opts.manifest === undefined ? MANIFEST : opts.manifest)
+        : (opts.runtime === undefined ? "" : opts.runtime);
+      if (body === null) throw new Error(`download ${path}: No such file or directory`);
+      return body;
     }),
   };
-  return { exec, calls, reads: () => calls.filter((c) => c.command === "download").length };
+  const isRead = (c: Req) => c.command === "download" && c.args?.[0] === MCP_MANIFEST_PATH;
+  return { exec, calls, reads: () => calls.filter(isRead).length };
 }
 
 function make(exec: ExecLike, opts?: { ttlMs?: number; now?: () => number }) {
@@ -204,6 +210,50 @@ describe("McpServerRegistry", () => {
 
   it("reports an unknown server rather than pretending it started", async () => {
     await expect(make(fakePod().exec).ensureStarted("conv-1", "nope")).resolves.toBe(false);
+  });
+});
+
+describe("mergeMcpManifests", () => {
+  const runtimeEntry = (over: Partial<McpServerDescriptor>) => entry({ unit: `mcp-user@${over.name}`, ...over });
+
+  it("appends runtime servers after the declared ones", () => {
+    const got = mergeMcpManifests([entry()], [runtimeEntry({ name: "fetch", port: 9799 })]);
+    expect(got.map((d) => d.name)).toEqual(["alpha", "fetch"]);
+  });
+
+  it("keeps the declared server when a runtime one takes its name", () => {
+    const got = mergeMcpManifests([entry()], [runtimeEntry({ name: "alpha", port: 9799 })]);
+    expect(got).toEqual([entry()]);
+  });
+
+  it("drops a runtime server on a declared server's port, which it could never bind", () => {
+    const got = mergeMcpManifests([entry()], [runtimeEntry({ name: "fetch", port: 9700 })]);
+    expect(got).toEqual([entry()]);
+  });
+});
+
+describe("McpServerRegistry with runtime servers", () => {
+  const RUNTIME = JSON.stringify({ servers: [entry({ name: "fetch", port: 9799, unit: "mcp-user@fetch" })] });
+
+  it("lists runtime servers beside the declared ones", async () => {
+    const pod = fakePod({ runtime: RUNTIME });
+    expect((await make(pod.exec).list("c")).map((d) => d.unit)).toEqual(["mcp-alpha", "mcp-user@fetch"]);
+  });
+
+  it("lists runtime servers when nothing is declared", async () => {
+    const pod = fakePod({ manifest: EMPTY, runtime: RUNTIME });
+    expect((await make(pod.exec).list("c")).map((d) => d.name)).toEqual(["fetch"]);
+  });
+
+  it("treats an unreadable runtime manifest as none, since older images have none", async () => {
+    const pod = fakePod({ runtime: null });
+    expect((await make(pod.exec).running("c")).map((d) => d.name)).toEqual(["alpha"]);
+  });
+
+  it("starts a runtime server through scooter-mcp like a declared one", async () => {
+    const pod = fakePod({ runtime: RUNTIME, states: { "mcp-user@fetch": "inactive" } });
+    expect(await make(pod.exec).ensureStarted("c", "fetch")).toBe(true);
+    expect(pod.calls).toContainEqual({ command: "scooter-mcp", args: ["start", "fetch"] });
   });
 });
 

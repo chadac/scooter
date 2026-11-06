@@ -240,6 +240,10 @@
             assert builtins.elem "contrib/skills/sandbox.nix" (derive [ ]).treeRelative;
             assert lib.any (p: (p.name or "") == "scooter-skills")
               shipped.nixos.config.environment.systemPackages;
+            # mcpservers ships its sync service and the units it starts.
+            assert builtins.elem "contrib/mcpservers/sandbox.nix" (derive [ ]).treeRelative;
+            assert shipped.nixos.config.systemd.services ? "scooter-mcp-servers-sync";
+            assert shipped.nixos.config.systemd.services ? "mcp-user@";
             assert shipped.nixos.config.systemd.services ? "scooter-aws-config";
             assert skillCfg.environment.etc ? "scooter/skills/echo-skill";
             assert builtins.elem "skill-dirs/module.nix"
@@ -402,6 +406,7 @@
             contrib-shares = contribs.packages.shares.broker;
             contrib-ssh = contribs.packages.ssh.broker;
             contrib-skills = contribs.packages.skills.broker;
+            contrib-mcpservers = contribs.packages.mcpservers.broker;
 
             # nix build .#contribs-all -> every variant of every contrib
             contribs-all = contribsAll;
@@ -559,6 +564,7 @@
             contrib-shares = contribs.packages.shares.broker;
             contrib-ssh = contribs.packages.ssh.broker;
             contrib-skills = contribs.packages.skills.broker;
+            contrib-mcpservers = contribs.packages.mcpservers.broker;
             # Every shipped handler and provider imports in its service's runtime env.
             webhooks-entrypoints = import ./nix/check-entrypoints.nix {
               inherit pkgs; name = "webhooks-entrypoints"; package = p.scooter-webhooks; bin = "agent-webhooks"; group = "scooter_webhooks.handlers";

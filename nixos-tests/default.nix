@@ -39,6 +39,8 @@ in
   dev-env-service-persist = runTest ./service-persist.nix;
   # The mcpServers option: unit, discovery manifest, auto-assigned ports, open ports and the stdio wrapper.
   dev-env-mcp-servers = runTest ./mcp-servers.nix;
+  # contrib/mcpservers' sandbox half: sync, manifest merge, changes.
+  dev-env-contrib-mcpservers = runTest ./contrib-mcpservers.nix;
   # The mcpServers port assertions actually fire (pure eval, no VM).
   dev-env-mcp-server-ports = runTest ./mcp-server-ports.nix;
   dev-env-nix-build-skill = runTest ./nix-build-skill.nix;

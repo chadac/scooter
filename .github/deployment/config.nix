@@ -29,6 +29,7 @@
     jira.enable = true;
     kagi.enable = true;
     marimo.enable = true;
+    mcpservers.enable = true;
     personalization.enable = true;
     shares.enable = true;
     skills.enable = true;

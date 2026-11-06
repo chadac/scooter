@@ -1,7 +1,7 @@
 /**
  * McpServerRegistry: reads a conversation's declared MCP servers from the in-pod
  * discovery manifest (/run/scooter/mcp-servers.json, rendered by the `mcpServers`
- * NixOS option) via the exec API and drives their systemd units through
+ * NixOS option) and the runtime one beside it via the exec API and drives their systemd units through
  * `scooter-mcp`, plus the pure resolver that turns descriptors into `new_session`
  * entries. Only running servers are offered, since a dead MCP endpoint degrades the
  * whole session, and the offered set carries a fingerprint so the bridge can tell
@@ -16,6 +16,9 @@ const log = logger("mcp-registry");
 
 /** The manifest file the `mcpServers` option renders inside the pod. */
 export const MCP_MANIFEST_PATH = "/run/scooter/mcp-servers.json";
+
+/** Servers registered at runtime, e.g. by contrib/mcpservers. */
+export const MCP_RUNTIME_MANIFEST_PATH = "/run/scooter/mcp-servers.runtime.json";
 
 /** Prefix for sandbox-declared servers, so none can shadow the platform's own. */
 export const SANDBOX_PREFIX = "sandbox-";
@@ -94,6 +97,20 @@ export function parseMcpManifest(json: string): McpServerDescriptor[] {
   }
 }
 
+/** Declared servers plus runtime ones with a free name and port. */
+export function mergeMcpManifests(declared: McpServerDescriptor[], runtime: McpServerDescriptor[]): McpServerDescriptor[] {
+  const names = new Set(declared.map((d) => d.name));
+  const ports = new Set(declared.map((d) => d.port));
+  const out = declared.slice();
+  for (const r of runtime) {
+    if (names.has(r.name) || ports.has(r.port)) continue;
+    names.add(r.name);
+    ports.add(r.port);
+    out.push(r);
+  }
+  return out;
+}
+
 /** How long a successful manifest read stays authoritative, since nothing in the pod signals a `scooter-rebuild`. */
 export const MCP_MANIFEST_TTL_MS = 10_000;
 
@@ -150,17 +167,28 @@ export function createMcpServerRegistry(
     const exec = await execFor(conversationId);
     // The image always renders the manifest, so a failed read is a blip, not none declared.
     const raw = await exec.download(MCP_MANIFEST_PATH);
-    const descriptors = parseMcpManifest(raw);
-    if (listedCount(raw) !== descriptors.length) {
+    const declared = parseMcpManifest(raw);
+    if (listedCount(raw) !== declared.length) {
       log.warn("the MCP manifest has entries the agent-host cannot use; check the rendered file", {
         conversation_id: conversationId,
         path: MCP_MANIFEST_PATH,
         bytes: raw.length,
-        usable: descriptors.length,
+        usable: declared.length,
       });
     }
+    const descriptors = mergeMcpManifests(declared, parseMcpManifest(await readRuntime(exec, conversationId)));
     cache.set(conversationId, { descriptors, at: now() });
     return descriptors;
+  }
+
+  /** The runtime manifest, or "" when unreadable (older images). */
+  async function readRuntime(exec: ExecLike, conversationId: string): Promise<string> {
+    try {
+      return await exec.download(MCP_RUNTIME_MANIFEST_PATH);
+    } catch (err) {
+      log.debug("could not read the runtime MCP manifest", { conversation_id: conversationId, error: formatError(err) });
+      return "";
+    }
   }
 
   async function list(conversationId: string, force = false): Promise<McpServerDescriptor[]> {

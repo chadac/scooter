@@ -44,3 +44,12 @@ label is the first 8 characters of the conversation id), so a page a sandbox ser
 script the Scooter UI or another conversation's services. That needs a wildcard DNS record
 and certificate for `*.<sandboxDomain>`, authenticated by the ingress like the main host.
 Sandboxes created before the setting changes keep their old URLs until they're recreated.
+
+## MCP servers from Settings
+
+With the `mcpservers` contrib enabled, Settings → **MCP servers** lists servers to start
+in every sandbox you own: an **npm** package (run with `npx -y`), a **PyPI** package (run
+with `uv tool run`) or a **nixpkgs** attribute (run with `nix run`), each with optional
+arguments. The agent gets a server's tools as `sandbox-<name>` once it's running. A change
+reaches running sandboxes within a couple of minutes. There's no way to give these servers
+an API key yet, and anything in their arguments is readable by the agent.

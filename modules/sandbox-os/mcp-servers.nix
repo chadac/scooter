@@ -1,8 +1,10 @@
 # mcpServers.<name>: declarative in-pod MCP servers registered with the agent.
 # One option renders both the systemd unit `mcp-<name>` and the discovery
 # manifest /run/scooter/mcp-servers.json the agent-host reads to learn each
-# server's port. The agent-host proxies to podIP:port; the sandbox-isolation
-# NetworkPolicy admits only the agent-host to their reserved port range. Unlike
+# server's port. Servers set up at runtime are listed in
+# /run/scooter/mcp-servers.runtime.json, which the agent-host merges in, a
+# declared server winning a name. The agent-host proxies to podIP:port; the
+# sandbox-isolation NetworkPolicy admits only the agent-host to their reserved port range. Unlike
 # web services, units are restartIfChanged and ports are auto-assigned.
 
 { config, lib, pkgs, ... }:
@@ -46,12 +48,16 @@ let
 
   stateFile = "/workspace/.scooter/mcp.json";
 
+  # Writable; empty until a runtime server is registered.
+  runtimeManifest = "/run/scooter/mcp-servers.runtime.json";
+
   scooterMcp = pkgs.writeShellApplication {
     name = "scooter-mcp";
     runtimeInputs = [ pkgs.systemd pkgs.jq pkgs.coreutils ];
     text = ''
       set -euo pipefail
-      MANIFEST=/run/scooter/mcp-servers.json
+      DECLARED=/run/scooter/mcp-servers.json
+      RUNTIME=${runtimeManifest}
       STATE=${stateFile}
 
       # Persisted autostart set on the workspace PVC, read by the boot restore oneshot after a resume recreates the pod.
@@ -93,9 +99,12 @@ let
       EOF
       }
 
-      have_manifest() { [ -s "$MANIFEST" ] || { echo "scooter-mcp: no MCP servers declared (manifest $MANIFEST missing)" >&2; exit 1; }; }
-      unit_of() { jq -r --arg n "$1" '.servers[] | select(.name==$n) | .unit' "$MANIFEST"; }
-      port_of() { jq -r --arg n "$1" '.servers[] | select(.name==$n) | .port' "$MANIFEST"; }
+      # Declared then runtime servers; a declared name wins.
+      MANIFEST=$(jq -cs '{servers: ((.[0].servers // []) + (.[1].servers // []) | unique_by(.name))}' \
+        "$DECLARED" <(cat "$RUNTIME" 2>/dev/null || echo '{}') 2>/dev/null || echo '{"servers":[]}')
+      have_manifest() { [ -s "$DECLARED" ] || { echo "scooter-mcp: no MCP servers declared (manifest $DECLARED missing)" >&2; exit 1; }; }
+      unit_of() { jq -r --arg n "$1" '.servers[] | select(.name==$n) | .unit' <<< "$MANIFEST"; }
+      port_of() { jq -r --arg n "$1" '.servers[] | select(.name==$n) | .port' <<< "$MANIFEST"; }
       resolve() {
         have_manifest
         u=$(unit_of "$1")
@@ -113,7 +122,7 @@ let
           while IFS=$'\t' read -r n u p; do
             [ -n "$n" ] || continue
             out="$out"$'\n'"$(printf '%-16s %-9s %s' "$n" "$(state "$u")" "$p")"
-          done <<< "$(jq -r '.servers[] | "\(.name)\t\(.unit)\t\(.port)"' "$MANIFEST")"
+          done <<< "$(jq -r '.servers[] | "\(.name)\t\(.unit)\t\(.port)"' <<< "$MANIFEST")"
           printf '%s\n' "$out" || true
           ;;
         status)
@@ -285,10 +294,12 @@ in
     systemd.tmpfiles.rules = [
       "d /run/scooter 0755 root root -"
       "L+ /run/scooter/mcp-servers.json - - - - ${manifestFile}"
+      "f ${runtimeManifest} 0644 root root -"
     ];
+    # The agent-host starts runtime servers through it too.
+    environment.systemPackages = [ scooterMcp ];
   }
   (lib.mkIf (enabled != { }) {
-    environment.systemPackages = [ scooterMcp ];
 
     # The agent-host dials podIP:port; the NetworkPolicy admits only it to this range.
     networking.firewall.allowedTCPPorts = resolvedPorts;

@@ -4,7 +4,7 @@
 let
   cfg = config.programs.scooterSkills;
   # The stub shim keeps Node's closure out of the image.
-  node = pkgs.scooter-skills-node or pkgs.nodejs;
+  node = pkgs.scooter-node or pkgs.nodejs;
 
   scooterSkills = pkgs.writeShellApplication {
     name = "scooter-skills";
