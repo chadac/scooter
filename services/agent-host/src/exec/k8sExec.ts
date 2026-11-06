@@ -1,6 +1,6 @@
 /**
  * Production SandboxApiClient over the Kubernetes exec API (pods/exec). There is no
- * in-pod server: commands run via the exec subresource and file ops use cat / tee.
+ * in-pod server: commands run via the exec subresource and file ops use cat.
  * Requires `get,create pods/exec` (plus get pods) RBAC on the agent-host SA.
  */
 
@@ -461,23 +461,22 @@ export function createK8sSandboxApiClient(
     },
 
     async upload(path: string, content: string): Promise<void> {
-      const stdin = Readable.from([content]);
-      // `tee <path> >/dev/null` writes stdin to the file.
-      const res = await execRaw(["sh", "-c", `tee ${shellQuote(path)} >/dev/null`], stdin);
+      const res = await execRaw(writeStdinCommand(path), Readable.from([content]));
       if (res.exitCode !== 0) throw new Error(`upload ${path}: ${res.stderr}`);
     },
 
     async uploadBinary(path: string, base64: string): Promise<void> {
       // Stream the base64 over stdin, since a single argv string is capped at MAX_ARG_STRLEN.
-      const dir = posixDirname(path);
-      const stdin = Readable.from([base64]);
-      const res = await execRaw(
-        ["sh", "-c", `mkdir -p ${shellQuote(dir)} && base64 -d > ${shellQuote(path)}`],
-        stdin,
-      );
+      const res = await execRaw(writeStdinCommand(path, "base64 -d"), Readable.from([base64]));
       if (res.exitCode !== 0) throw new Error(`uploadBinary ${path}: ${res.stderr}`);
     },
   };
+}
+
+/** argv piping stdin through `filter` into `path`, creating missing parent directories. */
+export function writeStdinCommand(path: string, filter = "cat"): string[] {
+  const dir = posixDirname(path);
+  return ["sh", "-c", `mkdir -p ${shellQuote(dir)} && ${filter} > ${shellQuote(path)}`];
 }
 
 /** POSIX dirname for sandbox-absolute paths. */

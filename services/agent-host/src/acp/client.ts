@@ -28,6 +28,7 @@ import {
   type UnsupportedSessionUpdate,
 } from "./sessionUpdateFilter.js";
 import { debug, debugError } from "../debug.js";
+import { installAcpSdkErrorLog } from "./sdkErrorLog.js";
 
 // --- Facade types (kept stable for the bridge + fake) -----------------------
 
@@ -337,6 +338,7 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
     }),
   );
 
+  installAcpSdkErrorLog();
   const conn = new ClientSideConnection(makeClient, stream);
 
   await conn.initialize({

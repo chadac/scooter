@@ -1,7 +1,7 @@
 /**
  * ExecBackend: services ACP terminal/* and fs/* by running commands in the
  * session's sandbox pod via the Kubernetes exec API, with no in-pod HTTP server.
- * `run` execs and collects output, `readTextFile`/`writeTextFile` exec `cat`/`tee`,
+ * `run` execs and collects output, `readTextFile`/`writeTextFile` exec `cat`,
  * and `spawn` execs with streamed output. `connectSandbox` resolves a SandboxRef to
  * a pod-exec client; the unit tier injects a fake SandboxApiClient directly.
  */
