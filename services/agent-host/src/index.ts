@@ -874,7 +874,7 @@ export async function main(
   // Hand the tracker's cached epoch to the append fence; undefined narrows the fence to pod
   // identity.
   observedGeneration = (id) => ownership?.guard.observedGeneration?.(id);
-  // The same row read a notification triggers, so a refusal can catch up on an early reassign.
+  // The row read a notification triggers, for a fence refusal.
   refreshGeneration = async (id) =>
     ownership && (await ownership.guard.confirmOwns(id)) ? ownership.guard.observedGeneration(id) : undefined;
   // The assignment table: the agent_host.conversations row, the same store the guard and the

@@ -42,8 +42,7 @@ export interface AppendFence {
   /** The epoch this pod believes it holds `id` under, or undefined when it has observed no
    *  assignment, which narrows the fence to pod identity. */
   generation(id: SessionId): number | undefined;
-  /** Re-read this pod's claim from the row: its generation when this pod holds `id`.
-   *  A refusal retries once under a newer one, since the cache trails a reassign. */
+  /** This pod's generation re-read from the row, if it holds `id`. */
   refresh?(id: SessionId): Promise<number | undefined>;
 }
 
@@ -204,11 +203,11 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
               on conflict (conversation_id, seq) do nothing
             `)
               ).rowCount ?? 0;
-            // Resolved once per attempt, so the predicate and the refusal log agree on the epoch.
+            // Resolved once, so the predicate and the refusal log agree on the epoch presented.
             let presented = config.fence?.generation(id);
             let inserted = await insert(presented);
             if (inserted === 0 && presented !== undefined && config.fence?.refresh) {
-              // Reassigning to this same pod bumps the epoch before its notification lands.
+              // A reassign to this pod can beat its notification.
               const fresh = await config.fence.refresh(id);
               if (fresh !== undefined && fresh > presented) {
                 log.info("append fence: the claim cache trailed the row; retrying under its generation", {
