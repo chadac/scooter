@@ -49,6 +49,8 @@ export interface SessionRegistryConfig {
 export interface SessionRegistry {
   mint(owner: string): Promise<{ sessionId: string; token: string }>;
   attach(sessionId: string, token: string, socket: ContainerSocket): AttachResult;
+  /** Load the owner's stored session into memory if absent, so a restart keeps its id. */
+  recover(owner: string): Promise<void>;
   /** Attach a device-authenticated container by its verified `owner` (the owner's current session, else a fresh persisted one, since `urlSessionId` may be stale), returning the sessionId actually attached. */
   attachAuthenticated(urlSessionId: string, owner: string, socket: ContainerSocket): AttachResult;
   detach(sessionId: string): void;
@@ -101,11 +103,20 @@ export function createSessionRegistry(config: SessionRegistryConfig): SessionReg
       return { ok: true, sessionId };
     },
 
+    async recover(owner) {
+      if (byOwner.has(owner)) return;
+      const row = await store.getByOwner(owner).catch(() => null);
+      // A mint or attach during the lookup wins over the stored row.
+      if (!row || byOwner.has(owner)) return;
+      sessions.set(row.sessionId, { owner });
+      byOwner.set(owner, row.sessionId);
+    },
+
     attachAuthenticated(urlSessionId, owner, socket) {
       // Attach by the verified owner, never by the URL id, which may be stale or belong to another owner.
       let sessionId = byOwner.get(owner);
       if (!sessionId) {
-        // A registered container dialling in after a restart gets a fresh persisted session rather than needing a re-mint.
+        // An owner with no stored session gets a fresh one, not a re-mint.
         sessionId = randomUUID();
         sessions.set(sessionId, { owner });
         byOwner.set(owner, sessionId);

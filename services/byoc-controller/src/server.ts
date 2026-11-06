@@ -289,7 +289,10 @@ export function createServer(config: ByocServerConfig): ByocServer {
     async authorizeDevice(deviceId, nonce, signature) {
       if (!devices) return { ok: false, reason: "device auth not enabled" };
       const res = await devices.verify(deviceId, nonce, signature);
-      return res.ok ? { ok: true, owner: res.owner } : { ok: false, reason: res.reason };
+      if (!res.ok) return { ok: false, reason: res.reason };
+      // The attach that follows is sync, so restore the owner's session first.
+      await registry.recover(res.owner);
+      return { ok: true, owner: res.owner };
     },
 
     close() {

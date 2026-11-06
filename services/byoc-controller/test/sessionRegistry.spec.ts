@@ -159,6 +159,37 @@ describe("BYOC session registry", () => {
     expect(store.rows.get("alice")?.sessionId).toBe(r.ok ? r.sessionId : "?");
   });
 
+  it("after a restart, recover + device attach reclaims the STORED session id", async () => {
+    const { sessionId } = await reg.mint("alice");
+    // A fresh registry over the same store is what a controller restart looks like.
+    const restarted = createSessionRegistry({ store, secret: SECRET });
+    await restarted.recover("alice");
+    const sock = fakeSocket();
+    const r = restarted.attachAuthenticated(sessionId, "alice", sock);
+    expect(r.ok && r.sessionId).toBe(sessionId);
+    expect(restarted.resolveByOwner("alice")?.socket).toBe(sock);
+    expect(store.rows.get("alice")?.sessionId).toBe(sessionId);
+  });
+
+  it("recover never replaces a session already in memory", async () => {
+    await reg.mint("alice");
+    const current = await reg.mint("alice");
+    store.rows.set("alice", { sessionId: "older-row", status: "offline" });
+    await reg.recover("alice");
+    expect(reg.resolveByOwner("alice")?.sessionId).toBe(current.sessionId);
+  });
+
+  it("recover is a no-op when the store fails or has no row", async () => {
+    const failing = createSessionRegistry({
+      store: { ...store, getByOwner: async () => { throw new Error("db down"); } },
+      secret: SECRET,
+    });
+    await failing.recover("alice");
+    expect(failing.resolveByOwner("alice")).toBeNull();
+    await reg.recover("nobody");
+    expect(reg.resolveByOwner("nobody")).toBeNull();
+  });
+
   it("resolveByOwner returns null for an owner with no session", () => {
     expect(reg.resolveByOwner("nobody")).toBeNull();
   });

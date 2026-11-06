@@ -185,6 +185,33 @@ describe("BYOC controller HTTP surface", () => {
     expect(auth.ok && auth.owner).toBe("alice");
   });
 
+  it("a device reconnecting after a controller restart keeps its session id", async () => {
+    const store = fakeStore();
+    const deviceStore = createMemoryDeviceStore();
+    const boot = () => {
+      const r = createSessionRegistry({ store, secret: SECRET });
+      const d = createDeviceAuth({ store: deviceStore, secret: SECRET });
+      return { registry: r, server: createServer({ registry: r, relay: createRunRelay({ registry: r }), secret: SECRET, devices: d }) };
+    };
+    const first = boot();
+    const dev = laptop();
+    const { sessionId } = await first.registry.mint("alice");
+    const reg = await first.server.handle({
+      method: "POST",
+      path: "/byoc/devices",
+      body: { joinToken: mintJoinToken("alice", SECRET), publicKey: dev.pem },
+    });
+    const deviceId = (reg.json as { deviceId: string }).deviceId;
+
+    const second = boot();
+    const { nonce } = (await second.server.handle({ method: "GET", path: "/byoc/challenge" })).json as { nonce: string };
+    expect((await second.server.authorizeDevice(deviceId, nonce, dev.sign(nonce))).ok).toBe(true);
+    const r = second.registry.attachAuthenticated(sessionId, "alice", { send() {}, close() {} });
+    expect(r.ok && r.sessionId).toBe(sessionId);
+    first.server.close();
+    second.server.close();
+  });
+
   it("GET /byoc/devices lists the AUTHENTICATED caller's devices only", async () => {
     const a = laptop(), b = laptop();
     await req("POST", "/byoc/devices", { body: { joinToken: mintJoinToken("alice", SECRET), publicKey: a.pem, label: "alice-laptop" } });
