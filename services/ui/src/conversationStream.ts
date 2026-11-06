@@ -16,7 +16,8 @@ import type { AgentHostConfig, ConversationScope, ConversationView } from "./cli
 export type ConversationStreamFrame =
   | { kind: "snapshot"; conversations: ConversationView[] }
   | { kind: "upsert"; conversation: ConversationView }
-  | { kind: "remove"; id: string };
+  | { kind: "remove"; id: string }
+  | { kind: "folders" };
 
 export interface ConversationStreamCallbacks {
   /** The initial full visible list (replaces the sidebar's known set). */
@@ -25,6 +26,8 @@ export interface ConversationStreamCallbacks {
   onUpsert(conversation: ConversationView): void;
   /** A conversation that is gone, by server id; the row carries no data because it no longer exists. */
   onRemove(id: string): void;
+  /** The viewer's folders changed (another tab or device); refetch them. */
+  onFolders?(): void;
 }
 
 export interface ConversationSubscription {
@@ -60,6 +63,7 @@ export function subscribeConversations(
     if (frame.kind === "snapshot") callbacks.onSnapshot(frame.conversations);
     else if (frame.kind === "upsert") callbacks.onUpsert(frame.conversation);
     else if (frame.kind === "remove" && frame.id) callbacks.onRemove(frame.id);
+    else if (frame.kind === "folders") callbacks.onFolders?.();
   };
 
   // The watchdog aborts the fetch, which surfaces as a read error and reconnects through the

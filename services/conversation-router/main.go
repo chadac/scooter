@@ -214,6 +214,7 @@ func main() {
 	go runConversationListener(ctx, store, links, hub, direct.invalidate)
 	go runLinkListener(ctx, store, links, hub)
 	go runAwaitingListener(ctx, store, links, hub)
+	go runFolderListener(ctx, store, hub)
 
 	handler := newRouter(ctx, cfg, resolver, creator, trusted, spawner, store, writeStore, links, hub)
 	mainGate, sandboxGate := buildGateways(kubeCfg, log)
@@ -312,6 +313,24 @@ func newRouter(shutdownCtx context.Context, cfg config, resolver ownerResolver, 
 				serveConversationEvents(w, r, store, links, hub)
 			} else {
 				serveConversationList(w, r, store, links)
+			}
+			return
+		}
+		// Folders and stars are per-user, served here (folders.go).
+		folderID, isFolders := FolderRoute(r.URL.Path)
+		placeID, isPlace := PlacementPut(r.Method, r.URL.Path)
+		if field, id, ok := MetadataPatch(r.Method, r.URL.Path); ok && field == "starred" {
+			placeID, isPlace = id, true
+		}
+		if isFolders || isPlace {
+			if writeStore == nil || store == nil {
+				writeJSONError(w, http.StatusServiceUnavailable, "conversation store unavailable")
+				return
+			}
+			if isFolders {
+				serveFolders(w, r, folderID, writeStore)
+			} else {
+				servePlacement(w, r, placeID, store, writeStore)
 			}
 			return
 		}

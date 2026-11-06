@@ -11,7 +11,7 @@ func bp(b bool) *bool     { return &b }
 // assembleList is the whole GET /conversations body: visibility under "mine" and the metadata-links join.
 func TestAssembleList(t *testing.T) {
 	metas := []ConversationRow{
-		{ID: "a", ThreadID: "a", Title: "Alpha", CreatedAt: 100, LastActivityAt: 900, Owner: sp("alice"), Starred: bp(true),
+		{ID: "a", ThreadID: "a", Title: "Alpha", CreatedAt: 100, LastActivityAt: 900, Owner: sp("alice"),
 			Phase: sp("Assigned"), SandboxRef: sp("conv-aa")},
 		{ID: "b", ThreadID: "b", Title: "Bravo", CreatedAt: 200, LastActivityAt: 800, Owner: sp("bob"),
 			Phase: sp("Suspended"), SandboxRef: sp("conv-bb")},
@@ -49,7 +49,7 @@ func TestAssembleList(t *testing.T) {
 			t.Errorf("status mapping wrong: %q %q", rows[0].Status, rows[1].Status)
 		}
 		a := rows[0]
-		if !a.Starred || a.IdleMs != 100 || a.AgeMs != 900 || a.Sandbox.Name != "conv-aa" {
+		if a.IdleMs != 100 || a.AgeMs != 900 || a.Sandbox.Name != "conv-aa" {
 			t.Errorf("row a projection wrong: %+v", a)
 		}
 		// Distinct sorted sources, full link list.

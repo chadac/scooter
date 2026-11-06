@@ -11,6 +11,7 @@ import { currentConversation, sessionStore } from "./sessions.js";
 import { loadWhoami } from "./client.js";
 import { setUploadLimits } from "./fileUpload.js";
 import { subscribeConversations } from "./conversationStream.js";
+import { folderStore } from "./folders.js";
 import { initTelemetryFromServer, installGlobalErrorHandlers } from "./telemetry.js";
 import { loadContribManifest } from "./contribManifest.js";
 import { installTitleSync } from "./pageTitle.js";
@@ -51,12 +52,15 @@ void loadWhoami({ baseUrl: BASE_URL }).then((me) => {
 subscribeConversations({ baseUrl: BASE_URL }, "all", {
   onSnapshot: (list) => {
     sessionStore.mergeFromServer(list);
+    // A reconnect may have missed folder frames.
+    void folderStore.load();
     chatListStatus.markLoaded();
   },
   // An upsert carries the row's whole link set, re-read when it was pushed, so it owns its own
   // sources/links — but it says nothing about any other row, so it cannot prune. Why: PR #779.
   onUpsert: (c) => sessionStore.mergeFromServer([c], { fullList: false }),
   onRemove: (id) => sessionStore.removeFromServer(id),
+  onFolders: () => void folderStore.load(),
 });
 
 // Deep-link support (?thread=<id>): requestSelect's pending target selects the

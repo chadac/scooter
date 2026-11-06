@@ -14,12 +14,20 @@ const sidebar = {
   title: '[data-testid="session-title"]',
 };
 
-/** The current conversation's star / rename / delete, beside its title in the header. */
+/** The current conversation's star / move / rename / delete, beside its title in the header. */
 const header = {
   deleteButton: '[data-testid="header-conversation"] [data-testid="session-delete"]',
   starButton: '[data-testid="header-conversation"] [data-testid="session-star"]',
   renameButton: '[data-testid="header-conversation"] [data-testid="session-rename"]',
+  moveButton: '[data-testid="header-conversation"] [data-testid="session-move"]',
   renameInput: '[data-testid="header-conversation"] [data-testid="session-rename-input"]',
+};
+
+/** Sidebar sections: Starred and the user's folders, then Recent. */
+const folders = {
+  section: (id: string) => `[data-testid="folder-section"][data-folder-id="${id}"]`,
+  header: '[data-testid="folder-header"]',
+  recent: '[data-testid="recent-section"]',
 };
 
 /** The open conversation's title in the top header, which mirrors the tab title. */
@@ -142,6 +150,47 @@ test.describe("session selector & titles", () => {
     await expect(row).toHaveAttribute("data-starred", "true", { timeout: 10_000 });
     await star.click();
     await expect(row).not.toHaveAttribute("data-starred", "true", { timeout: 10_000 });
+  });
+
+  test("starring files a conversation in Starred, and it stays there after a reload", async ({ chat, page }) => {
+    await chat.open();
+    await chat.send("pin me to the top");
+    await chat.waitForReply(/dummy agent/i);
+
+    const starred = page.locator(folders.section("starred")).locator(sidebar.item).filter({ hasText: /pin me to the top/i });
+    await expect(starred).toHaveCount(0);
+    await page.locator(header.starButton).click();
+    await expect(starred).toHaveCount(1, { timeout: 10_000 });
+    await expect(page.locator(folders.recent).locator(sidebar.item).filter({ hasText: /pin me to the top/i })).toHaveCount(0);
+
+    // Folders are server state, so the star survives a reload.
+    await page.reload();
+    await expect(starred).toHaveCount(1, { timeout: 30_000 });
+    await page.locator(header.starButton).click();
+    await expect(starred).toHaveCount(0, { timeout: 10_000 });
+  });
+
+  test("Move to… files a conversation in a new folder, and deleting the folder returns it to Recent", async ({ chat, page }) => {
+    await chat.open();
+    await chat.send("file me away");
+    await chat.waitForReply(/dummy agent/i);
+    const name = `e2e-folder-${Date.now()}`;
+
+    await page.locator(header.moveButton).click();
+    await page.getByRole("textbox", { name: "Filter folders" }).fill(name);
+    await page.keyboard.press("Enter");
+
+    const folderHeader = page.locator(folders.header).filter({ hasText: name });
+    await expect(folderHeader).toHaveCount(1, { timeout: 10_000 });
+    const folderId = await folderHeader.getAttribute("data-folder-id");
+    const filed = page.locator(folders.section(folderId!)).locator(sidebar.item).filter({ hasText: /file me away/i });
+    await expect(filed).toHaveCount(1, { timeout: 10_000 });
+
+    page.once("dialog", (d) => void d.accept());
+    await page.getByRole("button", { name: `${name} folder actions` }).click();
+    await page.getByRole("menuitem", { name: "Delete folder" }).click();
+    await expect(folderHeader).toHaveCount(0, { timeout: 10_000 });
+    await expect(page.locator(folders.recent).locator(sidebar.item).filter({ hasText: /file me away/i })).toHaveCount(1);
   });
 
   test("new-session button starts a fresh conversation", async ({ chat, page }) => {

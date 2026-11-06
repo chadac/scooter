@@ -37,7 +37,7 @@ export interface Session {
   status?: "running" | "suspended" | "failed" | "ended";
   /** The user renamed this conversation, so the server title is authoritative and the agent's title never overrides it. */
   userTitled?: boolean;
-  /** The user starred this conversation, server-sourced. */
+  /** In the viewer's Starred folder (see setStarredKeys). */
   starred?: boolean;
   /** "private" when only its owner may see and drive it, server-sourced; absent means shared. */
   visibility?: "shared" | "private";
@@ -64,7 +64,6 @@ export type ServerConversation = {
   status?: Session["status"];
   parentId?: string;
   userTitled?: boolean;
-  starred?: boolean;
   visibility?: "shared" | "private";
   runStartedAt?: number;
   lastReplyAt?: number;
@@ -224,6 +223,8 @@ const loadState = (): State => {
 };
 
 let state: State = loadState();
+// Stars come from the folder store, never a server row.
+let starredKeys: ReadonlySet<string> = new Set(state.sessions.filter((s) => s.starred).map(serverKeyOf));
 
 const persist = (s: State) => {
   try {
@@ -488,7 +489,7 @@ export const sessionStore = {
         userTitled,
         serverCreated: true,
         serverId: c.id,
-        starred: c.starred ?? existing?.starred,
+        starred: starredKeys.has(c.id) || undefined,
         visibility: c.visibility ?? existing?.visibility,
         createdAt: c.createdAt ?? existing?.createdAt ?? Date.now(),
         lastActivityAt: c.lastActivityAt ?? existing?.lastActivityAt ?? Date.now(),
@@ -635,21 +636,15 @@ export const sessionStore = {
     });
   },
 
-  /** Optimistically set the star flag and re-sort; the caller persists via setConversationStarred. */
-  setStarred(id: string, starred: boolean) {
-    const s = state.sessions.find((x) => x.id === id);
-    if (!s || s.starred === starred) return;
-    const sessions = state.sessions.map((x) => (x.id === id ? { ...x, starred } : x));
+  /** Mirror the viewer's Starred folder onto the sessions and re-sort. */
+  setStarredKeys(keys: ReadonlySet<string>) {
+    starredKeys = keys;
+    const sessions = state.sessions.map((s) => {
+      const starred = keys.has(serverKeyOf(s)) || undefined;
+      return s.starred === starred ? s : { ...s, starred };
+    });
     sessions.sort(byStarredThenRecent);
-    // A frame queued behind a hold predates this click, so replaying its star flag would undo
-    // it (the pointer is usually still on the tiles when the user stars); the click wins.
-    const key = s.serverId ?? s.id;
-    const pendingFrames = state.pendingFrames?.map((f) =>
-      f.kind === "merge" && f.convs.some((c) => c.id === key)
-        ? { ...f, convs: f.convs.map((c) => (c.id === key ? { ...c, starred: undefined } : c)) }
-        : f,
-    );
-    setState({ ...state, sessions, pendingFrames });
+    setState({ ...state, sessions });
   },
 
   /** Optimistically set a conversation's visibility (and its subagents', which follow it); the caller persists via setConversationVisibility. */
@@ -818,28 +813,6 @@ export function nestSubagents(sessions: Session[], activeId?: string): SidebarRo
     if (expand) for (const child of children) rows.push({ session: child, depth: 1, childCount: 0 });
   }
   return rows;
-}
-
-/** Split the rows into the Starred and Recent sections per conversation (starred if any row of it is), rendering a conversation held twice once, with subagents following their parent. */
-export function splitSections(rows: SidebarRow[]): { starred: SidebarRow[]; recent: SidebarRow[] } {
-  const starredKeys = new Set<string>();
-  for (const r of rows) if (r.session.starred) starredKeys.add(serverKeyOf(r.session));
-
-  const starred: SidebarRow[] = [];
-  const recent: SidebarRow[] = [];
-  const seen = new Set<string>();
-  // undefined means the current parent was a duplicate, so its children are dropped too.
-  let bucket: SidebarRow[] | undefined = recent;
-  for (const r of rows) {
-    const key = serverKeyOf(r.session);
-    if (r.depth === 0) {
-      bucket = seen.has(key) ? undefined : starredKeys.has(key) ? starred : recent;
-    }
-    if (!bucket || seen.has(key)) continue;
-    seen.add(key);
-    bucket.push(r);
-  }
-  return { starred, recent };
 }
 
 export function useSessions(): State {

@@ -110,6 +110,8 @@ let
         location /whoami        { proxy_pass ''${AGENT_HOST_PROXY}; proxy_set_header Host $host; proxy_set_header Connection ""; }
         # Scheduled-tasks CRUD for the Settings page.
         location /scheduled-tasks { proxy_pass ''${AGENT_HOST_PROXY}; proxy_set_header Host $host; proxy_set_header Connection ""; }
+        # Sidebar folders, served by the conversation-router.
+        location /folders       { proxy_pass ''${AGENT_HOST_PROXY}; proxy_set_header Host $host; proxy_set_header Connection ""; }
         # Personal-skills CRUD for the Settings page.
         location /user-skills   { proxy_pass ''${AGENT_HOST_PROXY}; proxy_set_header Host $host; proxy_set_header Connection ""; }
         # Contrib settings tabs reach their broker half as the signed-in user; the

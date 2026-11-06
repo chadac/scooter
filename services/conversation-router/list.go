@@ -95,7 +95,6 @@ func makeListRow(m ConversationRow, ls []Link, now int64) listRow {
 		Visibility:     visibilityOf(m.Visibility),
 		ParentID:       m.ParentID,
 		UserTitled:     deref(m.UserTitled),
-		Starred:        deref(m.Starred),
 		// The UI list ignores sandbox; the owner pod's GET /conversations/:id carries the live detail.
 		Sandbox:         sandboxProjection{Name: derefStr(m.SandboxRef), Namespace: ""},
 		Sources:         sourcesOf(ls),

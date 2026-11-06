@@ -2,7 +2,7 @@
  * The sidebar's row actions address the server by the server's id.
  *
  * A conversation started in this browser keeps its local key as `Session.id` for
- * life (adoptServerId records the server id alongside it), so star, rename and
+ * life (adoptServerId records the server id alongside it), so rename and
  * delete must send the server id to the API while the store stays keyed locally.
  */
 
@@ -14,7 +14,7 @@ import {
   setConversationMinter,
   type Session,
 } from "./sessions.js";
-import { commitRename, isServerBacked, removeSession, toggleStar } from "./sessionActions.js";
+import { commitRename, isServerBacked, removeSession } from "./sessionActions.js";
 
 /** Fake fetch: records every call and answers with `status`. */
 const stubFetch = (status = 200) => {
@@ -58,21 +58,6 @@ describe("sidebar actions address the server by serverId, not the local key", ()
     expect(isServerBacked(s)).toBe(true);
   });
 
-  it("STAR patches /conversations/<serverId>/starred", async () => {
-    const calls = stubFetch();
-    const s = await startedInThisBrowser("conv-B");
-
-    await toggleStar(s);
-
-    expect(calls).toHaveLength(1);
-    expect(calls[0].method).toBe("PATCH");
-    expect(calls[0].url).toContain("/conversations/conv-B/starred");
-    expect(calls[0].url, "the local key must never reach the server").not.toContain(s.id);
-    expect(calls[0].body).toBe(JSON.stringify({ starred: true }));
-    // The store is still keyed by the local key.
-    expect(current(s.id).starred).toBe(true);
-  });
-
   it("RENAME patches /conversations/<serverId>/title", async () => {
     const calls = stubFetch();
     const s = await startedInThisBrowser("conv-C");
@@ -101,53 +86,10 @@ describe("sidebar actions address the server by serverId, not the local key", ()
   });
 });
 
-describe("a failed star write is rolled back", () => {
-  it("reverts the optimistic star when the server rejects it", async () => {
-    stubFetch(404);
-    const s = await startedInThisBrowser("conv-E");
-
-    await toggleStar(s);
-
-    // Not left lit until the merge poll drops it.
-    expect(current(s.id).starred).toBe(false);
-  });
-
-  it("does NOT clobber a choice the user made while the write was in flight", async () => {
-    let release!: () => void;
-    const gate = new Promise<void>((r) => (release = r));
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => {
-        await gate;
-        return { ok: false, status: 500, json: async () => ({}) };
-      }) as never,
-    );
-    const s = await startedInThisBrowser("conv-F");
-
-    const inFlight = toggleStar(s); // -> starred true, write pending
-    sessionStore.setStarred(s.id, false); // the user unstars while it's in flight
-    release();
-    await inFlight;
-
-    // The rollback fires only while the row still holds the value we set, so the user's later choice stands.
-    expect(current(s.id).starred).toBe(false);
-  });
-});
-
 describe("a conversation the server has never created", () => {
   it("is not server-backed, so the star control is disabled rather than lying", () => {
     const key = sessionStore.newSession();
     expect(isServerBacked(current(key))).toBe(false);
-  });
-
-  it("stars nothing and issues no request", async () => {
-    const calls = stubFetch();
-    const key = sessionStore.newSession();
-
-    await toggleStar(current(key));
-
-    expect(calls).toHaveLength(0);
-    expect(current(key).starred).toBeFalsy();
   });
 
   it("renames LOCALLY without a request (there is no row to write yet)", async () => {

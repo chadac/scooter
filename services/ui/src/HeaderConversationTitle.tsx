@@ -5,9 +5,11 @@
  */
 
 import { useState } from "react";
-import { Lock, LockOpen, Pencil, Star, Trash2 } from "lucide-react";
+import { Check, Folder as FolderIcon, FolderInput, FolderPlus, Lock, LockOpen, Pencil, Star, Trash2 } from "lucide-react";
+import { Popover } from "radix-ui";
 import { flushSync } from "react-dom";
 
+import { folderOf, folderStore, moveTo, STARRED, useFolders } from "./folders.js";
 import { displayTitle } from "./pageTitle.js";
 import { sessionStore, useSessions, type Session } from "./sessions.js";
 import {
@@ -15,7 +17,6 @@ import {
   commitRename,
   isServerBacked,
   removeSession,
-  toggleStar,
   toggleVisibility,
 } from "./sessionActions.js";
 import { Button } from "@/components/ui/button";
@@ -86,12 +87,13 @@ function Actions({ session: s }: { session: Session }) {
           // Starred is server-owned, so an unsent conversation cannot be starred.
           disabled={!backed}
           title={backed ? (s.starred ? "Unstar" : "Star") : "Send a message first — an unsent conversation can't be starred"}
-          onClick={() => void toggleStar(s)}
+          onClick={() => void moveTo(s, s.starred ? null : STARRED)}
           className={cn(s.starred ? "text-warning" : "text-muted-foreground hover:text-warning")}
         >
           <Star fill={s.starred ? "currentColor" : "none"} />
         </Button>
       )}
+      {!s.parentId && backed && <MoveTo session={s} />}
       {/* Only the owner of a top-level conversation; subagents follow their parent. */}
       {canChangeVisibility(s, currentUser, currentUserAnonymous) && (
         <Button
@@ -163,5 +165,92 @@ export function HeaderConversationTitle({ actions = false }: { actions?: boolean
       )}
       {actions && !editing && <Actions session={s} />}
     </div>
+  );
+}
+
+/** "Move to…": Starred, a folder, a new folder, or Recent. */
+function MoveTo({ session: s }: { session: Session }) {
+  const { folders } = useFolders();
+  const [open, setOpen] = useState(false);
+  const [filter, setFilter] = useState("");
+  const current = folderOf(s);
+  const pick = (id: string | null) => {
+    void moveTo(s, id);
+    setOpen(false);
+    setFilter("");
+  };
+  const pickNew = async () => {
+    const name = filter.trim();
+    setOpen(false);
+    setFilter("");
+    const id = await folderStore.create(name);
+    if (id) await moveTo(s, id);
+  };
+  const options = folders.filter((f) =>
+    f.name.toLowerCase().includes(filter.trim().toLowerCase()),
+  );
+  const exact = folders.some((f) => f.name.toLowerCase() === filter.trim().toLowerCase());
+  const item = "flex w-full items-center gap-2 rounded px-2 py-1 text-start text-sm hover:bg-accent";
+  return (
+    <Popover.Root open={open} onOpenChange={setOpen}>
+      <Popover.Trigger asChild>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          data-testid="session-move"
+          aria-label={`Move ${s.title} to a folder`}
+          title="Move to…"
+          className="text-muted-foreground"
+        >
+          <FolderInput />
+        </Button>
+      </Popover.Trigger>
+      <Popover.Portal>
+        <Popover.Content
+          align="start"
+          sideOffset={6}
+          className="z-50 w-60 rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
+        >
+          <input
+            autoFocus
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key !== "Enter") return;
+              if (options[0]) pick(options[0].id);
+              else if (filter.trim()) void pickNew();
+            }}
+            placeholder="Move to…"
+            aria-label="Filter folders"
+            className="mb-1 h-7 w-full rounded border border-input bg-background px-2 text-sm"
+          />
+          {options.map((f) => (
+            <button key={f.id} type="button" className={item} onClick={() => pick(f.id)}>
+              {f.id === STARRED ? (
+                <Star fill="currentColor" className="size-3.5 text-warning" />
+              ) : (
+                <FolderIcon className="size-3.5 text-muted-foreground" />
+              )}
+              <span className="flex-1 truncate">{f.name}</span>
+              {current === f.id && <Check className="size-3.5" />}
+            </button>
+          ))}
+          {filter.trim() && !exact && (
+            <button type="button" className={item} onClick={() => void pickNew()}>
+              <FolderPlus className="size-3.5 text-muted-foreground" />
+              <span className="truncate">New folder “{filter.trim()}”</span>
+            </button>
+          )}
+          {current && (
+            <>
+              <div className="my-1 h-px bg-border" />
+              <button type="button" className={cn(item, "text-muted-foreground")} onClick={() => pick(null)}>
+                Remove from {current === STARRED ? "Starred" : "folder"}
+              </button>
+            </>
+          )}
+        </Popover.Content>
+      </Popover.Portal>
+    </Popover.Root>
   );
 }

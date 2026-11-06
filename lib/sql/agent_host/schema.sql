@@ -52,6 +52,7 @@ CREATE TABLE "conversations" (
   "owner"            text NULL,
   "parent_id"        text NULL,
   "user_titled"      boolean NULL,
+  -- Owner's star: agent-host's delete guard, derived by the router.
   "starred"          boolean NULL,
   "pending_queue"    jsonb NULL,
   -- Sidebar turn state: set while a run is in flight, NULL otherwise.
@@ -101,6 +102,32 @@ CREATE INDEX "conversations_by_parent" ON "conversations" ("parent_id");
 -- Keep the two in sync by hand when the notified columns change (that migration and the
 -- router's assembleList are the only two places that must agree on which changes push).
 -- Assignment changes notify 'conversation_assignment' instead, for the router.
+
+-- Per-user flat sidebar FOLDERS, including one built-in Starred each.
+CREATE TABLE "conversation_folders" (
+  "id"         text   NOT NULL,
+  -- Ingress identity; empty when the deployment has none.
+  "owner"      text   NOT NULL,
+  "kind"       text   NOT NULL DEFAULT 'user' CHECK ("kind" IN ('starred', 'user')),
+  "name"       text   NOT NULL CHECK (length("name") BETWEEN 1 AND 100),
+  -- Fractional, so a reorder rewrites one row.
+  "position"   double precision NOT NULL,
+  "created_at" bigint NOT NULL,
+  PRIMARY KEY ("id")
+);
+CREATE UNIQUE INDEX "conversation_folders_name" ON "conversation_folders" ("owner", (lower("name"))) WHERE ("kind" = 'user');
+CREATE UNIQUE INDEX "conversation_folders_one_starred" ON "conversation_folders" ("owner") WHERE ("kind" = 'starred');
+
+-- Per-user metadata on a conversation; for now, its folder.
+CREATE TABLE "user_conversation_metadata" (
+  "owner"           text NOT NULL,
+  "conversation_id" text NOT NULL,
+  "folder_id"       text NOT NULL,
+  PRIMARY KEY ("owner", "conversation_id"),
+  CONSTRAINT "user_conversation_metadata_conversation" FOREIGN KEY ("conversation_id") REFERENCES "conversations" ("id") ON DELETE CASCADE,
+  CONSTRAINT "user_conversation_metadata_folder" FOREIGN KEY ("folder_id") REFERENCES "conversation_folders" ("id") ON DELETE CASCADE
+);
+CREATE INDEX "user_conversation_metadata_by_folder" ON "user_conversation_metadata" ("folder_id");
 
 -- The conversation EVENT LOG — the durable replacement for events.jsonl on the
 -- wiped emptyDir, and for the NFS mirror that existed only to survive that.

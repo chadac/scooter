@@ -42,7 +42,6 @@ type fakeMeta struct {
 	rows        map[string]*ConversationRow
 	readErr     error
 	writeErr    error
-	setStarred  *bool
 	setTitle    *string
 	setVis      *string
 	writeCalled bool
@@ -53,19 +52,6 @@ func (f *fakeMeta) ConversationByID(_ context.Context, id string) (*Conversation
 		return nil, f.readErr
 	}
 	return f.rows[id], nil
-}
-func (f *fakeMeta) SetStarred(_ context.Context, id string, starred bool) (*ConversationRow, error) {
-	f.writeCalled = true
-	f.setStarred = &starred
-	if f.writeErr != nil {
-		return nil, f.writeErr
-	}
-	row := f.rows[id]
-	if row == nil {
-		return nil, nil
-	}
-	row.Starred = &starred
-	return row, nil
 }
 func (f *fakeMeta) SetUserTitle(_ context.Context, id, title string) (*ConversationRow, error) {
 	f.writeCalled = true
@@ -115,27 +101,6 @@ func patch(t *testing.T, f *fakeMeta, field, id, body, caller string) *httptest.
 }
 
 func TestMetadataPatchHandler(t *testing.T) {
-	t.Run("star an idle conversation persists and returns the updated view", func(t *testing.T) {
-		f := &fakeMeta{rows: map[string]*ConversationRow{"c1": rowFixture("c1", nil)}}
-		w := patch(t, f, "starred", "c1", `{"starred":true}`, "")
-		if w.Code != 200 {
-			t.Fatalf("want 200, got %d (%s)", w.Code, w.Body.String())
-		}
-		if f.setStarred == nil || *f.setStarred != true {
-			t.Fatalf("SetStarred not called with true: %+v", f.setStarred)
-		}
-		var out map[string]any
-		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
-			t.Fatalf("bad JSON: %v", err)
-		}
-		if out["starred"] != true {
-			t.Errorf("response starred = %v, want true", out["starred"])
-		}
-		if out["id"] != "c1" {
-			t.Errorf("response id = %v, want c1", out["id"])
-		}
-	})
-
 	t.Run("rename sets the title and locks it", func(t *testing.T) {
 		f := &fakeMeta{rows: map[string]*ConversationRow{"c1": rowFixture("c1", nil)}}
 		w := patch(t, f, "title", "c1", `{"title":"  My Project  "}`, "")
@@ -154,7 +119,7 @@ func TestMetadataPatchHandler(t *testing.T) {
 
 	t.Run("404 when the conversation row does not exist", func(t *testing.T) {
 		f := &fakeMeta{rows: map[string]*ConversationRow{}}
-		w := patch(t, f, "starred", "gone", `{"starred":true}`, "")
+		w := patch(t, f, "title", "gone", `{"title":"T"}`, "")
 		if w.Code != 404 {
 			t.Fatalf("want 404, got %d", w.Code)
 		}
@@ -165,7 +130,7 @@ func TestMetadataPatchHandler(t *testing.T) {
 
 	t.Run("403 when an identified caller is not the owner", func(t *testing.T) {
 		f := &fakeMeta{rows: map[string]*ConversationRow{"c1": rowFixture("c1", strptr("alice"))}}
-		w := patch(t, f, "starred", "c1", `{"starred":true}`, "bob")
+		w := patch(t, f, "title", "c1", `{"title":"T"}`, "bob")
 		if w.Code != 403 {
 			t.Fatalf("want 403, got %d", w.Code)
 		}
@@ -176,7 +141,7 @@ func TestMetadataPatchHandler(t *testing.T) {
 
 	t.Run("owner may mutate their own conversation", func(t *testing.T) {
 		f := &fakeMeta{rows: map[string]*ConversationRow{"c1": rowFixture("c1", strptr("alice"))}}
-		w := patch(t, f, "starred", "c1", `{"starred":true}`, "alice")
+		w := patch(t, f, "title", "c1", `{"title":"T"}`, "alice")
 		if w.Code != 200 {
 			t.Fatalf("want 200, got %d (%s)", w.Code, w.Body.String())
 		}
@@ -184,20 +149,9 @@ func TestMetadataPatchHandler(t *testing.T) {
 
 	t.Run("anonymous caller may mutate any conversation (single-user mode)", func(t *testing.T) {
 		f := &fakeMeta{rows: map[string]*ConversationRow{"c1": rowFixture("c1", strptr("alice"))}}
-		w := patch(t, f, "starred", "c1", `{"starred":true}`, "")
+		w := patch(t, f, "title", "c1", `{"title":"T"}`, "")
 		if w.Code != 200 {
 			t.Fatalf("want 200, got %d (%s)", w.Code, w.Body.String())
-		}
-	})
-
-	t.Run("400 on a non-boolean starred body", func(t *testing.T) {
-		f := &fakeMeta{rows: map[string]*ConversationRow{"c1": rowFixture("c1", nil)}}
-		w := patch(t, f, "starred", "c1", `{"starred":"yes"}`, "")
-		if w.Code != 400 {
-			t.Fatalf("want 400, got %d", w.Code)
-		}
-		if f.writeCalled {
-			t.Error("must not write on a 400")
 		}
 	})
 
@@ -211,7 +165,7 @@ func TestMetadataPatchHandler(t *testing.T) {
 
 	t.Run("502 when the write fails", func(t *testing.T) {
 		f := &fakeMeta{rows: map[string]*ConversationRow{"c1": rowFixture("c1", nil)}, writeErr: errors.New("boom")}
-		w := patch(t, f, "starred", "c1", `{"starred":true}`, "")
+		w := patch(t, f, "title", "c1", `{"title":"T"}`, "")
 		if w.Code != http.StatusBadGateway {
 			t.Fatalf("want 502, got %d", w.Code)
 		}
@@ -221,9 +175,9 @@ func TestMetadataPatchHandler(t *testing.T) {
 		// The row is present for the auth read, but the write returns (nil,nil).
 		f := &fakeMeta{rows: map[string]*ConversationRow{"c1": rowFixture("c1", nil)}}
 		fw := &raceWriter{fakeMeta: f}
-		r := httptest.NewRequest(http.MethodPatch, "/conversations/c1/starred", strings.NewReader(`{"starred":true}`))
+		r := httptest.NewRequest(http.MethodPatch, "/conversations/c1/title", strings.NewReader(`{"title":"T"}`))
 		w := httptest.NewRecorder()
-		serveConversationMetadataPatch(w, r, "starred", "c1", f, fw)
+		serveConversationMetadataPatch(w, r, "title", "c1", f, fw)
 		if w.Code != 404 {
 			t.Fatalf("want 404, got %d", w.Code)
 		}
@@ -233,7 +187,7 @@ func TestMetadataPatchHandler(t *testing.T) {
 // raceWriter returns (nil,nil) from the write to simulate a delete that raced the write.
 type raceWriter struct{ *fakeMeta }
 
-func (r *raceWriter) SetStarred(context.Context, string, bool) (*ConversationRow, error) {
+func (r *raceWriter) SetUserTitle(context.Context, string, string) (*ConversationRow, error) {
 	return nil, nil
 }
 
@@ -245,7 +199,7 @@ func (a assignedResolver) Resolve(context.Context, string) (string, string, bool
 }
 func (a assignedResolver) Assigned(context.Context, string) bool { return a.assigned }
 
-// Star and title are router-only even when live; live visibility goes to the owner pod.
+// Title is router-only even when live; live visibility goes to the owner pod.
 func TestRouterServesPatch(t *testing.T) {
 	ctx := context.Background()
 	live, idle := assignedResolver{true}, assignedResolver{false}
@@ -254,9 +208,6 @@ func TestRouterServesPatch(t *testing.T) {
 		resolver ownerResolver
 		want     bool
 	}{
-		{"starred", live, true},
-		{"starred", idle, true},
-		{"starred", nil, true},
 		{"title", live, true},
 		{"title", nil, true},
 		{"visibility", live, false},
