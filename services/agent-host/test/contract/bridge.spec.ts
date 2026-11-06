@@ -1144,6 +1144,43 @@ describe("bridge run queue + cancel", () => {
     expect(fin?.cancelled).toBe(true);
   });
 
+  it('interrupt "thinking" WAITS for a run still in setup to send its prompt', async () => {
+    const agent = createFakeAcpAgent();
+    agent.setScript([{ finish: { stopReason: "end_turn" } }]);
+    agent.gate();
+    // Hold the first run in setup (before its send) on the history load.
+    let releaseHistory!: () => void;
+    const historyLoaded = new Promise<void>((r) => (releaseHistory = r));
+    const exec = createSandboxExecBackend(createFakeSandboxApi());
+    const bridge = createSessionBridge({
+      config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
+      exec,
+      acpClient: acpClientFromTransport(agent.transport, exec),
+      loadHistory: async () => {
+        await historyLoaded;
+        return [];
+      },
+    });
+    const events = collect(bridge);
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "first" });
+    await tick();
+
+    void bridge.prompt({ threadId: "t1", text: "second" }, { priority: 10, interrupt: "thinking" });
+    await tick();
+    // Not aborted in setup: the first run is still alive, its prompt unsent.
+    expect(events.some((e) => e.type === "RUN_FINISHED")).toBe(false);
+    expect(agent.startedCount()).toBe(0);
+
+    // Once the first prompt reaches the agent, the deferred interrupt cancels it.
+    releaseHistory();
+    await tick();
+    await tick();
+    expect(agent.startedCount()).toBeGreaterThanOrEqual(1);
+    const fin = events.find((e) => e.type === "RUN_FINISHED") as { cancelled?: boolean } | undefined;
+    expect(fin?.cancelled).toBe(true);
+  });
+
   it('a priority prompt with no policy defaults to "thinking" (waits for tool, then preempts)', async () => {
     const agent = createFakeAcpAgent();
     agent.setScript([
