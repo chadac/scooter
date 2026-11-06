@@ -23,6 +23,7 @@
     gitlab.userAuth.enable = true;
     google.enable = true;
     grafana.enable = true;
+    handoff.enable = true;
     imagegen = {
       enable = true;
       backends.bedrock.enable = true;

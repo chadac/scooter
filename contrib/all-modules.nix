@@ -22,6 +22,7 @@
     ./google/contrib.nix
     ./gitlab/contrib.nix
     ./grafana/contrib.nix
+    ./handoff/contrib.nix
     ./imagegen/contrib.nix
     ./jira/contrib.nix
     ./kagi/contrib.nix

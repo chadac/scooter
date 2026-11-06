@@ -402,6 +402,7 @@
             # suite, the sandbox viewer's stdlib tests included, as check inputs.
             contrib-commits = contribs.packages.commits.broker;
             contrib-files = contribs.packages.files.broker;
+            contrib-handoff = contribs.packages.handoff.broker;
             contrib-personalization = contribs.packages.personalization.broker;
             contrib-shares = contribs.packages.shares.broker;
             contrib-ssh = contribs.packages.ssh.broker;
@@ -560,6 +561,7 @@
             contrib-slack-webhooks = contribs.packages.slack.webhooks;
             contrib-commits = contribs.packages.commits.broker;
             contrib-files = contribs.packages.files.broker;
+            contrib-handoff = contribs.packages.handoff.broker;
             contrib-personalization = contribs.packages.personalization.broker;
             contrib-shares = contribs.packages.shares.broker;
             contrib-ssh = contribs.packages.ssh.broker;

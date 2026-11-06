@@ -1,0 +1,2 @@
+<!-- Material Icons "forward" (https://fonts.google.com/icons), Apache 2.0. Single path + viewBox: contrib/ui-manifest.nix reads those two attributes into the runtime manifest. -->
+<svg role="img" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><title>Handoff</title><path d="M12 8V4l8 8-8 8v-4H4V8z"/></svg>
