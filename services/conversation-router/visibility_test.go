@@ -126,14 +126,6 @@ func TestMetadataPatchVisibility(t *testing.T) {
 			t.Fatalf("got %d", w.Code)
 		}
 	})
-	t.Run("a non-owner's star on a private conversation is a 404", func(t *testing.T) {
-		f := fresh(VisibilityPrivate, nil)
-		for _, caller := range []string{"bob", ""} {
-			if w := patch(t, f, "starred", "c1", `{"starred":true}`, caller); w.Code != 404 || f.writeCalled {
-				t.Fatalf("caller %q: got %d, writeCalled=%v", caller, w.Code, f.writeCalled)
-			}
-		}
-	})
 }
 
 // recv returns the next frame queued for s, or "" if none arrives promptly.

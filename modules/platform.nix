@@ -1418,6 +1418,16 @@ in
             the table for GET /conversations; conversation-controller writes `phase` and
             (re)assigns host_pod. A writer implies read, so none are also readers.'';
         };
+        conversation_folders = {
+          writers = [ "conversation-router" ];
+          note = ''
+            Per-user sidebar folders, including each user's built-in Starred. Pure UI state with
+            no pod involved, so the router serves the CRUD and nothing else touches it.'';
+        };
+        user_conversation_metadata = {
+          writers = [ "conversation-router" ];
+          note = "Per-user conversation metadata; for now, the folder each user filed it in.";
+        };
         conversation_events = {
           writers = [ "agent-host" ];
           note = ''

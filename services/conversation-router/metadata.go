@@ -1,4 +1,4 @@
-// Router-served star/title writes, and visibility for an idle conversation (see routerServesPatch).
+// Router-served title writes, and idle-conversation visibility.
 package main
 
 import (
@@ -16,12 +16,11 @@ type metaReader interface {
 }
 
 type metaWriter interface {
-	SetStarred(ctx context.Context, id string, starred bool) (*ConversationRow, error)
 	SetUserTitle(ctx context.Context, id, title string) (*ConversationRow, error)
 	SetVisibility(ctx context.Context, id, visibility string) (*ConversationRow, error)
 }
 
-// routerServesPatch: star/title are router-only; live visibility stays with its owner pod.
+// routerServesPatch: live visibility belongs to the owner pod.
 func routerServesPatch(ctx context.Context, resolver ownerResolver, field, id string) bool {
 	if field != "visibility" {
 		return true
@@ -53,19 +52,6 @@ func serveConversationMetadataPatch(w http.ResponseWriter, r *http.Request, fiel
 
 	var updated *ConversationRow
 	switch field {
-	case "starred":
-		var body struct {
-			Starred *bool `json:"starred"`
-		}
-		if err := decodeBody(r, &body); err != nil {
-			writeJSONError(w, http.StatusBadRequest, "invalid JSON body")
-			return
-		}
-		if body.Starred == nil {
-			writeJSONError(w, http.StatusBadRequest, "starred (boolean) is required")
-			return
-		}
-		updated, err = writeStore.SetStarred(r.Context(), id, *body.Starred)
 	case "title":
 		var body struct {
 			Title string `json:"title"`

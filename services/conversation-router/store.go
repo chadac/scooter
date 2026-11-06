@@ -1,5 +1,5 @@
 // Postgres access for the router: a read-only pool (Store) for the list/LISTEN path and a
-// narrow write pool (WriteStore) for idle star/title writes.
+// narrow write pool (WriteStore) for idle title writes and folders.
 package main
 
 import (
@@ -25,7 +25,6 @@ type ConversationRow struct {
 	Owner          *string
 	ParentID       *string
 	UserTitled     *bool
-	Starred        *bool
 	// Columns converged by every phase writer, never a read-time join against the CR; NULL is a legal read.
 	Phase      *string
 	SandboxRef *string
@@ -40,7 +39,7 @@ type ConversationRow struct {
 
 // conversationColumns is the one projection list, shared by the SELECTs and the write path's RETURNING so they cannot drift.
 const conversationColumns = `id, thread_id, title, created_at, last_activity_at,
-                             model, owner, parent_id, user_titled, starred, phase, sandbox_ref,
+                             model, owner, parent_id, user_titled, phase, sandbox_ref,
                              run_started_at, last_reply_at, visibility`
 
 // scannable is satisfied by both pgx.Row and pgx.Rows, so one scan helper serves every read.
@@ -50,7 +49,7 @@ type scannable interface {
 
 func scanConversation(s scannable, c *ConversationRow) error {
 	return s.Scan(&c.ID, &c.ThreadID, &c.Title, &c.CreatedAt, &c.LastActivityAt,
-		&c.Model, &c.Owner, &c.ParentID, &c.UserTitled, &c.Starred, &c.Phase, &c.SandboxRef,
+		&c.Model, &c.Owner, &c.ParentID, &c.UserTitled, &c.Phase, &c.SandboxRef,
 		&c.RunStartedAt, &c.LastReplyAt, &c.Visibility)
 }
 
@@ -212,12 +211,6 @@ func OpenWriteStore(ctx context.Context, dsn string) (*WriteStore, error) {
 
 // writeColumns is the RETURNING list, the same projection ConversationByID reads.
 const writeColumns = conversationColumns
-
-// SetStarred sets the star flag and returns the updated row, (nil, nil) if the row raced a delete.
-func (s *WriteStore) SetStarred(ctx context.Context, id string, starred bool) (*ConversationRow, error) {
-	return s.withAwaiting(ctx)(scanUpdated(s.pool.QueryRow(ctx,
-		`UPDATE conversations SET starred = $2 WHERE id = $1 RETURNING `+writeColumns, id, starred)))
-}
 
 // SetUserTitle sets the title and locks it with user_titled=true, mirroring agent-host's setUserTitle.
 func (s *WriteStore) SetUserTitle(ctx context.Context, id, title string) (*ConversationRow, error) {

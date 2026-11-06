@@ -4,9 +4,9 @@
 from typing import Optional
 import datetime
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, Index, PrimaryKeyConstraint, Text, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, Double, ForeignKeyConstraint, Index, PrimaryKeyConstraint, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 class Base(DeclarativeBase):
     pass
@@ -53,6 +53,26 @@ class ConversationEvents(Base):
     checksum: Mapped[str] = mapped_column(Text, nullable=False)
     prev_checksum: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(True), nullable=False, server_default=text('now()'))
+
+
+class ConversationFolders(Base):
+    __tablename__ = 'conversation_folders'
+    __table_args__ = (
+        CheckConstraint("kind = ANY (ARRAY['starred'::text, 'user'::text])", name='conversation_folders_kind_check'),
+        CheckConstraint('length(name) >= 1 AND length(name) <= 100', name='conversation_folders_name_check'),
+        PrimaryKeyConstraint('id', name='conversation_folders_pkey'),
+        Index('conversation_folders_name', 'owner', postgresql_where="(kind = 'user'::text)", unique=True),
+        Index('conversation_folders_one_starred', 'owner', postgresql_where="(kind = 'starred'::text)", unique=True)
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    owner: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'user'::text"))
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    position: Mapped[float] = mapped_column(Double(53), nullable=False)
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+    user_conversation_metadata: Mapped[list['UserConversationMetadata']] = relationship('UserConversationMetadata', back_populates='folder')
 
 
 class ConversationJobs(Base):
@@ -103,6 +123,8 @@ class Conversations(Base):
     sandbox_ref: Mapped[Optional[str]] = mapped_column(Text)
     creator_pod: Mapped[Optional[str]] = mapped_column(Text)
 
+    user_conversation_metadata: Mapped[list['UserConversationMetadata']] = relationship('UserConversationMetadata', back_populates='conversation')
+
 
 class Identities(Base):
     __tablename__ = 'identities'
@@ -149,3 +171,20 @@ class UserSkills(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('true'))
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
+class UserConversationMetadata(Base):
+    __tablename__ = 'user_conversation_metadata'
+    __table_args__ = (
+        ForeignKeyConstraint(['conversation_id'], ['conversations.id'], ondelete='CASCADE', name='user_conversation_metadata_conversation'),
+        ForeignKeyConstraint(['folder_id'], ['conversation_folders.id'], ondelete='CASCADE', name='user_conversation_metadata_folder'),
+        PrimaryKeyConstraint('owner', 'conversation_id', name='user_conversation_metadata_pkey'),
+        Index('user_conversation_metadata_by_folder', 'folder_id')
+    )
+
+    owner: Mapped[str] = mapped_column(Text, primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    folder_id: Mapped[str] = mapped_column(Text, nullable=False)
+
+    conversation: Mapped['Conversations'] = relationship('Conversations', back_populates='user_conversation_metadata')
+    folder: Mapped['ConversationFolders'] = relationship('ConversationFolders', back_populates='user_conversation_metadata')
