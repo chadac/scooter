@@ -10,11 +10,11 @@
       "type": "github"
     },
     "uv-nix": {
-      "lastModified": 1793193441,
-      "narHash": "sha256-iTRkjt2MXZ1L2b/Bohe+WUxhEnaukn1DBvO/kOuhoRU=",
+      "lastModified": 1793979777,
+      "narHash": "sha256-BCxZx10N+F7+JSNH0QV8XJWj8j+nJ1gbi6PT7r0eRok=",
       "owner": "chadac",
       "repo": "uv-nix",
-      "rev": "2c3a906558191f218df87aec45e2e6a9a79c11d7",
+      "rev": "bc034b79e4c4a03221ccf2cb649d5ac52518468a",
       "type": "github"
     }
   },
@@ -117,12 +117,12 @@
       },
       "uv": {
         "attr": "uv",
-        "drv": "/nix/store/4wc664d8jdycg1llrckavlxrsga2qs7r-uv-nix-bin-0.13.6-nix.1.drv",
+        "drv": "/nix/store/9pccarnf02yi68w4pyb3fsyaz40q7zlj-uv-nix-bin-0.13.7-nix.2.drv",
         "output": "out",
         "bins": [
           "uv"
         ],
-        "name": "uv-nix-bin-0.13.6-nix.1"
+        "name": "uv-nix-bin-0.13.7-nix.2"
       }
     },
     "aarch64-linux": {
@@ -260,12 +260,12 @@
       },
       "uv": {
         "attr": "uv",
-        "drv": "/nix/store/d61613q70sir8f7dxp08d3158i75gfy1-uv-nix-bin-0.13.6-nix.1.drv",
+        "drv": "/nix/store/0ybkgh8j740fh26a05lr6j47vh8frkpz-uv-nix-bin-0.13.7-nix.2.drv",
         "output": "out",
         "bins": [
           "uv"
         ],
-        "name": "uv-nix-bin-0.13.6-nix.1"
+        "name": "uv-nix-bin-0.13.7-nix.2"
       }
     },
     "x86_64-linux": {
@@ -403,12 +403,12 @@
       },
       "uv": {
         "attr": "uv",
-        "drv": "/nix/store/6apwnz0y4yrjh2ypzv2jqjks4i89j406-uv-nix-bin-0.13.6-nix.1.drv",
+        "drv": "/nix/store/7kyrqdxh4ggz7aqbzwlf3bg00vrl8a90-uv-nix-bin-0.13.7-nix.2.drv",
         "output": "out",
         "bins": [
           "uv"
         ],
-        "name": "uv-nix-bin-0.13.6-nix.1"
+        "name": "uv-nix-bin-0.13.7-nix.2"
       }
     }
   }
