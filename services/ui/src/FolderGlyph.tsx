@@ -59,8 +59,8 @@ export const FOLDER_ICONS: Record<string, LucideIcon> = {
 };
 
 /** A folder's icon: Starred's star, its chosen icon, else the folder glyph. */
-export function FolderGlyph({ builtin, icon, className }: { builtin: boolean; icon?: string; className?: string }) {
-  if (builtin) return <Star fill="currentColor" className={cn("size-3.5 shrink-0 text-warning", className)} aria-hidden />;
+export function FolderGlyph({ starred, icon, className }: { starred: boolean; icon?: string; className?: string }) {
+  if (starred) return <Star fill="currentColor" className={cn("size-3.5 shrink-0 text-warning", className)} aria-hidden />;
   // Unknown names, say from a newer UI, get the folder.
   const Icon = (icon && FOLDER_ICONS[icon]) || FolderIcon;
   return <Icon data-testid="folder-icon" data-icon={icon} className={cn("size-3.5 shrink-0", className)} aria-hidden />;

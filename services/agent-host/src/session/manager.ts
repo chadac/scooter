@@ -196,6 +196,8 @@ export interface ConversationStore {
   saveMeta?(meta: ConversationMeta): Promise<void>;
   /** The router-owned star and title as persisted; optional. */
   readRouterMeta?(id: SessionId): Promise<Partial<RouterMeta> | undefined>;
+  /** Folder lifetimes in hours, 0 = forever, for filed `ids`. */
+  readLifetimes?(ids: SessionId[]): Promise<Map<SessionId, number>>;
   /** Set the visibility of `rootId` and every descendant in one write; optional. */
   setVisibility?(rootId: SessionId, visibility: Visibility): Promise<void>;
   /** Read a conversation's owner and visibility fresh from the shared store, since another
@@ -362,10 +364,7 @@ export interface SessionManager {
    */
   sweepIdle(idleMs: number, now?: number): Promise<SessionId[]>;
 
-  /**
-   * Destructively end top-level conversations inactive longer than maxAgeMs, exempting
-   * starred ones and those with a live descendant; returns the ids reaped.
-   */
+  /** End idle top-level conversations past their folder's or default lifetime. */
   sweepRetention(maxAgeMs: number, now?: number): Promise<SessionId[]>;
 }
 
@@ -1938,15 +1937,23 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         return false;
       };
       // Snapshot first, since end() mutates `entries`.
-      const candidates = [...entries.values()].filter((entry) => {
+      const idle = [...entries.values()].filter((entry) => {
         if (entry.parentId !== undefined) return false; // subagents die with their parent
         if (entry.starred) return false; // starred = exempt
-        if (now - entry.lastActivityAt < maxAgeMs) return false; // still recent
+        if (now - entry.lastActivityAt < HOUR_MS) return false; // under the shortest lifetime
         if (hasLiveDescendant(entry.id)) return false; // keep the shared pod
         // Never reap a conversation with a live or queued run, since end() is destructive.
         const qs = entry.bridge?.queueState();
         if (qs && (qs.running || qs.queued > 0)) return false;
         return true;
+      });
+      // Throws on a failed read, so "forever" is never ignored.
+      const lifetimes =
+        idle.length && store.readLifetimes ? await store.readLifetimes(idle.map((e) => e.id)) : new Map<SessionId, number>();
+      const candidates = idle.filter((entry) => {
+        const hours = lifetimes.get(entry.id);
+        const limit = hours === undefined ? maxAgeMs : hours * HOUR_MS;
+        return limit > 0 && now - entry.lastActivityAt >= limit;
       });
       for (const entry of candidates) {
         try {
@@ -1971,6 +1978,8 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
   };
   return api;
 }
+
+const HOUR_MS = 3_600_000;
 
 /** Wall-clock ms, wrapped so it is mockable. */
 function nowMs(): number {

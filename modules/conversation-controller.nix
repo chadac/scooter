@@ -10,6 +10,9 @@
 let
   cfg = config.scooter;
   ccfg = cfg.conversationController;
+  # Enabled contribs' static folders, for STATIC_FOLDERS_JSON.
+  staticFolders = import ../contrib/static-folders.nix { inherit lib; }
+    (lib.filterAttrs (_: c: c.enable) config.contribs);
   # The router's sandbox-host listener. Must differ from the main (8080) and
   # self-access listeners, or the second bind fails and the router crash-loops.
   sandboxPort = 8082;
@@ -484,6 +487,8 @@ in
                 ]
                 ++ lib.optional (cfg.webhooks.enable && cfg.postgres.sslmode != null) { name = "WEBHOOKS_DB_SSLMODE"; value = cfg.postgres.sslmode; }
                 ++ cfg.contribDbEnv.conversation-router
+                ++ lib.optional (staticFolders != [ ])
+                  { name = "STATIC_FOLDERS_JSON"; value = builtins.toJSON staticFolders; }
                 # The router must read identity exactly as the agent-host does.
                 ++ lib.optional (cfg.auth.mode != "header")
                   { name = "AUTH_MODE"; value = cfg.auth.mode; }

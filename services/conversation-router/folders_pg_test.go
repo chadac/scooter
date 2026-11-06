@@ -22,18 +22,18 @@ func TestPgFolders(t *testing.T) {
 		t.Fatalf("a new user sees only Starred: %+v, %v", list, err)
 	}
 
-	work, err := s.CreateFolder(ctx, "alice", "Work")
+	work, err := s.CreateFolder(ctx, "alice", "Work", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	home, _ := s.CreateFolder(ctx, "alice", "Home")
+	home, _ := s.CreateFolder(ctx, "alice", "Home", "")
 	if home.Position <= work.Position {
 		t.Errorf("a new folder appends: work %v, home %v", work.Position, home.Position)
 	}
-	if _, err := s.CreateFolder(ctx, "alice", "work"); !errors.Is(err, errFolderNameTaken) {
+	if _, err := s.CreateFolder(ctx, "alice", "work", ""); !errors.Is(err, errFolderNameTaken) {
 		t.Errorf("names are unique per user, case-insensitively: %v", err)
 	}
-	if _, err := s.CreateFolder(ctx, "bob", "Work"); err != nil {
+	if _, err := s.CreateFolder(ctx, "bob", "Work", ""); err != nil {
 		t.Errorf("another user may reuse a name: %v", err)
 	}
 
@@ -101,14 +101,14 @@ func TestPgFolders(t *testing.T) {
 	}
 
 	// Deleting a folder returns its conversations to Recent.
-	if err := s.DeleteFolder(ctx, "alice", home.ID); err != nil {
+	if err := s.DeleteFolder(ctx, "alice", home.ID, false); err != nil {
 		t.Fatal(err)
 	}
 	list, _ = s.Folders(ctx, "alice")
 	if len(list.Placements) != 0 || len(list.Folders) != 2 {
 		t.Errorf("after delete: %+v", list)
 	}
-	if err := s.DeleteFolder(ctx, "alice", home.ID); !errors.Is(err, errFolderNotFound) {
+	if err := s.DeleteFolder(ctx, "alice", home.ID, false); !errors.Is(err, errFolderNotFound) {
 		t.Errorf("a second delete is not found: %v", err)
 	}
 }
@@ -181,7 +181,7 @@ func TestPgFolderChangesNotifyTheirOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := &WriteStore{pool: pool}
-	if _, err := s.CreateFolder(ctx, "alice", "Work"); err != nil {
+	if _, err := s.CreateFolder(ctx, "alice", "Work", ""); err != nil {
 		t.Fatal(err)
 	}
 	wctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -201,7 +201,7 @@ func TestPgOwnersStarGuardsTheConversation(t *testing.T) {
 	ctx := context.Background()
 	insertConv(t, pool, "c1", "", "")
 	_, _ = pool.Exec(ctx, `UPDATE conversations SET owner = 'alice'`)
-	work, _ := s.CreateFolder(ctx, "alice", "Work")
+	work, _ := s.CreateFolder(ctx, "alice", "Work", "")
 	column := func() bool {
 		var starred *bool
 		if err := pool.QueryRow(ctx, `SELECT starred FROM conversations WHERE id = 'c1'`).Scan(&starred); err != nil {
@@ -224,5 +224,179 @@ func TestPgOwnersStarGuardsTheConversation(t *testing.T) {
 	_ = s.PlaceConversation(ctx, "alice", "c1", StarredFolderID)
 	if err := s.Unstar(ctx, "alice", "c1"); err != nil || column() {
 		t.Fatalf("unstar: err %v, column %v", err, column())
+	}
+}
+
+func TestPgNestedFolders(t *testing.T) {
+	pool := startPG(t)
+	s := &WriteStore{pool: pool}
+	ctx := context.Background()
+	insertConv(t, pool, "c1", "", "")
+	insertConv(t, pool, "c2", "", "")
+
+	work, _ := s.CreateFolder(ctx, "alice", "Work", "")
+	proj, err := s.CreateFolder(ctx, "alice", "Scooter", work.ID)
+	if err != nil || proj.ParentID != work.ID {
+		t.Fatalf("subfolder: %+v, %v", proj, err)
+	}
+	ui, err := s.CreateFolder(ctx, "alice", "UI", proj.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateFolder(ctx, "alice", "Deeper", ui.ID); !errors.Is(err, errFolderTooDeep) {
+		t.Errorf("a 4th level is refused: %v", err)
+	}
+	if _, err := s.CreateFolder(ctx, "alice", "UI", work.ID); err != nil {
+		t.Errorf("names are unique per parent, not per user: %v", err)
+	}
+	if _, err := s.CreateFolder(ctx, "alice", "ui", proj.ID); !errors.Is(err, errFolderNameTaken) {
+		t.Errorf("a sibling can't share a name: %v", err)
+	}
+	if _, err := s.CreateFolder(ctx, "bob", "X", work.ID); !errors.Is(err, errFolderNotFound) {
+		t.Errorf("nesting in someone else's folder is not found: %v", err)
+	}
+
+	top := ""
+	if err := s.UpdateFolder(ctx, "alice", work.ID, FolderPatch{ParentID: &ui.ID}); !errors.Is(err, errFolderCycle) {
+		t.Errorf("a folder can't move into its own subtree: %v", err)
+	}
+	other, _ := s.CreateFolder(ctx, "alice", "Other", "")
+	if err := s.UpdateFolder(ctx, "alice", work.ID, FolderPatch{ParentID: &other.ID}); !errors.Is(err, errFolderTooDeep) {
+		t.Errorf("a 3-deep subtree can't go one level down: %v", err)
+	}
+	if err := s.UpdateFolder(ctx, "alice", ui.ID, FolderPatch{ParentID: &top}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateFolder(ctx, "alice", proj.ID, FolderPatch{ParentID: &other.ID}); err != nil {
+		t.Errorf("a 1-deep subfolder fits under another top-level one: %v", err)
+	}
+	list, _ := s.Folders(ctx, "alice")
+	byID := map[string]Folder{}
+	for _, f := range list.Folders {
+		byID[f.ID] = f
+	}
+	if byID[ui.ID].ParentID != "" || byID[proj.ID].ParentID != other.ID {
+		t.Errorf("after moves: %+v", list.Folders)
+	}
+	if byID[ui.ID].Position <= byID[other.ID].Position {
+		t.Errorf("a move without a position appends: %+v", list.Folders)
+	}
+
+	// Deleting lifts contents a level, keeping their order and conversations.
+	a, _ := s.CreateFolder(ctx, "alice", "A", proj.ID)
+	b, _ := s.CreateFolder(ctx, "alice", "Scooter", proj.ID)
+	_ = s.PlaceConversation(ctx, "alice", "c1", proj.ID)
+	_ = s.PlaceConversation(ctx, "alice", "c2", a.ID)
+	if err := s.DeleteFolder(ctx, "alice", proj.ID, false); err != nil {
+		t.Fatalf("a child may share its old parent's name: %v", err)
+	}
+	list, _ = s.Folders(ctx, "alice")
+	byID = map[string]Folder{}
+	for _, f := range list.Folders {
+		byID[f.ID] = f
+	}
+	if byID[a.ID].ParentID != other.ID || byID[b.ID].ParentID != other.ID || byID[a.ID].Position >= byID[b.ID].Position {
+		t.Errorf("lifted children: %+v", list.Folders)
+	}
+	if list.Placements["c1"] != other.ID || list.Placements["c2"] != a.ID {
+		t.Errorf("lifted placements: %v", list.Placements)
+	}
+
+	// Deleting with subfolders drops the subtree, unfiling it all.
+	if err := s.DeleteFolder(ctx, "alice", other.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	list, _ = s.Folders(ctx, "alice")
+	for _, f := range list.Folders {
+		if f.ID == a.ID || f.ID == b.ID {
+			t.Errorf("subfolder survived: %+v", f)
+		}
+	}
+	if len(list.Placements) != 0 {
+		t.Errorf("placements after a subtree delete: %v", list.Placements)
+	}
+}
+
+func TestPgFolderLifetimes(t *testing.T) {
+	pool := startPG(t)
+	week, forever := 168, 0
+	s := &WriteStore{pool: pool, statics: []StaticFolder{{ID: "design", Name: "Design", LifetimeHours: &forever}}}
+	ctx := context.Background()
+	insertConv(t, pool, "c1", "", "")
+
+	done, _ := s.CreateFolder(ctx, "alice", "Done", "")
+	if err := s.UpdateFolder(ctx, "alice", done.ID, FolderPatch{LifetimeHours: optionalInt{Set: true, Value: &week}}); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := s.Folders(ctx, "alice")
+	if got := list.Folders[2]; got.ID != done.ID || got.LifetimeHours == nil || *got.LifetimeHours != week {
+		t.Errorf("lifetime not saved: %+v", list.Folders)
+	}
+	// An unrelated patch keeps it; an explicit null clears it.
+	name := "Finished"
+	_ = s.UpdateFolder(ctx, "alice", done.ID, FolderPatch{Name: &name})
+	if list, _ = s.Folders(ctx, "alice"); list.Folders[2].LifetimeHours == nil {
+		t.Errorf("lifetime dropped by a rename")
+	}
+	_ = s.UpdateFolder(ctx, "alice", done.ID, FolderPatch{LifetimeHours: optionalInt{Set: true}})
+	if list, _ = s.Folders(ctx, "alice"); list.Folders[2].LifetimeHours != nil {
+		t.Errorf("lifetime not cleared: %+v", list.Folders[2])
+	}
+
+	// A static row carries its configured lifetime; resync updates it.
+	if err := s.PlaceConversation(ctx, "alice", "c1", "design"); err != nil {
+		t.Fatal(err)
+	}
+	var hours *int
+	_ = pool.QueryRow(ctx, `SELECT lifetime_hours FROM conversation_folders WHERE static_id = 'design'`).Scan(&hours)
+	if hours == nil || *hours != 0 {
+		t.Errorf("static row lifetime = %v", hours)
+	}
+	s.statics[0].LifetimeHours = &week
+	if err := s.SyncStaticFolders(ctx); err != nil {
+		t.Fatal(err)
+	}
+	_ = pool.QueryRow(ctx, `SELECT lifetime_hours FROM conversation_folders WHERE static_id = 'design'`).Scan(&hours)
+	if hours == nil || *hours != week {
+		t.Errorf("resynced lifetime = %v", hours)
+	}
+	// A removed static folder loses its lifetime and placements.
+	s.statics = nil
+	_ = s.SyncStaticFolders(ctx)
+	_ = pool.QueryRow(ctx, `SELECT lifetime_hours FROM conversation_folders WHERE static_id = 'design'`).Scan(&hours)
+	if hours != nil {
+		t.Errorf("an unconfigured static folder still has lifetime %v", *hours)
+	}
+	if list, _ = s.Folders(ctx, "alice"); len(list.Placements) != 0 || len(list.Folders) != 2 {
+		t.Errorf("unconfigured static folder still listed: %+v", list)
+	}
+}
+
+func TestPgStaticFolders(t *testing.T) {
+	pool := startPG(t)
+	s := &WriteStore{pool: pool, statics: []StaticFolder{{ID: "design", Name: "Design", Icon: "pencil-ruler"}}}
+	ctx := context.Background()
+	insertConv(t, pool, "c1", "", "")
+
+	list, _ := s.Folders(ctx, "alice")
+	if len(list.Folders) != 2 || list.Folders[1].ID != "design" || !list.Folders[1].Static || !list.Folders[0].Static {
+		t.Fatalf("Starred then static: %+v", list.Folders)
+	}
+	if err := s.PlaceConversation(ctx, "alice", "c1", "design"); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ = s.Folders(ctx, "alice"); list.Placements["c1"] != "design" {
+		t.Errorf("placements = %v", list.Placements)
+	}
+	var rowID string
+	_ = pool.QueryRow(ctx, `SELECT id FROM conversation_folders WHERE static_id = 'design'`).Scan(&rowID)
+	if _, err := s.CreateFolder(ctx, "alice", "Sub", rowID); !errors.Is(err, errFolderNotFound) {
+		t.Errorf("a static folder takes no subfolders: %v", err)
+	}
+	if err := s.UpdateFolder(ctx, "alice", rowID, FolderPatch{Name: new(string)}); !errors.Is(err, errFolderNotFound) {
+		t.Errorf("a static row can't be patched by its row id: %v", err)
+	}
+	if err := s.PlaceConversation(ctx, "alice", "c1", rowID); !errors.Is(err, errFolderNotFound) {
+		t.Errorf("a static folder is filed by its static id only: %v", err)
 	}
 }

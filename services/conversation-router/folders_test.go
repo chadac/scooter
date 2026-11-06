@@ -11,7 +11,8 @@ import (
 
 type fakeFolders struct {
 	owner, convID, folderID string
-	unstarred               bool
+	unstarred, subfolders   bool
+	parentID                string
 	created                 string
 	patch                   FolderPatch
 	err                     error
@@ -21,8 +22,8 @@ func (f *fakeFolders) Folders(_ context.Context, owner string) (FolderList, erro
 	f.owner = owner
 	return FolderList{Folders: []Folder{{ID: StarredFolderID, Name: "Starred", Kind: "starred"}}, Placements: map[string]string{}}, f.err
 }
-func (f *fakeFolders) CreateFolder(_ context.Context, owner, name string) (Folder, error) {
-	f.owner, f.created = owner, name
+func (f *fakeFolders) CreateFolder(_ context.Context, owner, name, parentID string) (Folder, error) {
+	f.owner, f.created, f.parentID = owner, name, parentID
 	return Folder{ID: "f1", Name: name, Kind: "user", Position: 1}, f.err
 }
 func (f *fakeFolders) UpdateFolder(_ context.Context, owner, id string, p FolderPatch) error {
@@ -30,8 +31,8 @@ func (f *fakeFolders) UpdateFolder(_ context.Context, owner, id string, p Folder
 	f.owner, f.folderID = owner, id
 	return f.err
 }
-func (f *fakeFolders) DeleteFolder(_ context.Context, owner, id string) error {
-	f.owner, f.folderID = owner, id
+func (f *fakeFolders) DeleteFolder(_ context.Context, owner, id string, subfolders bool) error {
+	f.owner, f.folderID, f.subfolders = owner, id, subfolders
 	return f.err
 }
 func (f *fakeFolders) PlaceConversation(_ context.Context, owner, convID, folderID string) error {
@@ -42,6 +43,8 @@ func (f *fakeFolders) Unstar(_ context.Context, owner, convID string) error {
 	f.owner, f.convID, f.unstarred = owner, convID, true
 	return f.err
 }
+
+func (f *fakeFolders) IsStatic(id string) bool { return id == "design" }
 
 func folderReq(method, path, body, caller string) *http.Request {
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -138,6 +141,63 @@ func TestServeFolders(t *testing.T) {
 			}
 		}
 	})
+	t.Run("static folders can't be changed", func(t *testing.T) {
+		f := &fakeFolders{}
+		w := httptest.NewRecorder()
+		serveFolders(w, folderReq("DELETE", "/folders/design", "", "alice"), "design", f)
+		if w.Code != 409 || f.folderID != "" {
+			t.Errorf("got %d", w.Code)
+		}
+	})
+	t.Run("POST passes the parent", func(t *testing.T) {
+		f := &fakeFolders{}
+		serveFolders(httptest.NewRecorder(), folderReq("POST", "/folders", `{"name":"Sub","parentId":"f1"}`, "alice"), "", f)
+		if f.parentID != "f1" {
+			t.Errorf("parent = %q", f.parentID)
+		}
+	})
+	t.Run("DELETE chooses what happens to subfolders", func(t *testing.T) {
+		for q, want := range map[string]bool{"": false, "?subfolders=delete": true, "?subfolders=lift": false} {
+			f := &fakeFolders{}
+			serveFolders(httptest.NewRecorder(), folderReq("DELETE", "/folders/f1"+q, "", "alice"), "f1", f)
+			if f.subfolders != want {
+				t.Errorf("%q: subfolders = %v", q, f.subfolders)
+			}
+		}
+	})
+	t.Run("PATCH validates the lifetime", func(t *testing.T) {
+		for body, want := range map[string]int{
+			`{"lifetimeHours":24}`:     204,
+			`{"lifetimeHours":0}`:      204,
+			`{"lifetimeHours":null}`:   204,
+			`{"lifetimeHours":-1}`:     400,
+			`{"lifetimeHours":999999}`: 400,
+		} {
+			w := httptest.NewRecorder()
+			serveFolders(w, folderReq("PATCH", "/folders/f1", body, "alice"), "f1", &fakeFolders{})
+			if w.Code != want {
+				t.Errorf("%s: got %d, want %d", body, w.Code, want)
+			}
+		}
+		f := &fakeFolders{}
+		serveFolders(httptest.NewRecorder(), folderReq("PATCH", "/folders/f1", `{"lifetimeHours":null}`, "alice"), "f1", f)
+		if !f.patch.LifetimeHours.Set || f.patch.LifetimeHours.Value != nil {
+			t.Errorf("null must clear: %+v", f.patch.LifetimeHours)
+		}
+		serveFolders(httptest.NewRecorder(), folderReq("PATCH", "/folders/f1", `{"name":"x"}`, "alice"), "f1", f)
+		if f.patch.LifetimeHours.Set {
+			t.Errorf("absent must keep: %+v", f.patch.LifetimeHours)
+		}
+	})
+	t.Run("too deep and cycles are 409s", func(t *testing.T) {
+		for _, err := range []error{errFolderTooDeep, errFolderCycle} {
+			w := httptest.NewRecorder()
+			serveFolders(w, folderReq("PATCH", "/folders/f1", `{"parentId":"f2"}`, "alice"), "f1", &fakeFolders{err: err})
+			if w.Code != 409 {
+				t.Errorf("%v: got %d", err, w.Code)
+			}
+		}
+	})
 	t.Run("someone else's folder is a 404", func(t *testing.T) {
 		w := httptest.NewRecorder()
 		serveFolders(w, folderReq("DELETE", "/folders/f1", "", "bob"), "f1", &fakeFolders{err: errFolderNotFound})
@@ -220,5 +280,28 @@ func TestFolderFramesReachOnlyTheirOwner(t *testing.T) {
 	}
 	if _, ok := folderNotifyOwner(`{}`); ok {
 		t.Error("a payload with no owner is dropped")
+	}
+}
+
+func TestParseStaticFolders(t *testing.T) {
+	got, err := parseStaticFolders(`[{"id":"design","name":" Design ","icon":"pencil","lifetimeHours":0}]`)
+	if err != nil || len(got) != 1 || got[0].Name != "Design" || *got[0].LifetimeHours != 0 {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+	if got, err := parseStaticFolders(""); err != nil || got != nil {
+		t.Errorf("empty: %+v, %v", got, err)
+	}
+	for _, bad := range []string{
+		`[{"id":"starred","name":"Mine"}]`,
+		`[{"id":"Design","name":"Design"}]`,
+		`[{"id":"a","name":"A"},{"id":"a","name":"B"}]`,
+		`[{"id":"a","name":""}]`,
+		`[{"id":"a","name":"A","icon":"Bad Icon"}]`,
+		`[{"id":"a","name":"A","lifetimeHours":-2}]`,
+		`{"id":"a"}`,
+	} {
+		if _, err := parseStaticFolders(bad); err == nil {
+			t.Errorf("accepted %s", bad)
+		}
 	}
 }

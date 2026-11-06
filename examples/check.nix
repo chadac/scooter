@@ -1166,6 +1166,34 @@ let
       (containersOf w))
     allWorkloads;
 
+  # Static folders reach the router only from enabled contribs.
+  foldersRouterEnv = extra:
+    let
+      e = evalPlatform {
+        module = { ... }: {
+          imports = [ ./kubenix-config.nix ];
+          config = extra;
+        };
+      };
+      ctrs = builtins.attrValues (e.config.kubernetes.resources.deployments.conversation-router.spec.template.spec.containers or { });
+      m = builtins.filter (v: v.name == "STATIC_FOLDERS_JSON") (builtins.concatMap (c: c.env or [ ]) ctrs);
+    in if m == [ ] then null else builtins.fromJSON (builtins.head m).value;
+  echoFolders = on: folders: {
+    contribs.echo.enable = nixpkgsLib.mkForce on;
+    contribs.echo.folders = nixpkgsLib.mkForce folders;
+  };
+  echoFolder = { id = "echo-design"; name = "Design"; lifetimeHours = 0; };
+  foldersThrow = extra: !(builtins.tryEval (builtins.deepSeq (foldersRouterEnv extra) true)).success;
+  staticFolderProblems =
+    (if foldersRouterEnv (echoFolders false [ echoFolder ]) == null then [ ]
+     else [ "a disabled contrib's static folder is in the router's STATIC_FOLDERS_JSON" ])
+    ++ (if foldersRouterEnv (echoFolders true [ echoFolder ]) == [ echoFolder ] then [ ]
+        else [ "an enabled contrib's static folder is not in STATIC_FOLDERS_JSON as declared" ])
+    ++ (if foldersThrow (echoFolders true [ (echoFolder // { id = "design"; }) ]) then [ ]
+        else [ "a static folder id outside `<contrib>[-…]` rendered" ])
+    ++ (if foldersThrow (echoFolders true [ echoFolder echoFolder ]) then [ ]
+        else [ "two static folders with one id rendered" ]);
+
   # Contrib settings tabs, resolved by the same function the UI manifest uses, over
   # the platform eval's contribs with fixture overrides. Echo declares a tab and is
   # disabled; each bad declaration must throw, since a tab the UI cannot route is
@@ -1538,7 +1566,7 @@ let
     ++ (if imageDrv forkedLib "conversation-router" == imageDrv platform "conversation-router" then [ ]
         else [ "scooter.packages.scooter-lib override changed conversation-router, which does not use it" ]);
 
-  allProblems = packageProblems ++ uploadsProblems ++ sysTaskProblems ++ askUserProblems ++ hookProblems ++ providerProblems ++ disabledContribProblems ++ settingsTabProblems ++ uiManifestProblems ++ conversationUiProblems ++ contribApiProblems ++ dirSkillProblems ++ legacyRootProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ imagegenProblems ++ atProblems ++ googleProblems ++ ghOwnersProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems' ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ contribCoverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ volumeProblems ++ approvalProblems ++ awaitingNotifyProblems ++ stage2Problems ++ contribDbProblems ++ contribGrantProblems ++ retireProblems ++ initGrantProblems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems ++ conversationServiceProblems ++ selfAccessProblems ++ npProblems ++ sandboxOriginProblems ++ enforceProblems;
+  allProblems = packageProblems ++ uploadsProblems ++ sysTaskProblems ++ askUserProblems ++ hookProblems ++ providerProblems ++ disabledContribProblems ++ settingsTabProblems ++ staticFolderProblems ++ uiManifestProblems ++ conversationUiProblems ++ contribApiProblems ++ dirSkillProblems ++ legacyRootProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ imagegenProblems ++ atProblems ++ googleProblems ++ ghOwnersProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems' ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ contribCoverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ volumeProblems ++ approvalProblems ++ awaitingNotifyProblems ++ stage2Problems ++ contribDbProblems ++ contribGrantProblems ++ retireProblems ++ initGrantProblems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems ++ conversationServiceProblems ++ selfAccessProblems ++ npProblems ++ sandboxOriginProblems ++ enforceProblems;
 in
 if allProblems == [ ]
 then "ok: deployments = ${haveDeps}; datadog + airtable + brave + kagi + duckduckgo (three search providers, each with its own tool) + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every scooter.* namespace and every shipped contrib's own options; skills gated on the contrib being built; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; the renamed root (agentSandbox.*) fails the render; contribs reach the platform eval and configuring an unshipped one fails the render; deploy-time Jobs are spec-hash named; a scooter.packages override reaches exactly the images that use it\n"

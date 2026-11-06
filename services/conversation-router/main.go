@@ -154,6 +154,16 @@ func main() {
 			writeStore = ws
 			defer writeStore.Close()
 			log.Info("postgres write store connected (star/title served here)")
+			// Bad config is a deploy bug; Nix checks it too.
+			statics, err := parseStaticFolders(os.Getenv("STATIC_FOLDERS_JSON"))
+			if err != nil {
+				log.Error("STATIC_FOLDERS_JSON is invalid", errAttr(err))
+				os.Exit(1)
+			}
+			ws.statics = statics
+			if err := ws.SyncStaticFolders(ctx); err != nil {
+				log.Warn("static folder sync failed; lifetimes may be stale until the next boot", errAttr(err))
+			}
 		}
 	}
 

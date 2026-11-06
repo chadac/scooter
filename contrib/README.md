@@ -600,6 +600,26 @@ option's description.
 `pythonDeps` dependency, as below), never its SQL. There are no foreign keys
 across databases.
 
+### Static sidebar folders (`folders`)
+
+A contrib can add folders that every user has, listed below Starred:
+
+```nix
+folders = [{
+  id = "mycontrib-design";   # `<contrib>` or `<contrib>-…`
+  name = "Design";
+  icon = "palette";          # optional; a name from services/ui/src/FolderGlyph.tsx
+  lifetimeHours = 0;         # optional; 0 keeps conversations forever
+}];
+```
+
+Users file conversations in them but can't rename, move, delete or nest
+folders in them. `lifetimeHours` sets how long a conversation filed there may
+sit idle before agent-host deletes it; null leaves `scooter.retentionMaxAgeMs`
+in charge. The router reads the list from `STATIC_FOLDERS_JSON`, built by
+contrib/static-folders.nix from enabled contribs only. When a contrib is
+disabled its folders disappear, and their conversations show unfiled.
+
 ### Depending on another contrib
 
 Integrations reference each other — gitlab reads Jira keys out of MR titles to

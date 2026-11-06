@@ -1022,8 +1022,10 @@ in
         conversation that has been inactive (no prompt/event) longer than this.
         Age is measured from last activity, so a recently-used conversation is
         never reaped however old it is. STARRED conversations are exempt. 0
-        disables (the default — opt in for a real deployment, e.g. 30 days =
-        2592000000). Runs on a slow cadence (retentionSweepIntervalMs, default 6h).
+        keeps them (the default — opt in for a real deployment, e.g. 30 days =
+        2592000000). A folder's own lifetime, set by its owner or a static
+        folder's `lifetimeHours`, replaces this for the conversations filed in
+        it, even at 0. Runs on a slow cadence (retentionSweepIntervalMs, default 6h).
       '';
     };
 
@@ -1422,8 +1424,9 @@ in
         conversation_folders = {
           writers = [ "conversation-router" ];
           note = ''
-            Per-user sidebar folders, including each user's built-in Starred. Pure UI state with
-            no pod involved, so the router serves the CRUD and nothing else touches it.'';
+            Per-user sidebar folders, including each user's built-in Starred and static folders.
+            The router serves the CRUD; agent-host, the database owner, reads folder lifetimes
+            for its retention reap.'';
         };
         user_conversation_metadata = {
           writers = [ "conversation-router" ];
