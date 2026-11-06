@@ -121,6 +121,28 @@ in
       default = 2;
       description = "Router replicas (stateless proxy; fronts the agent-host Service).";
     };
+    spawners = mkOption {
+      type = types.listOf (types.strMatching "[a-z0-9]([-a-z0-9]*[a-z0-9])?");
+      default = [ ];
+      example = [ "agent-broker" ];
+      description = ''
+        ServiceAccounts (in the platform namespace) that may call
+        `POST /conversations/{id}/spawns` on the router, which opens a new
+        top-level conversation for that conversation's owner and queues its
+        first message. Owner and visibility always come from the source
+        conversation, and the route reads nothing back, so it is far
+        narrower than the owner-asserting allowlist. The new conversation's
+        agent still acts for that owner, so list only services already
+        trusted with users' credentials (the broker). Each source may spawn
+        at most `spawnsPerSourcePerHour` conversations per router replica.
+        Empty disables the route.
+      '';
+    };
+    spawnsPerSourcePerHour = mkOption {
+      type = types.ints.positive;
+      default = 10;
+      description = "Per-source spawn cap, per router replica (SPAWNS_PER_SOURCE_PER_HOUR).";
+    };
 
     # --- history mirror (cross-pod conversation revival) --------------------
     # One shared RWX volume every agent-host pod mirrors its events to, read back
@@ -469,6 +491,11 @@ in
                 # Services that may call the router without asserting a user.
                 ++ lib.optional cfg.broker.enable
                   { name = "ROUTER_SERVICE_ACCOUNTS"; value = "system:serviceaccount:${cfg.namespace}:agent-broker"; }
+                ++ lib.optionals (ccfg.spawners != [ ]) [
+                  { name = "CONVERSATION_SPAWNER_SERVICE_ACCOUNTS";
+                    value = lib.concatMapStringsSep "," (sa: "system:serviceaccount:${cfg.namespace}:${sa}") ccfg.spawners; }
+                  { name = "SPAWNS_PER_SOURCE_PER_HOUR"; value = toString ccfg.spawnsPerSourcePerHour; }
+                ]
                 ++ lib.optional (cfg.auth.sessionCheckUrl != null)
                   { name = "AUTH_SESSION_CHECK_URL"; value = cfg.auth.sessionCheckUrl; }
                 ++ lib.optional (cfg.auth.sandboxSessionCheckUrl != null)

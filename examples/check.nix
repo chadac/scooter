@@ -572,6 +572,16 @@ let
   albRouterEnv =
     let ctrs = builtins.attrValues (albPlatform.config.kubernetes.resources.deployments.conversation-router.spec.template.spec.containers or { });
     in builtins.concatMap (c: c.env or [ ]) ctrs;
+  spawnPlatform = evalPlatform {
+    module = { ... }: {
+      imports = [ ./kubenix-config.nix ];
+      scooter.conversationController.spawners = [ "agent-broker" ];
+    };
+  };
+  spawnRouterEnv =
+    let ctrs = builtins.attrValues (spawnPlatform.config.kubernetes.resources.deployments.conversation-router.spec.template.spec.containers or { });
+    in builtins.concatMap (c: c.env or [ ]) ctrs;
+  spawnEnvVal = name: let m = builtins.filter (e: e.name == name) spawnRouterEnv; in if m == [ ] then "" else (builtins.head m).value;
   ownerProblems =
     (if builtins.match ".*:agent-webhooks.*" (routerEnvVal "WEBHOOKS_SERVICE_ACCOUNT") != null then [ ]
      else [ "router.env.WEBHOOKS_SERVICE_ACCOUNT (a webhooks-resolved conversation owner is dropped)" ])
@@ -605,6 +615,14 @@ let
         else [ "broker.volumes scooter-router-token must be minted for ROUTER_TOKEN_AUDIENCE" ])
     ++ (if (res.clusterRoleBindings or { }) ? conversation-router-tokenreview then [ ]
         else [ "clusterRoleBindings.conversation-router-tokenreview (TokenReview 403s, so every webhook conversation is unowned)" ])
+    # Spawning is off by default, and a spawner never becomes an owner asserter.
+    ++ (if routerEnvVal "CONVERSATION_SPAWNER_SERVICE_ACCOUNTS" == "" then [ ]
+        else [ "router.env.CONVERSATION_SPAWNER_SERVICE_ACCOUNTS set with no spawners configured" ])
+    ++ (if spawnEnvVal "CONVERSATION_SPAWNER_SERVICE_ACCOUNTS" == "system:serviceaccount:${spawnPlatform.config.scooter.namespace}:agent-broker"
+          && spawnEnvVal "SPAWNS_PER_SOURCE_PER_HOUR" == "10" then [ ]
+        else [ "spawners: router.env.CONVERSATION_SPAWNER_SERVICE_ACCOUNTS / SPAWNS_PER_SOURCE_PER_HOUR not rendered from conversationController.spawners" ])
+    ++ (if builtins.match ".*:agent-broker.*" (spawnEnvVal "WEBHOOKS_SERVICE_ACCOUNT") == null then [ ]
+        else [ "spawners: the broker landed on the owner-asserting allowlist (WEBHOOKS_SERVICE_ACCOUNT)" ])
     ++ (if builtins.any (e: e.name == "AUTH_MODE" && e.value == "alb-oidc") albRouterEnv then [ ]
         else [ "alb-oidc: router.env.AUTH_MODE (the router reads x-auth-user, which an ALB never sets — every caller looks anonymous and sees every conversation)" ]);
 

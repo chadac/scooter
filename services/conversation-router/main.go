@@ -85,6 +85,8 @@ func main() {
 	var pods *ReadyPods
 	// Body-`owner` trust for in-cluster callers; nil outside a cluster, where a body owner is never honored.
 	var trusted TrustedCaller
+	// Verifies spawn callers; nil disables POST /conversations/{id}/spawns.
+	var spawner TrustedCaller
 	// The apiserver credentials, for the self-access TokenReview; nil in dev mode.
 	var kubeCfg *rest.Config
 	if devModeEnabled() {
@@ -116,6 +118,7 @@ func main() {
 		creator = unavailableCreator{}
 		cfg.fallback = FallbackURL(cfg.clusterIPService, cfg.namespace, cfg.upstreamPort)
 		trusted = buildTrustedCaller(kubeCfg, log)
+		spawner = buildSpawner(kubeCfg, log)
 	}
 
 	// Optional read-only Postgres handle on the agent_host database, from which GET /conversations is served.
@@ -212,7 +215,7 @@ func main() {
 	go runLinkListener(ctx, store, links, hub)
 	go runAwaitingListener(ctx, store, links, hub)
 
-	handler := newRouter(ctx, cfg, resolver, creator, trusted, store, writeStore, links, hub)
+	handler := newRouter(ctx, cfg, resolver, creator, trusted, spawner, store, writeStore, links, hub)
 	mainGate, sandboxGate := buildGateways(kubeCfg, log)
 	srv := &http.Server{Addr: cfg.listenAddr, Handler: guarded(mainGate, handler)}
 	if self := buildSelfServer(kubeCfg, cfg, store, handler, log); self != nil {
@@ -265,14 +268,18 @@ func main() {
 }
 
 // newRouter builds the HTTP handler: resolve the target, reverse-proxy, and on a dial failure to the owner IP retry once via the fallback Service.
-func newRouter(shutdownCtx context.Context, cfg config, resolver ownerResolver, creator ConversationCreator, trusted TrustedCaller, store *Store, writeStore *WriteStore, links *LinkStore, hub *sseHub) http.Handler {
+func newRouter(shutdownCtx context.Context, cfg config, resolver ownerResolver, creator ConversationCreator, trusted, spawner TrustedCaller, store *Store, writeStore *WriteStore, links *LinkStore, hub *sseHub) http.Handler {
 	fallback := cfg.fallback
 	// A typed-nil *Store in an interface is not nil.
 	var parents parentLookup
 	if store != nil {
 		parents = store
 	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	limiter := newSpawnLimiter(atoi(env("SPAWNS_PER_SOURCE_PER_HOUR", "10")), time.Hour)
+	var h http.HandlerFunc
+	// The first message re-enters this handler to be routed.
+	deliver := internalDeliver(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { h(w, r) }), identityConfigFromEnv())
+	h = func(w http.ResponseWriter, r *http.Request) {
 		// Only the router's sandbox listener may mark a request as host-routed.
 		r.Header.Del(SandboxHostHeader)
 		// Sandbox hosts are served only by the sandbox listener (newSandboxRouter); one that
@@ -284,6 +291,11 @@ func newRouter(shutdownCtx context.Context, cfg config, resolver ownerResolver, 
 		// Create, the conversation list and its events stream are served here rather than proxied: no single agent-host pod knows every conversation, and a capacity-bound pod cannot create one (see create.go, list.go, events.go).
 		if IsConversationCreate(r.Method, r.URL.Path) {
 			serveConversationCreate(w, r, creator, ownerFrom(r), trusted)
+			return
+		}
+		// Spawn is served here too (see spawn.go).
+		if sourceID, ok := ConversationSpawn(r.Method, r.URL.Path); ok {
+			serveConversationSpawn(w, r, creator, parents, sourceID, spawner, limiter, deliver)
 			return
 		}
 		// Subagent create is served here too (see subagent.go).
@@ -332,7 +344,8 @@ func newRouter(shutdownCtx context.Context, cfg config, resolver ownerResolver, 
 			return
 		}
 		serveVia(shutdownCtx, w, r, target, fallback, canRetry, convID)
-	})
+	}
+	return h
 }
 
 // agentHostKeepAlive is agent-host's server keepAliveTimeout (services/agent-host/src/agui/server.ts).
@@ -543,6 +556,22 @@ func buildTrustedCaller(kubeCfg *rest.Config, log *slog.Logger) TrustedCaller {
 		return nil
 	}
 	log.Info("body-owner trust enabled", slog.Int("trusted_service_accounts", len(allowed)))
+	return newTrustedCaller(review, allowed)
+}
+
+// buildSpawner verifies spawn callers; nil disables spawning.
+func buildSpawner(kubeCfg *rest.Config, log *slog.Logger) TrustedCaller {
+	allowed := spawnServiceAccounts()
+	if len(allowed) == 0 {
+		return nil
+	}
+	audiences := env("WEBHOOKS_TOKEN_AUDIENCE", "agent-host") + "," + env("ROUTER_TOKEN_AUDIENCE", "scooter-router")
+	review, err := newTokenReviewer(kubeCfg, audiences)
+	if err != nil {
+		log.Warn("TokenReview client init failed: conversation spawns are refused", errAttr(err))
+		return nil
+	}
+	log.Info("conversation spawns enabled", slog.Int("spawner_service_accounts", len(allowed)))
 	return newTrustedCaller(review, allowed)
 }
 
