@@ -310,19 +310,6 @@ test.describe("session selector & titles", () => {
     await request.delete(`${base}/folders/${a}?subfolders=delete`);
   });
 
-  test("a locked folder can't be changed by its user", async ({ chat, page, request, baseURL }) => {
-    const base = baseURL ?? "http://localhost:5173";
-    await chat.open();
-    const head = page.locator(folders.head("e2e-design"));
-    await expect(head).toBeVisible();
-    const ids = await page.locator(folders.header).evaluateAll((els) => els.map((e) => e.getAttribute("data-folder-id")));
-    expect(ids.slice(0, 2)).toEqual(["starred", "e2e-design"]);
-    await expect(head).toHaveAttribute("draggable", "false");
-    await expect(head.getByRole("button", { name: /folder actions/ })).toHaveCount(0);
-    await expect(head.getByTestId("folder-lifetime")).toBeVisible();
-    expect((await request.patch(`${base}/folders/e2e-design`, { data: { name: "x" } })).status()).toBe(409);
-  });
-
   test("new-session button starts a fresh conversation", async ({ chat, page }) => {
     await chat.open();
     await chat.send("first conversation");
@@ -561,3 +548,18 @@ fastOnly("an API-seeded conversation with no run is not served by the multi-pod 
   });
   },
 );
+
+fastOnly("the locked folder is seeded by the fake backend")("session selector & titles — locked folders", () => {
+  test("a locked folder can't be changed by its user", async ({ chat, page, request, baseURL }) => {
+    const base = baseURL ?? "http://localhost:5173";
+    await chat.open();
+    const head = page.locator(folders.head("e2e-design"));
+    await expect(head).toBeVisible();
+    const ids = await page.locator(folders.header).evaluateAll((els) => els.map((e) => e.getAttribute("data-folder-id")));
+    expect(ids.slice(0, 2)).toEqual(["starred", "e2e-design"]);
+    await expect(head).toHaveAttribute("draggable", "false");
+    await expect(head.getByRole("button", { name: /folder actions/ })).toHaveCount(0);
+    await expect(head.getByTestId("folder-lifetime")).toBeVisible();
+    expect((await request.patch(`${base}/folders/e2e-design`, { data: { name: "x" } })).status()).toBe(409);
+  });
+});
