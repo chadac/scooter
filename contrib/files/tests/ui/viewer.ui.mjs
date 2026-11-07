@@ -517,6 +517,38 @@ Second?
   );
   check("its dimensions are shown", await until(async () => (await page.locator("main").innerText()).includes("1 × 1"), 3000));
 
+  // --- html: rendered in a sandboxed frame ----------------------------------------
+
+  // The probes write what the frame could reach into its own page.
+  writeFileSync(
+    join(ws, "docs/report.html"),
+    `<!doctype html><title>Report</title><h1 id="h">static</h1><img src="dot.png" alt="dot"><pre id="probe"></pre>
+<script>
+document.getElementById("h").textContent = "scripted";
+const out = [];
+try { out.push("parent:" + parent.document.title); } catch { out.push("parent:blocked"); }
+try { out.push("cookie:" + document.cookie); } catch { out.push("cookie:blocked"); }
+fetch("${url}/api/list?path=").then(() => out.push("fetch:ok"), () => out.push("fetch:blocked"))
+  .finally(() => (document.getElementById("probe").textContent = out.join(" ")));
+</script>`,
+  );
+  await page.goto(`${url}/?path=docs/report.html`);
+  const frame = page.frameLocator("main iframe");
+  await frame.locator("#h").waitFor();
+  check("an HTML file renders and its script runs", (await frame.locator("#h").textContent()) === "scripted");
+  check("its tab is titled from <title>", await until(async () => (await page.title()) === "Report · Files", 3000));
+  check(
+    "a relative image in it loads",
+    await until(() => frame.locator("img").evaluate((i) => i.complete && i.naturalWidth === 1), 3000).catch(() => false),
+  );
+  await until(async () => (await frame.locator("#probe").textContent()).includes("fetch:"), 5000);
+  const probe = await frame.locator("#probe").textContent();
+  check("its script cannot reach the viewer's page", probe.includes("parent:blocked"), probe);
+  check("its script cannot read cookies", probe.includes("cookie:blocked"), probe);
+  check("its script cannot call the viewer's API", probe.includes("fetch:blocked"), probe);
+  await page.getByTitle("Source").click();
+  check("Source shows the HTML as code", await until(() => page.getByText("parent.document.title").first().isVisible(), 5000));
+
   // --- code: a line-range comment -------------------------------------------------
 
   await page.goto(`${url}/?path=src/sample.py`);

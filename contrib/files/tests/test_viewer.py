@@ -242,6 +242,15 @@ def test_markdown_gets_its_own_renderer(client, workspace: Path, name: str) -> N
     assert payload["renderer"] == "markdown"
 
 
+@pytest.mark.parametrize("name", ["report.html", "page.HTM"])
+def test_html_gets_its_own_renderer_with_its_source(client, workspace: Path, name: str) -> None:
+    html = "<!doctype html><p>hi</p>\n"
+    (workspace / name).write_text(html)
+    _, payload = client.json(f"/api/file?path={name}")
+    assert payload["renderer"] == "html"
+    assert payload["body"] == html and payload["etag"]
+
+
 def test_binary_is_reported_not_rendered(client) -> None:
     _, payload = client.json("/api/file?path=blob.bin")
     assert payload["renderer"] == "binary"

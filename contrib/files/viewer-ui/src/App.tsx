@@ -6,6 +6,7 @@ import { Tree } from "./Tree";
 import { CodePane } from "./CodePane";
 import { MarkdownPane } from "./MarkdownPane";
 import { ImagePane } from "./ImagePane";
+import { HtmlPane } from "./HtmlPane";
 import { RetryAll } from "./Thread";
 import { current, navigate, onNavigate } from "./nav";
 import { useNarrow } from "./media";
@@ -163,14 +164,19 @@ export function App() {
   };
   const md = file?.renderer === "markdown";
   const image = file?.renderer === "image";
-  // Rendered by default, with a Source toggle: markdown, and SVGs (images with a body).
-  const previewable = md || (image && !!file?.body);
+  const html = file?.renderer === "html";
+  // Rendered by default, with a Source toggle: markdown, HTML, and SVGs (images with a body).
+  const previewable = md || html || (image && !!file?.body);
   const open = threads.filter((t) => !t.resolved).length;
   const unanswered = questions.filter((q) => !q.answered).length;
 
   // Tab title: the doc's heading, else the filename.
   const shownFile = file && file.path === path ? file : null;
-  const docTitle = useMemo(() => (shownFile?.renderer === "markdown" ? mdTitle(shownFile.body) : ""), [shownFile]);
+  const docTitle = useMemo(() => {
+    if (shownFile?.renderer === "markdown") return mdTitle(shownFile.body);
+    if (shownFile?.renderer === "html") return new DOMParser().parseFromString(shownFile.body, "text/html").title.trim();
+    return "";
+  }, [shownFile]);
   useEffect(() => {
     const name = path.split("/").pop() || "";
     const label = docTitle || name;
@@ -279,6 +285,7 @@ export function App() {
             </div>
           )}
           {file && file.path === path && image && !(previewable && source) && <ImagePane file={file} />}
+          {file && file.path === path && html && !source && <HtmlPane path={path} body={file.body} />}
           {file && file.path === path && md && !source && (
             <MarkdownPane
               path={path}

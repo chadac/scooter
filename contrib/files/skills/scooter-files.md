@@ -56,6 +56,10 @@ platform auto-starts it.
 - **Images** (PNG, JPEG, GIF, WebP, SVG, AVIF, ICO, BMP, up to 16 MB): link one
   directly to show it, or embed it in a document with `![alt](shot.png)`, a
   `/workspace/...` path, or an HTML `<img src=… width=…>` to size it.
+- **HTML pages** (`.html`, `.htm`) rendered in a sandboxed frame, with a Source
+  toggle. Scripts run, and CDN (`https:`) scripts, styles and fonts load, but the
+  page can't `fetch` anything. Relative `<img>` files load; relative CSS and JS
+  don't, so inline them. Good for charts and reports you want *seen*.
 - Other binaries and text files past 2 MB report themselves instead of rendering —
   say so rather than retrying.
 

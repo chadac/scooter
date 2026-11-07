@@ -47,6 +47,8 @@ What it asserts, each one a bug that shipped or a contract someone relies on:
   workspace; a relative link opens its target in the viewer and Back returns; an old
   `#/<file>` link still opens and is rewritten to `?path=`
 - images: a `/workspace/...` path and HTML `<img>` tags (block and inline, width kept) load in a document, an image inside a sentence stays inline; an image file opened on its own is shown with its size
+- an HTML file renders in its frame, with its script running and its relative image loaded; that script
+  can't reach the viewer's page, its cookies or its API; Source shows the HTML
 - in a code file, a range comment anchors to its first line, quotes the range, and
   its thread renders inline under those lines
 - no page errors

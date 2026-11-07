@@ -54,6 +54,9 @@ MAX_RAW_BYTES = 16 * 1024 * 1024
 # for the whole workspace. Why that is not wanted: PR #772.
 RAW_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".avif", ".ico", ".bmp"}
 
+# Text files the page renders rather than shows as source.
+RENDERERS = {".md": "markdown", ".markdown": "markdown", ".html": "html", ".htm": "html"}
+
 # A write body is a comment and its quote, never a file, so anything larger is a bug
 # or an attack whose read would cost the pod's memory.
 MAX_BODY_BYTES = 128 * 1024
@@ -209,7 +212,7 @@ def read_file(root: Path, path: Path) -> dict:
         "etag": etag_of(body),
         # Which of the page's renderers gets the body; markdown is parsed in the
         # browser, where the sanitizer that must see the result lives.
-        "renderer": "markdown" if path.suffix in {".md", ".markdown"} else "code",
+        "renderer": RENDERERS.get(suffix, "code"),
     }
 
 
