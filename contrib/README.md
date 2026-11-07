@@ -833,6 +833,8 @@ ui.views.roadmap = {
   throws shows an error in that view only. A deployment that does not ship the contrib
   serves its URL as the chat.
 
+`contrib/echo/ui/View.tsx` is the minimal example.
+
 #### Hooks on filed conversations
 
 Every hook's input carries the owner's folder for the conversation as `scooter.folder`

@@ -27,6 +27,12 @@
       api = true;
     }];
 
+    # The fixture for contrib views: /echo exists only while echo is enabled.
+    ui.views.echo = {
+      label = "Echo";
+      entry = "ui/View.tsx";
+    };
+
     # The fixture for contrib system tasks: `scooter.systemTasks.echo-greet` while echo
     # is enabled, and nothing while it is not.
     systemTasks.greet = {
