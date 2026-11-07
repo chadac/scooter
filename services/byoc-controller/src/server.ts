@@ -1,16 +1,23 @@
 /**
  * The BYOC controller's HTTP surface, a pure request->response function so every route and
- * rejection is contract-testable without sockets; index.ts binds it to node:http and ws.
+ * rejection is contract-testable without sockets; shell.ts binds it to node:http and ws.
  *
- *   POST /byoc/sessions             mint, authed: served from the UI surface, not the /byoc/ ingress
- *   GET  /byoc/ws/:id               connect, unauthenticated at the ingress; the join token is the gate
- *   POST /byoc/:id/prompt           in-cluster, from any agent-host replica
- *   POST /byoc/:id/permission/:pid  in-cluster, unblocks a pending permission
- *   POST /byoc/:id/exec/:xid        in-cluster, a Channel B result
- *   GET  /byoc/status?owner=…       the UI badge
+ * The public surface, the only one the ingress reaches, serves the container's routes:
+ *   GET  /byoc/ws/:id               connect; a join token or device signature is the gate
+ *   POST /byoc/devices              register a device key with a join token
+ *   GET  /byoc/challenge            a nonce for a device-signed connect
  *
- * Routes are matched exactly with no catch-all, so the unauthenticated surface 404s anything
- * it does not explicitly serve.
+ * The internal surface, reached only by the agent-host in-cluster, serves everything:
+ *   POST /byoc/sessions             mint for the user the agent-host names
+ *   POST /byoc/:id/prompt           an ACP request from any agent-host replica
+ *   POST /byoc/:id/permission/:pid  unblocks a pending permission
+ *   POST /byoc/:id/exec/:xid        a Channel B result
+ *   GET  /byoc/:id/tunnel           the container-initiated tunnel stream (replies POST to it)
+ *   GET  /byoc/status?owner=…       the UI badge and the routing check
+ *   GET|DELETE /byoc/devices[/:id]  the user's registered devices
+ *
+ * Routes are matched exactly with no catch-all, so each surface 404s anything it does not
+ * explicitly serve.
  */
 
 import type { SessionRegistry } from "./sessionRegistry.js";
@@ -23,8 +30,18 @@ export interface ByocRequest {
   method: string;
   path: string;
   body?: unknown;
-  /** The resolved user, present only on the authed surface. */
+  /** The user the agent-host names, honoured only on the internal surface. */
   user?: { id: string };
+  /** Which listener the request arrived on; defaults to internal. */
+  surface?: "public" | "internal";
+}
+
+/** Whether a request is one the public, ingress-facing surface serves. */
+export function isPublicRoute(method: string, path: string): boolean {
+  const pathname = path.split("?")[0];
+  return (
+    (method === "POST" && pathname === "/byoc/devices") || (method === "GET" && pathname === "/byoc/challenge")
+  );
 }
 
 export interface ByocResponse {
@@ -136,6 +153,11 @@ export function createServer(config: ByocServerConfig): ByocServer {
 
   return {
     async handle(req) {
+      if (req.surface === "public") {
+        if (!isPublicRoute(req.method, req.path)) return { status: 404, json: { error: "not found" } };
+        // Public callers can set any header, so no identity crosses this surface.
+        req = { ...req, user: undefined };
+      }
       const [pathname, query = ""] = req.path.split("?");
       let parts: string[];
       try {
@@ -147,7 +169,7 @@ export function createServer(config: ByocServerConfig): ByocServer {
 
       if (parts[0] !== "byoc") return { status: 404, json: { error: "not found" } };
 
-      // POST /byoc/sessions: mint (authed).
+      // POST /byoc/sessions: mint (internal).
       if (req.method === "POST" && parts.length === 2 && parts[1] === "sessions") {
         if (!req.user?.id) {
           return { status: 401, json: { error: "authentication required to mint a BYOC session" } };
@@ -157,7 +179,7 @@ export function createServer(config: ByocServerConfig): ByocServer {
       }
 
       // --- Device auth ---
-      // POST /byoc/devices: register, on the unauthenticated ingress because the container has no browser session and the join token is the gate.
+      // POST /byoc/devices: register, public because the container has no browser session and the join token is the gate.
       if (req.method === "POST" && parts.length === 2 && parts[1] === "devices") {
         if (!devices) return { status: 404, json: { error: "device auth not enabled" } };
         const body = req.body as { joinToken?: string; publicKey?: string; label?: string };

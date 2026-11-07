@@ -1,7 +1,8 @@
 /** The controller's network shell: HTTP/SSE and container sockets, with heartbeats. */
 
-import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer as createHttpServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import type { Duplex } from "node:stream";
 
 import { WebSocketServer, type WebSocket } from "ws";
 
@@ -18,8 +19,10 @@ export const WS_PING_MS = 20_000;
 export const WS_MAX_MISSED_PONGS = 3;
 
 export interface ControllerOptions {
-  /** 0 picks a free port. */
+  /** The internal listener, for in-cluster callers only; 0 picks a free port. */
   port: number;
+  /** The public listener the ingress targets; omitted means none, 0 picks a free port. */
+  publicPort?: number;
   secret: string;
   /** Caller-owned, so a restarted controller reuses them. */
   store: SessionStore;
@@ -31,6 +34,7 @@ export interface ControllerOptions {
 
 export interface RunningController {
   port: number;
+  publicPort?: number;
   /** Stop listening and drop every container socket and stream. */
   close(): Promise<void>;
 }
@@ -46,9 +50,8 @@ const readBody = async (req: IncomingMessage): Promise<unknown> => {
   }
 };
 
-/** The identity the authed surface passes down; in-cluster callers have none. */
+/** The identity the agent-host names; server.ts drops it on the public surface. */
 const userFrom = (req: IncomingMessage): { id: string } | undefined => {
-  // Set by the ingress auth proxy and absent on the unauthenticated /byoc/ ingress.
   const id = (req.headers["x-auth-request-user"] ?? req.headers["x-forwarded-user"]) as string | undefined;
   return id ? { id } : undefined;
 };
@@ -65,7 +68,7 @@ export async function startController(opts: ControllerOptions): Promise<RunningC
   const devices = createDeviceAuth({ store: deviceStore, secret });
   const api = createServer({ registry, relay, secret, devices });
 
-  const http = createHttpServer((req: IncomingMessage, res: ServerResponse) => {
+  const serve = (surface: "public" | "internal") => (req: IncomingMessage, res: ServerResponse) => {
     void (async () => {
       if (req.url === "/healthz") {
         res.writeHead(200).end("ok");
@@ -77,6 +80,7 @@ export async function startController(opts: ControllerOptions): Promise<RunningC
           path: req.url ?? "/",
           body: await readBody(req),
           user: userFrom(req),
+          surface,
         });
 
         if (result.stream) {
@@ -115,7 +119,9 @@ export async function startController(opts: ControllerOptions): Promise<RunningC
         res.end(JSON.stringify({ error: "internal error" }));
       }
     })();
-  });
+  };
+  const http = createHttpServer(serve("internal"));
+  const publicHttp = opts.publicPort === undefined ? undefined : createHttpServer(serve("public"));
 
   // --- Container sockets -----------------------------------------------------------------------
   const wss = new WebSocketServer({ noServer: true });
@@ -139,7 +145,7 @@ export async function startController(opts: ControllerOptions): Promise<RunningC
     }
   }, wsPingMs);
 
-  http.on("upgrade", (req, socket, head) => {
+  const onUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     const m = /^\/byoc\/ws\/([^/]+)$/.exec(url.pathname);
     if (!m) {
@@ -207,22 +213,36 @@ export async function startController(opts: ControllerOptions): Promise<RunningC
         ws.on("error", (e) => console.warn(`[byoc] socket error session=${liveSessionId}: ${e.message}`));
       });
     })();
-  });
+  };
+  // Both listeners take the connect, which authenticates itself.
+  http.on("upgrade", onUpgrade);
+  publicHttp?.on("upgrade", onUpgrade);
 
-  await new Promise<void>((resolve) => http.listen(opts.port, resolve));
-  const port = (http.address() as AddressInfo).port;
-  console.log(`[byoc] listening on :${port}`);
+  const listen = async (server: Server, at: number): Promise<number> => {
+    await new Promise<void>((resolve) => server.listen(at, resolve));
+    return (server.address() as AddressInfo).port;
+  };
+  const port = await listen(http, opts.port);
+  const publicPort = publicHttp ? await listen(publicHttp, opts.publicPort!) : undefined;
+  console.log(`[byoc] listening on :${port} (internal)${publicPort === undefined ? "" : `, :${publicPort} (public)`}`);
 
   return {
     port,
+    publicPort,
     async close() {
       clearInterval(pinger);
       for (const ws of sockets) ws.terminate();
       api.close();
-      await new Promise<void>((resolve) => {
-        http.close(() => resolve());
-        http.closeAllConnections();
-      });
+      await Promise.all(
+        [http, publicHttp].map(
+          (s) =>
+            s &&
+            new Promise<void>((resolve) => {
+              s.close(() => resolve());
+              s.closeAllConnections();
+            }),
+        ),
+      );
     },
   };
 }

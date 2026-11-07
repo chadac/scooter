@@ -69,10 +69,13 @@ export function createDeviceAuth(config: DeviceAuthConfig): DeviceAuth {
   const now = config.now ?? (() => Math.floor(Date.now() / 1000));
   // Issued, unconsumed challenges, in-memory so a nonce cannot be replayed across a restart.
   const pending = new Map<string, number>(); // nonce -> expiresAt
+  // Join-token nonces already traded for a device, kept until the token expires.
+  const redeemed = new Map<string, number>(); // nonce -> exp
 
   const sweep = (): void => {
     const t = now();
     for (const [nonce, exp] of pending) if (exp <= t) pending.delete(nonce);
+    for (const [nonce, exp] of redeemed) if (exp <= t) redeemed.delete(nonce);
   };
 
   return {
@@ -90,6 +93,13 @@ export function createDeviceAuth(config: DeviceAuthConfig): DeviceAuth {
       } catch {
         return { ok: false, reason: "unparseable public key" };
       }
+
+      // One device per join token, tracked by its nonce.
+      const { nonce, exp } = verified.claims;
+      sweep();
+      if (redeemed.has(nonce)) return { ok: false, reason: "join token rejected: already used to register a device" };
+      // Claimed before any await, so concurrent registrations cannot both pass.
+      redeemed.set(nonce, exp);
 
       // Enforce the cap by evicting the least-recently-seen device.
       const existing = await store.listByOwner(owner);

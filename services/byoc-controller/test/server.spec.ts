@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 
 import { createSessionRegistry, type SessionRegistry, type SessionStore } from "../src/sessionRegistry.js";
 import { createRunRelay, type RunRelay } from "../src/runRelay.js";
-import { createServer, type ByocServer } from "../src/server.js";
+import { createServer, isPublicRoute, type ByocServer } from "../src/server.js";
 import { mintJoinToken } from "../src/joinToken.js";
 import { createDeviceAuth } from "../src/deviceAuth.js";
 import { createMemoryDeviceStore } from "../src/sessionStore.js";
@@ -550,6 +550,59 @@ describe("GET /byoc/:id/tunnel — the agent-host's inbound stream", () => {
     const server = createServer({ registry, relay: createRunRelay({ registry }), secret: SECRET });
     const res = await server.handle({ method: "GET", path: "/byoc/nope/tunnel", user: { id: "alice" } } as never);
     expect(res.status).toBe(404);
+    server.close();
+  });
+});
+
+describe("the public surface", () => {
+  const setup = () => {
+    const registry = createSessionRegistry({ store: fakeStore(), secret: SECRET });
+    const relay = createRunRelay({ registry });
+    const devices = createDeviceAuth({ store: createMemoryDeviceStore(), secret: SECRET });
+    const server = createServer({ registry, relay, secret: SECRET, devices });
+    const pub = (method: string, path: string, body?: unknown) =>
+      server.handle({ method, path, body, user: { id: "alice" }, surface: "public" });
+    return { registry, server, pub };
+  };
+
+  it("isPublicRoute admits only device registration and the challenge", () => {
+    expect(isPublicRoute("POST", "/byoc/devices")).toBe(true);
+    expect(isPublicRoute("GET", "/byoc/challenge?x=1")).toBe(true);
+    expect(isPublicRoute("GET", "/byoc/devices")).toBe(false);
+    expect(isPublicRoute("POST", "/byoc/sessions")).toBe(false);
+    expect(isPublicRoute("GET", "/byoc/status")).toBe(false);
+  });
+
+  it("404s every internal route, even with an identity header", async () => {
+    const { registry, server, pub } = setup();
+    const { sessionId } = await registry.mint("alice");
+    for (const [method, path] of [
+      ["POST", "/byoc/sessions"],
+      ["GET", "/byoc/status?owner=alice"],
+      ["GET", "/byoc/devices"],
+      ["DELETE", "/byoc/devices/d1"],
+      ["POST", `/byoc/${sessionId}/prompt`],
+      ["POST", `/byoc/${sessionId}/permission/p1`],
+      ["POST", `/byoc/${sessionId}/exec/x1`],
+      ["GET", `/byoc/${sessionId}/tunnel`],
+      ["POST", `/byoc/${sessionId}/tunnel/s1`],
+    ]) {
+      expect((await pub(method, path)).status, `${method} ${path}`).toBe(404);
+    }
+    // The mint was refused, so the owner's session is untouched.
+    expect(registry.resolveByOwner("alice")?.sessionId).toBe(sessionId);
+    server.close();
+  });
+
+  it("still serves the container's registration and challenge", async () => {
+    const { server, pub } = setup();
+    const { publicKey } = generateKeyPairSync("ed25519");
+    const reg = await pub("POST", "/byoc/devices", {
+      joinToken: mintJoinToken("alice", SECRET),
+      publicKey: publicKey.export({ type: "spki", format: "pem" }).toString(),
+    });
+    expect(reg.status).toBe(200);
+    expect((await pub("GET", "/byoc/challenge")).status).toBe(200);
     server.close();
   });
 });

@@ -3,6 +3,7 @@
 # - Sandboxes reach only the broker, forge proxy, router self-access, DNS and the internet.
 # - Only the agent-host and router reach a sandbox; only the agent-host reaches its MCP ports.
 # - Only the router and conversation-controller reach agent-host pods.
+# - Only the agent-host reaches the BYOC controller's internal port.
 #
 # Needs a CNI that enforces NetworkPolicy; elsewhere these are inert.
 
@@ -116,6 +117,19 @@ in
   };
 
   config = lib.mkIf npcfg.enable {
+    # The internal port trusts the identity the caller names.
+    kubernetes.resources.networkPolicies.byoc-controller-ingress = lib.mkIf cfg.byoc.enable {
+      metadata = { name = "byoc-controller-ingress"; namespace = cfg.namespace; };
+      spec = {
+        podSelector.matchLabels."app.kubernetes.io/name" = "byoc-controller";
+        policyTypes = [ "Ingress" ];
+        ingress = [
+          { from = [{ podSelector.matchLabels.app = "agent-host"; }]; }
+          { ports = [ (tcp "public") ]; }
+        ];
+      };
+    };
+
     kubernetes.resources.networkPolicies.sandbox-isolation = {
       metadata = { name = "sandbox-isolation"; namespace = cfg.namespace; };
       spec = {

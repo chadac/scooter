@@ -58,6 +58,11 @@ describe("controller entrypoint wiring", () => {
     expect(SRC).toMatch(/liveSessionId/);
   });
 
+  it("starts the public listener from PUBLIC_PORT", () => {
+    // Without it the ingress-facing port is never opened and containers cannot connect.
+    expect(SRC).toMatch(/publicPort:\s*PUBLIC_PORT/);
+  });
+
   it("refuses to start without a signing key", () => {
     // A controller with no BYOC_JOIN_SECRET would accept unsigned junk.
     expect(SRC).toMatch(/BYOC_JOIN_SECRET/);

@@ -2,7 +2,9 @@
 # It holds the bring-your-own-Claude container sockets so any agent-host replica
 # can drive any container; the user's container dials wss://<host>/byoc/ws/<id>
 # and presents an owner-bound HS256 join token, so the ingress carries no auth
-# middleware. It runs a single replica because one process must own every socket.
+# middleware. The Ingress reaches only the "public" port, which serves just the
+# container's routes; the "http" port serves the agent-host and is fenced to it
+# by a NetworkPolicy. It runs a single replica because one process must own every socket.
 
 { config, lib, ... }:
 
@@ -51,7 +53,7 @@ in
         type = types.bool;
         default = true;
         description = ''
-          Expose /byoc/ via a standard Ingress so a user's container can dial in. Default ON when
+          Expose the connect paths via a standard Ingress so a user's container can dial in. Default ON when
           the controller is enabled — a BYOC controller nothing can reach is not a configuration
           anyone wants; opt out for exotic topologies (own gateway, mesh).
         '';
@@ -62,11 +64,11 @@ in
         defaultText = literalExpression "config.scooter.ingress.host";
         example = "scooter.example.com";
         description = ''
-          Public hostname for the BYOC connect path (/byoc). Defaults to the UI's own ingress
-          host: this is a SEPARATE Ingress object carrying only the /byoc path with NO auth
-          annotations, so sharing the hostname does not weaken the authed UI ingress — per-path
-          annotation scoping is exactly what standard controllers do. Override for a dedicated
-          hostname (e.g. byoc.example.com).
+          Public hostname for the BYOC connect paths (/byoc/ws/, /byoc/devices,
+          /byoc/challenge). Defaults to the UI's own ingress host: this is a SEPARATE Ingress
+          object carrying only those paths with NO auth annotations, so sharing the hostname
+          does not weaken the authed UI ingress. Override for a dedicated hostname
+          (e.g. byoc.example.com).
         '';
       };
       className = mkOption {
@@ -134,9 +136,13 @@ in
                 containers.byoc-controller = {
                   image = bcfg.image;
                   imagePullPolicy = "IfNotPresent";
-                  ports = [{ name = "http"; containerPort = 8080; }];
+                  ports = [
+                    { name = "http"; containerPort = 8080; }
+                    { name = "public"; containerPort = 8090; }
+                  ];
                   env = [
                     { name = "PORT"; value = "8080"; }
+                    { name = "PUBLIC_PORT"; value = "8090"; }
                     {
                       name = "BYOC_JOIN_SECRET";
                       valueFrom.secretKeyRef = { name = bcfg.joinSecretName; key = "secret"; };
@@ -153,8 +159,9 @@ in
                     # Without this the controller silently connects cleartext to a Postgres the deployment asked to reach over TLS.
                   ] ++ lib.optional (cfg.postgres.sslmode != null)
                     { name = "DB_SSLMODE"; value = cfg.postgres.sslmode; };
-                  readinessProbe.httpGet = { path = "/healthz"; port = "http"; };
-                  livenessProbe.httpGet = { path = "/healthz"; port = "http"; };
+                  # Probe the public port, which the NetworkPolicy leaves open.
+                  readinessProbe.httpGet = { path = "/healthz"; port = "public"; };
+                  livenessProbe.httpGet = { path = "/healthz"; port = "public"; };
                 };
               };
             };
@@ -165,13 +172,16 @@ in
           metadata = { name = "byoc-controller"; namespace = cfg.namespace; };
           spec = {
             selector."app.kubernetes.io/name" = "byoc-controller";
-            ports = [{ name = "http"; port = 8080; targetPort = "http"; }];
+            ports = [
+              { name = "http"; port = 8080; targetPort = "http"; }
+              { name = "public"; port = 8090; targetPort = "public"; }
+            ];
           };
         };
       }
 
       (lib.mkIf bcfg.ingress.enable {
-        # Unauthenticated by design; minting stays on the authed UI surface.
+        # Unauthenticated by design, so it routes only the container's paths to the public port.
         ingresses.byoc-controller = {
           metadata = {
             name = "byoc-controller";
@@ -182,11 +192,13 @@ in
             ingressClassName = lib.mkIf (bcfg.ingress.className != "") bcfg.ingress.className;
             rules = [{
               host = bcfg.ingress.host;
-              http.paths = [{
-                path = "/byoc";
-                pathType = "Prefix";
-                backend.service = { name = "byoc-controller"; port.number = 8080; };
-              }];
+              http.paths = map
+                (p: p // { backend.service = { name = "byoc-controller"; port.name = "public"; }; })
+                [
+                  { path = "/byoc/ws"; pathType = "Prefix"; }
+                  { path = "/byoc/devices"; pathType = "Exact"; }
+                  { path = "/byoc/challenge"; pathType = "Exact"; }
+                ];
             }];
             tls = lib.optionals bcfg.ingress.tls [
               ({ hosts = [ bcfg.ingress.host ]; }

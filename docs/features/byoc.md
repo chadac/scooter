@@ -26,16 +26,21 @@ laptop container  ──wss──▶  BYOC controller  ◀──http──  agen
 scooter.byoc.enable = true;
 ```
 
-One option: the controller, its (deliberately unauthenticated) `/byoc` connect path on your
-existing ingress host, and the Settings UI. See the
+One option: the controller, its (deliberately unauthenticated) `/byoc/ws`, `/byoc/devices` and
+`/byoc/challenge` connect paths on your existing ingress host, and the Settings UI. See the
 [configuration reference](../reference/options/index.md) for the knobs.
 
 ## Security model
 
 - First connect: a short-lived, owner-bound **join token** (minted from the authenticated
-  Settings page) registers the container's **Ed25519 device key**.
+  Settings page) registers the container's **Ed25519 device key**. Each token registers one
+  device.
 - Every later connect: the container signs a server nonce — no long-lived bearer credential,
   reconnects survive laptop sleep and container restarts indefinitely.
+- The ingress reaches only the controller's `public` port, which serves just those connect
+  paths. The agent-host drives sessions over the `http` port, which a NetworkPolicy opens to
+  agent-host pods only. If you bring your own gateway (`byoc.ingress.enable = false`), point it
+  at the `public` port.
 - Up to three devices per user, least-recently-seen evicted; devices are listed and revocable
   in Settings.
 - A rejected container is loud on **both** ends: the container log says why and backs off; the

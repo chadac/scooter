@@ -72,6 +72,20 @@ describe("BYOC device-key auth", () => {
     expect(res.ok).toBe(false);
   });
 
+  it("REFUSES a second registration with the same join token", async () => {
+    const token = mintJoinToken("alice", SECRET);
+    expect((await auth.register(token, fakeDevice().publicKeyPem)).ok).toBe(true);
+    const again = await auth.register(token, fakeDevice().publicKeyPem);
+    expect(again.ok).toBe(false);
+    expect(await store.listByOwner("alice")).toHaveLength(1);
+  });
+
+  it("a fresh join token registers another device", async () => {
+    expect((await auth.register(mintJoinToken("alice", SECRET), fakeDevice().publicKeyPem)).ok).toBe(true);
+    expect((await auth.register(mintJoinToken("alice", SECRET), fakeDevice().publicKeyPem)).ok).toBe(true);
+    expect(await store.listByOwner("alice")).toHaveLength(2);
+  });
+
   it("REFUSES a malformed public key rather than storing junk", async () => {
     // A row whose key cannot verify anything would still consume one of the owner's slots.
     const res = await auth.register(mintJoinToken("alice", SECRET), "not-a-key");

@@ -89,7 +89,7 @@
     # Conversation UI (nginx serving assistant-ui + proxying the agent-host API).
     ui.enable = true;
 
-    # Bring-your-own-Claude: deploys the controller, the unauthenticated /byoc
+    # Bring-your-own-Claude: deploys the controller, the unauthenticated connect
     # Ingress and the agent-host's remote-agent routes.
     byoc.enable = true;
 

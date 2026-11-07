@@ -13,6 +13,7 @@ import {
 } from "./sessionStore.js";
 
 const PORT = Number(process.env.PORT ?? 8080);
+const PUBLIC_PORT = process.env.PUBLIC_PORT ? Number(process.env.PUBLIC_PORT) : undefined;
 const SECRET = process.env.BYOC_JOIN_SECRET ?? "";
 // Assemble the DSN from parts, since postgres-init writes only a `password` secret; DATABASE_URL is still honoured.
 const DSN =
@@ -34,7 +35,7 @@ if (!DSN) console.warn("[byoc] no DATABASE_URL — owner->session mapping will N
 
 const deviceStore = DSN ? createPgDeviceStore({ dsn: DSN }) : createMemoryDeviceStore();
 
-const controller = await startController({ port: PORT, secret: SECRET, store, deviceStore });
+const controller = await startController({ port: PORT, publicPort: PUBLIC_PORT, secret: SECRET, store, deviceStore });
 
 const shutdown = () => {
   console.log("[byoc] shutting down");
