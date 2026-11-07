@@ -603,8 +603,8 @@ across databases.
 ### Locked sidebar folders
 
 A contrib's service can manage folders in a user's sidebar that the user can't
-change, such as a kanban board. Allow its ServiceAccount with
-`scooter.conversationController.folderServices = [ "<sa>" ]`. Then call the
+change, such as a kanban board. The broker is allowed by default; allow any
+other ServiceAccount in `scooter.conversationController.folderServices`. Then call the
 router's `/folders` routes with its projected token (audience `scooter-router`)
 and the user in `X-Scooter-User`:
 
