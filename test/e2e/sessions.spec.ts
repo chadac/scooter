@@ -567,11 +567,14 @@ fastOnly("the locked folder is seeded by the fake backend")("session selector & 
 fullOnly("registers the locked folder as the broker, through the kubectl hook")(
   "session selector & titles — locked folders registered by a service",
   () => {
+    // Anonymous is "" to the router but "anonymous" in /whoami, so sign in.
+    const user = "e2e-locked-folder";
+    test.use({ extraHTTPHeaders: { "x-auth-user": user } });
+
     test("a service's locked folder can't be changed by its user", async ({ chat, page, request, baseURL }) => {
       const base = baseURL ?? "http://localhost:5173";
       const hook = process.env.E2E_ROLLOUT_HOOK;
       test.skip(!hook, "no rollout hook configured for this run");
-      const user = ((await (await request.get(`${base}/whoami`)).json()) as { id: string }).id;
       const made = await request.post(`${hook}/locked-folder`, { data: { user, name: `locked ${Date.now()}` } });
       expect(made.status(), await made.text()).toBe(201);
       const id = ((await made.json()) as { id: string }).id;
