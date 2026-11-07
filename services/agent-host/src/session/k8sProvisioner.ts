@@ -20,7 +20,7 @@ import {
 } from "@kubernetes/client-node";
 
 import type { SandboxRef } from "../types.js";
-import type { PendingRestart, SandboxProvisioner, SandboxRestartResult } from "./manager.js";
+import type { PendingRestart, ProvisionedRef, SandboxProvisioner, SandboxRestartResult } from "./manager.js";
 import { formatError, logger } from "../log.js";
 import { applyOverlay, deepMerge, parseOverlay } from "./sandboxOverlay.js";
 import { sandboxOrigin, type SandboxOrigins } from "../proxy/sandboxOrigin.js";
@@ -624,7 +624,7 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
     (await readSize(id)) ?? sandboxResources;
 
   return {
-    async create(id: string, threadId?: string): Promise<SandboxRef> {
+    async create(id: string, threadId?: string): Promise<ProvisionedRef> {
       // The URL deep-links on the full conversation id, not the short hash used for resource names.
       const urlThread = threadId ?? id;
       // 1. the per-conversation ServiceAccount (broker identity); a 409 from a prior run is
@@ -667,7 +667,7 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
         });
       }
 
-      return { name, namespace: ns };
+      return alreadyExisted ? { name, namespace: ns } : { name, namespace: ns, fresh: true };
     },
 
     async suspend(ref: SandboxRef): Promise<void> {
@@ -682,7 +682,7 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
       }
     },
 
-    async resume(ref: SandboxRef, threadId?: string): Promise<SandboxRef> {
+    async resume(ref: SandboxRef, threadId?: string): Promise<ProvisionedRef> {
       // A Sandbox that is gone cannot be patched, so recreate it: the conversation's work lives on
       // the workspace PVC, which outlives the Sandbox.
       try {

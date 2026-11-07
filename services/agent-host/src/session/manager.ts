@@ -27,6 +27,12 @@ const RESUME_NUDGE =
   "repeat a message/comment you already posted. If you had already finished, a brief " +
   "status is fine.]";
 
+/** Shown to the user and the agent when a revive had to build a new Sandbox. */
+export const SANDBOX_RESET_NOTE =
+  "This conversation's sandbox was deleted, most likely reclaimed after sitting idle, and " +
+  "has been recreated from scratch. /workspace is empty and anything installed or built " +
+  "earlier is gone; re-clone or rebuild what you need before relying on it.";
+
 /** The synthetic prompt sent after an agent-initiated model switch, whose turn was cancelled to
  *  apply it. */
 const MODEL_SWITCH_NUDGE =
@@ -57,15 +63,18 @@ export interface ChecksummedEvent {
   checksum: string;
 }
 
+/** A provisioned Sandbox; `fresh` means it was newly made, so /workspace is empty. */
+export type ProvisionedRef = SandboxRef & { fresh?: boolean };
+
 /** Provisions, suspends, resumes and destroys the per-conversation Sandbox. */
 export interface SandboxProvisioner {
   /** Cold-create a Sandbox named by the short DNS-1123-safe `conversationId`; `threadId` is the
    *  full conversation id used for its CONVERSATION_URL (defaults to `conversationId`). */
-  create(conversationId: string, threadId?: string): Promise<SandboxRef>;
+  create(conversationId: string, threadId?: string): Promise<ProvisionedRef>;
   /** Set operatingMode Suspended: drop the pod, keep the PVCs and the Sandbox object. */
   suspend(ref: SandboxRef): Promise<void>;
   /** Set operatingMode Running: recreate the pod and re-mount the PVCs. */
-  resume(ref: SandboxRef, threadId?: string): Promise<SandboxRef>;
+  resume(ref: SandboxRef, threadId?: string): Promise<ProvisionedRef>;
   /** Delete the Sandbox and GC its per-conversation SA/RBAC. */
   destroy(ref: SandboxRef): Promise<void>;
   /** List the live per-conversation Sandboxes with whether each pod is currently running, so
@@ -1083,7 +1092,8 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       await conversationRegistry.register(id, { model, owner, sandboxRef: entry.sandbox.name, creatorPod: deps.selfPod });
 
       // Provision the sandbox and attach the bridge.
-      entry.sandbox = await provisioner.create(sandboxKey(name), threadId);
+      const { fresh: _new, ...created } = await provisioner.create(sandboxKey(name), threadId);
+      entry.sandbox = created;
       entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model, owner: entry.owner });
       wireEventLog(entry); // after the bridge exists
       // Re-persist with the real sandbox ref so a crash mid-provision leaves a resumable entry.
@@ -1174,6 +1184,14 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         };
         // Built before provisioning, so prompts queue during the cold start.
         let early: SessionBridge | undefined;
+        let noted = false;
+        // Must land before the gate opens, or the first run misses it.
+        const noteReset = () => {
+          if (noted || !entry.bridge) return;
+          noted = true;
+          entry.bridge.addNote?.("sandbox", SANDBOX_RESET_NOTE);
+        };
+        let fresh = false;
         if (entry.parentId) {
           // A subagent never provisions; it rides its root's Sandbox.
           let root: Entry | undefined = entry;
@@ -1197,13 +1215,16 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
               if (!sameRef(ref, from)) {
                 throw new Error(`sandbox moved from ${from.namespace}/${from.name} to ${ref.namespace}/${ref.name} while reviving`);
               }
+              if (ref.fresh) noteReset();
             });
             entry.lastActivityAt = nowMs();
             await requeuePending(entry);
             markQueueable(early);
           }
           try {
-            entry.sandbox = await provisioning;
+            const { fresh: isNew, ...ref } = await provisioning;
+            entry.sandbox = ref;
+            fresh = isNew === true;
           } catch (err) {
             // Queued runs fail on the gate; next prompt revives afresh.
             if (early && entry.bridge === early) entry.bridge = undefined;
@@ -1231,6 +1252,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         // A model switch during provisioning drops the early bridge.
         const late = !early || entry.bridge !== early;
         if (late) buildBridge();
+        if (fresh) noteReset();
         entry.status = "running";
         // Republish sandbox_ref, and this pod as creator_pod since the run now lives here;
         // idempotent, fire-and-forget.

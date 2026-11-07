@@ -224,6 +224,24 @@ def find_expired_overlays(
     ]
 
 
+def find_expired_sandboxes(
+    sandboxes: list[SandboxRef],
+    reapable: set[str],
+    retention_seconds: float,
+) -> list[str]:
+    """Sandboxes suspended past retention whose rows all allow reaping."""
+    if retention_seconds <= 0:
+        return []
+    return [
+        sb.name
+        for sb in sandboxes
+        if sb.name in reapable
+        and sb.operating_mode == "Suspended"
+        and sb.suspended_seconds is not None
+        and sb.suspended_seconds >= retention_seconds
+    ]
+
+
 def find_orphans(
     sandboxes: list[SandboxRef],
     referenced: set[str],

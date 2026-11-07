@@ -76,4 +76,11 @@ describe("k8sProvisioner.resume — a GONE Sandbox is recreated", () => {
     expect(ref.name).toBe("conv-abc");
     expect(calls).toContain("create:sandbox");
   });
+
+  it("marks a recreated Sandbox fresh, and a plain resume not", async () => {
+    const gone = fakeKc({ modePatchError: 404 });
+    expect((await provisioner(gone.kc).resume({ name: "conv-abc", namespace: "agent-manager" })).fresh).toBe(true);
+    const live = fakeKc();
+    expect((await provisioner(live.kc).resume({ name: "conv-abc", namespace: "agent-manager" })).fresh).toBeUndefined();
+  });
 });

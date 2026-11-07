@@ -22,6 +22,7 @@ from .reconcile import (
     MarkSuspended,
     reconcile,
     find_orphans,
+    find_expired_sandboxes,
     find_expired_overlays,
     desired_replicas,
     deletion_costs,
@@ -354,6 +355,36 @@ def reap_overlays(k8s, retention_seconds: float) -> list[str]:
             logger.info("reaped expired overlay store", extra={**_C, "pvc": name})
         except Exception:  # noqa: BLE001
             logger.exception("overlay reap failed", extra={**_C, "pvc": name, "will_retry_next_pass": True})
+    return reaped
+
+
+# Bounds one pass so a first rollout drains a backlog gradually.
+SANDBOX_REAP_BATCH = 20
+
+
+def reap_sandboxes(k8s, rows, retention_seconds: float, now_ms: int) -> list[str]:
+    """Delete idle suspended sandboxes and both their PVCs; the conversations stay."""
+    if retention_seconds <= 0:
+        return []
+    cutoff = now_ms - int(retention_seconds * 1000)
+    reapable = rows.reapable_sandboxes(cutoff)
+    if reapable is None:
+        logger.warning("skipping sandbox reap: conversations rows unreadable", extra=_C)
+        return []
+    expired = find_expired_sandboxes(k8s.list_sandboxes(), reapable, retention_seconds)
+    reaped: list[str] = []
+    for name in expired[:SANDBOX_REAP_BATCH]:
+        # A message may have revived it since the batch read.
+        if name not in (rows.reapable_sandboxes(cutoff, only=name) or set()):
+            continue
+        try:
+            k8s.delete_sandbox_tree(name)
+            k8s.delete_pvc(f"scooter-rw-{name}")
+            k8s.delete_pvc(f"workspace-{name}")
+            reaped.append(name)
+            logger.info("reaped idle sandbox", extra={**_C, "sandbox_name": name})
+        except Exception:  # noqa: BLE001
+            logger.exception("sandbox reap failed", extra={**_C, "sandbox_name": name, "will_retry_next_pass": True})
     return reaped
 
 

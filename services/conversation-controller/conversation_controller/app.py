@@ -13,7 +13,7 @@ from .config import Config
 from .k8s import ControllerK8s
 from .leader import LeaderElector
 from .logging_config import configure_logging
-from .loop import reconcile_once, reap_orphans, reap_overlays, autoscale_once, AutoscaleState
+from .loop import reconcile_once, reap_orphans, reap_overlays, reap_sandboxes, autoscale_once, AutoscaleState
 from . import rows as conversation_rows
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,7 @@ def run(cfg: Config, stop: threading.Event) -> None:
     metrics.serve(cfg.metrics_port, stop)
     was_leader = False
     last_overlay_reap = float("-inf")
+    last_sandbox_reap = float("-inf")
     while not stop.is_set():
         try:
             leader = elector.try_acquire_or_renew()
@@ -54,6 +55,12 @@ def run(cfg: Config, stop: threading.Event) -> None:
                         reap_overlays(k8s, cfg.overlay_retention_seconds)
                     except Exception:  # noqa: BLE001
                         logger.exception("overlay-reaper pass failed", extra={**_C, "will_retry_next_tick": True})
+                if cfg.sandbox_retention_seconds > 0 and time.monotonic() - last_sandbox_reap >= 60:
+                    last_sandbox_reap = time.monotonic()
+                    try:
+                        reap_sandboxes(k8s, rows, cfg.sandbox_retention_seconds, int(time.time() * 1000))
+                    except Exception:  # noqa: BLE001
+                        logger.exception("sandbox-reaper pass failed", extra={**_C, "will_retry_next_tick": True})
                 # Guarded so a scale failure does not abort the tick.
                 if cfg.autoscale:
                     try:

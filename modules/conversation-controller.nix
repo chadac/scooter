@@ -73,6 +73,17 @@ in
         turn is lost. Workspaces are never touched. 0 disables.
       '';
     };
+    sandboxRetentionSeconds = mkOption {
+      type = types.int;
+      default = 28 * 86400;
+      description = ''
+        Delete a root conversation's whole sandbox (the Sandbox, its overlay store and its
+        `/workspace` PVC) once it has been suspended, unhosted and idle this long. The
+        conversation and its history stay; the next message provisions a fresh, empty
+        sandbox and tells the user and the agent that `/workspace` was reset. Starred
+        conversations are never reaped. 0 disables.
+      '';
+    };
     # --- agent-host autoscaling -------------------------------------------
     autoscale = mkOption {
       type = types.bool;
@@ -347,7 +358,7 @@ in
           # and ConfigMap.
           { apiGroups = [ "agents.x-k8s.io" ]; resources = [ "sandboxes" ]; verbs = [ "get" "list" "watch" "delete" "patch" ]; }
           { apiGroups = [ "" ]; resources = [ "serviceaccounts" "configmaps" ]; verbs = [ "get" "list" "delete" ]; }
-          # Overlay-store retention.
+          # Overlay-store and sandbox retention.
           { apiGroups = [ "" ]; resources = [ "persistentvolumeclaims" ]; verbs = [ "list" "delete" ]; }
           # The autoscaler patches the agent-host Deployment's scale subresource.
           { apiGroups = [ "apps" ]; resources = [ "deployments" ]; verbs = [ "get" "list" "watch" ]; }
@@ -384,6 +395,7 @@ in
                   { name = "REAP_ORPHANED_SANDBOXES"; value = if ccfg.reapOrphans then "1" else "0"; }
                   { name = "ORPHAN_GRACE_SECONDS"; value = toString ccfg.orphanGraceSeconds; }
                   { name = "OVERLAY_RETENTION_SECONDS"; value = toString ccfg.overlayRetentionSeconds; }
+                  { name = "SANDBOX_RETENTION_SECONDS"; value = toString ccfg.sandboxRetentionSeconds; }
                   # Agent-host autoscaler (leader-only, single writer of agent-host replicas).
                   { name = "AUTOSCALE_AGENT_HOST"; value = if ccfg.autoscale then "1" else "0"; }
                   { name = "AGENT_HOST_MIN_REPLICAS"; value = toString ccfg.minReplicas; }

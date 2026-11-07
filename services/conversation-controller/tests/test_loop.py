@@ -6,7 +6,7 @@ import pytest
 
 import conversation_controller.loop as loop_mod
 from conversation_controller.logging_config import forget_warned
-from conversation_controller.loop import reconcile_once, reap_orphans, reap_overlays, autoscale_once, AutoscaleState
+from conversation_controller.loop import reconcile_once, reap_orphans, reap_overlays, reap_sandboxes, autoscale_once, AutoscaleState
 from conversation_controller.reconcile import Pod, SandboxRef
 
 
@@ -868,3 +868,65 @@ def test_reap_overlays_one_failure_does_not_abort_the_pass():
     k = FakeK8s([], [], sandboxes=sbs)
     k.pvcs = {"scooter-rw-conv-boom", "scooter-rw-conv-ok"}
     assert reap_overlays(k, 7 * day) == ["scooter-rw-conv-ok"]
+
+
+# --- reap_sandboxes (whole-sandbox retention) ----------------------------------
+
+
+class ReapableRows:
+    """reapable_sandboxes() over a fixed set; `revived` drop out on the re-check."""
+
+    def __init__(self, reapable, revived=(), fail=False):
+        self.reapable = set(reapable)
+        self.revived = set(revived)
+        self.fail = fail
+        self.cutoffs = []
+
+    def reapable_sandboxes(self, idle_before_ms, only=None):
+        self.cutoffs.append(idle_before_ms)
+        if self.fail:
+            return None
+        if only is not None:
+            return {only} & (self.reapable - self.revived)
+        return set(self.reapable)
+
+
+def _suspended(name, days):
+    day = 86400.0
+    return SandboxRef(name, age_seconds=90 * day, operating_mode="Suspended", suspended_seconds=days * day)
+
+
+def test_reap_sandboxes_deletes_the_tree_and_both_pvcs():
+    day = 86400.0
+    k = FakeK8s([], [], sandboxes=[_suspended("conv-old", 8), _suspended("conv-new", 1)])
+    k.pvcs = {f"{p}-{n}" for p in ("scooter-rw", "workspace") for n in ("conv-old", "conv-new")}
+    rows = ReapableRows({"conv-old", "conv-new"})
+    assert reap_sandboxes(k, rows, 7 * day, now_ms=10 * 86_400_000) == ["conv-old"]
+    assert k.deleted_trees == ["conv-old"]
+    assert k.pvcs == {"scooter-rw-conv-new", "workspace-conv-new"}
+    assert set(rows.cutoffs) == {3 * 86_400_000}
+
+
+def test_reap_sandboxes_spares_one_revived_since_the_batch_read():
+    k = FakeK8s([], [], sandboxes=[_suspended("conv-old", 8)])
+    assert reap_sandboxes(k, ReapableRows({"conv-old"}, revived={"conv-old"}), 7 * 86400.0, now_ms=0) == []
+    assert k.deleted_trees == []
+
+
+def test_reap_sandboxes_skips_the_pass_when_rows_are_unreadable():
+    k = FakeK8s([], [], sandboxes=[_suspended("conv-old", 30)])
+    assert reap_sandboxes(k, ReapableRows({"conv-old"}, fail=True), 7 * 86400.0, now_ms=0) == []
+    assert k.deleted_trees == []
+
+
+def test_reap_sandboxes_caps_one_pass():
+    names = [f"conv-{i}" for i in range(loop_mod.SANDBOX_REAP_BATCH + 5)]
+    k = FakeK8s([], [], sandboxes=[_suspended(n, 30) for n in names])
+    reaped = reap_sandboxes(k, ReapableRows(names), 7 * 86400.0, now_ms=0)
+    assert len(reaped) == loop_mod.SANDBOX_REAP_BATCH
+
+
+def test_reap_sandboxes_one_failure_does_not_abort_the_pass():
+    k = FakeK8s([], [], sandboxes=[_suspended("conv-boom", 30), _suspended("conv-ok", 30)])
+    k.pvcs = {"scooter-rw-conv-boom", "scooter-rw-conv-ok"}
+    assert reap_sandboxes(k, ReapableRows({"conv-boom", "conv-ok"}), 7 * 86400.0, now_ms=0) == ["conv-ok"]

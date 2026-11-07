@@ -15,7 +15,7 @@ import { FaSlack } from "react-icons/fa";
 // The Scooter mark for the "show the conversation title" option.
 import { SCOOTER_MARK } from "./brandMark.js";
 // Unbranded sources take a Lucide glyph.
-import { AlarmClockIcon, BotIcon, CogIcon, KeyRoundIcon, LinkIcon, ShieldCheckIcon, SquareTerminalIcon } from "lucide-react";
+import { AlarmClockIcon, BotIcon, BoxIcon, CogIcon, KeyRoundIcon, LinkIcon, ShieldCheckIcon, SquareTerminalIcon } from "lucide-react";
 import type { ContribIcon } from "./contribTypes.js";
 import { contribSources } from "./contribManifest.js";
 
@@ -48,6 +48,7 @@ const BUILTIN_SOURCES: Record<string, SourceRow> = {
   broker: { label: "Broker", mark: KeyRoundIcon, color: "currentColor" },
   subagent: { label: "Subagent", mark: BotIcon, color: "currentColor" },
   hook: { label: "Hook", mark: ShieldCheckIcon, color: "currentColor" },
+  sandbox: { label: "Sandbox", mark: BoxIcon, color: "currentColor" },
 };
 
 /** Built-ins plus the deployment's contribs merged on top, resolved per call because

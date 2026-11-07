@@ -114,6 +114,25 @@ class ConversationRows:
             logger.warning("conversations sandbox_ref read failed", extra={**_C, "error": str(err)})
             return None
 
+    def reapable_sandboxes(self, idle_before_ms: int, only: str | None = None) -> set[str] | None:
+        """Sandbox refs whose every row is Suspended, unhosted, unstarred and idle, or None when unreadable."""
+        # bool_and skips NULLs, so every term must be NULL-safe.
+        try:
+            with self._cursor() as cur:
+                cur.execute(
+                    "SELECT sandbox_ref FROM conversations "
+                    "WHERE sandbox_ref IS NOT NULL AND (%s::text IS NULL OR sandbox_ref = %s) "
+                    "GROUP BY sandbox_ref "
+                    "HAVING bool_and(phase IS NOT DISTINCT FROM 'Suspended' AND host_pod IS NULL "
+                    "AND starred IS NOT TRUE AND run_started_at IS NULL AND last_activity_at < %s)",
+                    (only, only, idle_before_ms),
+                )
+                return {r[0] for r in cur.fetchall()}
+        except Exception as err:  # noqa: BLE001
+            self._drop()
+            logger.warning("conversations reapable read failed", extra={**_C, "error": str(err)})
+            return None
+
     def set_phase(self, conversation_id: str, phase: str) -> bool:
         """Mirror a phase onto the row, returning True when a row was updated (a miss is not an error)."""
         try:

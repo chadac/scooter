@@ -185,3 +185,8 @@ def test_release_cannot_detach_a_pod_assigned_at_a_newer_epoch():
     rows = ConversationRows("dsn", connect=lambda _dsn: conn)
 
     assert rows.release_assignment("c1", 1) is False
+
+
+def test_reapable_read_failure_is_none_so_the_reaper_skips():
+    rows = ConversationRows("dsn", connect=lambda _dsn: FakeConn(fail=True))
+    assert rows.reapable_sandboxes(0) is None

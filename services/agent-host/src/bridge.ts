@@ -336,6 +336,9 @@ export interface SessionBridge {
    *  rejecting each drained prompt() and emitting a clearing QUEUE_UPDATED. */
   drainQueue(): Array<{ text: string; priority: number; source?: string; sender?: MessageSender; humanInitiated?: boolean }>;
 
+  /** Log a visible system message now and prepend it to the agent's next prompt. */
+  addNote?(source: string, text: string): void;
+
   /** True when a PRIORITY_INTERRUPT item is waiting, which tells a provider's pre-tool
    *  gate to deny the next tool so the run quiesces to a boundary. */
   shouldYieldToQueue(): boolean;
@@ -537,6 +540,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     reject: (err: unknown) => void;
   }
   const queue: QueueItem[] = [];
+  // Notes for the agent, sent with the next prompt.
+  const pendingNotes: Array<{ source: string; text: string }> = [];
 
   // Broadcast and persist a snapshot of the queued items, ordered highest-priority then
   // FIFO, on every enqueue and drain.
@@ -1311,9 +1316,14 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       // Decorate system-sourced items, combine the burst into one prompt, and prepend the
       // history preamble as a separate block when present.
       const combined = combineTexts(batch.map((b) => (b.source ? decorateSystemMessage(b.source, b.text) : b.text)));
-      const textBlocks: ContentBlock[] = historyPreamble
-        ? [{ type: "text", text: historyPreamble }, { type: "text", text: combined }]
-        : [{ type: "text", text: combined }];
+      const noteBlocks: ContentBlock[] = pendingNotes
+        .splice(0)
+        .map((n) => ({ type: "text", text: decorateSystemMessage(n.source, n.text) }));
+      const textBlocks: ContentBlock[] = [
+        ...(historyPreamble ? [{ type: "text" as const, text: historyPreamble }] : []),
+        ...noteBlocks,
+        { type: "text", text: combined },
+      ];
       // Resolve attached images to base64 ACP image blocks after the text, skipping
       // unreadable assets.
       const imageBlocks: ContentBlock[] = [];
@@ -2005,6 +2015,11 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     },
 
     recordRawInput,
+
+    addNote(source, text) {
+      emit({ type: "SYSTEM_MESSAGE", messageId: nextId("sys"), source, text });
+      pendingNotes.push({ source, text });
+    },
 
     drainQueue() {
       // Include the batch the pump is currently running, since it was spliced out of `queue`

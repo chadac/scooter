@@ -11,6 +11,7 @@ from conversation_controller.reconcile import (
     reconcile,
     find_orphans,
     find_expired_overlays,
+    find_expired_sandboxes,
     desired_replicas,
     demand_of,
     Detach,
@@ -374,3 +375,28 @@ def test_unknown_suspend_time_is_not_expired():
 def test_zero_retention_disables_the_reaper():
     sbs = [_sb("conv-old", 365 * DAY)]
     assert find_expired_overlays(sbs, {"scooter-rw-conv-old"}, 0) == []
+
+
+# --- find_expired_sandboxes (the whole-sandbox retention decision) ------------
+
+
+def test_sandbox_suspended_past_retention_with_reapable_rows_expires():
+    sbs = [_sb("conv-old", 8 * DAY), _sb("conv-new", 1 * DAY)]
+    assert find_expired_sandboxes(sbs, {"conv-old", "conv-new"}, 7 * DAY) == ["conv-old"]
+
+
+def test_sandbox_whose_rows_forbid_reaping_is_kept():
+    assert find_expired_sandboxes([_sb("conv-starred", 30 * DAY)], set(), 7 * DAY) == []
+
+
+def test_running_sandbox_is_never_expired():
+    sbs = [_sb("conv-live", 30 * DAY, mode="Running")]
+    assert find_expired_sandboxes(sbs, {"conv-live"}, 7 * DAY) == []
+
+
+def test_sandbox_with_unknown_suspend_time_is_kept():
+    assert find_expired_sandboxes([_sb("conv-x", None)], {"conv-x"}, 7 * DAY) == []
+
+
+def test_zero_sandbox_retention_disables_the_reaper():
+    assert find_expired_sandboxes([_sb("conv-old", 365 * DAY)], {"conv-old"}, 0) == []
