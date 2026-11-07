@@ -2,7 +2,9 @@
 
 The DDL lives in contrib/kanban/sql/schema.sql (Atlas owns it); this module never
 creates tables. A card is keyed by the broker's conversation key, so the agent's
-tools and the board's relay routes address the same row.
+tools and the board's relay routes address the same row. A card's stage is the
+folder its conversation is filed in, which the router holds; this store keeps
+which folders are boards and stages.
 """
 
 from __future__ import annotations
@@ -44,6 +46,36 @@ class _Board(_Base):
     folder_id: Mapped[str] = mapped_column(String, primary_key=True)
     owner: Mapped[str] = mapped_column(String, index=True)
     created_at: Mapped[str] = mapped_column(String)
+
+
+class _Stage(_Base):
+    """Mirrors `kanban_stages` in contrib/kanban/sql/schema.sql."""
+
+    __tablename__ = "kanban_stages"
+
+    folder_id: Mapped[str] = mapped_column(String, primary_key=True)
+    board_id: Mapped[str] = mapped_column(String, index=True)
+    name: Mapped[str] = mapped_column(String)
+    position: Mapped[float] = mapped_column(Float)
+
+
+@dataclass(frozen=True)
+class Stage:
+    folder: str
+    name: str
+    position: float
+
+    def payload(self) -> dict:
+        return {"id": self.folder, "label": self.name, "position": self.position}
+
+
+@dataclass(frozen=True)
+class Place:
+    """Where a folder sits on a board: the board root has no stage."""
+
+    board: str
+    owner: str
+    stage: str | None
 
 
 @dataclass
@@ -133,7 +165,49 @@ class KanbanStore:
             if await s.get(_Board, folder_id) is None:
                 s.add(_Board(folder_id=folder_id, owner=owner, created_at=now_iso()))
 
+    async def board_owner(self, folder_id: str) -> str | None:
+        async with self._session() as s:
+            row = await s.get(_Board, folder_id)
+            return row.owner if row else None
+
+    async def place(self, folder_id: str) -> Place | None:
+        """The board a folder belongs to, as its root or one of its stages; None off every board."""
+        async with self._session() as s:
+            board = await s.get(_Board, folder_id)
+            if board is not None:
+                return Place(board=board.folder_id, owner=board.owner, stage=None)
+            stage = await s.get(_Stage, folder_id)
+            board = await s.get(_Board, stage.board_id) if stage else None
+            return Place(board=board.folder_id, owner=board.owner, stage=stage.folder_id) if board else None
+
+    async def stages(self, board_id: str) -> list[Stage]:
+        """A board's stages in board order."""
+        async with self._session() as s:
+            rows = await s.execute(
+                select(_Stage).where(_Stage.board_id == board_id).order_by(_Stage.position, _Stage.folder_id)
+            )
+            return [Stage(folder=r.folder_id, name=r.name, position=r.position) for r in rows.scalars()]
+
+    async def add_stage(self, board_id: str, folder_id: str, name: str, position: float) -> None:
+        async with self._session() as s, s.begin():
+            s.add(_Stage(folder_id=folder_id, board_id=board_id, name=name, position=position))
+
+    async def update_stage(self, folder_id: str, *, name: str | None = None, position: float | None = None) -> None:
+        async with self._session() as s, s.begin():
+            row = await s.get(_Stage, folder_id)
+            if row is None:
+                return
+            row.name = row.name if name is None else name
+            row.position = row.position if position is None else position
+
+    async def remove_stage(self, folder_id: str) -> None:
+        async with self._session() as s, s.begin():
+            await s.execute(delete(_Stage).where(_Stage.folder_id == folder_id))
+
     async def remove_board(self, owner: str, folder_id: str) -> bool:
         async with self._session() as s, s.begin():
             res = await s.execute(delete(_Board).where(_Board.folder_id == folder_id, _Board.owner == owner))
-            return res.rowcount > 0
+            if res.rowcount == 0:
+                return False
+            await s.execute(delete(_Stage).where(_Stage.board_id == folder_id))
+            return True

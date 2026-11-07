@@ -318,14 +318,9 @@
       };
     };
 
-    # Kanban: the board's columns and when an untouched card earns a reminder.
+    # Kanban: new boards' stages, and when stale cards get reminders.
     kanban = {
-      columns = [
-        { id = "design"; label = "Design"; }
-        { id = "in-progress"; label = "In progress"; }
-        { id = "review"; label = "Review"; }
-        { id = "done"; label = "Done"; }
-      ];
+      stages = [ "Design" "In progress" "Review" "Done" ];
       staleAfter = 60;
     };
   };

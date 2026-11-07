@@ -125,14 +125,8 @@ func PlacementPut(method, path string) (convID string, ok bool) {
 // serveFolders serves the caller's /folders routes.
 func serveFolders(w http.ResponseWriter, r *http.Request, id string, fs folderStore, services FolderService) {
 	log := logger("folders")
-	owner := ownerFrom(r)
 	ctx := r.Context()
-	service := false
-	if services != nil && bearerToken(r) != "" {
-		if user, ok := services(ctx, r); ok {
-			owner, service = user, true
-		}
-	}
+	owner, service := folderCaller(r, services)
 	var err error
 	switch {
 	case id == "" && r.Method == http.MethodGet:
@@ -266,10 +260,20 @@ func lifetimeMsg(h int) string {
 // iconName is kebab-case, as Lucide names its icons.
 var iconName = regexp.MustCompile(`^[a-z0-9-]*$`)
 
+// folderCaller returns the acting user and whether a service named them.
+func folderCaller(r *http.Request, services FolderService) (owner string, service bool) {
+	if services != nil && bearerToken(r) != "" {
+		if user, ok := services(r.Context(), r); ok {
+			return user, true
+		}
+	}
+	return ownerFrom(r), false
+}
+
 // servePlacement serves PUT …/folder and PATCH …/starred.
-func servePlacement(w http.ResponseWriter, r *http.Request, convID string, store metaReader, fs folderStore) {
+func servePlacement(w http.ResponseWriter, r *http.Request, convID string, store metaReader, fs folderStore, services FolderService) {
 	log := logger("folders")
-	owner := ownerFrom(r)
+	owner, _ := folderCaller(r, services)
 	starPatch := r.Method == http.MethodPatch
 	var folderID string
 	var starred bool

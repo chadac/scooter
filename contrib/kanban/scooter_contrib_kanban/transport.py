@@ -1,15 +1,20 @@
 """kanban's HTTP routes, mounted under /kanban/*.
 
-    GET  /card?folder=<id>&since=<t>   this conversation's card, and whether the folder is a board (hooks)
-    GET  /user/boards                  the user's boards and the columns (the view, via /contrib-api)
-    POST /user/boards                  {name}: a new board, as a locked folder only kanban changes
-    PATCH /user/boards/{folder}        {name}: rename a board
-    DELETE /user/boards/{folder}       delete a board; its conversations stay, unfiled
-    GET  /conversation/{key}/card      one card (the board, via the conversation relay)
-    PUT  /conversation/{key}/card      {column, position?}: the user moves a card
+    GET    /card?folder=<id>&since=<t>             this conversation's card and stage, if the folder is on a board (hooks)
+    GET    /user/boards                            the user's boards and their stages (the view, via /contrib-api)
+    POST   /user/boards                            {name}: a new board, with the default stages
+    PATCH  /user/boards/{board}                    {name}: rename a board
+    DELETE /user/boards/{board}                    delete a board and its stages; its conversations stay, unfiled
+    POST   /user/boards/{board}/stages             {name}: add a stage at the end
+    PATCH  /user/boards/{board}/stages/{stage}     {name?, position?}: rename or reorder a stage
+    DELETE /user/boards/{board}/stages/{stage}     delete a stage; its cards move to the first stage
+    GET    /conversation/{key}/card                one card (the board, via the conversation relay)
+    PUT    /conversation/{key}/card                {column, position?}: record the user's move to a stage
 
 /user/* and /conversation/* are reached only through the agent-host's relays, which
-name the user and have already checked they may see the conversation.
+name the user and have already checked they may see the conversation. Every board
+and stage is a locked folder; moving a card files its conversation in the stage's
+folder, which the board does itself before it records the move here.
 """
 
 from __future__ import annotations
@@ -25,9 +30,8 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from scooter_broker_lib.types import AuthDependency, Identity, Provider, Transport
 from scooter_broker_lib.user import user_identity
 
-from .config import Column
-from .folders import FolderError, Folders
-from .store import Card, KanbanStore
+from .boards import BoardError, Boards
+from .store import Card, KanbanStore, Stage
 
 # Folder ids are URL-safe: router UUIDs, or ids a folder service chose.
 _FOLDER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
@@ -48,25 +52,34 @@ def is_stale(card: Card | None, stale_after: timedelta, now: datetime, since: da
 
 
 def view(
-    card: Card | None, columns: list[Column], *, stale_after: timedelta, now: datetime, since: datetime | None = None
+    card: Card | None,
+    stages: list[Stage],
+    stage: Stage,
+    *,
+    stale_after: timedelta,
+    now: datetime,
+    since: datetime | None = None,
 ) -> dict:
-    """A card as every route returns it; no row means the first column."""
+    """A card on a board, as the hooks and the agent tools read it."""
     return {
+        "board": True,
         "card": card.payload() if card else None,
-        "column": card.column if card else columns[0].id,
-        "columns": [{"id": c.id, "label": c.label} for c in columns],
+        "column": stage.name,
+        "columns": [s.name for s in stages],
         "stale": is_stale(card, stale_after, now, since),
         # The broker's clock, so a hook marks a run's start without trusting its own.
         "now": now.isoformat(),
     }
 
 
+def _http(e: BoardError) -> HTTPException:
+    return HTTPException(status_code=e.status, detail=e.detail)
+
+
 @dataclass
 class Kanban(Transport):
     name: str = "kanban"
-    store: KanbanStore | None = None
-    folders: Folders | None = None
-    columns: list[Column] = field(default_factory=list)
+    boards: Boards | None = None
     stale_after: timedelta = timedelta(minutes=30)
     # The relayed user; None means user_identity(authed). Tests may inject a fake.
     user: Callable[..., Awaitable[str]] | None = None
@@ -75,14 +88,13 @@ class Kanban(Transport):
     def routes(self, provider: Provider, authed: AuthDependency) -> APIRouter:
         router = APIRouter(tags=["kanban"])
 
-        def _store() -> KanbanStore:
-            if self.store is None:
+        def _boards() -> Boards:
+            if self.boards is None:
                 raise HTTPException(status_code=503, detail="kanban not configured")
-            return self.store
+            return self.boards
 
-        async def _view(key: str, since: datetime | None = None) -> dict:
-            card = await _store().card(key)
-            return view(card, self.columns, stale_after=self.stale_after, now=self.now(), since=since)
+        def _store() -> KanbanStore:
+            return _boards().store
 
         user = Depends(self.user or user_identity(authed))
 
@@ -102,88 +114,100 @@ class Kanban(Transport):
                 raise HTTPException(status_code=400, detail="folder must be a folder id")
             return folder
 
-        @router.get("/card")
-        async def own_card(folder: str = "", since: str = "", identity: Identity = Depends(authed)) -> dict:
-            if not identity.conversation_id:
-                raise HTTPException(status_code=403, detail="a conversation identity is required")
-            board = bool(folder) and await _store().is_board(_folder(folder))
-            return {**await _view(identity.conversation_id, _since(since)), "board": board}
-
-        async def _boards(owner: str) -> dict:
-            return {
-                "boards": await _store().boards(owner),
-                "columns": [{"id": c.id, "label": c.label} for c in self.columns],
-            }
-
-        @router.get("/user/boards")
-        async def boards(owner: str = user) -> dict:
-            return await _boards(owner)
-
-        def _folders() -> Folders:
-            if self.folders is None:
-                raise HTTPException(status_code=503, detail="kanban can't manage folders here")
-            return self.folders
-
         def _name(body: dict) -> str:
             name = body.get("name")
             if not isinstance(name, str) or not name.strip():
                 raise HTTPException(status_code=400, detail="name is required")
             return name.strip()
 
-        async def _own(owner: str, folder: str) -> str:
-            if _folder(folder) not in await _store().boards(owner):
-                raise HTTPException(status_code=404, detail="no such board")
-            return folder
-
-        def _refused(e: FolderError) -> HTTPException:
-            # The user's mistakes pass through; the router failing is ours.
-            return HTTPException(status_code=e.status if e.status in (400, 404, 409) else 502, detail=e.detail)
-
-        @router.post("/user/boards")
-        async def create_board(body: dict = Body(...), owner: str = user) -> dict:
-            name = _name(body)
-            try:
-                folder = await _folders().create(owner, name)
-            except FolderError as e:
-                raise _refused(e) from None
-            await _store().add_board(owner, folder)
-            return {**await _boards(owner), "folder": folder}
-
-        @router.patch("/user/boards/{folder}")
-        async def rename_board(folder: str, body: dict = Body(...), owner: str = user) -> dict:
-            name = _name(body)
-            try:
-                await _folders().rename(owner, await _own(owner, folder), name)
-            except FolderError as e:
-                raise _refused(e) from None
-            return await _boards(owner)
-
-        @router.delete("/user/boards/{folder}")
-        async def delete_board(folder: str, owner: str = user) -> dict:
-            try:
-                await _folders().delete(owner, await _own(owner, folder))
-            except FolderError as e:
-                # Already gone from the sidebar, so just forget it.
-                if e.status != 404:
-                    raise _refused(e) from None
-            await _store().remove_board(owner, folder)
-            return await _boards(owner)
-
-        @router.get("/conversation/{key}/card")
-        async def get_card(key: str, _user: str = user) -> dict:
-            return await _view(key)
-
-        @router.put("/conversation/{key}/card")
-        async def move_card(key: str, body: dict = Body(...), _user: str = user) -> dict:
-            column = body.get("column")
-            if column not in {c.id for c in self.columns}:
-                raise HTTPException(status_code=400, detail="column must be one of the board's column ids")
+        def _position(body: dict) -> float | None:
             position = body.get("position")
             if position is not None and (
                 isinstance(position, bool) or not isinstance(position, (int, float)) or not math.isfinite(position)
             ):
                 raise HTTPException(status_code=400, detail="position must be a finite number")
-            await _store().put(key, column=column, by="user", position=position)
-            return await _view(key)
+            return None if position is None else float(position)
+
+        async def _list(owner: str, **extra: str) -> dict:
+            try:
+                return {"boards": await _boards().list(owner), **extra}
+            except BoardError as e:
+                raise _http(e) from None
+
+        async def _do(work: Awaitable[object]) -> None:
+            try:
+                await work
+            except BoardError as e:
+                raise _http(e) from None
+
+        @router.get("/card")
+        async def own_card(folder: str = "", since: str = "", identity: Identity = Depends(authed)) -> dict:
+            if not identity.conversation_id:
+                raise HTTPException(status_code=403, detail="a conversation identity is required")
+            card = await _store().card(identity.conversation_id)
+            try:
+                found = await _boards().at(_folder(folder)) if folder else None
+            except BoardError as e:
+                raise _http(e) from None
+            if found is None:
+                return {"board": False, "card": card.payload() if card else None}
+            _, stages, stage = found
+            return view(card, stages, stage, stale_after=self.stale_after, now=self.now(), since=_since(since))
+
+        @router.get("/user/boards")
+        async def list_boards(owner: str = user) -> dict:
+            return await _list(owner)
+
+        @router.post("/user/boards")
+        async def create_board(body: dict = Body(...), owner: str = user) -> dict:
+            name = _name(body)
+            try:
+                board = await _boards().create(owner, name)
+            except BoardError as e:
+                raise _http(e) from None
+            return await _list(owner, folder=board)
+
+        @router.patch("/user/boards/{board}")
+        async def rename_board(board: str, body: dict = Body(...), owner: str = user) -> dict:
+            await _do(_boards().rename(owner, _folder(board), _name(body)))
+            return await _list(owner)
+
+        @router.delete("/user/boards/{board}")
+        async def delete_board(board: str, owner: str = user) -> dict:
+            await _do(_boards().delete(owner, _folder(board)))
+            return await _list(owner)
+
+        @router.post("/user/boards/{board}/stages")
+        async def add_stage(board: str, body: dict = Body(...), owner: str = user) -> dict:
+            await _do(_boards().add_stage(owner, _folder(board), _name(body)))
+            return await _list(owner)
+
+        @router.patch("/user/boards/{board}/stages/{stage}")
+        async def update_stage(board: str, stage: str, body: dict = Body(...), owner: str = user) -> dict:
+            name = _name(body) if "name" in body else None
+            position = _position(body)
+            if name is None and position is None:
+                raise HTTPException(status_code=400, detail="name or position is required")
+            await _do(_boards().update_stage(owner, _folder(board), _folder(stage), name=name, position=position))
+            return await _list(owner)
+
+        @router.delete("/user/boards/{board}/stages/{stage}")
+        async def delete_stage(board: str, stage: str, owner: str = user) -> dict:
+            await _do(_boards().delete_stage(owner, _folder(board), _folder(stage)))
+            return await _list(owner)
+
+        @router.get("/conversation/{key}/card")
+        async def get_card(key: str, _user: str = user) -> dict:
+            card = await _store().card(key)
+            return {"card": card.payload() if card else None}
+
+        @router.put("/conversation/{key}/card")
+        async def move_card(key: str, body: dict = Body(...), owner: str = user) -> dict:
+            column = body.get("column")
+            place = await _store().place(column) if isinstance(column, str) and _FOLDER.match(column) else None
+            if place is None or place.stage is None or place.owner != owner:
+                raise HTTPException(status_code=400, detail="column must be one of your boards' stage ids")
+            card = await _store().put(key, column=column, by="user", position=_position(body))
+            return {"card": card.payload()}
 
         return router

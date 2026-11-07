@@ -1,11 +1,12 @@
 // The /boards view: kanban boards, each conversation a card.
 //
-// A board is a locked folder only kanban changes, so the sidebar can't rename, nest or
-// delete it. /boards lists the boards; /boards/<folderId> shows one, with the chat of the open card
-// beside it. Boards and columns come from /kanban/user/boards, each card's column from its
-// conversation's relay. Moving a card saves it, then tells that conversation as the user.
+// A board is a locked folder only kanban changes, and each of its stages a locked folder inside
+// it, so a card's stage is the folder its conversation is filed in. /boards lists the boards;
+// /boards/<folderId> shows one, with the chat of the open card beside it. Boards and stages come
+// from /kanban/user/boards, each card's note and order from its conversation's relay. Moving a
+// card files the conversation in the stage, then tells it as the user.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ChevronLeft, ChevronRight } from "lucide-react";
+import { ArrowLeft, ChevronLeft, ChevronRight, Pencil, Plus, Trash2 } from "lucide-react";
 import {
   Button,
   ChatPanel,
@@ -15,6 +16,7 @@ import {
   EmptyState,
   ErrorState,
   inputClass,
+  moveToFolder,
   newConversation,
   openConversation,
   openInChat,
@@ -29,9 +31,15 @@ import {
   type ViewFolder,
 } from "@/src/contrib/sdk";
 
-interface Column {
+interface Stage {
   id: string;
   label: string;
+  position: number;
+}
+
+interface BoardRow {
+  folder: string;
+  stages: Stage[];
 }
 
 interface CardRow {
@@ -44,7 +52,6 @@ interface CardRow {
 
 interface CardView {
   card: CardRow | null;
-  column: string;
 }
 
 // Agents move their own cards, and nothing pushes that here.
@@ -70,12 +77,11 @@ function between(before?: number, after?: number): number {
 }
 
 interface BoardsReply {
-  boards: string[];
-  columns: Column[];
+  boards: BoardRow[];
   folder?: string;
 }
 
-/** The user's boards and the deployment's columns, with calls that make, rename and delete boards. */
+/** The user's boards and their stages, with calls that change them. */
 function useBoards() {
   const [state, setState] = useState<BoardsReply | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -91,21 +97,33 @@ function useBoards() {
     call("boards").catch((e: unknown) => setError(String((e as Error)?.message ?? e)));
   }, [call]);
   const board = (folder: string) => `boards/${encodeURIComponent(folder)}`;
+  const stage = (folder: string, id: string) => `${board(folder)}/stages/${encodeURIComponent(id)}`;
   return {
     boards: state?.boards ?? null,
-    columns: state?.columns ?? [],
     error,
     create: async (name: string) => (await call("boards", "POST", { name })).folder ?? "",
     rename: (folder: string, name: string) => call(board(folder), "PATCH", { name }),
     remove: (folder: string) => call(board(folder), "DELETE"),
+    stages: {
+      add: (folder: string, name: string) => call(`${board(folder)}/stages`, "POST", { name }),
+      update: (folder: string, id: string, patch: { name?: string; position?: number }) =>
+        call(stage(folder, id), "PATCH", patch),
+      remove: (folder: string, id: string) => call(stage(folder, id), "DELETE"),
+    },
   };
 }
+
+type StageCalls = ReturnType<typeof useBoards>["stages"];
+
+/** Whether a conversation is filed on a board: in its folder or one of its stages. */
+const onBoard = (row: BoardRow, conv: ViewConversation) =>
+  conv.folderId === row.folder || row.stages.some((s) => s.id === conv.folderId);
 
 export default function BoardsView() {
   const { path, navigate } = useViewRoute();
   const folders = useFolders();
   const conversations = useConversations();
-  const { boards, columns, error, create, rename, remove } = useBoards();
+  const { boards, error, create, rename, remove, stages } = useBoards();
 
   if (error && !boards) return <ErrorState variant="boxed" title="Boards failed to load." error={error} />;
   if (!boards) {
@@ -115,23 +133,27 @@ export default function BoardsView() {
       </div>
     );
   }
-  const boardFolders = boards.map((id) => folders.find((f) => f.id === id)).filter((f): f is ViewFolder => !!f);
-  const current = boardFolders.find((f) => f.id === path);
+  const shown = boards.flatMap((row) => {
+    const folder = folders.find((f) => f.id === row.folder);
+    return folder ? [{ row, folder }] : [];
+  });
+  const current = shown.find((b) => b.folder.id === path);
   if (current) {
     return (
       <Board
-        key={current.id}
-        folder={current}
-        boards={boardFolders}
-        columns={columns}
-        conversations={conversations.filter((c) => c.folderId === current.id)}
+        key={current.folder.id}
+        folder={current.folder}
+        stages={current.row.stages}
+        boards={shown.map((b) => b.folder)}
+        conversations={conversations.filter((c) => onBoard(current.row, c))}
         navigate={navigate}
-        rename={(name) => rename(current.id, name)}
-        remove={() => remove(current.id).then(() => navigate(""))}
+        rename={(name) => rename(current.folder.id, name)}
+        remove={() => remove(current.folder.id).then(() => navigate(""))}
+        stageCalls={stages}
       />
     );
   }
-  if (boards.includes(path)) {
+  if (boards.some((b) => b.folder === path)) {
     // A board just made: its folder reaches the sidebar a moment later.
     return (
       <div className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
@@ -141,8 +163,7 @@ export default function BoardsView() {
   }
   return (
     <BoardList
-      boards={boardFolders}
-      conversations={conversations}
+      boards={shown.map(({ row, folder }) => ({ folder, count: conversations.filter((c) => onBoard(row, c)) }))}
       open={navigate}
       create={async (name) => navigate(await create(name))}
     />
@@ -151,12 +172,10 @@ export default function BoardsView() {
 
 function BoardList({
   boards,
-  conversations,
   open,
   create,
 }: {
-  boards: ViewFolder[];
-  conversations: ViewConversation[];
+  boards: Array<{ folder: ViewFolder; count: ViewConversation[] }>;
   open(folder: string): void;
   create(name: string): Promise<void>;
 }) {
@@ -175,29 +194,26 @@ function BoardList({
     <div className="mx-auto max-w-3xl space-y-6 p-6" data-testid="kanban-boards">
       <h1 className="text-xl font-semibold">Boards</h1>
       {boards.length === 0 ? (
-        <EmptyState title="No boards yet." description="Start one below, then file conversations into it." />
+        <EmptyState title="No boards yet." description="Start one below, then file conversations into its stages." />
       ) : (
         <ul className="grid gap-3 sm:grid-cols-2">
-          {boards.map((b) => {
-            const cards = conversations.filter((c) => c.folderId === b.id);
-            return (
-              <li key={b.id}>
-                <button
-                  type="button"
-                  data-testid="kanban-board-link"
-                  data-folder-id={b.id}
-                  onClick={() => open(b.id)}
-                  className="w-full rounded-lg border bg-card p-4 text-start hover:bg-accent/50"
-                >
-                  <div className="font-medium">{b.name}</div>
-                  <div className="mt-1 text-xs text-muted-foreground">
-                    {cards.length} conversation{cards.length === 1 ? "" : "s"}
-                    {cards.some((c) => c.running) && " · agent working"}
-                  </div>
-                </button>
-              </li>
-            );
-          })}
+          {boards.map(({ folder: b, count: cards }) => (
+            <li key={b.id}>
+              <button
+                type="button"
+                data-testid="kanban-board-link"
+                data-folder-id={b.id}
+                onClick={() => open(b.id)}
+                className="w-full rounded-lg border bg-card p-4 text-start hover:bg-accent/50"
+              >
+                <div className="font-medium">{b.name}</div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  {cards.length} conversation{cards.length === 1 ? "" : "s"}
+                  {cards.some((c) => c.running) && " · agent working"}
+                </div>
+              </button>
+            </li>
+          ))}
         </ul>
       )}
       <section className="space-y-2">
@@ -229,26 +245,32 @@ function BoardList({
 
 function Board({
   folder,
+  stages,
   boards,
-  columns,
   conversations,
   navigate,
   rename,
   remove,
+  stageCalls,
 }: {
   folder: ViewFolder;
+  stages: Stage[];
   boards: ViewFolder[];
-  columns: Column[];
   conversations: ViewConversation[];
   navigate(path: string): void;
   rename(name: string): Promise<unknown>;
   remove(): Promise<unknown>;
+  stageCalls: StageCalls;
 }) {
   const [cards, setCards] = useState<Record<string, CardView>>({});
+  // Local moves, shown until the folder update arrives.
+  const [pending, setPending] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
   const [dropAt, setDropAt] = useState<{ column: string; before?: string } | null>(null);
   const [panel, setPanel] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [newStage, setNewStage] = useState("");
   const openId = useOpenConversation();
   const live = useRef(true);
   useEffect(() => {
@@ -273,20 +295,33 @@ function Board({
     return () => clearInterval(timer);
   }, [idsKey, loadCard]);
 
-  const first = columns[0]?.id ?? "";
+  useEffect(() => {
+    setPending((p) => {
+      const left = Object.fromEntries(
+        Object.entries(p).filter(([id, stage]) => conversations.find((c) => c.id === id)?.folderId !== stage),
+      );
+      return Object.keys(left).length === Object.keys(p).length ? p : left;
+    });
+  }, [conversations]);
+
+  const first = stages[0]?.id ?? "";
+  const stageOf = useCallback(
+    (conv: ViewConversation) => {
+      const at = pending[conv.id] ?? conv.folderId ?? "";
+      return stages.some((s) => s.id === at) ? at : first;
+    },
+    [pending, stages, first],
+  );
   const lanes = useMemo(() => {
-    const out: Record<string, ViewConversation[]> = Object.fromEntries(columns.map((c) => [c.id, []]));
-    for (const conv of conversations) {
-      const col = cards[conv.id]?.column;
-      out[col && out[col] ? col : first]?.push(conv);
-    }
+    const out: Record<string, ViewConversation[]> = Object.fromEntries(stages.map((s) => [s.id, []]));
+    for (const conv of conversations) out[stageOf(conv)]?.push(conv);
     const pos = (id: string) => cards[id]?.card?.position ?? 0;
     for (const lane of Object.values(out)) lane.sort((a, b) => pos(a.id) - pos(b.id) || b.lastActivityAt - a.lastActivityAt);
     return out;
-  }, [columns, conversations, cards, first]);
+  }, [stages, conversations, cards, stageOf]);
 
   // Board order, for stepping through cards with the chat open.
-  const order = useMemo(() => columns.flatMap((c) => lanes[c.id] ?? []), [columns, lanes]);
+  const order = useMemo(() => stages.flatMap((s) => lanes[s.id] ?? []), [stages, lanes]);
   const at = order.findIndex((c) => c.id === openId);
   const showing = panel && (at >= 0 || openId === null);
   const step = (by: -1 | 1) => {
@@ -296,7 +331,8 @@ function Board({
 
   const move = useCallback(
     async (id: string, column: string, before?: string) => {
-      const from = cards[id]?.column ?? first;
+      const conv = conversations.find((c) => c.id === id);
+      const from = conv ? stageOf(conv) : first;
       const lane = (lanes[column] ?? []).filter((c) => c.id !== id);
       const idx = before ? Math.max(0, lane.findIndex((c) => c.id === before)) : lane.length;
       const pos = (c: ViewConversation) => cards[c.id]?.card?.position ?? 0;
@@ -311,33 +347,49 @@ function Board({
       const placed = (cid: string, at: number, moved: boolean): CardView => {
         const old = cards[cid]?.card;
         const by = moved || !old ? { updated_by: "user", updated_at: now } : {};
-        return { column, card: { note: "", ...old, ...by, column, position: at } as CardRow };
+        return { card: { note: "", ...old, ...by, column, position: at } as CardRow };
       };
-      const prev = cards;
+      const prev = { cards, pending };
       setCards((p) => ({
         ...p,
         ...Object.fromEntries(shifts.map(([cid, at]) => [cid, placed(cid, at, false)])),
         [id]: placed(id, position, from !== column),
       }));
+      if (from !== column) setPending((p) => ({ ...p, [id]: column }));
       const put = (cid: string, at: number) =>
         conversationApi("kanban", cid, "card", { method: "PUT", json: { column, position: at } })
           .then((r) => r.ok)
           .catch(() => false);
-      const ok = (await Promise.all([put(id, position), ...shifts.map(([cid, at]) => put(cid, at))])).every(Boolean);
+      // File the conversation in the stage's folder first.
+      const filed = from === column || (await moveToFolder(id, column).catch(() => false));
+      const ok = filed && (await Promise.all([put(id, position), ...shifts.map(([cid, at]) => put(cid, at))])).every(Boolean);
       if (!live.current) return;
       if (!ok) {
-        setCards(prev);
+        setCards(prev.cards);
+        setPending(prev.pending);
         setError("Could not move the card. Try again.");
         return;
       }
       setError(null);
       if (from !== column) {
-        const label = (cid: string) => columns.find((c) => c.id === cid)?.label ?? cid;
+        const label = (sid: string) => stages.find((s) => s.id === sid)?.label ?? sid;
         void send(id, `I moved this card from **${label(from)}** to **${label(column)}** on the "${folder.name}" board.`);
       }
     },
-    [cards, lanes, columns, first, folder.name],
+    [cards, pending, lanes, stages, first, folder.name, conversations, stageOf],
   );
+
+  const changeStages = (work: Promise<unknown>, what: string) =>
+    work.then(
+      () => setError(null),
+      (e: unknown) => setError(`Could not ${what}: ${(e as Error).message}`),
+    );
+  const shiftStage = (i: number, by: -1 | 1) => {
+    // Position between the neighbours on the target side.
+    const [a, b] = by < 0 ? [stages[i - 2], stages[i - 1]] : [stages[i + 1], stages[i + 2]];
+    const position = between(a?.position, b?.position);
+    void changeStages(stageCalls.update(folder.id, stages[i].id, { position }), "move the stage");
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="kanban-board" data-folder-id={folder.id}>
@@ -358,17 +410,26 @@ function Board({
             </option>
           ))}
         </select>
-        <div className="ms-auto flex items-center gap-2">
+        <div className="ms-auto flex flex-wrap items-center gap-2">
           <Button
             size="sm"
             variant="outline"
             data-testid="kanban-new"
             onClick={() => {
-              newConversation({ folderId: folder.id });
+              newConversation({ folderId: first || folder.id });
               setPanel(true);
             }}
           >
             New conversation
+          </Button>
+          <Button
+            size="sm"
+            variant={editing ? "secondary" : "ghost"}
+            data-testid="kanban-edit-stages"
+            aria-pressed={editing}
+            onClick={() => setEditing((e) => !e)}
+          >
+            {editing ? "Done editing" : "Edit stages"}
           </Button>
           <Button
             size="sm"
@@ -388,7 +449,7 @@ function Board({
             variant="ghost"
             data-testid="kanban-delete-board"
             onClick={() => {
-              const ok = window.confirm(`Delete the "${folder.name}" board? Its conversations stay, unfiled.`);
+              const ok = window.confirm(`Delete the "${folder.name}" board and its stages? Its conversations stay, unfiled.`);
               if (ok) remove().catch((e: unknown) => setError(`Could not delete the board: ${(e as Error).message}`));
             }}
           >
@@ -402,15 +463,15 @@ function Board({
         </p>
       )}
       <div className="flex min-h-0 flex-1">
-        {conversations.length === 0 && !showing ? (
+        {conversations.length === 0 && !showing && !editing ? (
           <EmptyState
             className="flex-1"
             title="No conversations on this board yet."
-            description="Start one here, or file conversations into this folder from the chat view."
+            description="Start one here, or file conversations into its stages from the sidebar."
           />
         ) : (
           <div className="flex min-h-0 min-w-0 flex-1 gap-3 overflow-x-auto p-4">
-            {columns.map((col) => (
+            {stages.map((col, i) => (
               <section
                 key={col.id}
                 data-testid="kanban-lane"
@@ -433,9 +494,61 @@ function Board({
                   dropAt?.column === col.id && !dropAt.before && "ring-2 ring-primary/50",
                 )}
               >
-                <header className="flex items-center justify-between px-3 py-2 text-sm font-medium">
-                  <span>{col.label}</span>
-                  <span className="text-xs tabular-nums text-muted-foreground">{lanes[col.id]?.length ?? 0}</span>
+                <header className="flex items-center justify-between gap-1 px-3 py-2 text-sm font-medium">
+                  <span className="truncate">{col.label}</span>
+                  {editing ? (
+                    <span className="flex shrink-0 items-center" data-testid="kanban-stage-tools">
+                      <Button
+                        size="icon-xs"
+                        variant="ghost"
+                        aria-label={`Move ${col.label} left`}
+                        disabled={i === 0}
+                        onClick={() => shiftStage(i, -1)}
+                      >
+                        <ChevronLeft aria-hidden />
+                      </Button>
+                      <Button
+                        size="icon-xs"
+                        variant="ghost"
+                        aria-label={`Move ${col.label} right`}
+                        disabled={i === stages.length - 1}
+                        onClick={() => shiftStage(i, 1)}
+                      >
+                        <ChevronRight aria-hidden />
+                      </Button>
+                      <Button
+                        size="icon-xs"
+                        variant="ghost"
+                        aria-label={`Rename ${col.label}`}
+                        data-testid="kanban-rename-stage"
+                        onClick={() => {
+                          const name = window.prompt("Rename the stage", col.label)?.trim();
+                          if (name && name !== col.label) {
+                            void changeStages(stageCalls.update(folder.id, col.id, { name }), "rename the stage");
+                          }
+                        }}
+                      >
+                        <Pencil aria-hidden />
+                      </Button>
+                      <Button
+                        size="icon-xs"
+                        variant="ghost"
+                        aria-label={`Delete ${col.label}`}
+                        data-testid="kanban-delete-stage"
+                        disabled={stages.length <= 1}
+                        onClick={() => {
+                          const to = (i === 0 ? stages[1] : stages[0])?.label;
+                          if (window.confirm(`Delete the "${col.label}" stage? Its cards move to "${to}".`)) {
+                            void changeStages(stageCalls.remove(folder.id, col.id), "delete the stage");
+                          }
+                        }}
+                      >
+                        <Trash2 aria-hidden />
+                      </Button>
+                    </span>
+                  ) : (
+                    <span className="text-xs tabular-nums text-muted-foreground">{lanes[col.id]?.length ?? 0}</span>
+                  )}
                 </header>
                 <ol className="flex min-h-16 flex-1 flex-col gap-2 overflow-y-auto px-2 pt-1 pb-2">
                   {(lanes[col.id] ?? []).map((conv) => {
@@ -496,6 +609,33 @@ function Board({
                 </ol>
               </section>
             ))}
+            {editing && (
+              <form
+                data-testid="kanban-add-stage"
+                className="flex w-64 shrink-0 flex-col gap-2 self-start rounded-lg border border-dashed p-3"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const name = newStage.trim();
+                  if (!name) return;
+                  void changeStages(
+                    stageCalls.add(folder.id, name).then(() => setNewStage("")),
+                    "add the stage",
+                  );
+                }}
+              >
+                <input
+                  aria-label="New stage name"
+                  data-testid="kanban-new-stage-name"
+                  className={cn(inputClass, "min-w-0")}
+                  placeholder="New stage, e.g. Backlog"
+                  value={newStage}
+                  onChange={(e) => setNewStage(e.currentTarget.value)}
+                />
+                <Button type="submit" size="sm" variant="outline" disabled={!newStage.trim()}>
+                  <Plus aria-hidden /> Add stage
+                </Button>
+              </form>
+            )}
           </div>
         )}
         {showing && (

@@ -5,10 +5,11 @@
 -- file (`just db-migrate kanban`). The row model in scooter_contrib_kanban/store.py
 -- mirrors it, and tests/test_db.py holds the two together.
 
--- One conversation's place on a board. A conversation with no row is in the first column.
+-- A card's note; its stage is its conversation's folder.
 CREATE TABLE "kanban_cards" (
   -- The broker's key for the conversation (Identity.conversation_id).
   "conversation_id" character varying NOT NULL,
+  -- Stage folder the position applies to.
   "column_id"       character varying NOT NULL,
   -- Fractional order within the column, so a move rewrites one row.
   "position"        double precision NOT NULL,
@@ -21,7 +22,7 @@ CREATE TABLE "kanban_cards" (
   PRIMARY KEY ("conversation_id")
 );
 
--- The folders a user opted in as boards; the hooks act only on conversations filed in one.
+-- Locked folders kanban made as boards.
 CREATE TABLE "kanban_boards" (
   -- A conversation folder's id (agent_host.conversation_folders.id, another database).
   "folder_id"  character varying NOT NULL,
@@ -30,3 +31,17 @@ CREATE TABLE "kanban_boards" (
   PRIMARY KEY ("folder_id")
 );
 CREATE INDEX "ix_kanban_boards_owner" ON "kanban_boards" ("owner");
+
+-- Stages: locked folders inside a board's folder.
+CREATE TABLE "kanban_stages" (
+  -- The stage's folder id (agent_host.conversation_folders.id, another database).
+  "folder_id" character varying NOT NULL,
+  -- The board's folder id (kanban_boards.folder_id).
+  "board_id"  character varying NOT NULL,
+  -- The folder's name; agents name stages by it.
+  "name"      character varying NOT NULL,
+  -- Board order, the folder's sidebar position too.
+  "position"  double precision NOT NULL,
+  PRIMARY KEY ("folder_id")
+);
+CREATE INDEX "ix_kanban_stages_board_id" ON "kanban_stages" ("board_id");

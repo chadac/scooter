@@ -344,7 +344,7 @@ func newRouter(shutdownCtx context.Context, cfg config, resolver ownerResolver, 
 			if isFolders {
 				serveFolders(w, r, folderID, writeStore, folderServices)
 			} else {
-				servePlacement(w, r, placeID, store, writeStore)
+				servePlacement(w, r, placeID, store, writeStore, folderServices)
 			}
 			return
 		}

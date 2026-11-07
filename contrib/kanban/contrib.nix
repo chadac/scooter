@@ -1,30 +1,19 @@
-# kanban's declaration: boards, locked folders only kanban changes, shown at /boards, each conversation a
-# card whose column the agent and the user both move. Boards and cards live in its own database.
+# kanban's declaration: boards, locked folders only kanban changes, shown at /boards. Each stage
+# is a locked folder inside its board, and each conversation filed there a card the agent and the
+# user both move. Boards and cards live in its own database.
 { lib, ... }:
 
 {
   contribs.kanban = { config, ... }: {
     options = {
-      columns = lib.mkOption {
-        type = lib.types.listOf (lib.types.submodule {
-          options = {
-            id = lib.mkOption {
-              type = lib.types.strMatching "[a-z][a-z0-9-]{0,39}";
-              description = "The column's id, which the agent passes to kanban_set_status.";
-            };
-            label = lib.mkOption {
-              type = lib.types.str;
-              description = "The column's heading on the board.";
-            };
-          };
-        });
-        default = [
-          { id = "design"; label = "Design"; }
-          { id = "in-progress"; label = "In progress"; }
-          { id = "review"; label = "Review"; }
-          { id = "done"; label = "Done"; }
-        ];
-        description = "Every board's columns, in order. A card with no status shows in the first.";
+      stages = lib.mkOption {
+        type = lib.types.nonEmptyListOf lib.types.nonEmptyStr;
+        default = [ "Design" "In progress" "Review" "Done" ];
+        description = ''
+          The stages a new board starts with, in order. Each stage is a folder inside the
+          board's folder, and the user can add, rename, reorder or delete a board's stages
+          on the board.
+        '';
       };
       staleAfter = lib.mkOption {
         type = lib.types.ints.positive;
@@ -40,6 +29,7 @@
         enable = true;
         tables.kanban_cards = { };
         tables.kanban_boards = { };
+        tables.kanban_stages = { };
       };
 
       services.broker = {
@@ -47,7 +37,7 @@
         pythonDeps = ps: [ ps.aiosqlite ];
         env = {
           KANBAN_ENABLED = "true";
-          KANBAN_COLUMNS = builtins.toJSON (map (c: { inherit (c) id label; }) config.columns);
+          KANBAN_STAGES = builtins.toJSON config.stages;
           KANBAN_STALE_AFTER_SECONDS = toString (config.staleAfter * 60);
         };
       };

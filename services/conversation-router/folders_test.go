@@ -240,7 +240,7 @@ func TestServePlacement(t *testing.T) {
 	}
 	place := func(f *fakeFolders, method, conv, body, caller string) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
-		servePlacement(w, folderReq(method, "/conversations/"+conv+"/x", body, caller), conv, rows(), f)
+		servePlacement(w, folderReq(method, "/conversations/"+conv+"/x", body, caller), conv, rows(), f, nil)
 		return w
 	}
 
@@ -278,6 +278,28 @@ func TestServePlacement(t *testing.T) {
 		f := &fakeFolders{}
 		if w := place(f, "PATCH", "child", `{"starred":true}`, "alice"); w.Code != 409 || f.convID != "" {
 			t.Fatalf("got %d", w.Code)
+		}
+	})
+	t.Run("a folder service files a conversation for the user it names", func(t *testing.T) {
+		f := &fakeFolders{}
+		kanban := FolderService(func(context.Context, *http.Request) (string, bool) { return "alice", true })
+		r := folderReq("PUT", "/conversations/priv/folder", `{"folderId":"stage"}`, "")
+		r.Header.Set("Authorization", "Bearer t")
+		w := httptest.NewRecorder()
+		servePlacement(w, r, "priv", rows(), f, kanban)
+		if w.Code != 204 || f.owner != "alice" || f.folderID != "stage" {
+			t.Fatalf("got %d, %+v", w.Code, f)
+		}
+	})
+	t.Run("a folder service files a conversation for the user it names", func(t *testing.T) {
+		f := &fakeFolders{}
+		kanban := FolderService(func(context.Context, *http.Request) (string, bool) { return "alice", true })
+		r := folderReq("PUT", "/conversations/priv/folder", `{"folderId":"stage"}`, "")
+		r.Header.Set("Authorization", "Bearer t")
+		w := httptest.NewRecorder()
+		servePlacement(w, r, "priv", rows(), f, kanban)
+		if w.Code != 204 || f.owner != "alice" || f.folderID != "stage" {
+			t.Fatalf("got %d, %+v", w.Code, f)
 		}
 	})
 	t.Run("a non-boolean star is a 400", func(t *testing.T) {

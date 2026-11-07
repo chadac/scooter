@@ -1,13 +1,17 @@
-"""Board folders: kanban owns them as locked folders in the user's sidebar.
+"""Board and stage folders: kanban owns them as locked folders in the user's sidebar.
 
-The broker is a folder service, so the router lets it create, rename and delete a
-locked folder for the user it names; the user can only file conversations in and out.
+The broker is a folder service, so the router lets it create, rename, reorder and
+delete a locked folder for the user it names, and file that user's conversations.
+A board is a top-level locked folder and each stage a locked folder inside it; the
+user can only file conversations in and out of them.
 """
 
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from typing import Protocol
+from urllib.parse import quote
 
 import httpx
 
@@ -23,14 +27,25 @@ class FolderError(Exception):
         self.detail = detail
 
 
+@dataclass(frozen=True)
+class Conversation:
+    """A conversation as the router knows it, looked up by the broker's key."""
+
+    id: str
+    owner: str
+
+
 class Folders(Protocol):
-    async def create(self, owner: str, name: str) -> str: ...
-    async def rename(self, owner: str, folder: str, name: str) -> None: ...
-    async def delete(self, owner: str, folder: str) -> None: ...
+    async def create(self, owner: str, name: str, parent: str = "") -> str: ...
+    async def update(self, owner: str, folder: str, *, name: str | None = None, position: float | None = None) -> None: ...
+    async def delete(self, owner: str, folder: str, *, subfolders: bool = False) -> None: ...
+    async def conversation(self, key: str) -> Conversation | None: ...
+    async def placement(self, owner: str, conversation: str) -> str | None: ...
+    async def file(self, owner: str, conversation: str, folder: str) -> None: ...
 
 
 class RouterFolders:
-    """The router's /folders routes, called as the broker on the user's behalf."""
+    """The router's /folders and placement routes, called as the broker on the user's behalf."""
 
     def __init__(
         self,
@@ -53,7 +68,7 @@ class RouterFolders:
             raise FolderError(503, "no router token") from None
         async with httpx.AsyncClient(timeout=10, transport=self.transport) as client:
             try:
-                res = await client.request(method, f"{self.base_url}/folders{path}", json=body, headers=headers)
+                res = await client.request(method, f"{self.base_url}{path}", json=body, headers=headers)
             except httpx.HTTPError as e:
                 raise FolderError(502, f"router unreachable: {type(e).__name__}") from None
         if res.status_code >= 400:
@@ -64,12 +79,36 @@ class RouterFolders:
             raise FolderError(res.status_code, detail)
         return res
 
-    async def create(self, owner: str, name: str) -> str:
-        res = await self._call(owner, "POST", "", {"name": name, "locked": True})
+    async def create(self, owner: str, name: str, parent: str = "") -> str:
+        body: dict = {"name": name, "locked": True}
+        if parent:
+            body["parentId"] = parent
+        res = await self._call(owner, "POST", "/folders", body)
         return str(res.json()["id"])
 
-    async def rename(self, owner: str, folder: str, name: str) -> None:
-        await self._call(owner, "PATCH", f"/{folder}", {"name": name})
+    async def update(self, owner: str, folder: str, *, name: str | None = None, position: float | None = None) -> None:
+        body = {k: v for k, v in (("name", name), ("position", position)) if v is not None}
+        await self._call(owner, "PATCH", f"/folders/{folder}", body)
 
-    async def delete(self, owner: str, folder: str) -> None:
-        await self._call(owner, "DELETE", f"/{folder}")
+    async def delete(self, owner: str, folder: str, *, subfolders: bool = False) -> None:
+        # Deleted stages' conversations move up to the board folder.
+        await self._call(owner, "DELETE", f"/folders/{folder}" + ("?subfolders=delete" if subfolders else ""))
+
+    async def conversation(self, key: str) -> Conversation | None:
+        try:
+            res = await self._call("", "GET", f"/conversations/{quote(key, safe='')}")
+        except FolderError as e:
+            if e.status == 404:
+                return None
+            raise
+        view = res.json()
+        if not view.get("id") or not view.get("owner"):
+            return None
+        return Conversation(id=str(view["id"]), owner=str(view["owner"]))
+
+    async def placement(self, owner: str, conversation: str) -> str | None:
+        res = await self._call(owner, "GET", "/folders")
+        return res.json().get("placements", {}).get(conversation)
+
+    async def file(self, owner: str, conversation: str, folder: str) -> None:
+        await self._call(owner, "PUT", f"/conversations/{quote(conversation, safe='')}/folder", {"folderId": folder})

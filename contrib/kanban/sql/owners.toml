@@ -10,3 +10,4 @@ owner = "broker"
 [contrib_kanban.tables]
 kanban_boards = { writers = ["broker"], readers = [] }
 kanban_cards  = { writers = ["broker"], readers = [] }
+kanban_stages = { writers = ["broker"], readers = [] }

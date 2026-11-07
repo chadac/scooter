@@ -1,4 +1,4 @@
-# Reminds an agent in a board folder of its column, and marks when its run started.
+# Tells the agent its card's stage; marks when the run started.
 in=$(cat)
 folder=$(printf '%s' "$in" | jq -r '.scooter.folder.id // empty')
 run=$(printf '%s' "$in" | jq -r '.scooter.run_id // empty')
@@ -11,7 +11,7 @@ if [ -n "$run" ]; then
   [ -e "$dir/$run" ] || printf '%s' "$card" | jq -r '.now // empty' >"$dir/$run"
 fi
 printf '%s' "$card" | jq -r '
-  "Kanban: this card is in `\(.column)`"
+  "Kanban: this card is in \"\(.column)\""
   + if .card == null then ", but no status has been set yet."
     elif .card.updated_by == "user" then " (moved there by the user)."
     else "." end
