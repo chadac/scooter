@@ -13,25 +13,23 @@
 
 Serving under /s/ is unauthenticated because the UUID is an unguessable capability;
 `visibility` is carried but not yet enforced on the serve path. The publish payload is
-JSON with either an inline file map or a base64 zip the broker unpacks:
+JSON with a one-file inline map:
 
     {"description": "...", "visibility": "public", "entry_point": "index.html",
-     "files": {"index.html": {"content_type": "text/html", "b64": "..."},
-               "chart.png":  {"content_type": "image/png",  "b64": "..."}}}
-    # or:
-    {"zip_b64": "<base64 of a .zip>"}
+     "files": {"index.html": {"content_type": "text/html", "b64": "..."}}}
+
+A bundle holds one file. Behind a login proxy the sandboxed (opaque-origin) page sends
+no session cookie, so requests for its other files would be redirected to sign-in.
 """
 
 from __future__ import annotations
 
 import base64
 import binascii
-import io
 import logging
 import mimetypes
 import posixpath
 import re
-import zipfile
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
@@ -48,7 +46,8 @@ logger = logging.getLogger(__name__)
 # --- limits and whitelist ---------------------------------------------------
 _MAX_FILE_BYTES = 10 * 1024 * 1024          # 10 MB per file
 _MAX_TOTAL_BYTES = 100 * 1024 * 1024        # 100 MB per bundle
-_MAX_FILE_COUNT = 200
+# One file: sandboxed pages can't load siblings past the login proxy.
+_MAX_FILE_COUNT = 1
 _ALLOWED_EXT = {
     ".html", ".htm", ".css", ".js", ".mjs", ".json", ".csv", ".txt", ".md",
     ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".woff", ".woff2",
@@ -89,7 +88,7 @@ def _guess_content_type(path: str, given: str | None = None) -> str:
 
 
 def _safe_rel_path(name: str) -> str:
-    """Normalize a bundle path and reject traversal or absolute paths, so a zip entry cannot escape the bundle namespace."""
+    """Normalize a bundle path, rejecting traversal or absolute paths."""
     n = name.replace("\\", "/").lstrip("/")
     norm = posixpath.normpath(n)
     if norm.startswith("../") or norm == ".." or norm.startswith("/") or norm == ".":
@@ -110,7 +109,10 @@ def _validate_bundle(files: dict[str, ShareFile]) -> None:
     if not files:
         raise HTTPException(status_code=400, detail="bundle is empty")
     if len(files) > _MAX_FILE_COUNT:
-        raise HTTPException(status_code=400, detail=f"too many files (max {_MAX_FILE_COUNT})")
+        raise HTTPException(
+            status_code=400,
+            detail="multi-file shares are disabled: publish one self-contained file",
+        )
     total = 0
     for f in files.values():
         _check_ext(f.path)
@@ -136,33 +138,13 @@ def _files_from_inline(raw: dict) -> dict[str, ShareFile]:
     return out
 
 
-def _files_from_zip(zip_b64: str) -> dict[str, ShareFile]:
-    """Unpack a base64 zip into a bundle, guarding path traversal and size."""
-    try:
-        raw = base64.b64decode(zip_b64, validate=True)
-    except (binascii.Error, ValueError) as e:
-        raise HTTPException(status_code=400, detail="zip_b64 is not valid base64") from e
-    out: dict[str, ShareFile] = {}
-    try:
-        with zipfile.ZipFile(io.BytesIO(raw)) as zf:
-            for info in zf.infolist():
-                if info.is_dir():
-                    continue
-                rel = _safe_rel_path(info.filename)
-                if info.file_size > _MAX_FILE_BYTES:
-                    raise HTTPException(status_code=400, detail=f"zip entry too large: {rel!r}")
-                out[rel] = ShareFile(path=rel, content_type=_guess_content_type(rel), data=zf.read(info))
-    except zipfile.BadZipFile as e:
-        raise HTTPException(status_code=400, detail="zip_b64 is not a valid zip") from e
-    return out
-
-
 def _bundle_from_body(body: dict) -> dict[str, ShareFile]:
+    if "zip_b64" in body:
+        raise HTTPException(status_code=400, detail="zip shares are disabled: publish one file in `files`")
     inline = body.get("files")
-    zip_b64 = body.get("zip_b64")
-    if bool(inline) == bool(zip_b64):
-        raise HTTPException(status_code=400, detail="supply exactly one of `files` or `zip_b64`")
-    files = _files_from_zip(zip_b64) if zip_b64 else _files_from_inline(inline)
+    if not inline:
+        raise HTTPException(status_code=400, detail="supply `files`")
+    files = _files_from_inline(inline)
     _validate_bundle(files)
     return files
 

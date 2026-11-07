@@ -118,20 +118,27 @@ async def test_update_serves_new_version_at_root(store):
 
 
 @pytest.mark.asyncio
-async def test_zip_ingest_multifile(store):
+async def test_zip_publish_rejected(store):
     c = _client(store)
-    zb = _zip_b64({"index.html": b"<img src=chart.png>", "chart.png": b"\x89PNG..."})
-    r = c.post("/shares", json={"zip_b64": zb})
-    assert r.status_code == 201, r.text
-    uuid = r.json()["uuid"]
-    assert c.get(f"/s/{uuid}/").content.endswith(b"<img src=chart.png>")
-    assert c.get(f"/s/{uuid}/chart.png").content == b"\x89PNG..."
+    r = c.post("/shares", json={"zip_b64": _zip_b64({"index.html": b"<img src=chart.png>"})})
+    assert r.status_code == 400 and "zip shares are disabled" in r.text
 
 
 @pytest.mark.asyncio
-async def test_zip_traversal_rejected(store):
+async def test_multifile_publish_rejected(store):
     c = _client(store)
-    r = c.post("/shares", json={"zip_b64": _zip_b64({"../evil.html": b"x"})})
+    files = {
+        "index.html": {"content_type": "text/html", "b64": _b64(b"<img src=chart.png>")},
+        "chart.png": {"content_type": "image/png", "b64": _b64(b"\x89PNG...")},
+    }
+    r = c.post("/shares", json={"files": files})
+    assert r.status_code == 400 and "multi-file shares are disabled" in r.text
+
+
+@pytest.mark.asyncio
+async def test_traversal_rejected(store):
+    c = _client(store)
+    r = c.post("/shares", json={"files": {"../evil.html": {"b64": _b64(b"x")}}})
     assert r.status_code == 400
 
 

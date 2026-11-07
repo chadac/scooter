@@ -27,12 +27,11 @@ A 404 from `agent-broker shares` means publishing is not enabled here.
 
 ## The model
 
-- You upload a **bundle** — one file, or several (HTML + CSS + images + a chart).
-- The broker **mints a UUID** and serves the bundle at:
+- You upload **one file**, usually a self-contained `index.html`.
+- The broker **mints a UUID** and serves it at:
 
   ```
-  https://<host>/s/<uuid>/            → the entry point (index.html)
-  https://<host>/s/<uuid>/chart.png   → any file in the bundle
+  https://<host>/s/<uuid>/            → the page
   https://<host>/s/<uuid>/v/2/        → a specific version
   ```
 
@@ -41,32 +40,28 @@ A 404 from `agent-broker shares` means publishing is not enabled here.
 - **Updating** keeps the same UUID and adds a new version; the root always serves
   the latest. So a link you shared stays live as you update the page.
 
-## Publish (single file or multi-file zip)
+## Publish
 
-The publish API is JSON — files are base64. Supply EITHER an inline `files` map
-OR a base64 `zip_b64` the broker unpacks. Go through `agent-broker` (it injects
-your identity; owner = this conversation):
+The publish API is JSON, with the file base64-encoded in a one-entry `files`
+map. Go through `agent-broker` (it injects your identity; owner = this
+conversation):
 
 ```bash
-# multi-file: zip a directory, base64 it, publish
-cd /workspace/dashboard && zip -qr /tmp/site.zip .
-ZIP_B64=$(base64 -w0 /tmp/site.zip)
+B64=$(base64 -w0 /workspace/report.html)
 agent-broker shares -X POST -H 'Content-Type: application/json' \
-  -d "{\"description\":\"My dashboard\",\"zip_b64\":\"$ZIP_B64\"}"
+  -d "{\"description\":\"My report\",\"files\":{\"index.html\":{\"content_type\":\"text/html\",\"b64\":\"$B64\"}}}"
 # → {"uuid":"7f3c…","url":"https://<host>/s/7f3c…/", ...}
 ```
 
-```bash
-# single file
-B64=$(base64 -w0 /workspace/report.html)
-agent-broker shares -X POST -H 'Content-Type: application/json' \
-  -d "{\"files\":{\"index.html\":{\"content_type\":\"text/html\",\"b64\":\"$B64\"}}}"
-```
+**Multi-file and zip shares are disabled.** A share page runs sandboxed, so
+behind the login proxy any other file it loads (`chart.png`, `style.css`) gets
+redirected to sign-in. Put everything in the one file: inline `<style>` and
+`<script>`, and images as `data:` URIs or inline SVG.
 
 ## Update, list, delete
 
 ```bash
-agent-broker shares/<uuid> -X PUT  -H 'Content-Type: application/json' -d "{\"zip_b64\":\"$ZIP_B64\"}"
+agent-broker shares/<uuid> -X PUT  -H 'Content-Type: application/json' -d "{\"files\":{\"index.html\":{\"b64\":\"$B64\"}}}"
 agent-broker shares                      # list your shares (this conversation's)
 agent-broker shares/<uuid>               # metadata + file manifest
 agent-broker shares/<uuid> -X DELETE     # remove it + all versions
@@ -74,42 +69,40 @@ agent-broker shares/<uuid> -X DELETE     # remove it + all versions
 
 ## Entry point + file rules
 
-- Entry point resolution: an explicit `entry_point`, else `index.html`, else the
-  sole file if the bundle has exactly one. Otherwise the publish is rejected — put
-  an `index.html` at the bundle root.
-- All asset paths must be **relative** (`<img src="chart.png">`), not absolute.
+- One file per share; a second file or a `zip_b64` is rejected.
+- No external asset files: inline CSS, JS and images (`data:` URIs).
 - Allowed types: `.html .css .js .json .csv .txt .md .svg .png .jpg .jpeg .gif
   .webp .ico .woff .woff2 .map .xml .wasm`. No server-side execution — pure static.
-- Limits (placeholder): 10 MB/file, 100 MB/bundle, 200 files.
+- Limit (placeholder): 10 MB.
 - HTML pages without a `<link rel="icon">` are served with the Scooter favicon;
   add your own link to override it.
 
 ## Interactive graphs with Python
 
-Render to a file, embed it in `index.html`, then publish the directory:
+Render everything into one self-contained `index.html`, then publish it:
 
 ```python
-import os
-os.makedirs("/workspace/dashboard", exist_ok=True)
+import base64, io
 
-# static image (matplotlib / seaborn)
+# static image (matplotlib / seaborn), inlined as a data: URI
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 plt.plot([1, 2, 3], [1, 4, 9]); plt.title("Demo")
-plt.savefig("/workspace/dashboard/chart.png", dpi=150, bbox_inches="tight")
+buf = io.BytesIO(); plt.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+img = base64.b64encode(buf.getvalue()).decode()
 
-# interactive (plotly) — self-contained HTML you can <iframe> or link
+# interactive (plotly), with plotly.js inlined
 import plotly.graph_objects as go
-go.Figure(go.Scatter(x=[1, 2, 3], y=[1, 4, 9])).write_html("/workspace/dashboard/chart.html")
+chart = go.Figure(go.Scatter(x=[1, 2, 3], y=[1, 4, 9])).to_html(full_html=False, include_plotlyjs=True)
 
-open("/workspace/dashboard/index.html", "w").write(
+open("/workspace/index.html", "w").write(
     "<!doctype html><meta charset=utf-8><h1>Dashboard</h1>"
-    "<img src='chart.png'><iframe src='chart.html' width=100% height=500></iframe>"
+    f"<img src='data:image/png;base64,{img}'>{chart}"
 )
 ```
 
-Then zip `/workspace/dashboard` and publish as above. See the **dataviz** skill
+Then publish `/workspace/index.html` as above. See the **dataviz** skill
 for chart design guidance before writing chart code.
 
 ## Showing a share inline in the conversation
@@ -133,6 +126,5 @@ Notes:
 - The frame is sandboxed (`allow-scripts`, no same-origin), so interactive JS
   charts work but the page can't touch the conversation. The broker sends the
   same sandbox as a CSP, so it applies when the link is opened directly too:
-  inline your data or load it with `<script src>`, not `fetch()`, cookies or
-  `localStorage`. A `frame-ancestors` CSP lets shares embed only in the Scooter UI.
+  inline your data and scripts, not `fetch()`, cookies or `localStorage`. A `frame-ancestors` CSP lets shares embed only in the Scooter UI.
 - Publish/update the share first (above), then embed it by its UUID.
