@@ -14,7 +14,13 @@ import httpx
 
 from .folders import Conversation, FolderError, Folders
 from .messages import Send
-from .store import Card, KanbanStore, Place, Stage
+from .store import Card, KanbanStore, Place, Stage, Tag
+
+MAX_TAG_CHARS = 24
+MAX_BOARD_TAGS = 20
+MAX_CARD_TAGS = 5
+# Palette keys; the board maps each to its own classes.
+TAG_COLORS = ("gray", "red", "orange", "yellow", "green", "teal", "blue", "purple")
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +92,11 @@ class Boards:
 
     async def list(self, owner: str) -> list[dict]:
         return [
-            {"folder": b, "stages": [s.payload() for s in await self.stages(b, owner)]}
+            {
+                "folder": b,
+                "stages": [s.payload() for s in await self.stages(b, owner)],
+                "tags": [t.payload() for t in await self.store.tags(b)],
+            }
             for b in await self.store.boards(owner)
         ]
 
@@ -389,3 +399,86 @@ class Boards:
             return []
         return await self.blockers(key, owner, found[0].board, placements=placements)
 
+    async def _tag_name(self, board: str, name: str, *, skip: str = "") -> str:
+        name = name.strip()
+        if len(name) > MAX_TAG_CHARS:
+            raise BoardError(400, f"a tag name is at most {MAX_TAG_CHARS} characters")
+        if any(t.name.casefold() == name.casefold() and t.id != skip for t in await self.store.tags(board)):
+            raise BoardError(409, f"this board already has a tag named `{name}`")
+        return name
+
+    @staticmethod
+    def _color(color: str) -> str:
+        if color not in TAG_COLORS:
+            raise BoardError(400, f"color must be one of {', '.join(TAG_COLORS)}")
+        return color
+
+    async def own_tag(self, owner: str, board: str, tag: str) -> Tag:
+        found = next((t for t in await self.store.tags(await self.own(owner, board)) if t.id == tag), None)
+        if found is None:
+            raise BoardError(404, "no such tag")
+        return found
+
+    async def add_tag(self, owner: str, board: str, name: str, color: str | None = None) -> Tag:
+        tags = await self.store.tags(await self.own(owner, board))
+        if len(tags) >= MAX_BOARD_TAGS:
+            raise BoardError(409, f"a board has at most {MAX_BOARD_TAGS} tags")
+        name = await self._tag_name(board, name)
+        if color is None:
+            # The first palette color no tag has yet, cycling once all are used.
+            used = [t.color for t in tags]
+            color = min(TAG_COLORS, key=lambda c: (used.count(c), TAG_COLORS.index(c)))
+        position = (tags[-1].position if tags else 0.0) + 1
+        return await self.store.add_tag(board, name, self._color(color), position)
+
+    async def update_tag(
+        self,
+        owner: str,
+        board: str,
+        tag: str,
+        *,
+        name: str | None = None,
+        color: str | None = None,
+        position: float | None = None,
+    ) -> None:
+        await self.own_tag(owner, board, tag)
+        name = None if name is None else await self._tag_name(board, name, skip=tag)
+        color = None if color is None else self._color(color)
+        await self.store.update_tag(tag, name=name, color=color, position=position)
+
+    async def delete_tag(self, owner: str, board: str, tag: str) -> None:
+        await self.own_tag(owner, board, tag)
+        await self.store.remove_tag(tag)
+
+    async def tag_card(self, owner: str, key: str, tags: list[str]) -> list[str]:
+        """The user replaces a card's tags, all from one of their boards, by id."""
+        tags = list(dict.fromkeys(tags))
+        if len(tags) > MAX_CARD_TAGS:
+            raise BoardError(400, f"a card has at most {MAX_CARD_TAGS} tags")
+        if tags:
+            board_of = {t.id: b for b in await self.store.boards(owner) for t in await self.store.tags(b)}
+            if any(t not in board_of for t in tags) or len({board_of[t] for t in tags}) != 1:
+                raise BoardError(400, "tags must be ids of one of your boards' tags")
+        await self.store.set_card_tags(key, tags)
+        return tags
+
+    async def set_tags(self, key: str, names: list[str]) -> Located:
+        """The agent replaces its card's tags, by name, from its board's tags."""
+        where = await self.locate(key)
+        board = await self.store.tags(where.place.board)
+        by_name = {t.name.casefold(): t for t in board}
+        unknown = [n for n in names if n.strip().casefold() not in by_name]
+        if unknown:
+            have = ", ".join(f"`{t.name}`" for t in board) or "none"
+            raise BoardError(400, f"{', '.join(f'`{n}`' for n in unknown)} not on this board; its tags: {have}")
+        picked = list(dict.fromkeys(by_name[n.strip().casefold()].id for n in names))
+        if len(picked) > MAX_CARD_TAGS:
+            raise BoardError(400, f"a card has at most {MAX_CARD_TAGS} tags")
+        await self.store.set_card_tags(key, picked)
+        return where
+
+    async def tag_view(self, key: str, board: str) -> dict[str, list[Tag]]:
+        """A board's tags and the card's, as `view` takes them."""
+        tags = await self.store.tags(board)
+        mine = set(await self.store.card_tags(key))
+        return {"tags": tags, "card_tags": [t for t in tags if t.id in mine]}

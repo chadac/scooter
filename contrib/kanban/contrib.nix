@@ -31,6 +31,8 @@
         tables.kanban_boards = { };
         tables.kanban_stages = { };
         tables.kanban_blockers = { };
+        tables.kanban_tags = { };
+        tables.kanban_card_tags = { };
       };
 
       services.broker = {

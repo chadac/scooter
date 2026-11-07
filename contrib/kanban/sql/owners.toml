@@ -8,7 +8,9 @@
 owner = "broker"
 
 [contrib_kanban.tables]
-kanban_blockers = { writers = ["broker"], readers = [] }
-kanban_boards   = { writers = ["broker"], readers = [] }
-kanban_cards    = { writers = ["broker"], readers = [] }
-kanban_stages   = { writers = ["broker"], readers = [] }
+kanban_blockers  = { writers = ["broker"], readers = [] }
+kanban_boards    = { writers = ["broker"], readers = [] }
+kanban_card_tags = { writers = ["broker"], readers = [] }
+kanban_cards     = { writers = ["broker"], readers = [] }
+kanban_stages    = { writers = ["broker"], readers = [] }
+kanban_tags      = { writers = ["broker"], readers = [] }

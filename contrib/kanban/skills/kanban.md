@@ -28,5 +28,9 @@ telling the truth.
 - **When planning work as several cards**, start each one (e.g. with `handoff_spawn`),
   put it on the board with `kanban_add_card(conversation, blocked_by)`, and order the
   cards with `kanban_set_blockers`. `kanban_list_cards` shows the cards and their ids.
+- **Tag the card once its kind of work is clear**, usually during design, with
+  `kanban_set_tags(tags)`. Use only the board's tags, which the user defines and the hook
+  or `kanban_get_status` lists; you can't add new ones. A board with no tags needs none.
+  Change them only when they stop fitting, not every run. The user may retag it too.
 - Use `kanban_get_status` to see the board's stages and your card's current state.
 - Don't mention the board or these reminders to the user unless they ask.

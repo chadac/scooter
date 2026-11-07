@@ -8,8 +8,12 @@
     POST   /user/boards/{board}/stages             {name}: add a stage at the end
     PATCH  /user/boards/{board}/stages/{stage}     {name?, position?}: rename or reorder a stage
     DELETE /user/boards/{board}/stages/{stage}     delete a stage; its cards move to the first stage
-    GET    /conversation/{key}/card                one card and its blockers (the board, via the conversation relay)
+    POST   /user/boards/{board}/tags               {name, color?}: add a tag
+    PATCH  /user/boards/{board}/tags/{tag}         {name?, color?, position?}: rename, recolor or reorder a tag
+    DELETE /user/boards/{board}/tags/{tag}         delete a tag and take it off every card
+    GET    /conversation/{key}/card                one card, its blockers and tag ids (the board, via the conversation relay)
     PUT    /conversation/{key}/card                {column, position?}: record the user's move to a stage
+    PUT    /conversation/{key}/card/tags           {tags: [id]}: the user replaces the card's tags
 
 /user/* and /conversation/* are reached only through the agent-host's relays, which
 name the user and have already checked they may see the conversation. Every board
@@ -31,9 +35,9 @@ from scooter_broker_lib.types import AuthDependency, Identity, Provider, Transpo
 from scooter_broker_lib.user import user_identity
 
 from .boards import BoardError, Blocker, Boards
-from .store import Card, KanbanStore, Stage
+from .store import Card, KanbanStore, Stage, Tag
 
-# Folder ids are URL-safe: router UUIDs, or ids a folder service chose.
+# Folder and tag ids are URL-safe: UUIDs, or ids a folder service chose.
 _FOLDER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 
@@ -56,6 +60,8 @@ def view(
     stages: list[Stage],
     stage: Stage,
     *,
+    tags: list[Tag],
+    card_tags: list[Tag],
     stale_after: timedelta,
     now: datetime,
     since: datetime | None = None,
@@ -69,6 +75,8 @@ def view(
         "columns": [s.name for s in stages],
         # Open blockers only: they hold the card in its stage.
         "blocked_by": [b.payload() for b in blockers or [] if not b.done],
+        "tags": [t.name for t in tags],
+        "card_tags": [t.name for t in card_tags],
         "stale": is_stale(card, stale_after, now, since),
         # The broker's clock, so a hook marks a run's start without trusting its own.
         "now": now.isoformat(),
@@ -117,11 +125,22 @@ class Kanban(Transport):
                 raise HTTPException(status_code=400, detail="folder must be a folder id")
             return folder
 
+        def _tag(tag: str) -> str:
+            if not _FOLDER.match(tag):
+                raise HTTPException(status_code=400, detail="tag must be a tag id")
+            return tag
+
         def _name(body: dict) -> str:
             name = body.get("name")
             if not isinstance(name, str) or not name.strip():
                 raise HTTPException(status_code=400, detail="name is required")
             return name.strip()
+
+        def _color(body: dict) -> str | None:
+            color = body.get("color")
+            if color is not None and not isinstance(color, str):
+                raise HTTPException(status_code=400, detail="color must be a string")
+            return color
 
         def _position(body: dict) -> float | None:
             position = body.get("position")
@@ -159,8 +178,16 @@ class Kanban(Transport):
                 blockers = await _boards().blockers(identity.conversation_id, place.owner, place.board)
             except BoardError as e:
                 raise _http(e) from None
+            tags = await _boards().tag_view(identity.conversation_id, place.board)
             return view(
-                card, stages, stage, stale_after=self.stale_after, now=self.now(), since=_since(since), blockers=blockers
+                card,
+                stages,
+                stage,
+                **tags,
+                stale_after=self.stale_after,
+                now=self.now(),
+                since=_since(since),
+                blockers=blockers,
             )
 
         @router.get("/user/boards")
@@ -212,7 +239,11 @@ class Kanban(Transport):
                 blockers = await _boards().blockers_of(key, owner)
             except BoardError as e:
                 raise _http(e) from None
-            return {"card": card.payload() if card else None, "blockers": [b.payload() for b in blockers]}
+            return {
+                "card": card.payload() if card else None,
+                "blockers": [b.payload() for b in blockers],
+                "tags": await _store().card_tags(key),
+            }
 
         @router.put("/conversation/{key}/card")
         async def move_card(key: str, body: dict = Body(...), owner: str = user) -> dict:
@@ -226,5 +257,33 @@ class Kanban(Transport):
                 raise _http(e) from None
             return {"card": card.payload()}
 
+        @router.post("/user/boards/{board}/tags")
+        async def add_tag(board: str, body: dict = Body(...), owner: str = user) -> dict:
+            await _do(_boards().add_tag(owner, _folder(board), _name(body), _color(body)))
+            return await _list(owner)
+
+        @router.patch("/user/boards/{board}/tags/{tag}")
+        async def update_tag(board: str, tag: str, body: dict = Body(...), owner: str = user) -> dict:
+            name = _name(body) if "name" in body else None
+            color, position = _color(body), _position(body)
+            if name is None and color is None and position is None:
+                raise HTTPException(status_code=400, detail="name, color or position is required")
+            await _do(_boards().update_tag(owner, _folder(board), _tag(tag), name=name, color=color, position=position))
+            return await _list(owner)
+
+        @router.delete("/user/boards/{board}/tags/{tag}")
+        async def delete_tag(board: str, tag: str, owner: str = user) -> dict:
+            await _do(_boards().delete_tag(owner, _folder(board), _tag(tag)))
+            return await _list(owner)
+
+        @router.put("/conversation/{key}/card/tags")
+        async def tag_card(key: str, body: dict = Body(...), owner: str = user) -> dict:
+            tags = body.get("tags")
+            if not isinstance(tags, list) or not all(isinstance(t, str) for t in tags):
+                raise HTTPException(status_code=400, detail="tags must be a list of tag ids")
+            try:
+                return {"tags": await _boards().tag_card(owner, key, tags)}
+            except BoardError as e:
+                raise _http(e) from None
 
         return router

@@ -9,6 +9,7 @@ which folders are boards and stages.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
@@ -70,6 +71,27 @@ class _Blocker(_Base):
     created_at: Mapped[str] = mapped_column(String)
 
 
+class _Tag(_Base):
+    """Mirrors `kanban_tags` in contrib/kanban/sql/schema.sql."""
+
+    __tablename__ = "kanban_tags"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    board_id: Mapped[str] = mapped_column(String, index=True)
+    name: Mapped[str] = mapped_column(String)
+    color: Mapped[str] = mapped_column(String)
+    position: Mapped[float] = mapped_column(Float)
+
+
+class _CardTag(_Base):
+    """Mirrors `kanban_card_tags` in contrib/kanban/sql/schema.sql."""
+
+    __tablename__ = "kanban_card_tags"
+
+    conversation_id: Mapped[str] = mapped_column(String, primary_key=True)
+    tag_id: Mapped[str] = mapped_column(String, primary_key=True, index=True)
+
+
 @dataclass(frozen=True)
 class Stage:
     folder: str
@@ -78,6 +100,17 @@ class Stage:
 
     def payload(self) -> dict:
         return {"id": self.folder, "label": self.name, "position": self.position}
+
+
+@dataclass(frozen=True)
+class Tag:
+    id: str
+    name: str
+    color: str
+    position: float
+
+    def payload(self) -> dict:
+        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -221,6 +254,9 @@ class KanbanStore:
             if res.rowcount == 0:
                 return False
             await s.execute(delete(_Stage).where(_Stage.board_id == folder_id))
+            tags = select(_Tag.id).where(_Tag.board_id == folder_id)
+            await s.execute(delete(_CardTag).where(_CardTag.tag_id.in_(tags)))
+            await s.execute(delete(_Tag).where(_Tag.board_id == folder_id))
             return True
 
     async def blockers(self, conversation_id: str) -> list[str]:
@@ -257,3 +293,50 @@ class KanbanStore:
             for b in want:
                 if b not in have:
                     s.add(_Blocker(conversation_id=conversation_id, blocker_id=b, created_by=by, created_at=at))
+
+    async def tags(self, board_id: str) -> list[Tag]:
+        """A board's tags in board order."""
+        async with self._session() as s:
+            rows = await s.execute(
+                select(_Tag).where(_Tag.board_id == board_id).order_by(_Tag.position, _Tag.id)
+            )
+            return [_tag(r) for r in rows.scalars()]
+
+    async def add_tag(self, board_id: str, name: str, color: str, position: float) -> Tag:
+        row = _Tag(id=str(uuid.uuid4()), board_id=board_id, name=name, color=color, position=position)
+        async with self._session() as s, s.begin():
+            s.add(row)
+        return _tag(row)
+
+    async def update_tag(
+        self, tag_id: str, *, name: str | None = None, color: str | None = None, position: float | None = None
+    ) -> None:
+        async with self._session() as s, s.begin():
+            row = await s.get(_Tag, tag_id)
+            if row is None:
+                return
+            row.name = row.name if name is None else name
+            row.color = row.color if color is None else color
+            row.position = row.position if position is None else position
+
+    async def remove_tag(self, tag_id: str) -> None:
+        """Delete a tag and take it off every card."""
+        async with self._session() as s, s.begin():
+            await s.execute(delete(_CardTag).where(_CardTag.tag_id == tag_id))
+            await s.execute(delete(_Tag).where(_Tag.id == tag_id))
+
+    async def card_tags(self, conversation_id: str) -> list[str]:
+        """The ids of a card's tags, from any board."""
+        async with self._session() as s:
+            rows = await s.execute(select(_CardTag.tag_id).where(_CardTag.conversation_id == conversation_id))
+            return list(rows.scalars())
+
+    async def set_card_tags(self, conversation_id: str, tag_ids: list[str]) -> None:
+        """Replace a card's tags; tags from other boards are dropped too."""
+        async with self._session() as s, s.begin():
+            await s.execute(delete(_CardTag).where(_CardTag.conversation_id == conversation_id))
+            s.add_all(_CardTag(conversation_id=conversation_id, tag_id=t) for t in tag_ids)
+
+
+def _tag(row: _Tag) -> Tag:
+    return Tag(id=row.id, name=row.name, color=row.color, position=row.position)

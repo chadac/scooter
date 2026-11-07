@@ -12,4 +12,8 @@ printf '%s' "$card" | jq -r '
         " It is blocked by " + (.blocked_by | map("\(.title | @json) (\(.stage))") | join(", "))
         + ", so it can'\''t move past this stage until they reach \"\(.columns[-1])\"; you will be messaged when they do."
       else "" end
+    + if (.tags // []) == [] then "" else
+        " Board tags: \(.tags | map("\"\(.)\"") | join(", ")); this card has "
+        + if (.card_tags // []) == [] then "none" else (.card_tags | map("\"\(.)\"") | join(", ")) end
+        + ". Tag it with kanban_set_tags once its kind of work is clear." end
 '

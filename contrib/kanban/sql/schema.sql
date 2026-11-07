@@ -58,3 +58,27 @@ CREATE TABLE "kanban_blockers" (
   PRIMARY KEY ("conversation_id", "blocker_id")
 );
 CREATE INDEX "ix_kanban_blockers_blocker_id" ON "kanban_blockers" ("blocker_id");
+
+-- A board's tags, which the user picks; unique by name, case-insensitively, per board.
+CREATE TABLE "kanban_tags" (
+  "id"       character varying NOT NULL,
+  -- The board's folder id (kanban_boards.folder_id).
+  "board_id" character varying NOT NULL,
+  "name"     character varying NOT NULL,
+  -- A palette key, e.g. "blue" (store.TAG_COLORS).
+  "color"    character varying NOT NULL,
+  -- Order in the picker and on the card.
+  "position" double precision NOT NULL,
+  PRIMARY KEY ("id")
+);
+CREATE INDEX "ix_kanban_tags_board_id" ON "kanban_tags" ("board_id");
+
+-- Tags on a card.
+CREATE TABLE "kanban_card_tags" (
+  -- kanban_cards.conversation_id; a card may be tagged before it has a status.
+  "conversation_id" character varying NOT NULL,
+  -- kanban_tags.id
+  "tag_id"          character varying NOT NULL,
+  PRIMARY KEY ("conversation_id", "tag_id")
+);
+CREATE INDEX "ix_kanban_card_tags_tag_id" ON "kanban_card_tags" ("tag_id");

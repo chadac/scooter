@@ -668,3 +668,134 @@ async def test_the_unblock_message_reaches_the_agent_host():
     await send("conv-1", "go")
     assert str(seen[0].url) == "http://agent-host/conversations/conv-1/messages"
     assert json.loads(seen[0].content) == {"text": "go", "source": "kanban"}
+
+
+# --- tags --------------------------------------------------------------------------
+
+async def _tags(app, board: dict, *names: str, owner: str = "alice") -> dict[str, str]:
+    """Add tags to a board; their ids by name."""
+    async with as_(app, user=owner) as c:
+        for n in names:
+            r = await c.post(f"/kanban/user/boards/{board['folder']}/tags", json={"name": n})
+            assert r.status_code == 200, r.text
+    row = next(b for b in r.json()["boards"] if b["folder"] == board["folder"])
+    return {t["name"]: t["id"] for t in row["tags"]}
+
+
+async def test_the_user_adds_renames_recolors_and_deletes_tags(app):
+    board = await _board(app)
+    b = board["folder"]
+    ids = await _tags(app, board, "bug", "infra")
+    async with as_(app, user="alice") as c:
+        tags = (await c.get("/kanban/user/boards")).json()["boards"][0]["tags"]
+        assert [(t["name"], t["color"]) for t in tags] == [("bug", "gray"), ("infra", "red")]
+        r = await c.patch(f"/kanban/user/boards/{b}/tags/{ids['bug']}", json={"name": "Bug", "color": "blue", "position": 9})
+        assert r.status_code == 200, r.text
+        tags = r.json()["boards"][0]["tags"]
+        assert [(t["name"], t["color"]) for t in tags] == [("infra", "red"), ("Bug", "blue")]
+        tags = (await c.delete(f"/kanban/user/boards/{b}/tags/{ids['infra']}")).json()["boards"][0]["tags"]
+        assert [t["name"] for t in tags] == ["Bug"]
+
+
+async def test_a_bad_tag_is_refused(app):
+    board = await _board(app)
+    b = board["folder"]
+    ids = await _tags(app, board, "bug", "infra")
+    async with as_(app, user="alice") as c:
+        assert (await c.post(f"/kanban/user/boards/{b}/tags", json={"name": "BUG"})).status_code == 409
+        assert (await c.post(f"/kanban/user/boards/{b}/tags", json={"name": "x" * 25})).status_code == 400
+        assert (await c.post(f"/kanban/user/boards/{b}/tags", json={"name": "a", "color": "pink"})).status_code == 400
+        assert (await c.patch(f"/kanban/user/boards/{b}/tags/{ids['bug']}", json={"name": "Infra"})).status_code == 409
+        assert (await c.patch(f"/kanban/user/boards/{b}/tags/{ids['bug']}", json={})).status_code == 400
+        assert (await c.patch(f"/kanban/user/boards/{b}/tags/nope", json={"color": "red"})).status_code == 404
+    async with as_(app, user="bob") as c:
+        assert (await c.delete(f"/kanban/user/boards/{b}/tags/{ids['bug']}")).status_code == 404
+
+
+async def test_a_board_holds_at_most_twenty_tags(app):
+    board = await _board(app)
+    await _tags(app, board, *(f"t{i}" for i in range(20)))
+    async with as_(app, user="alice") as c:
+        assert (await c.post(f"/kanban/user/boards/{board['folder']}/tags", json={"name": "one more"})).status_code == 409
+
+
+async def test_the_user_tags_a_card_from_one_of_their_boards(app):
+    board = await _board(app)
+    ids = await _tags(app, board, "bug", "infra")
+    other = await _tags(app, await _board(app, name="Home"), "garden")
+    bobs = await _tags(app, await _board(app, owner="bob", name="Bob's"), "bug", owner="bob")
+    async with as_(app, user="alice") as c:
+        r = await c.put("/kanban/conversation/key-1/card/tags", json={"tags": [ids["infra"], ids["bug"], ids["bug"]]})
+        assert r.status_code == 200 and r.json()["tags"] == [ids["infra"], ids["bug"]]
+        got = (await c.get("/kanban/conversation/key-1/card")).json()
+        assert got["card"] is None and sorted(got["tags"]) == sorted(ids.values())
+        for tags in [[bobs["bug"]], [ids["bug"], other["garden"]], ["nope"], "bug", [1]]:
+            assert (await c.put("/kanban/conversation/key-1/card/tags", json={"tags": tags})).status_code == 400, tags
+        assert (await c.put("/kanban/conversation/key-1/card/tags", json={"tags": []})).json()["tags"] == []
+
+
+async def test_tagging_does_not_touch_the_status(app, store):
+    board = await _board(app)
+    ids = await _tags(app, board, "bug")
+    await store.put("key-1", column=_stage(board, "Design"), by="agent", note="n", now="2026-01-01T00:00:00+00:00")
+    async with as_(app, user="alice") as c:
+        await c.put("/kanban/conversation/key-1/card/tags", json={"tags": [ids["bug"]]})
+    card = await store.card("key-1")
+    assert (card.updated_by, card.updated_at) == ("agent", "2026-01-01T00:00:00+00:00")
+
+
+async def test_deleting_a_tag_or_board_takes_it_off_cards(app, store):
+    board = await _board(app)
+    ids = await _tags(app, board, "bug", "infra")
+    async with as_(app, user="alice") as c:
+        await c.put("/kanban/conversation/key-1/card/tags", json={"tags": [ids["bug"], ids["infra"]]})
+        await c.delete(f"/kanban/user/boards/{board['folder']}/tags/{ids['bug']}")
+        assert await store.card_tags("key-1") == [ids["infra"]]
+        await c.delete(f"/kanban/user/boards/{board['folder']}")
+    assert await store.card_tags("key-1") == []
+    assert await store.tags(board["folder"]) == []
+
+
+async def test_the_hooks_learn_the_board_s_and_card_s_tags(app):
+    board = await _board(app)
+    ids = await _tags(app, board, "bug", "infra")
+    async with as_(app, user="alice") as c:
+        await c.put("/kanban/conversation/key-1/card/tags", json={"tags": [ids["infra"]]})
+    async with as_(app, conversation="key-1") as c:
+        body = (await c.get("/kanban/card", params={"folder": _stage(board, "Design")})).json()
+    assert (body["tags"], body["card_tags"]) == (["bug", "infra"], ["infra"])
+
+
+async def test_the_agent_tags_its_card_by_name(app, boards, folders, store):
+    board = await _board(app)
+    ids = await _tags(app, board, "Bug", "infra")
+    folders.conversations["key-1"] = Conversation(id="conv-1", owner="alice")
+    folders.placements[("alice", "conv-1")] = board["folder"]
+    mcp_tools.configure(boards, timedelta(minutes=30), _keys())
+    out = await mcp_tools.kanban_set_tags(tags=[" bug "], ctx=_ctx())
+    assert not out.is_error and 'Tags: "Bug". Board tags: "Bug", "infra".' in out.text
+    assert await store.card_tags("key-1") == [ids["Bug"]]
+    assert await store.card("key-1") is None
+    got = await mcp_tools.kanban_get_status(ctx=_ctx())
+    assert 'Tags: "Bug".' in got.text
+    assert not (await mcp_tools.kanban_set_tags(tags=[], ctx=_ctx())).is_error
+    assert await store.card_tags("key-1") == []
+
+
+async def test_the_agent_cannot_invent_a_tag(app, boards, folders, store):
+    board = await _board(app)
+    await _tags(app, board, "bug")
+    folders.conversations["key-1"] = Conversation(id="conv-1", owner="alice")
+    folders.placements[("alice", "conv-1")] = board["folder"]
+    mcp_tools.configure(boards, timedelta(minutes=30), _keys())
+    out = await mcp_tools.kanban_set_tags(tags=["bug", "feature"], ctx=_ctx())
+    assert out.is_error and "`feature`" in out.text and "`bug`" in out.text
+    assert await store.card_tags("key-1") == []
+
+
+async def test_a_board_without_tags_says_nothing_of_them(app, boards, folders):
+    board = await _board(app)
+    folders.conversations["key-1"] = Conversation(id="conv-1", owner="alice")
+    folders.placements[("alice", "conv-1")] = board["folder"]
+    mcp_tools.configure(boards, timedelta(minutes=30), _keys())
+    assert "Tags" not in (await mcp_tools.kanban_get_status(ctx=_ctx())).text

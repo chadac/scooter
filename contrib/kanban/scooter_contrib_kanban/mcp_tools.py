@@ -61,12 +61,23 @@ def _describe(v: dict, blockers: list[Blocker]) -> str:
     )
     card = v["card"]
     if card is None:
-        return f'No status set yet; the card shows in "{v["column"]}". Stages: {stages}.{blocked}'
+        return f'No status set yet; the card shows in "{v["column"]}". Stages: {stages}.{blocked}{_describe_tags(v)}'
     note = f' Note: "{card["note"]}".' if card["note"] else ""
     return (
         f'The card is in "{v["column"]}", last set by the {card["updated_by"]} at {card["updated_at"]}.'
-        f"{note} Stages: {stages}.{blocked}"
+        f"{note} Stages: {stages}.{blocked}{_describe_tags(v)}"
     )
+
+
+def _describe_tags(v: dict) -> str:
+    """The card's and board's tags; nothing when the board has none."""
+    if not v["tags"]:
+        return ""
+    return f" Tags: {_quoted(v['card_tags']) or 'none'}. Board tags: {_quoted(v['tags'])}."
+
+
+def _quoted(names: list[str]) -> str:
+    return ", ".join(f'"{n}"' for n in names)
 
 
 async def _key(ctx: ToolContext) -> str | ToolResult:
@@ -99,7 +110,8 @@ async def kanban_set_status(column: str, note: str = "", ctx: ToolContext = Tool
         blockers = await _boards.blockers(key, where.conversation.owner, where.place.board)
     except BoardError as e:
         return ToolResult.error(f"{e.detail}.")
-    v = view(card, where.stages, where.stage, stale_after=_stale_after, now=datetime.now(timezone.utc))
+    tags = await _boards.tag_view(key, where.place.board)
+    v = view(card, where.stages, where.stage, **tags, stale_after=_stale_after, now=datetime.now(timezone.utc))
     return ToolResult.ok(_describe(v, blockers))
 
 
@@ -116,7 +128,8 @@ async def kanban_get_status(ctx: ToolContext = ToolContextDep) -> ToolResult:
     except BoardError as e:
         return ToolResult.error(f"{e.detail}.")
     card = await _boards.store.card(key)
-    v = view(card, where.stages, where.stage, stale_after=_stale_after, now=datetime.now(timezone.utc))
+    tags = await _boards.tag_view(key, where.place.board)
+    v = view(card, where.stages, where.stage, **tags, stale_after=_stale_after, now=datetime.now(timezone.utc))
     return ToolResult.ok(_describe(v, blockers))
 
 
@@ -189,6 +202,29 @@ async def kanban_add_card(
     return ToolResult.ok(
         f'"{conv.title or conv.id}" is on the board in "{stage.name}", blocked by {_names(blockers)}.'
     )
+
+
+@mcp.tool
+async def kanban_set_tags(tags: list[str], ctx: ToolContext = ToolContextDep) -> ToolResult:
+    """Replace this conversation's card's tags on its kanban board.
+
+    `tags` are names from the board's tags, as kanban_get_status lists them; the user
+    defines them, so you cannot add new ones. An empty list clears the card's tags.
+    Tag the card once the kind of work is clear, not every run.
+    """
+    key = await _key(ctx)
+    if isinstance(key, ToolResult):
+        return key
+    assert _boards is not None
+    try:
+        where = await _boards.set_tags(key, tags)
+        blockers = await _boards.blockers(key, where.conversation.owner, where.place.board)
+    except BoardError as e:
+        return ToolResult.error(f"{e.detail}.")
+    card = await _boards.store.card(key)
+    tagged = await _boards.tag_view(key, where.place.board)
+    v = view(card, where.stages, where.stage, **tagged, stale_after=_stale_after, now=datetime.now(timezone.utc))
+    return ToolResult.ok(_describe(v, blockers))
 
 
 def kanban_mcp_server() -> FastMCP:
