@@ -82,3 +82,17 @@ CREATE TABLE "kanban_card_tags" (
   PRIMARY KEY ("conversation_id", "tag_id")
 );
 CREATE INDEX "ix_kanban_card_tags_tag_id" ON "kanban_card_tags" ("tag_id");
+
+-- A card's description and priority, apart from kanban_cards so editing them isn't a move.
+CREATE TABLE "kanban_card_details" (
+  -- kanban_cards.conversation_id; a card may have details before it has a status.
+  "conversation_id" character varying NOT NULL,
+  -- Markdown, what the card is for.
+  "description"     text NOT NULL DEFAULT '',
+  -- 0 none, 1 low, 2 medium, 3 high, 4 urgent (store.PRIORITIES).
+  "priority"        integer NOT NULL DEFAULT 0,
+  -- "agent" or "user".
+  "updated_by"      character varying NOT NULL,
+  "updated_at"      character varying NOT NULL,
+  PRIMARY KEY ("conversation_id")
+);

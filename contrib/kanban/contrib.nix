@@ -33,6 +33,7 @@
         tables.kanban_blockers = { };
         tables.kanban_tags = { };
         tables.kanban_card_tags = { };
+        tables.kanban_card_details = { };
       };
 
       services.broker = {

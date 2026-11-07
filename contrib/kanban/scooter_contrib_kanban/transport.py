@@ -11,9 +11,12 @@
     POST   /user/boards/{board}/tags               {name, color?}: add a tag
     PATCH  /user/boards/{board}/tags/{tag}         {name?, color?, position?}: rename, recolor or reorder a tag
     DELETE /user/boards/{board}/tags/{tag}         delete a tag and take it off every card
-    GET    /conversation/{key}/card                one card, its blockers and tag ids (the board, via the conversation relay)
+    GET    /conversation/{key}/card                one card, its blockers, tag ids and priority (the board, via the conversation relay)
     PUT    /conversation/{key}/card                {column, position?}: record the user's move to a stage
     PUT    /conversation/{key}/card/tags           {tags: [id]}: the user replaces the card's tags
+    PUT    /conversation/{key}/card/blockers       {blocked_by: [conversation id]}: the user replaces the card's blockers
+    GET    /conversation/{key}/details             the card's description, priority, blockers and the cards it blocks
+    PATCH  /conversation/{key}/details             {description?, priority?}: the user edits them
 
 /user/* and /conversation/* are reached only through the agent-host's relays, which
 name the user and have already checked they may see the conversation. Every board
@@ -35,7 +38,7 @@ from scooter_broker_lib.types import AuthDependency, Identity, Provider, Transpo
 from scooter_broker_lib.user import user_identity
 
 from .boards import BoardError, Blocker, Boards
-from .store import Card, KanbanStore, Stage, Tag
+from .store import Card, Details, KanbanStore, Stage, Tag
 
 # Folder and tag ids are URL-safe: UUIDs, or ids a folder service chose.
 _FOLDER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
@@ -66,6 +69,7 @@ def view(
     now: datetime,
     since: datetime | None = None,
     blockers: list[Blocker] | None = None,
+    details: Details | None = None,
 ) -> dict:
     """A card on a board, as the hooks and the agent tools read it."""
     return {
@@ -77,6 +81,7 @@ def view(
         "blocked_by": [b.payload() for b in blockers or [] if not b.done],
         "tags": [t.name for t in tags],
         "card_tags": [t.name for t in card_tags],
+        "details": (details or Details()).payload(),
         "stale": is_stale(card, stale_after, now, since),
         # The broker's clock, so a hook marks a run's start without trusting its own.
         "now": now.isoformat(),
@@ -188,6 +193,7 @@ class Kanban(Transport):
                 now=self.now(),
                 since=_since(since),
                 blockers=blockers,
+                details=await _store().details(identity.conversation_id),
             )
 
         @router.get("/user/boards")
@@ -243,6 +249,7 @@ class Kanban(Transport):
                 "card": card.payload() if card else None,
                 "blockers": [b.payload() for b in blockers],
                 "tags": await _store().card_tags(key),
+                "priority": (await _store().details(key)).payload()["priority"],
             }
 
         @router.put("/conversation/{key}/card")
@@ -285,5 +292,44 @@ class Kanban(Transport):
                 return {"tags": await _boards().tag_card(owner, key, tags)}
             except BoardError as e:
                 raise _http(e) from None
+
+        @router.put("/conversation/{key}/card/blockers")
+        async def block_card(key: str, body: dict = Body(...), owner: str = user) -> dict:
+            refs = body.get("blocked_by")
+            if not isinstance(refs, list) or not all(isinstance(r, str) for r in refs):
+                raise HTTPException(status_code=400, detail="blocked_by must be a list of conversation ids")
+            try:
+                blockers = await _boards().user_set_blockers(owner, key, refs)
+            except BoardError as e:
+                raise _http(e) from None
+            return {"blockers": [b.payload() for b in blockers]}
+
+        async def _details(key: str, owner: str) -> dict:
+            try:
+                blocked_by = await _boards().blockers_of(key, owner)
+                blocking = await _boards().dependents_of(key, owner)
+            except BoardError as e:
+                raise _http(e) from None
+            return {
+                **(await _store().details(key)).payload(),
+                "blocked_by": [b.payload() for b in blocked_by],
+                "blocking": [b.payload() for b in blocking],
+            }
+
+        @router.get("/conversation/{key}/details")
+        async def get_details(key: str, owner: str = user) -> dict:
+            return await _details(key, owner)
+
+        @router.patch("/conversation/{key}/details")
+        async def edit_details(key: str, body: dict = Body(...), owner: str = user) -> dict:
+            description, priority = body.get("description"), body.get("priority")
+            if description is not None and not isinstance(description, str):
+                raise HTTPException(status_code=400, detail="description must be a string")
+            if priority is not None and not isinstance(priority, str):
+                raise HTTPException(status_code=400, detail="priority must be a string")
+            if description is None and priority is None:
+                raise HTTPException(status_code=400, detail="description or priority is required")
+            await _do(_boards().set_details(key, by="user", description=description, priority=priority, owner=owner))
+            return await _details(key, owner)
 
         return router

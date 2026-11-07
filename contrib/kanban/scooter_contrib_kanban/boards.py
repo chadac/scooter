@@ -14,7 +14,7 @@ import httpx
 
 from .folders import Conversation, FolderError, Folders
 from .messages import Send
-from .store import Card, KanbanStore, Place, Stage, Tag
+from .store import PRIORITIES, Card, Details, KanbanStore, Place, Stage, Tag
 
 MAX_TAG_CHARS = 24
 MAX_BOARD_TAGS = 20
@@ -62,6 +62,14 @@ class Blocker:
 
     def payload(self) -> dict:
         return {"id": self.id, "title": self.title, "stage": self.stage, "done": self.done}
+
+
+def parse_priority(name: str) -> int:
+    """A priority's stored number, from its name, e.g. "high"."""
+    want = name.strip().casefold()
+    if want not in PRIORITIES:
+        raise BoardError(400, f"priority must be one of {', '.join(PRIORITIES)}")
+    return PRIORITIES.index(want)
 
 
 def quote_blockers(blockers: list[Blocker]) -> str:
@@ -390,14 +398,71 @@ class Boards:
         """`key`'s blockers on whatever board `owner` filed it on; [] off every board."""
         if not await self.store.blockers(key):
             return []
+        on = await self._board_of(key, owner)
+        if on is None:
+            return []
+        _, board, placements = on
+        return await self.blockers(key, owner, board, placements=placements)
+
+    async def _board_of(self, key: str, owner: str) -> tuple[Conversation, str, dict[str, str]] | None:
+        """`key`'s conversation, the board `owner` filed it on, and their placements; None off every board."""
         conv = await self._conversation(key)
         if conv is None or conv.owner != owner:
-            return []
+            return None
         placements = await self._placements(owner)
         found = await self.at(placements.get(conv.id) or "")
         if found is None or found[0].owner != owner:
+            return None
+        return conv, found[0].board, placements
+
+    async def dependents_of(self, key: str, owner: str) -> list[Blocker]:
+        """The cards on `key`'s board that wait on it, each with its own stage."""
+        keys = await self.store.dependents(key)
+        on = await self._board_of(key, owner) if keys else None
+        if on is None:
             return []
-        return await self.blockers(key, owner, found[0].board, placements=placements)
+        _, board, placements = on
+        last = (await self.stages(board, owner))[-1]
+        out: list[Blocker] = []
+        for k in keys:
+            conv = await self._conversation(k)
+            stage = await self._stage_of(conv, owner, board, placements) if conv else None
+            if conv is not None and stage is not None:
+                out.append(Blocker(conv.id, conv.title, stage.name, stage.folder == last.folder))
+        return out
+
+    async def user_set_blockers(self, owner: str, key: str, refs: list[str]) -> list[Blocker]:
+        """The user replaces a card's blockers; clearing its last open one tells its agent."""
+        on = await self._board_of(key, owner)
+        if on is None:
+            raise BoardError(409, "this conversation isn't filed on one of your boards")
+        conv, board, placements = on
+        waited = any(not b.done for b in await self.blockers(key, owner, board, placements=placements))
+        blockers = await self.set_blockers(owner, board, conv, refs, by="user")
+        if waited and all(b.done for b in blockers) and self.send is not None:
+            try:
+                await self.send(
+                    conv.id,
+                    "The user removed the open blockers from this card on the kanban board. "
+                    "You can move it on to its next stage now.",
+                )
+            except httpx.HTTPError as e:
+                logger.warning("kanban unblock message failed", extra={"conversation_id": conv.id, "error": str(e)})
+        return blockers
+
+    async def set_details(
+        self, key: str, *, by: str, description: str | None = None, priority: str | None = None, owner: str = ""
+    ) -> Details:
+        """Change a card's description or priority, named as `parse_priority` takes it.
+
+        With `owner`, the user's edit: only to a conversation of theirs, not one shared with them.
+        """
+        if owner:
+            conv = await self._conversation(key)
+            if conv is None or conv.owner != owner:
+                raise BoardError(404, "you can only change the details of your own conversations")
+        level = None if priority is None else parse_priority(priority)
+        return await self.store.set_details(key, by=by, description=description, priority=level)
 
     async def _tag_name(self, board: str, name: str, *, skip: str = "") -> str:
         name = name.strip()
