@@ -15,6 +15,7 @@ from scooter_broker_lib.types import Provider
 
 from . import mcp_tools
 from .config import parse_columns, settings
+from .folders import RouterFolders
 from .store import KanbanStore
 from .transport import Kanban
 
@@ -31,5 +32,6 @@ def kanban(ctx: BrokerContext) -> Provider:
 
     store = KanbanStore(ctx.contrib_store_config("kanban"))
     transport.store = store
+    transport.folders = RouterFolders()
     mcp_tools.configure(store, columns, stale_after)
     return Provider(name="kanban", transports=[transport, tools], enabled=True)

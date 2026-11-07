@@ -1,6 +1,7 @@
-// The /boards view: folders the user opted in as kanban boards, each conversation a card.
+// The /boards view: kanban boards, each conversation a card.
 //
-// /boards lists the boards; /boards/<folderId> shows one, with the chat of the open card
+// A board is a locked folder only kanban changes, so the sidebar can't rename, nest or
+// delete it. /boards lists the boards; /boards/<folderId> shows one, with the chat of the open card
 // beside it. Boards and columns come from /kanban/user/boards, each card's column from its
 // conversation's relay. Moving a card saves it, then tells that conversation as the user.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -11,7 +12,6 @@ import {
   cn,
   contribFetch,
   conversationApi,
-  createFolder,
   EmptyState,
   ErrorState,
   inputClass,
@@ -69,24 +69,35 @@ function between(before?: number, after?: number): number {
   return (before + after) / 2;
 }
 
-/** The user's boards and the deployment's columns, with calls to change which folders are boards. */
+interface BoardsReply {
+  boards: string[];
+  columns: Column[];
+  folder?: string;
+}
+
+/** The user's boards and the deployment's columns, with calls that make, rename and delete boards. */
 function useBoards() {
-  const [state, setState] = useState<{ boards: string[]; columns: Column[] } | null>(null);
+  const [state, setState] = useState<BoardsReply | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const call = useCallback(async (path: string, method = "GET") => {
-    const res = await contribFetch("kanban", path, { method });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    setState((await res.json()) as { boards: string[]; columns: Column[] });
+  const call = useCallback(async (path: string, method = "GET", json?: unknown) => {
+    const res = await contribFetch("kanban", path, { method, json });
+    const body = (await res.json().catch(() => ({}))) as BoardsReply & { detail?: string };
+    // kanban passes the router's reason through, e.g. a name already taken.
+    if (!res.ok) throw new Error(body.detail ?? `HTTP ${res.status}`);
+    setState(body);
+    return body;
   }, []);
   useEffect(() => {
     call("boards").catch((e: unknown) => setError(String((e as Error)?.message ?? e)));
   }, [call]);
+  const board = (folder: string) => `boards/${encodeURIComponent(folder)}`;
   return {
     boards: state?.boards ?? null,
     columns: state?.columns ?? [],
     error,
-    add: (folder: string) => call(`boards/${encodeURIComponent(folder)}`, "PUT"),
-    remove: (folder: string) => call(`boards/${encodeURIComponent(folder)}`, "DELETE"),
+    create: async (name: string) => (await call("boards", "POST", { name })).folder ?? "",
+    rename: (folder: string, name: string) => call(board(folder), "PATCH", { name }),
+    remove: (folder: string) => call(board(folder), "DELETE"),
   };
 }
 
@@ -94,7 +105,7 @@ export default function BoardsView() {
   const { path, navigate } = useViewRoute();
   const folders = useFolders();
   const conversations = useConversations();
-  const { boards, columns, error, add, remove } = useBoards();
+  const { boards, columns, error, create, rename, remove } = useBoards();
 
   if (error && !boards) return <ErrorState variant="boxed" title="Boards failed to load." error={error} />;
   if (!boards) {
@@ -115,55 +126,56 @@ export default function BoardsView() {
         columns={columns}
         conversations={conversations.filter((c) => c.folderId === current.id)}
         navigate={navigate}
-        remove={() => void remove(current.id).then(() => navigate(""))}
+        rename={(name) => rename(current.id, name)}
+        remove={() => remove(current.id).then(() => navigate(""))}
       />
+    );
+  }
+  if (boards.includes(path)) {
+    // A board just made: its folder reaches the sidebar a moment later.
+    return (
+      <div className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
+        <Spinner /> Loading board…
+      </div>
     );
   }
   return (
     <BoardList
       boards={boardFolders}
-      others={folders.filter((f) => !boards.includes(f.id))}
       conversations={conversations}
       open={navigate}
-      add={async (folder) => {
-        await add(folder);
-        navigate(folder);
-      }}
+      create={async (name) => navigate(await create(name))}
     />
   );
 }
 
 function BoardList({
   boards,
-  others,
   conversations,
   open,
-  add,
+  create,
 }: {
   boards: ViewFolder[];
-  others: ViewFolder[];
   conversations: ViewConversation[];
   open(folder: string): void;
-  add(folder: string): Promise<void>;
+  create(name: string): Promise<void>;
 }) {
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const create = async () => {
+  const submit = async () => {
     const n = name.trim();
     if (!n) return;
     setBusy(true);
     setError(null);
-    const id = await createFolder(n);
-    if (id) await add(id).catch(() => setError("Could not make it a board."));
-    else setError("A folder with that name already exists.");
+    await create(n).catch((e: unknown) => setError(`Could not make the board: ${(e as Error).message}`));
     setBusy(false);
   };
   return (
     <div className="mx-auto max-w-3xl space-y-6 p-6" data-testid="kanban-boards">
       <h1 className="text-xl font-semibold">Boards</h1>
       {boards.length === 0 ? (
-        <EmptyState title="No boards yet." description="Start one below, or turn one of your folders into a board." />
+        <EmptyState title="No boards yet." description="Start one below, then file conversations into it." />
       ) : (
         <ul className="grid gap-3 sm:grid-cols-2">
           {boards.map((b) => {
@@ -194,7 +206,7 @@ function BoardList({
           className="flex gap-2"
           onSubmit={(e) => {
             e.preventDefault();
-            void create();
+            void submit();
           }}
         >
           <input
@@ -211,26 +223,6 @@ function BoardList({
         </form>
         {error && <p className="text-xs text-destructive">{error}</p>}
       </section>
-      {others.length > 0 && (
-        <section className="space-y-2">
-          <h2 className="text-sm font-medium">Turn a folder into a board</h2>
-          <ul className="flex flex-wrap gap-2">
-            {others.map((f) => (
-              <li key={f.id}>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  data-testid="kanban-make-board"
-                  data-folder-id={f.id}
-                  onClick={() => void add(f.id)}
-                >
-                  {f.name}
-                </Button>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
     </div>
   );
 }
@@ -241,6 +233,7 @@ function Board({
   columns,
   conversations,
   navigate,
+  rename,
   remove,
 }: {
   folder: ViewFolder;
@@ -248,7 +241,8 @@ function Board({
   columns: Column[];
   conversations: ViewConversation[];
   navigate(path: string): void;
-  remove(): void;
+  rename(name: string): Promise<unknown>;
+  remove(): Promise<unknown>;
 }) {
   const [cards, setCards] = useState<Record<string, CardView>>({});
   const [error, setError] = useState<string | null>(null);
@@ -379,10 +373,26 @@ function Board({
           <Button
             size="sm"
             variant="ghost"
-            data-testid="kanban-remove-board"
-            onClick={() => window.confirm(`Stop showing "${folder.name}" as a board? The folder stays.`) && remove()}
+            data-testid="kanban-rename-board"
+            onClick={() => {
+              const name = window.prompt("Rename the board", folder.name)?.trim();
+              if (name && name !== folder.name) {
+                rename(name).catch((e: unknown) => setError(`Could not rename the board: ${(e as Error).message}`));
+              }
+            }}
           >
-            Remove board
+            Rename
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            data-testid="kanban-delete-board"
+            onClick={() => {
+              const ok = window.confirm(`Delete the "${folder.name}" board? Its conversations stay, unfiled.`);
+              if (ok) remove().catch((e: unknown) => setError(`Could not delete the board: ${(e as Error).message}`));
+            }}
+          >
+            Delete board
           </Button>
         </div>
       </div>

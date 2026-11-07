@@ -2,8 +2,9 @@
 
     GET  /card?folder=<id>             this conversation's card, and whether the folder is a board (hooks)
     GET  /user/boards                  the user's boards and the columns (the view, via /contrib-api)
-    PUT  /user/boards/{folder}         opt a folder in as a board
-    DELETE /user/boards/{folder}       opt it out again
+    POST /user/boards                  {name}: a new board, as a locked folder only kanban changes
+    PATCH /user/boards/{folder}        {name}: rename a board
+    DELETE /user/boards/{folder}       delete a board; its conversations stay, unfiled
     GET  /conversation/{key}/card      one card (the board, via the conversation relay)
     PUT  /conversation/{key}/card      {column, position?}: the user moves a card
 
@@ -25,6 +26,7 @@ from scooter_broker_lib.types import AuthDependency, Identity, Provider, Transpo
 from scooter_broker_lib.user import user_identity
 
 from .config import Column
+from .folders import FolderError, Folders
 from .store import Card, KanbanStore
 
 # Folder ids are URL-safe: router UUIDs, or ids a folder service chose.
@@ -56,6 +58,7 @@ def view(card: Card | None, columns: list[Column], *, stale_after: timedelta, no
 class Kanban(Transport):
     name: str = "kanban"
     store: KanbanStore | None = None
+    folders: Folders | None = None
     columns: list[Column] = field(default_factory=list)
     stale_after: timedelta = timedelta(minutes=30)
     # The relayed user; None means user_identity(authed). Tests may inject a fake.
@@ -98,14 +101,54 @@ class Kanban(Transport):
         async def boards(owner: str = user) -> dict:
             return await _boards(owner)
 
-        @router.put("/user/boards/{folder}")
-        async def add_board(folder: str, owner: str = user) -> dict:
-            await _store().add_board(owner, _folder(folder))
+        def _folders() -> Folders:
+            if self.folders is None:
+                raise HTTPException(status_code=503, detail="kanban can't manage folders here")
+            return self.folders
+
+        def _name(body: dict) -> str:
+            name = body.get("name")
+            if not isinstance(name, str) or not name.strip():
+                raise HTTPException(status_code=400, detail="name is required")
+            return name.strip()
+
+        async def _own(owner: str, folder: str) -> str:
+            if _folder(folder) not in await _store().boards(owner):
+                raise HTTPException(status_code=404, detail="no such board")
+            return folder
+
+        def _refused(e: FolderError) -> HTTPException:
+            # The user's mistakes pass through; the router failing is ours.
+            return HTTPException(status_code=e.status if e.status in (400, 404, 409) else 502, detail=e.detail)
+
+        @router.post("/user/boards")
+        async def create_board(body: dict = Body(...), owner: str = user) -> dict:
+            name = _name(body)
+            try:
+                folder = await _folders().create(owner, name)
+            except FolderError as e:
+                raise _refused(e) from None
+            await _store().add_board(owner, folder)
+            return {**await _boards(owner), "folder": folder}
+
+        @router.patch("/user/boards/{folder}")
+        async def rename_board(folder: str, body: dict = Body(...), owner: str = user) -> dict:
+            name = _name(body)
+            try:
+                await _folders().rename(owner, await _own(owner, folder), name)
+            except FolderError as e:
+                raise _refused(e) from None
             return await _boards(owner)
 
         @router.delete("/user/boards/{folder}")
-        async def remove_board(folder: str, owner: str = user) -> dict:
-            await _store().remove_board(owner, _folder(folder))
+        async def delete_board(folder: str, owner: str = user) -> dict:
+            try:
+                await _folders().delete(owner, await _own(owner, folder))
+            except FolderError as e:
+                # Already gone from the sidebar, so just forget it.
+                if e.status != 404:
+                    raise _refused(e) from None
+            await _store().remove_board(owner, folder)
             return await _boards(owner)
 
         @router.get("/conversation/{key}/card")

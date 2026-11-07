@@ -1,4 +1,4 @@
-# kanban's declaration: folders you opt in as boards, shown at /boards, each conversation a
+# kanban's declaration: boards, locked folders only kanban changes, shown at /boards, each conversation a
 # card whose column the agent and the user both move. Boards and cards live in its own database.
 { lib, ... }:
 
@@ -42,6 +42,8 @@
         tables.kanban_boards = { };
       };
 
+      # Boards are locked folders the broker makes; the deployment must set
+      # scooter.conversationController.folderServices = [ "agent-broker" ].
       services.broker = {
         enable = true;
         pythonDeps = ps: [ ps.aiosqlite ];

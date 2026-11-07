@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
@@ -13,6 +15,7 @@ from scooter_broker_lib.testing import create_schema, sqlite_config
 from scooter_broker_lib.types import Identity, Provider
 from scooter_contrib_kanban import mcp_tools
 from scooter_contrib_kanban.config import DEFAULT_COLUMNS, parse_columns
+from scooter_contrib_kanban.folders import FolderError, RouterFolders
 from scooter_contrib_kanban.store import KanbanStore, _Base
 from scooter_contrib_kanban.transport import Kanban, is_stale
 
@@ -27,9 +30,41 @@ async def store():
     return s
 
 
+class FakeFolders:
+    """The router's folders, per user: id -> name."""
+
+    def __init__(self) -> None:
+        self.by_owner: dict[str, dict[str, str]] = {}
+        self.next = 0
+
+    async def create(self, owner: str, name: str) -> str:
+        mine = self.by_owner.setdefault(owner, {})
+        if name in mine.values():
+            raise FolderError(409, "you already have a folder with that name there")
+        self.next += 1
+        mine[f"f-{self.next}"] = name
+        return f"f-{self.next}"
+
+    async def rename(self, owner: str, folder: str, name: str) -> None:
+        if folder not in self.by_owner.get(owner, {}):
+            raise FolderError(404, "not found")
+        self.by_owner[owner][folder] = name
+
+    async def delete(self, owner: str, folder: str) -> None:
+        if self.by_owner.get(owner, {}).pop(folder, None) is None:
+            raise FolderError(404, "not found")
+
+
 @pytest.fixture
-def app(store):
-    transport = Kanban(store=store, columns=COLUMNS, stale_after=timedelta(minutes=30), now=lambda: NOW)
+def folders():
+    return FakeFolders()
+
+
+@pytest.fixture
+def app(store, folders):
+    transport = Kanban(
+        store=store, folders=folders, columns=COLUMNS, stale_after=timedelta(minutes=30), now=lambda: NOW
+    )
     caller: dict[str, Identity] = {}
 
     async def authed() -> Identity:
@@ -167,32 +202,77 @@ async def test_the_agent_moves_only_its_own_card(store):
 
 # --- boards ------------------------------------------------------------------------
 
-async def test_a_user_opts_folders_in_and_out_and_sees_only_their_own(app):
+async def test_a_board_is_a_folder_kanban_makes_renames_and_deletes(app, folders):
     async with as_(app, user="alice") as c:
-        assert (await c.put("/kanban/user/boards/f-1")).json()["boards"] == ["f-1"]
-        assert (await c.put("/kanban/user/boards/f-1")).json()["boards"] == ["f-1"]
+        r = await c.post("/kanban/user/boards", json={"name": "  Infra "})
+        assert r.status_code == 200 and r.json()["folder"] == "f-1" and r.json()["boards"] == ["f-1"]
+        assert folders.by_owner["alice"] == {"f-1": "Infra"}
+        assert (await c.patch("/kanban/user/boards/f-1", json={"name": "Platform"})).status_code == 200
+        assert folders.by_owner["alice"] == {"f-1": "Platform"}
+        assert (await c.delete("/kanban/user/boards/f-1")).json()["boards"] == []
+        assert folders.by_owner["alice"] == {}
+
+
+async def test_a_user_changes_only_their_own_boards(app, folders):
+    async with as_(app, user="alice") as c:
+        await c.post("/kanban/user/boards", json={"name": "Infra"})
     async with as_(app, user="bob") as c:
         assert (await c.get("/kanban/user/boards")).json()["boards"] == []
-        # Bob can't opt out Alice's board.
-        await c.delete("/kanban/user/boards/f-1")
+        assert (await c.patch("/kanban/user/boards/f-1", json={"name": "Mine"})).status_code == 404
+        assert (await c.delete("/kanban/user/boards/f-1")).status_code == 404
+    assert folders.by_owner["alice"] == {"f-1": "Infra"}
+
+
+async def test_the_router_refusing_a_name_reaches_the_user(app):
     async with as_(app, user="alice") as c:
+        await c.post("/kanban/user/boards", json={"name": "Infra"})
+        r = await c.post("/kanban/user/boards", json={"name": "Infra"})
+        assert r.status_code == 409 and "already" in r.json()["detail"]
+        assert (await c.post("/kanban/user/boards", json={"name": " "})).status_code == 400
         assert (await c.get("/kanban/user/boards")).json()["boards"] == ["f-1"]
+
+
+async def test_a_board_deleted_elsewhere_is_forgotten(app, folders):
+    async with as_(app, user="alice") as c:
+        await c.post("/kanban/user/boards", json={"name": "Infra"})
+        folders.by_owner["alice"].clear()
         assert (await c.delete("/kanban/user/boards/f-1")).json()["boards"] == []
 
 
 async def test_a_bad_folder_id_is_refused(app):
     async with as_(app, user="alice") as c:
-        assert (await c.put("/kanban/user/boards/-leading-dash")).status_code == 400
-        assert (await c.put("/kanban/user/boards/" + "x" * 65)).status_code == 400
-        # A folder service may pick its own ids.
-        assert (await c.put("/kanban/user/boards/e2e-design")).status_code == 200
+        assert (await c.delete("/kanban/user/boards/-leading-dash")).status_code == 400
+        assert (await c.delete("/kanban/user/boards/" + "x" * 65)).status_code == 400
     async with as_(app, conversation="conv-1") as c:
         assert (await c.get("/kanban/card", params={"folder": "../x"})).status_code == 400
+        # A folder service may pick its own ids.
+        assert (await c.get("/kanban/card", params={"folder": "e2e-design"})).status_code == 200
+
+
+async def test_the_router_is_asked_for_a_locked_folder_as_the_user(tmp_path):
+    (tmp_path / "token").write_text("tok")
+    seen = []
+
+    def handle(req: httpx.Request) -> httpx.Response:
+        seen.append(req)
+        if req.method == "POST":
+            return httpx.Response(201, json={"id": "f-9", "name": "Infra", "locked": True})
+        return httpx.Response(409, json={"error": "you already have a folder with that name there"})
+
+    folders = RouterFolders("http://router/", str(tmp_path / "token"), httpx.MockTransport(handle))
+    assert await folders.create("alice", "Infra") == "f-9"
+    req = seen[0]
+    assert str(req.url) == "http://router/folders"
+    assert json.loads(req.content) == {"name": "Infra", "locked": True}
+    assert req.headers["authorization"] == "Bearer tok" and req.headers["x-scooter-user"] == "alice"
+    with pytest.raises(FolderError) as e:
+        await folders.rename("alice", "f-9", "Infra")
+    assert e.value.status == 409 and "already" in e.value.detail
 
 
 async def test_the_hooks_learn_whether_the_folder_is_a_board(app):
     async with as_(app, user="alice") as c:
-        await c.put("/kanban/user/boards/f-1")
+        await c.post("/kanban/user/boards", json={"name": "Infra"})
     async with as_(app, conversation="conv-1") as c:
         assert (await c.get("/kanban/card", params={"folder": "f-1"})).json()["board"] is True
         assert (await c.get("/kanban/card", params={"folder": "f-2"})).json()["board"] is False

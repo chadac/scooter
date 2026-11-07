@@ -116,7 +116,7 @@ class KanbanStore:
             return _card(row)
 
     async def boards(self, owner: str) -> list[str]:
-        """The folder ids `owner` opted in as boards, oldest first."""
+        """The folder ids of `owner`'s boards, oldest first."""
         async with self._session() as s:
             rows = await s.execute(
                 select(_Board.folder_id).where(_Board.owner == owner).order_by(_Board.created_at)
@@ -128,7 +128,7 @@ class KanbanStore:
             return await s.get(_Board, folder_id) is not None
 
     async def add_board(self, owner: str, folder_id: str) -> None:
-        """Opt a folder in; a folder another user already opted in is left alone."""
+        """Record a board kanban made; one already recorded is left alone."""
         async with self._session() as s, s.begin():
             if await s.get(_Board, folder_id) is None:
                 s.add(_Board(folder_id=folder_id, owner=owner, created_at=now_iso()))
