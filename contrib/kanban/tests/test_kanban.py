@@ -112,6 +112,20 @@ async def test_a_card_is_stale_when_unset_or_old(store):
     assert is_stale(old, timedelta(minutes=30), NOW)
 
 
+async def test_a_run_owes_a_status_until_the_agent_sets_one(store):
+    run_start = NOW - timedelta(minutes=2)
+    before = await store.put("c", column="design", by="agent", now=(NOW - timedelta(minutes=5)).isoformat())
+    assert is_stale(before, timedelta(minutes=30), NOW, since=run_start)
+    during = await store.put("c", column="design", by="agent", now=(NOW - timedelta(minutes=1)).isoformat())
+    assert not is_stale(during, timedelta(minutes=30), NOW, since=run_start)
+
+
+async def test_a_users_move_waits_for_the_agent_to_confirm_it(store):
+    moved = await store.put("c", column="in-progress", by="user", now=NOW.isoformat())
+    assert is_stale(moved, timedelta(minutes=30), NOW)
+    assert is_stale(moved, timedelta(minutes=30), NOW, since=NOW - timedelta(minutes=1))
+
+
 # --- store -------------------------------------------------------------------------
 
 async def test_put_keeps_the_note_unless_given(store):
@@ -167,7 +181,7 @@ async def test_the_user_moves_a_card_and_the_agent_sees_it(app):
         assert (await c.get("/kanban/user/boards")).json()["columns"][0] == {"id": "design", "label": "Design"}
     async with as_(app, conversation="conv-1") as c:
         body = (await c.get("/kanban/card")).json()
-    assert body["column"] == "review" and body["card"]["position"] == 1.5 and body["stale"] is False
+    assert body["column"] == "review" and body["card"]["position"] == 1.5 and body["stale"] is True
 
 
 @pytest.mark.parametrize("payload", [{"column": "nope"}, {"column": "review", "position": "x"}, {"column": "review", "position": True}])
@@ -308,6 +322,20 @@ async def test_the_router_is_asked_for_a_locked_folder_as_the_user(tmp_path):
     with pytest.raises(FolderError) as e:
         await folders.rename("alice", "f-9", "Infra")
     assert e.value.status == 409 and "already" in e.value.detail
+
+
+async def test_the_hook_route_judges_staleness_from_the_runs_start(app, store):
+    await store.put("conv-1", column="design", by="agent", now=(NOW - timedelta(minutes=5)).isoformat())
+    async with as_(app, conversation="conv-1") as c:
+        assert (await c.get("/kanban/card")).json()["stale"] is False
+        r = (await c.get("/kanban/card", params={"since": (NOW - timedelta(minutes=1)).isoformat()})).json()
+        assert r["stale"] is True and r["now"] == NOW.isoformat()
+
+
+@pytest.mark.parametrize("since", ["yesterday", "2026-01-01T00:00:00"])
+async def test_a_bad_since_is_refused(app, since):
+    async with as_(app, conversation="conv-1") as c:
+        assert (await c.get("/kanban/card", params={"since": since})).status_code == 400
 
 
 async def test_the_hooks_learn_whether_the_folder_is_a_board(app):

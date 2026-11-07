@@ -79,7 +79,7 @@
           event = "Stop";
           when = "filed";
           userCanDisable = true;
-          description = "Once per run, ask the agent to update a card that is unset or stale.";
+          description = "Once per run, ask the agent to set its card's status unless it did this run.";
           command = builtins.readFile ./hooks/stop.sh;
         };
       };

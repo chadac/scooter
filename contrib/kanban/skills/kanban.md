@@ -12,7 +12,8 @@ message. Your job is to keep the card telling the truth.
   board: "PR #412 open, CI green, waiting on review", not "Working on it".
 - **The user may move the card themselves.** You'll get a message saying so. Treat the
   new column as their instruction: moving to `in-progress` means go ahead, moving to
-  `review` means they want to look, moving back means more work is needed.
+  `review` means they want to look, moving back means more work is needed. Confirm the
+  move with `kanban_set_status` (with a note) once you act on it.
 - **When asked to confirm the status**, set the column that fits now. Setting the same
   column again is fine; it records that the status is still right.
 - Use `kanban_get_status` to see the board's columns and your card's current state.

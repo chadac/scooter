@@ -1,6 +1,6 @@
 """kanban's HTTP routes, mounted under /kanban/*.
 
-    GET  /card?folder=<id>             this conversation's card, and whether the folder is a board (hooks)
+    GET  /card?folder=<id>&since=<t>   this conversation's card, and whether the folder is a board (hooks)
     GET  /user/boards                  the user's boards and the columns (the view, via /contrib-api)
     POST /user/boards                  {name}: a new board, as a locked folder only kanban changes
     PATCH /user/boards/{folder}        {name}: rename a board
@@ -33,24 +33,31 @@ from .store import Card, KanbanStore
 _FOLDER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 
-def is_stale(card: Card | None, stale_after: timedelta, now: datetime) -> bool:
-    """Whether the card was never set, or not touched within `stale_after`."""
-    if card is None:
+def is_stale(card: Card | None, stale_after: timedelta, now: datetime, since: datetime | None = None) -> bool:
+    """Whether the agent owes a status: none set, the user's move unconfirmed, or none this run.
+
+    `since` is when the run started; without it, an update older than `stale_after` is stale.
+    """
+    if card is None or card.updated_by != "agent":
         return True
     try:
         at = datetime.fromisoformat(card.updated_at)
     except ValueError:
         return True
-    return now - at > stale_after
+    return at < since if since is not None else now - at > stale_after
 
 
-def view(card: Card | None, columns: list[Column], *, stale_after: timedelta, now: datetime) -> dict:
+def view(
+    card: Card | None, columns: list[Column], *, stale_after: timedelta, now: datetime, since: datetime | None = None
+) -> dict:
     """A card as every route returns it; no row means the first column."""
     return {
         "card": card.payload() if card else None,
         "column": card.column if card else columns[0].id,
         "columns": [{"id": c.id, "label": c.label} for c in columns],
-        "stale": is_stale(card, stale_after, now),
+        "stale": is_stale(card, stale_after, now, since),
+        # The broker's clock, so a hook marks a run's start without trusting its own.
+        "now": now.isoformat(),
     }
 
 
@@ -73,11 +80,22 @@ class Kanban(Transport):
                 raise HTTPException(status_code=503, detail="kanban not configured")
             return self.store
 
-        async def _view(key: str) -> dict:
+        async def _view(key: str, since: datetime | None = None) -> dict:
             card = await _store().card(key)
-            return view(card, self.columns, stale_after=self.stale_after, now=self.now())
+            return view(card, self.columns, stale_after=self.stale_after, now=self.now(), since=since)
 
         user = Depends(self.user or user_identity(authed))
+
+        def _since(since: str) -> datetime | None:
+            if not since:
+                return None
+            try:
+                at = datetime.fromisoformat(since)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="since must be an ISO 8601 time") from None
+            if at.tzinfo is None:
+                raise HTTPException(status_code=400, detail="since must carry a UTC offset")
+            return at
 
         def _folder(folder: str) -> str:
             if not _FOLDER.match(folder):
@@ -85,11 +103,11 @@ class Kanban(Transport):
             return folder
 
         @router.get("/card")
-        async def own_card(folder: str = "", identity: Identity = Depends(authed)) -> dict:
+        async def own_card(folder: str = "", since: str = "", identity: Identity = Depends(authed)) -> dict:
             if not identity.conversation_id:
                 raise HTTPException(status_code=403, detail="a conversation identity is required")
             board = bool(folder) and await _store().is_board(_folder(folder))
-            return {**await _view(identity.conversation_id), "board": board}
+            return {**await _view(identity.conversation_id, _since(since)), "board": board}
 
         async def _boards(owner: str) -> dict:
             return {
