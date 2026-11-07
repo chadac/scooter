@@ -6,7 +6,7 @@
 // from /kanban/user/boards, each card's note and order from its conversation's relay. Moving a
 // card files the conversation in the stage, then tells it as the user.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ChevronLeft, ChevronRight, Pencil, Plus, Trash2 } from "lucide-react";
+import { ArrowLeft, ChevronLeft, ChevronRight, Lock, Pencil, Plus, Trash2 } from "lucide-react";
 import {
   Button,
   ChatPanel,
@@ -50,8 +50,17 @@ interface CardRow {
   updated_at: string;
 }
 
+/** A card this one waits on; done means in the last stage. */
+interface BlockerRow {
+  id: string;
+  title: string;
+  stage: string;
+  done: boolean;
+}
+
 interface CardView {
   card: CardRow | null;
+  blockers?: BlockerRow[];
 }
 
 // Agents move their own cards, and nothing pushes that here.
@@ -571,6 +580,7 @@ function Board({
                 )}
                 {(lanes[col.id] ?? []).map((conv) => {
                   const card = cards[conv.id]?.card;
+                  const waiting = (cards[conv.id]?.blockers ?? []).filter((b) => !b.done);
                   const open = showing && conv.id === openId;
                   return (
                     <li
@@ -578,6 +588,7 @@ function Board({
                       data-testid="kanban-card"
                       data-conversation-id={conv.id}
                       data-open={open || undefined}
+                      data-blocked={waiting.length > 0 || undefined}
                       draggable
                       onDragStart={(e) => {
                         e.dataTransfer.setData(CARD_MIME, conv.id);
@@ -597,6 +608,7 @@ function Board({
                       className={cn(
                         "rounded-md border bg-background p-2 text-sm shadow-xs",
                         open && "ring-2 ring-primary",
+                        waiting.length > 0 && "border-dashed bg-muted/40",
                         dragging === conv.id && "opacity-50",
                         dropAt?.before === conv.id && "border-t-2 border-t-primary",
                       )}
@@ -618,9 +630,18 @@ function Board({
                           {card.note}
                         </p>
                       )}
-                      <p className="mt-1.5 text-[11px] text-muted-foreground">
-                        {card ? `${card.updated_by === "agent" ? "Agent" : "You"} · ${ago(card.updated_at)}` : "No status yet"}
-                      </p>
+                      <div className="mt-1.5 flex items-center gap-2 text-[11px] text-muted-foreground">
+                        <span>{card ? `${card.updated_by === "agent" ? "Agent" : "You"} · ${ago(card.updated_at)}` : "No status yet"}</span>
+                        {waiting.length > 0 && (
+                          <span
+                            data-testid="kanban-blocked-by"
+                            className="ms-auto inline-flex items-center gap-1 font-medium text-amber-700 dark:text-amber-400"
+                          >
+                            <Lock aria-hidden className="size-3" />
+                            Blocked by {waiting.length}
+                          </span>
+                        )}
+                      </div>
                     </li>
                   );
                 })}

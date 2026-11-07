@@ -24,6 +24,7 @@ async function serveKanban(page: Page, request: APIRequestContext, base: string)
   const boards: Array<{ folder: string; stages: Stage[] }> = [];
   const cards: Record<string, { column: string; position: number; note: string; updated_by: string; updated_at: string }> = {};
   const puts: Array<{ id: string; body: { column: string } }> = [];
+  const blockers: Record<string, string[]> = {};
   const folder = async (name: string, parentId?: string) =>
     ((await (await request.post(`${base}/folders`, { data: { name, parentId } })).json()) as { id: string }).id;
   const board = async (name: string) => {
@@ -82,10 +83,13 @@ async function serveKanban(page: Page, request: APIRequestContext, base: string)
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ card: card && { conversation_id: id, ...card } }),
+      body: JSON.stringify({
+        card: card && { conversation_id: id, ...card },
+        blockers: (blockers[id] ?? []).map((b) => ({ id: b, title: b, stage: "Design", done: false })),
+      }),
     });
   });
-  return { boards, cards, puts, board };
+  return { boards, cards, puts, board, blockers };
 }
 
 const threadId = (page: Page) => new URL(page.url()).searchParams.get("thread");
@@ -284,5 +288,35 @@ fastOnly("the kanban broker routes are stubbed in the browser")("kanban /boards 
     const left = (await (await request.get(`${base}/folders`)).json()) as { folders: Array<{ id: string }> };
     const gone = [board.folder, ...board.stages.map((s) => s.id)];
     expect(left.folders.map((f) => f.id).filter((f) => gone.includes(f))).toEqual([]);
+  });
+
+  test("a blocked card shows how many cards it waits on", async ({ chat, page, request, baseURL }) => {
+    const base = baseURL ?? "http://localhost:5173";
+    const kanban = await serveKanban(page, request, base);
+    const board = await kanban.board(`e2e-board-blockers-${Date.now()}`);
+    const design = board.stages[0].id;
+    const ids: string[] = [];
+    for (const text of ["schema", "api"]) {
+      await chat.open();
+      await page.locator('[data-testid="new-session"]').click();
+      await chat.send(text);
+      await chat.waitForReply(/dummy agent/i);
+      await expect.poll(() => threadId(page)).not.toBe(ids.at(-1) ?? null);
+      ids.push(threadId(page)!);
+      await request.put(`${base}/conversations/${ids.at(-1)}/folder`, { data: { folderId: design } });
+    }
+    const [schema, api] = ids;
+    const card = (id: string) => page.locator(`[data-testid="kanban-card"][data-conversation-id="${id}"]`);
+
+    await page.goto(`/boards/${board.folder}`);
+    await expect(card(api)).toBeVisible({ timeout: 20_000 });
+    await expect(card(api)).not.toHaveAttribute("data-blocked");
+    await expect(card(api).getByTestId("kanban-blocked-by")).toHaveCount(0);
+
+    kanban.blockers[api] = [schema];
+    await page.reload();
+    await expect(card(api)).toHaveAttribute("data-blocked", "true", { timeout: 20_000 });
+    await expect(card(api).getByTestId("kanban-blocked-by")).toHaveText("Blocked by 1");
+    await expect(card(schema).getByTestId("kanban-blocked-by")).toHaveCount(0);
   });
 });

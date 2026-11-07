@@ -21,5 +21,12 @@ telling the truth.
   note) once you act on it.
 - **When asked to confirm the status**, set the stage that fits now. Setting the same
   stage again is fine; it records that the status is still right.
+- **A card can be blocked by other cards.** While it is, you can work in its current
+  stage but `kanban_set_status` won't move it to a later one. Do what you can there,
+  say what you're waiting on, and end your turn: a message comes when the blockers
+  reach the last stage. Don't poll for it.
+- **When planning work as several cards**, start each one (e.g. with `handoff_spawn`),
+  put it on the board with `kanban_add_card(conversation, blocked_by)`, and order the
+  cards with `kanban_set_blockers`. `kanban_list_cards` shows the cards and their ids.
 - Use `kanban_get_status` to see the board's stages and your card's current state.
 - Don't mention the board or these reminders to the user unless they ask.

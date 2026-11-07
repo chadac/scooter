@@ -59,6 +59,17 @@ class _Stage(_Base):
     position: Mapped[float] = mapped_column(Float)
 
 
+class _Blocker(_Base):
+    """Mirrors `kanban_blockers` in contrib/kanban/sql/schema.sql."""
+
+    __tablename__ = "kanban_blockers"
+
+    conversation_id: Mapped[str] = mapped_column(String, primary_key=True)
+    blocker_id: Mapped[str] = mapped_column(String, primary_key=True, index=True)
+    created_by: Mapped[str] = mapped_column(String)
+    created_at: Mapped[str] = mapped_column(String)
+
+
 @dataclass(frozen=True)
 class Stage:
     folder: str
@@ -211,3 +222,38 @@ class KanbanStore:
                 return False
             await s.execute(delete(_Stage).where(_Stage.board_id == folder_id))
             return True
+
+    async def blockers(self, conversation_id: str) -> list[str]:
+        """The keys of the cards `conversation_id` waits on, oldest edge first."""
+        async with self._session() as s:
+            rows = await s.execute(
+                select(_Blocker.blocker_id)
+                .where(_Blocker.conversation_id == conversation_id)
+                .order_by(_Blocker.created_at, _Blocker.blocker_id)
+            )
+            return list(rows.scalars())
+
+    async def dependents(self, blocker_id: str) -> list[str]:
+        """The keys of the cards waiting on `blocker_id`."""
+        async with self._session() as s:
+            rows = await s.execute(
+                select(_Blocker.conversation_id).where(_Blocker.blocker_id == blocker_id).order_by(_Blocker.conversation_id)
+            )
+            return list(rows.scalars())
+
+    async def set_blockers(self, conversation_id: str, blocker_ids: list[str], *, by: str) -> None:
+        """Replace a card's blockers, keeping the edges that stay as they were."""
+        async with self._session() as s, s.begin():
+            want = list(dict.fromkeys(blocker_ids))
+            have = set(
+                (await s.execute(select(_Blocker.blocker_id).where(_Blocker.conversation_id == conversation_id))).scalars()
+            )
+            await s.execute(
+                delete(_Blocker).where(
+                    _Blocker.conversation_id == conversation_id, _Blocker.blocker_id.not_in(want)
+                )
+            )
+            at = now_iso()
+            for b in want:
+                if b not in have:
+                    s.add(_Blocker(conversation_id=conversation_id, blocker_id=b, created_by=by, created_at=at))

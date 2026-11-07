@@ -45,3 +45,16 @@ CREATE TABLE "kanban_stages" (
   PRIMARY KEY ("folder_id")
 );
 CREATE INDEX "ix_kanban_stages_board_id" ON "kanban_stages" ("board_id");
+
+-- A card waits until its blockers reach the last stage.
+CREATE TABLE "kanban_blockers" (
+  -- The blocked card's key (kanban_cards.conversation_id).
+  "conversation_id" character varying NOT NULL,
+  -- The blocking card's key.
+  "blocker_id"      character varying NOT NULL,
+  -- "agent" or "user".
+  "created_by"      character varying NOT NULL,
+  "created_at"      character varying NOT NULL,
+  PRIMARY KEY ("conversation_id", "blocker_id")
+);
+CREATE INDEX "ix_kanban_blockers_blocker_id" ON "kanban_blockers" ("blocker_id");

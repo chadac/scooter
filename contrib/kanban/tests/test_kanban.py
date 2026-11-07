@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -19,6 +19,7 @@ from scooter_contrib_kanban.boards import Boards
 from scooter_contrib_kanban.config import parse_stages
 from scooter_contrib_kanban.folders import Conversation, FolderError, RouterFolders
 from scooter_contrib_kanban.keys import CardKeys
+from scooter_contrib_kanban.messages import AgentHostMessages
 from scooter_contrib_kanban.store import KanbanStore, _Base
 from scooter_contrib_kanban.transport import Kanban, is_stale
 
@@ -80,10 +81,17 @@ class FakeFolders:
                     self.placements[at] = f.parent
 
     async def conversation(self, key: str) -> Conversation | None:
-        return self.conversations.get(key)
+        """By card key or conversation id, as the router answers for either."""
+        for k, c in self.conversations.items():
+            if key in (k, c.id):
+                return replace(c, key=k)
+        return None
 
     async def placement(self, owner: str, conversation: str) -> str | None:
         return self.placements.get((owner, conversation))
+
+    async def filed(self, owner: str) -> dict[str, str]:
+        return {c: f for (o, c), f in self.placements.items() if o == owner}
 
     async def file(self, owner: str, conversation: str, folder: str) -> None:
         self._get(owner, folder)
@@ -479,7 +487,7 @@ async def test_the_router_is_called_as_the_broker_for_the_user(tmp_path):
     assert await folders.create("alice", "Design", "board-1") == "f-9"
     assert json.loads(seen[0].content) == {"name": "Design", "locked": True, "parentId": "board-1"}
     assert seen[0].headers["authorization"] == "Bearer tok" and seen[0].headers["x-scooter-user"] == "alice"
-    assert await folders.conversation("key-1") == Conversation(id="conv-1", owner="alice")
+    assert await folders.conversation("key-1") == Conversation(id="conv-1", owner="alice", key="key-1")
     assert await folders.placement("alice", "conv-1") == "f-9"
     await folders.file("alice", "conv-1", "f-9")
     assert (str(seen[-1].url), json.loads(seen[-1].content)) == ("http://router/conversations/conv-1/folder", {"folderId": "f-9"})
@@ -503,3 +511,160 @@ async def test_a_bad_since_is_refused(app, since):
     design = _stage(await _board(app), "Design")
     async with as_(app, conversation="key-1") as c:
         assert (await c.get("/kanban/card", params={"folder": design, "since": since})).status_code == 400
+
+
+# --- blockers ----------------------------------------------------------------------
+
+class Sent:
+    """Messages kanban sent, by conversation id."""
+
+    def __init__(self) -> None:
+        self.messages: list[tuple[str, str]] = []
+
+    async def __call__(self, conversation_id: str, text: str) -> None:
+        self.messages.append((conversation_id, text))
+
+
+async def _cards(app, boards, folders, *names: str, stage: str = "Design") -> dict:
+    """A board with a card per name: key-<name> runs conv-<name>; thread-<name> calls as it."""
+    board = await _board(app)
+    for n in names:
+        folders.conversations[f"key-{n}"] = Conversation(id=f"conv-{n}", owner="alice", title=n.title())
+        folders.placements[("alice", f"conv-{n}")] = _stage(board, stage)
+    mcp_tools.configure(boards, timedelta(minutes=30), _keys({f"thread-{n}": f"conv-key-{n}" for n in names}))
+    return board
+
+
+async def test_a_blocked_card_stays_in_its_stage_until_its_blockers_are_done(app, boards, folders):
+    board = await _cards(app, boards, folders, "api", "schema")
+    out = await mcp_tools.kanban_set_blockers(blocked_by=["conv-schema"], ctx=_ctx("thread-api"))
+    assert not out.is_error and '"Schema" (Design)' in out.text
+    out = await mcp_tools.kanban_set_status(column="In progress", ctx=_ctx("thread-api"))
+    assert out.is_error and "blocked by" in out.text and '"Schema" (Design)' in out.text
+    assert folders.placements[("alice", "conv-api")] == _stage(board, "Design")
+    # The same stage, or an earlier one, is still fine.
+    assert not (await mcp_tools.kanban_set_status(column="Design", note="drafting", ctx=_ctx("thread-api"))).is_error
+    got = await mcp_tools.kanban_get_status(ctx=_ctx("thread-api"))
+    assert 'Blocked by "Schema" (Design)' in got.text
+    assert not (await mcp_tools.kanban_set_status(column="Done", ctx=_ctx("thread-schema"))).is_error
+    assert not (await mcp_tools.kanban_set_status(column="In progress", ctx=_ctx("thread-api"))).is_error
+
+
+async def test_the_last_blocker_done_messages_the_blocked_card(app, boards, folders):
+    sent = Sent()
+    boards.send = sent
+    await _cards(app, boards, folders, "ui", "api", "schema")
+    await mcp_tools.kanban_set_blockers(blocked_by=["conv-api", "conv-schema"], ctx=_ctx("thread-ui"))
+    await mcp_tools.kanban_set_status(column="Done", note="PR #1 merged", ctx=_ctx("thread-schema"))
+    assert sent.messages == []
+    await mcp_tools.kanban_set_status(column="Done", note="PR #2 merged", ctx=_ctx("thread-api"))
+    assert [c for c, _ in sent.messages] == ["conv-ui"]
+    assert '"Api" (note: "PR #2 merged")' in sent.messages[0][1] and '"Schema"' in sent.messages[0][1]
+    # Confirming Done again sends nothing more.
+    await mcp_tools.kanban_set_status(column="Done", ctx=_ctx("thread-api"))
+    assert len(sent.messages) == 1
+
+
+async def test_the_users_move_to_the_last_stage_releases_too(app, boards, folders):
+    sent = Sent()
+    boards.send = sent
+    board = await _cards(app, boards, folders, "api", "schema")
+    await mcp_tools.kanban_set_blockers(blocked_by=["conv-schema"], ctx=_ctx("thread-api"))
+    done = _stage(board, "Done")
+    folders.placements[("alice", "conv-schema")] = done
+    async with as_(app, user="alice") as c:
+        assert (await c.put("/kanban/conversation/key-schema/card", json={"column": done})).status_code == 200
+        assert (await c.put("/kanban/conversation/key-schema/card", json={"column": done, "position": 2.0})).status_code == 200
+    assert [c for c, _ in sent.messages] == ["conv-api"]
+
+
+async def test_the_user_drags_a_blocked_card_anywhere(app, boards, folders):
+    board = await _cards(app, boards, folders, "api", "schema")
+    await mcp_tools.kanban_set_blockers(blocked_by=["conv-schema"], ctx=_ctx("thread-api"))
+    async with as_(app, user="alice") as c:
+        r = await c.put("/kanban/conversation/key-api/card", json={"column": _stage(board, "Review")})
+    assert r.status_code == 200
+
+
+async def test_blockers_are_checked(app, boards, folders):
+    await _cards(app, boards, folders, "a", "b", "c")
+    bobs = await _board(app, owner="bob", name="Bob's")
+    folders.conversations["key-bob"] = Conversation(id="conv-bob", owner="bob", title="Bob")
+    folders.placements[("bob", "conv-bob")] = _stage(bobs, "Design")
+    folders.conversations["key-loose"] = Conversation(id="conv-loose", owner="alice", title="Loose")
+    a = _ctx("thread-a")
+    assert "itself" in (await mcp_tools.kanban_set_blockers(blocked_by=["conv-a"], ctx=a)).text
+    for ref in ["conv-bob", "conv-loose", "nope"]:
+        out = await mcp_tools.kanban_set_blockers(blocked_by=[ref], ctx=a)
+        assert out.is_error and "not a card on this board" in out.text, ref
+    assert not (await mcp_tools.kanban_set_blockers(blocked_by=["conv-b"], ctx=a)).is_error
+    assert not (await mcp_tools.kanban_set_blockers(blocked_by=["conv-c"], card="conv-b", ctx=a)).is_error
+    # c -> a would close a -> b -> c.
+    out = await mcp_tools.kanban_set_blockers(blocked_by=["conv-a"], card="conv-c", ctx=a)
+    assert out.is_error and "already waits on" in out.text
+    assert "nothing" in (await mcp_tools.kanban_set_blockers(blocked_by=[], ctx=a)).text
+
+
+async def test_a_blocker_that_left_the_board_no_longer_blocks(app, boards, folders, store):
+    await _cards(app, boards, folders, "api", "schema")
+    await mcp_tools.kanban_set_blockers(blocked_by=["conv-schema"], ctx=_ctx("thread-api"))
+    del folders.placements[("alice", "conv-schema")]
+    assert not (await mcp_tools.kanban_set_status(column="Review", ctx=_ctx("thread-api"))).is_error
+    assert await store.blockers("key-api") == ["key-schema"]
+
+
+async def test_a_planner_adds_cards_and_lists_them(app, boards, folders):
+    board = await _cards(app, boards, folders, "plan")
+    folders.conversations["key-schema"] = Conversation(id="conv-schema", owner="alice", title="Schema")
+    folders.conversations["key-api"] = Conversation(id="conv-api", owner="alice", title="Api")
+    plan = _ctx("thread-plan")
+    out = await mcp_tools.kanban_add_card(conversation="conv-schema", ctx=plan)
+    assert not out.is_error and '"Design"' in out.text
+    out = await mcp_tools.kanban_add_card(conversation="conv-api", blocked_by=["conv-schema"], ctx=plan)
+    assert not out.is_error and 'blocked by "Schema"' in out.text
+    assert folders.placements[("alice", "conv-api")] == _stage(board, "Design")
+    listed = json.loads((await mcp_tools.kanban_list_cards(ctx=plan)).text)
+    by_id = {c["id"]: c for c in listed["cards"]}
+    assert by_id["conv-plan"]["this"] and not by_id["conv-api"]["this"]
+    assert by_id["conv-api"]["blocked_by"] == [{"id": "conv-schema", "title": "Schema", "stage": "Design", "done": False}]
+
+
+async def test_a_conversation_on_another_board_is_not_taken(app, boards, folders):
+    await _cards(app, boards, folders, "plan")
+    other = await _board(app, name="Other")
+    folders.conversations["key-x"] = Conversation(id="conv-x", owner="alice", title="X")
+    folders.placements[("alice", "conv-x")] = _stage(other, "Review")
+    out = await mcp_tools.kanban_add_card(conversation="conv-x", ctx=_ctx("thread-plan"))
+    assert out.is_error and "another board" in out.text
+
+
+async def test_the_board_reads_a_card_s_blockers(app, boards, folders):
+    await _cards(app, boards, folders, "api", "schema")
+    await mcp_tools.kanban_set_blockers(blocked_by=["conv-schema"], ctx=_ctx("thread-api"))
+    async with as_(app, user="alice") as c:
+        got = (await c.get("/kanban/conversation/key-api/card")).json()
+        assert got["blockers"] == [{"id": "conv-schema", "title": "Schema", "stage": "Design", "done": False}]
+    async with as_(app, user="bob") as c:
+        assert (await c.get("/kanban/conversation/key-api/card")).json()["blockers"] == []
+
+
+async def test_the_hooks_see_only_open_blockers(app, boards, folders):
+    board = await _cards(app, boards, folders, "api", "schema", "auth")
+    await mcp_tools.kanban_set_blockers(blocked_by=["conv-schema", "conv-auth"], ctx=_ctx("thread-api"))
+    folders.placements[("alice", "conv-auth")] = _stage(board, "Done")
+    async with as_(app, conversation="key-api") as c:
+        r = (await c.get("/kanban/card", params={"folder": _stage(board, "Design")})).json()
+    assert r["blocked_by"] == [{"id": "conv-schema", "title": "Schema", "stage": "Design", "done": False}]
+
+
+async def test_the_unblock_message_reaches_the_agent_host():
+    seen: list[httpx.Request] = []
+
+    def handle(req: httpx.Request) -> httpx.Response:
+        seen.append(req)
+        return httpx.Response(202, json={"ok": True})
+
+    send = AgentHostMessages("http://agent-host/", transport=httpx.MockTransport(handle))
+    await send("conv-1", "go")
+    assert str(seen[0].url) == "http://agent-host/conversations/conv-1/messages"
+    assert json.loads(seen[0].content) == {"text": "go", "source": "kanban"}

@@ -15,4 +15,8 @@ printf '%s' "$card" | jq -r '
   + if .card == null then ", but no status has been set yet."
     elif .card.updated_by == "user" then " (moved there by the user)."
     else "." end
-  + if (.card.note // "") != "" then " Note: \(.card.note | @json)." else "" end'
+  + if (.card.note // "") != "" then " Note: \(.card.note | @json)." else "" end
+  + if (.blocked_by // []) != [] then
+      " Blocked by " + (.blocked_by | map("\(.title | @json) (\(.stage))") | join(", "))
+      + ": you can work in this stage, but can'\''t move the card to a later one until they reach \"\(.columns[-1])\"."
+    else "" end'

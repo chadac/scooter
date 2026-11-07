@@ -8,7 +8,7 @@
     POST   /user/boards/{board}/stages             {name}: add a stage at the end
     PATCH  /user/boards/{board}/stages/{stage}     {name?, position?}: rename or reorder a stage
     DELETE /user/boards/{board}/stages/{stage}     delete a stage; its cards move to the first stage
-    GET    /conversation/{key}/card                one card (the board, via the conversation relay)
+    GET    /conversation/{key}/card                one card and its blockers (the board, via the conversation relay)
     PUT    /conversation/{key}/card                {column, position?}: record the user's move to a stage
 
 /user/* and /conversation/* are reached only through the agent-host's relays, which
@@ -30,7 +30,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from scooter_broker_lib.types import AuthDependency, Identity, Provider, Transport
 from scooter_broker_lib.user import user_identity
 
-from .boards import BoardError, Boards
+from .boards import BoardError, Blocker, Boards
 from .store import Card, KanbanStore, Stage
 
 # Folder ids are URL-safe: router UUIDs, or ids a folder service chose.
@@ -59,6 +59,7 @@ def view(
     stale_after: timedelta,
     now: datetime,
     since: datetime | None = None,
+    blockers: list[Blocker] | None = None,
 ) -> dict:
     """A card on a board, as the hooks and the agent tools read it."""
     return {
@@ -66,6 +67,8 @@ def view(
         "card": card.payload() if card else None,
         "column": stage.name,
         "columns": [s.name for s in stages],
+        # Open blockers only: they hold the card in its stage.
+        "blocked_by": [b.payload() for b in blockers or [] if not b.done],
         "stale": is_stale(card, stale_after, now, since),
         # The broker's clock, so a hook marks a run's start without trusting its own.
         "now": now.isoformat(),
@@ -151,8 +154,14 @@ class Kanban(Transport):
                 raise _http(e) from None
             if found is None:
                 return {"board": False, "card": card.payload() if card else None}
-            _, stages, stage = found
-            return view(card, stages, stage, stale_after=self.stale_after, now=self.now(), since=_since(since))
+            place, stages, stage = found
+            try:
+                blockers = await _boards().blockers(identity.conversation_id, place.owner, place.board)
+            except BoardError as e:
+                raise _http(e) from None
+            return view(
+                card, stages, stage, stale_after=self.stale_after, now=self.now(), since=_since(since), blockers=blockers
+            )
 
         @router.get("/user/boards")
         async def list_boards(owner: str = user) -> dict:
@@ -197,17 +206,25 @@ class Kanban(Transport):
             return await _list(owner)
 
         @router.get("/conversation/{key}/card")
-        async def get_card(key: str, _user: str = user) -> dict:
+        async def get_card(key: str, owner: str = user) -> dict:
             card = await _store().card(key)
-            return {"card": card.payload() if card else None}
+            try:
+                blockers = await _boards().blockers_of(key, owner)
+            except BoardError as e:
+                raise _http(e) from None
+            return {"card": card.payload() if card else None, "blockers": [b.payload() for b in blockers]}
 
         @router.put("/conversation/{key}/card")
         async def move_card(key: str, body: dict = Body(...), owner: str = user) -> dict:
             column = body.get("column")
-            place = await _store().place(column) if isinstance(column, str) and _FOLDER.match(column) else None
-            if place is None or place.stage is None or place.owner != owner:
+            if not isinstance(column, str) or not _FOLDER.match(column):
                 raise HTTPException(status_code=400, detail="column must be one of your boards' stage ids")
-            card = await _store().put(key, column=column, by="user", position=_position(body))
+            position = _position(body)
+            try:
+                card = await _boards().user_move(key, owner, column, position)
+            except BoardError as e:
+                raise _http(e) from None
             return {"card": card.payload()}
+
 
         return router

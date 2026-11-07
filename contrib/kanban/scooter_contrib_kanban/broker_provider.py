@@ -18,6 +18,7 @@ from .boards import Boards
 from .config import parse_stages, settings
 from .folders import RouterFolders
 from .keys import CardKeys
+from .messages import AgentHostMessages
 from .store import KanbanStore
 from .transport import Kanban
 
@@ -35,6 +36,7 @@ def kanban(ctx: BrokerContext) -> Provider:
         store=KanbanStore(ctx.contrib_store_config("kanban")),
         folders=RouterFolders(),
         default_stages=parse_stages(settings.kanban_stages),
+        send=AgentHostMessages(settings.agent_host_url) if settings.agent_host_url else None,
     )
     transport.boards = boards
     keys = CardKeys(settings.agent_host_url) if settings.agent_host_url else None
