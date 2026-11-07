@@ -7,6 +7,7 @@ conversation in that stage's folder.
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -15,7 +16,7 @@ from fastmcp import FastMCP
 
 from scooter_broker_lib.mcp import ToolContext, ToolContextDep, ToolResult
 
-from .boards import BoardError, Boards
+from .boards import BoardError, Blocker, Boards, quote_blockers
 from .keys import CardKeys
 from .transport import view
 
@@ -51,15 +52,20 @@ async def _card_key(ctx: ToolContext) -> tuple[str | None, str]:
     return key, ""
 
 
-def _describe(v: dict) -> str:
+def _describe(v: dict, blockers: list[Blocker]) -> str:
     stages = ", ".join(f'"{s}"' for s in v["columns"])
+    waiting = [b for b in blockers if not b.done]
+    blocked = (
+        f" Blocked by {quote_blockers(waiting)}: it can't move past this stage until they reach \"{v['columns'][-1]}\"."
+        if waiting else ""
+    )
     card = v["card"]
     if card is None:
-        return f'No status set yet; the card shows in "{v["column"]}". Stages: {stages}.'
+        return f'No status set yet; the card shows in "{v["column"]}". Stages: {stages}.{blocked}'
     note = f' Note: "{card["note"]}".' if card["note"] else ""
     return (
         f'The card is in "{v["column"]}", last set by the {card["updated_by"]} at {card["updated_at"]}.'
-        f"{note} Stages: {stages}."
+        f"{note} Stages: {stages}.{blocked}"
     )
 
 
@@ -70,6 +76,10 @@ async def _key(ctx: ToolContext) -> str | ToolResult:
     return ToolResult.error(why) if key is None else key
 
 
+def _names(blockers: list[Blocker]) -> str:
+    return quote_blockers(blockers) if blockers else "nothing"
+
+
 @mcp.tool
 async def kanban_set_status(column: str, note: str = "", ctx: ToolContext = ToolContextDep) -> ToolResult:
     """Move this conversation's card to a stage on its kanban board, with a one-line note
@@ -77,7 +87,8 @@ async def kanban_set_status(column: str, note: str = "", ctx: ToolContext = Tool
 
     `column` is the stage's name, as kanban_get_status lists it; the user picks each
     board's stages. Call it when the work changes phase, and to confirm the status when
-    asked: setting the same stage again records that it is still right.
+    asked: setting the same stage again records that it is still right. A card blocked
+    by other cards can't move to a later stage until they are in the board's last stage.
     """
     key = await _key(ctx)
     if isinstance(key, ToolResult):
@@ -85,26 +96,99 @@ async def kanban_set_status(column: str, note: str = "", ctx: ToolContext = Tool
     assert _boards is not None
     try:
         where, card = await _boards.set_stage(key, column, note=note.strip() or None)
+        blockers = await _boards.blockers(key, where.conversation.owner, where.place.board)
     except BoardError as e:
         return ToolResult.error(f"{e.detail}.")
     v = view(card, where.stages, where.stage, stale_after=_stale_after, now=datetime.now(timezone.utc))
-    return ToolResult.ok(_describe(v))
+    return ToolResult.ok(_describe(v, blockers))
 
 
 @mcp.tool
 async def kanban_get_status(ctx: ToolContext = ToolContextDep) -> ToolResult:
-    """Read this conversation's stage and note on its kanban board, and the board's stages."""
+    """Read this conversation's stage, note and blockers on its kanban board, and the board's stages."""
     key = await _key(ctx)
     if isinstance(key, ToolResult):
         return key
     assert _boards is not None
     try:
         where = await _boards.locate(key)
+        blockers = await _boards.blockers(key, where.conversation.owner, where.place.board)
     except BoardError as e:
         return ToolResult.error(f"{e.detail}.")
     card = await _boards.store.card(key)
     v = view(card, where.stages, where.stage, stale_after=_stale_after, now=datetime.now(timezone.utc))
-    return ToolResult.ok(_describe(v))
+    return ToolResult.ok(_describe(v, blockers))
+
+
+@mcp.tool
+async def kanban_list_cards(ctx: ToolContext = ToolContextDep) -> ToolResult:
+    """List the cards on this conversation's kanban board: each one's conversation id,
+    title, stage and blockers. Use the ids with kanban_set_blockers.
+    """
+    key = await _key(ctx)
+    if isinstance(key, ToolResult):
+        return key
+    assert _boards is not None
+    try:
+        where = await _boards.locate(key)
+        cards = await _boards.cards(where.conversation.owner, where.place.board)
+    except BoardError as e:
+        return ToolResult.error(f"{e.detail}.")
+    for c in cards:
+        c["this"] = c["id"] == where.conversation.id
+    return ToolResult.ok(json.dumps({"stages": [s.name for s in where.stages], "cards": cards}))
+
+
+@mcp.tool
+async def kanban_set_blockers(
+    blocked_by: list[str], card: str = "", ctx: ToolContext = ToolContextDep
+) -> ToolResult:
+    """Set which cards block a card on this board, replacing its blockers; [] clears them.
+
+    `card` is a conversation id from kanban_list_cards, or empty for this conversation's
+    own card. A blocked card's agent can work in its current stage but can't move to a
+    later one until every blocker is in the board's last stage; then it is messaged. Use
+    it to order planned work, e.g. the API card blocked by the schema card.
+    """
+    key = await _key(ctx)
+    if isinstance(key, ToolResult):
+        return key
+    assert _boards is not None
+    try:
+        where = await _boards.locate(key)
+        owner, board = where.conversation.owner, where.place.board
+        target = (
+            await _boards.card_on(owner, board, card)
+            if card.strip() else where.conversation
+        )
+        blockers = await _boards.set_blockers(owner, board, target, blocked_by, by="agent")
+    except BoardError as e:
+        return ToolResult.error(f"{e.detail}.")
+    name = "This card" if target.id == where.conversation.id else f'"{target.title or target.id}"'
+    return ToolResult.ok(f"{name} is now blocked by {_names(blockers)}.")
+
+
+@mcp.tool
+async def kanban_add_card(
+    conversation: str, blocked_by: list[str] | None = None, ctx: ToolContext = ToolContextDep
+) -> ToolResult:
+    """Put another of the user's conversations on this board, e.g. one handoff_spawn just
+    started, in the board's first stage, optionally blocked by other cards on the board.
+
+    `conversation` is its conversation id. A conversation already on this board stays in
+    its stage and only has its blockers set, if any are given.
+    """
+    key = await _key(ctx)
+    if isinstance(key, ToolResult):
+        return key
+    assert _boards is not None
+    try:
+        conv, stage, blockers = await _boards.add_card(key, conversation, blocked_by or [])
+    except BoardError as e:
+        return ToolResult.error(f"{e.detail}.")
+    return ToolResult.ok(
+        f'"{conv.title or conv.id}" is on the board in "{stage.name}", blocked by {_names(blockers)}.'
+    )
 
 
 def kanban_mcp_server() -> FastMCP:

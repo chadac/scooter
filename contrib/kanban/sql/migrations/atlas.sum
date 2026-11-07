@@ -1,3 +1,4 @@
-h1:wrqPOawYd1QwEqFh7chG3IrP3BK2Njzxy5SRiVeK2K4=
+h1:pTuH0mGflQ+t7ojvVAn0s+/HgjJL8ePcPiH927SY7ys=
 20261106220000_create_kanban.sql h1:GCUgbCy8uwlY+5mCTr6/oFAhnubceWRrl3pzY6UuMoc=
 20261107045247_add_kanban_stages.sql h1:Lg1dnLN7GE29YxdnLVrzidT0pBLlMEG5U+iuiQ0wVcM=
+20261107162219_add_kanban_blockers.sql h1:byzWz9qgd7Bs5nvCkhSRTQH0xfMu9DBhnoNPRKdS7ro=
