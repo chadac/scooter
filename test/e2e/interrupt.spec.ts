@@ -29,9 +29,10 @@ test.describe("agent option dropdown (interrupt)", () => {
     await chat.send("?pick a color");
 
     // The right panel appears, auto-focused to the Approvals tab, with the options.
+    // On full the interrupt can land well after the panel.
     await expect(page.locator(panel.rightPanel)).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator(panel.root)).toBeVisible({ timeout: 90_000 });
     await expect(page.locator(panel.approvalsTab)).toHaveAttribute("aria-selected", "true");
-    await expect(page.locator(panel.root)).toBeVisible({ timeout: 30_000 });
     await expect(page.locator(panel.option)).toHaveCount(3, { timeout: 30_000 });
     await expect(page.locator(panel.option).filter({ hasText: /green/i })).toHaveCount(1);
 
