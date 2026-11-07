@@ -442,6 +442,8 @@ interface Entry {
   pendingQueue?: Array<{ text: string; priority: number; source?: string; sender?: MessageSender; humanInitiated?: boolean }>;
   /** Suspend the sandbox when this run ends (in memory). */
   stopAfterRun?: boolean;
+  /** No recorded Sandbox, so a fresh one is no reset. */
+  neverProvisioned?: boolean;
 }
 
 /** Drain an async iterable of events into an array. */
@@ -569,6 +571,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       starred: m.starred,
       pendingQueue: m.pendingQueue,
       visibility: m.visibility,
+      ...(m.parentId || m.sandboxRef || onCluster ? {} : { neverProvisioned: true }),
     };
     entries.set(m.id, entry);
     return entry;
@@ -1224,7 +1227,8 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           try {
             const { fresh: isNew, ...ref } = await provisioning;
             entry.sandbox = ref;
-            fresh = isNew === true;
+            fresh = isNew === true && !entry.neverProvisioned;
+            entry.neverProvisioned = undefined;
           } catch (err) {
             // Queued runs fail on the gate; next prompt revives afresh.
             if (early && entry.bridge === early) entry.bridge = undefined;

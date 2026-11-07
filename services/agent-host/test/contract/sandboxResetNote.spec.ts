@@ -47,7 +47,7 @@ function recordingAgent() {
 function harness(root: string, resume: (ref: { name: string; namespace: string }) => Promise<{ name: string; namespace: string; fresh?: boolean }>) {
   const agent = recordingAgent();
   const provisioner: SandboxProvisioner = {
-    create: vi.fn(async (id: string) => ({ name: `conv-${id}`, namespace: "ns" })),
+    create: vi.fn(async (id: string) => ({ name: `conv-${id}`, namespace: "ns", fresh: true })),
     suspend: vi.fn(async () => {}),
     resume: vi.fn(resume),
     destroy: vi.fn(async () => {}),
@@ -73,7 +73,7 @@ function harness(root: string, resume: (ref: { name: string; namespace: string }
     for await (const e of store.readEvents(id)) out.push(e);
     return out;
   };
-  return { agent, provisioner, sessions, logged };
+  return { agent, provisioner, sessions, logged, store };
 }
 
 const notes = (events: AguiEvent[]) =>
@@ -116,6 +116,41 @@ describe("reviving into a recreated sandbox", () => {
       expect(notes(await logged(conv.id))).toEqual([]);
       expect(agent.prompts.at(-1)).not.toContain("/workspace is empty");
       await logged(conv.id);
+    } finally {
+      rmSync(root, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+});
+
+describe("creating a hydrated conversation's sandbox", () => {
+  const seed = (sandboxRef?: string) => ({
+    id: "thread-seeded" as SessionId, threadId: "thread-seeded" as never, title: "", createdAt: 1, lastActivityAt: 1,
+    ...(sandboxRef ? { sandboxRef } : {}),
+  });
+
+  it("says nothing for a conversation that never had a sandbox", async () => {
+    const root = mkdtempSync(join(tmpdir(), "reset-first-"));
+    try {
+      const { agent, provisioner, sessions, logged, store } = harness(root, async (ref) => ref);
+      await store.saveMeta!(seed());
+      await sessions.promptByThread("thread-seeded" as never, "hello", undefined);
+      expect(provisioner.create).toHaveBeenCalled();
+      expect(notes(await logged("thread-seeded" as SessionId))).toEqual([]);
+      expect(agent.prompts.at(-1)).not.toContain("/workspace is empty");
+    } finally {
+      rmSync(root, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+
+  it("notes the reset when its recorded sandbox was reaped", async () => {
+    const root = mkdtempSync(join(tmpdir(), "reset-reaped-"));
+    try {
+      const { agent, provisioner, sessions, logged, store } = harness(root, async (ref) => ref);
+      await store.saveMeta!(seed("conv-thread-seeded"));
+      await sessions.promptByThread("thread-seeded" as never, "where were we?", undefined);
+      expect(provisioner.create).toHaveBeenCalled();
+      expect(notes(await logged("thread-seeded" as SessionId))).toHaveLength(1);
+      expect(agent.prompts.at(-1)).toContain("/workspace is empty");
     } finally {
       rmSync(root, { recursive: true, force: true, maxRetries: 5 });
     }
