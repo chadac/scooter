@@ -308,6 +308,27 @@ export interface ApproverIdentity {
   id: string;
   email?: string;
   name?: string;
+  /** The router's user assertion proving this human, relayed to the broker as a header. */
+  assertion?: string;
+}
+
+/** The router's user-assertion header, matching broker/core/user_assertion.py. */
+export const USER_ASSERTION_HEADER = "x-scooter-user-assertion";
+
+/** The user assertion the router stamped on `req`, if any. */
+export function userAssertionOf(req: { headers: Record<string, string | string[] | undefined> }): string | undefined {
+  const v = req.headers[USER_ASSERTION_HEADER];
+  const s = (Array.isArray(v) ? v[0] : v)?.trim();
+  return s || undefined;
+}
+
+/** Split an approver into the JSON body the broker reads and the headers proving it. */
+export function approverForBroker(approver: ApproverIdentity): { body: string; headers: Record<string, string> } {
+  const { assertion, ...who } = approver;
+  return {
+    body: JSON.stringify({ approver: who }),
+    headers: assertion ? { [USER_ASSERTION_HEADER]: assertion } : {},
+  };
 }
 
 /**

@@ -1,0 +1,26 @@
+{
+  "_comment": [
+    "FROZEN CROSS-LANGUAGE TEST VECTOR for the user assertion.",
+    "The router (Go, userassertion.go) signs it and the broker (Python,",
+    "broker/core/user_assertion.py) verifies it; both suites check THIS token against",
+    "THIS secret, so a wire-format change in either fails the other's suite.",
+    "",
+    "Duplicated at services/broker/tests/fixtures/user-assertion.json because each nix",
+    "derivation builds from its own service directory. scripts/check-conv-token-vector.sh",
+    "fails CI if the copies drift.",
+    "",
+    "The secret is a test value and is not used anywhere else."
+  ],
+  "secret": "user-assertion-test-secret-do-not-use-in-production",
+  "claims": {
+    "iss": "scooter-router",
+    "aud": "scooter-user-assertion",
+    "sub": "alice",
+    "email": "alice@example.com",
+    "iat": 1700000000,
+    "exp": 1700000300
+  },
+  "verifyAtEpochSeconds": 1700000100,
+  "expiredAtEpochSeconds": 1700000300,
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzY29vdGVyLXJvdXRlciIsImF1ZCI6InNjb290ZXItdXNlci1hc3NlcnRpb24iLCJzdWIiOiJhbGljZSIsImVtYWlsIjoiYWxpY2VAZXhhbXBsZS5jb20iLCJpYXQiOjE3MDAwMDAwMDAsImV4cCI6MTcwMDAwMDMwMH0.QzfAMhSZARND7RISGNTLY97mxuDLLTQ5bTkKPDP5lFs"
+}

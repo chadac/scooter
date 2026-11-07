@@ -10,7 +10,7 @@ import { createServer, type IncomingMessage, type ServerResponse, type Server } 
 import { EventEncoder } from "@ag-ui/encoder";
 import type { BaseEvent } from "@ag-ui/core";
 
-import type { AguiEvent, ApproverIdentity } from "../bridge.js";
+import { userAssertionOf, type AguiEvent, type ApproverIdentity } from "../bridge.js";
 import type { SessionId, ThreadId } from "../types.js";
 import type { Router } from "../http/router.js";
 import { sandboxLabelOf, type WebServiceProxy } from "../proxy/webServiceProxy.js";
@@ -434,7 +434,7 @@ export function createAguiServer(): AguiServer {
         const answerer = await resolveUserSafely(req);
         const approver: ApproverIdentity | undefined =
           answerer && !answerer.anonymous
-            ? { id: answerer.id, email: answerer.email, name: answerer.name }
+            ? { id: answerer.id, email: answerer.email, name: answerer.name, assertion: userAssertionOf(req) }
             : undefined;
         const outcomes = await Promise.all(
           input.resume.map((r) => resumeHandler?.(sessionId, r, approver) ?? Promise.resolve({ ok: true } as ResumeOutcome)),

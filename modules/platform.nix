@@ -1146,6 +1146,21 @@ in
         default = null;
         description = "As `sessionCheckUrl`, for requests to `ingress.sandboxDomain` hosts; defaults to `sessionCheckUrl`.";
       };
+      userAssertionSecret = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "agent-user-assertion-secret";
+        description = ''
+          Name of the Secret holding the HS256 key (key `secret`) for user assertions.
+          The router signs a short-lived assertion for each user it proves (a browser
+          session, or a user named by the webhooks service), the agent-host relays it
+          with an approval answer, and the broker refuses any relayed `approver` the
+          assertion does not name. Without it the broker trusts the approver the
+          agent-host sends. Requires `enforce`, since only the enforcing router mints.
+
+          kubectl create secret generic <name> --from-literal=secret=$(openssl rand -hex 32)
+        '';
+      };
       # ALB OIDC only puts the `sub` in a header, so this static sub -> email map
       # seeds the learned identity store.
       subEmailMap = mkOption {

@@ -25,6 +25,11 @@ let
     else if cfg.auth.mode == "header" && cfg.auth.sessionCheckUrl == null then
       throw "scooter.auth.enforce needs scooter.auth.sessionCheckUrl in header mode, or the router refuses every browser request."
     else "true";
+  # The broker would refuse every approval if the router never minted one.
+  userAssertionSecret =
+    if cfg.auth.userAssertionSecret != null && !cfg.auth.enforce then
+      throw "scooter.auth.userAssertionSecret needs scooter.auth.enforce, or the broker refuses every approval."
+    else cfg.auth.userAssertionSecret;
 in
 {
   options.scooter.conversationController = with lib; {
@@ -547,6 +552,11 @@ in
                 ++ lib.optional (ccfg.readers != [ ])
                   { name = "CONVERSATION_READER_SERVICE_ACCOUNTS";
                     value = lib.concatMapStringsSep "," (sa: "system:serviceaccount:${cfg.namespace}:${sa}") ccfg.readers; }
+                ++ lib.optionals (userAssertionSecret != null) [
+                  { name = "USER_ASSERTION_SECRET"; valueFrom.secretKeyRef = { name = userAssertionSecret; key = "secret"; }; }
+                  # Only webhooks may have the users it names vouched for, never the agent-host.
+                  { name = "USER_ASSERTION_SERVICE_ACCOUNTS"; value = "system:serviceaccount:${cfg.namespace}:agent-webhooks"; }
+                ]
                 ++ lib.optional (cfg.auth.sessionCheckUrl != null)
                   { name = "AUTH_SESSION_CHECK_URL"; value = cfg.auth.sessionCheckUrl; }
                 ++ lib.optional (cfg.auth.sandboxSessionCheckUrl != null)

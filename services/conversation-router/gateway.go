@@ -49,8 +49,10 @@ type gateway struct {
 	// legacy accepts the `agent-host` audience until callers migrate.
 	legacy *svcauth.Verifier
 	policy svcauth.Policy
-	public func(*http.Request) bool
-	log    *slog.Logger
+	// assertions mints user assertions; nil mints none.
+	assertions *assertionMinter
+	public     func(*http.Request) bool
+	log        *slog.Logger
 	// spawn runs a background check; tests run it inline.
 	spawn func(func())
 
@@ -131,6 +133,7 @@ func gatewayStatus(err error) int {
 // wrap checks non-public requests: inline when enforcing, else in the background.
 func (g *gateway) wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Del(userAssertionHeader) // only stamp may set one
 		switch {
 		case g.public(r):
 		case g.enforce:
@@ -159,6 +162,7 @@ func (g *gateway) stamp(r *http.Request, p gatewayPrincipal) {
 	if p.user == "" {
 		return
 	}
+	g.assertions.stamp(r, p)
 	r.Header.Set(header, p.user)
 	if p.email != "" && g.identity.mode != "alb-oidc" {
 		r.Header.Set(g.identity.emailHeader, p.email)

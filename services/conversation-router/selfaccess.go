@@ -74,7 +74,7 @@ type selfAccess struct {
 const selfReviewTTL = svcauth.CacheTTL
 
 func newSelfAccess(review reviewTokenFunc, namespace string, lookup conversationLookup, identity identityConfig, messagesPerMinute int) *selfAccess {
-	strip := []string{identity.userHeader, identity.albIdentityHeader, "x-auth-email", "x-amzn-oidc-data", "x-amzn-oidc-accesstoken"}
+	strip := []string{identity.userHeader, identity.albIdentityHeader, "x-auth-email", "x-amzn-oidc-data", "x-amzn-oidc-accesstoken", userAssertionHeader}
 	s := &selfAccess{
 		verifier: svcauth.NewVerifier(review), namespace: namespace, lookup: lookup,
 		stripHeaders: strip, messagesPerMinute: messagesPerMinute, now: time.Now,

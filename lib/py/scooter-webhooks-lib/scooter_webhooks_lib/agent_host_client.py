@@ -454,7 +454,13 @@ async def answer_interrupt(
 ) -> str | None:
     """Answer a pending question as the Scooter user `answered_by`; None on success, else why it was refused."""
     base = _cfg().agent_host_url.rstrip("/")
-    headers = {"content-type": "application/json", **_auth()}
+    # The router vouches for the user named here with an assertion the broker checks.
+    headers = {
+        "content-type": "application/json",
+        **_auth(),
+        "x-scooter-user": answered_by,
+        **({"x-scooter-user-email": email} if email else {}),
+    }
     body: dict = {"answeredBy": {"id": answered_by, **({"email": email} if email else {})}, "optionId": option_id}
     if result is not None:
         body["result"] = result

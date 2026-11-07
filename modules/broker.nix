@@ -269,6 +269,10 @@ in
                     name = "CONV_TOKEN_SECRET";
                     valueFrom.secretKeyRef = { name = cfg.convTokenSecret; key = "secret"; };
                   }
+                ] ++ lib.optional (cfg.auth.userAssertionSecret != null)
+                  # The router's key; set, every relayed approver must be proven.
+                  { name = "USER_ASSERTION_SECRET"; valueFrom.secretKeyRef = { name = cfg.auth.userAssertionSecret; key = "secret"; }; }
+                ++ [
                   # Whether the broker serves its own tool surface.
                   { name = "MCP_ENABLED"; value = lib.boolToString bcfg.mcp.enable; }
                 ] ++ lib.optional (cfg.postgres.sslmode != null)

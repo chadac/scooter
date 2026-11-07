@@ -43,6 +43,10 @@ class BrokerSettings(ScooterBaseSettings):
     # The HS256 secret the agent-host signs conversation tokens with; empty fails closed.
     conv_token_secret: str = ""
 
+    # The HS256 secret the router signs user assertions with. When set, an approver SA's
+    # relayed `approver` must come with an assertion vouching for it.
+    user_assertion_secret: str = ""
+
     # The `test` whoami provider, off in prod.
     test_provider_enabled: bool = False
 

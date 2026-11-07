@@ -489,6 +489,7 @@ def _patch_answer(monkeypatch, status: int, json: dict, captured: dict):
     async def fake_post(self, url, **kwargs):  # noqa: ANN001
         captured["url"] = url
         captured["json"] = kwargs.get("json")
+        captured["headers"] = kwargs.get("headers")
         return httpx.Response(status, json=json, request=httpx.Request("POST", url))
 
     monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
@@ -501,6 +502,9 @@ async def test_answer_interrupt_names_the_answerer(monkeypatch):
     assert err is None
     assert captured["url"].endswith("/conversations/c-1/interrupts/i-1/answer")
     assert captured["json"] == {"answeredBy": {"id": "u-1", "email": "u@example.com"}, "optionId": "answer", "result": {"answers": {"Q": "A"}}}
+    # The router vouches for this user with the assertion the broker checks.
+    assert captured["headers"]["x-scooter-user"] == "u-1"
+    assert captured["headers"]["x-scooter-user-email"] == "u@example.com"
 
 
 async def test_answer_interrupt_reports_the_refusal(monkeypatch):

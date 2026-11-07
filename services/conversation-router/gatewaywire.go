@@ -53,6 +53,11 @@ func buildGateways(kubeCfg *rest.Config, log *slog.Logger) (main, sandbox *gatew
 
 	main = mk("main", env("AUTH_SESSION_CHECK_URL", ""))
 	main.public = healthPaths
+	main.assertions = newAssertionMinter(env("USER_ASSERTION_SECRET", ""),
+		svcauth.ParseAllowlist(env("USER_ASSERTION_SERVICE_ACCOUNTS", "")))
+	if main.assertions != nil && !enforce {
+		log.Warn("USER_ASSERTION_SECRET is set without AUTH_ENFORCE, so no user assertions are minted")
+	}
 	main.policy = svcauth.Policy{
 		Services:  svcauth.ParseAllowlist(env("ROUTER_SERVICE_ACCOUNTS", "")),
 		Asserters: trustedServiceAccounts(),

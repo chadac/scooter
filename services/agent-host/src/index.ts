@@ -58,6 +58,7 @@ import {
   writeSandboxFile,
   type AguiEvent,
   type ApproverIdentity,
+  approverForBroker,
   type MessageSender,
 } from "./bridge.js";
 import { createAcpClient, type BlockingTool } from "./acp/client.js";
@@ -1008,9 +1009,10 @@ export async function main(
     }
     // The optionId is the verb; the platform does not interpret the choice.
     const prefix = cfg.brokerPrefix.replace(/\/$/, "");
+    const relay = approverForBroker(approver);
     const res = await fetch(
       `${brokerUrl}${prefix}/${encodeURIComponent(requestId)}/${encodeURIComponent(optionId)}`,
-      { method: "POST", headers: await brokerAuthHeaders(), body: JSON.stringify({ approver }) },
+      { method: "POST", headers: { ...(await brokerAuthHeaders()), ...relay.headers }, body: relay.body },
     );
     // 409: the request was already decided or replaced, so the agent has nothing to fix.
     if (res.status === 409) {
@@ -1717,9 +1719,10 @@ export async function main(
         if (!auth) return true;
         try {
           const prefix = cfg.brokerPrefix.replace(/\/$/, "");
+          const relay = approverForBroker(approver);
           const res = await fetch(
             `${auth.url}${prefix}/${encodeURIComponent(requestId)}/can-approve`,
-            { method: "POST", headers: auth.headers, body: JSON.stringify({ approver }) },
+            { method: "POST", headers: { ...auth.headers, ...relay.headers }, body: relay.body },
           );
           if (!res.ok) return false;
           const j = (await res.json().catch(() => ({}))) as { can_approve?: boolean };

@@ -670,6 +670,30 @@ let
     ++ (if builtins.elem { name = "AUTH_EMAIL_HEADER"; value = "x-forwarded-email"; } emailRouterEnv then [ ]
         else [ "router.env.AUTH_EMAIL_HEADER missing: an enforcing router would leave a client-sent email header in place" ]);
 
+  # User assertions: off by default, and once on the router mints for webhooks only
+  # and the broker verifies with the same Secret.
+  uaSecret = "agent-user-assertion-secret";
+  uaPlatform = evalPlatform {
+    module = { ... }: {
+      imports = [ ./kubenix-config.nix ];
+      scooter.auth.userAssertionSecret = uaSecret;
+    };
+  };
+  uaEnv = deployEnv uaPlatform.config.kubernetes.resources;
+  uaRef = env: map (e: e.valueFrom.secretKeyRef.name or "") (builtins.filter (e: e.name == "USER_ASSERTION_SECRET") env);
+  uaProblems =
+    (if uaRef (uaEnv "conversation-router") == [ uaSecret ] then [ ]
+     else [ "auth.userAssertionSecret did not reach router.env.USER_ASSERTION_SECRET" ])
+    ++ (if uaRef (uaEnv "agent-broker") == [ uaSecret ] then [ ]
+        else [ "auth.userAssertionSecret did not reach broker.env.USER_ASSERTION_SECRET: forged approvers pass" ])
+    ++ (if builtins.elem { name = "USER_ASSERTION_SERVICE_ACCOUNTS"; value = "system:serviceaccount:agent-sandbox:agent-webhooks"; } (uaEnv "conversation-router") then [ ]
+        else [ "router.env.USER_ASSERTION_SERVICE_ACCOUNTS must name only agent-webhooks" ])
+    ++ (if uaRef routerEnv ++ uaRef brokerEnv == [ ] then [ ]
+        else [ "USER_ASSERTION_SECRET rendered without auth.userAssertionSecret" ])
+    ++ (if renders { scooter.auth = { userAssertionSecret = uaSecret; enforce = nixpkgsLib.mkForce false; }; }
+        then [ "auth.userAssertionSecret rendered without enforce: the broker would refuse every approval" ]
+        else [ ]);
+
   # The shared broker database reaches the broker regardless of which feature wants
   # it: present with aws off, and never declared twice with aws on.
   awsOffPlatform = evalPlatform {
@@ -1541,7 +1565,7 @@ let
     ++ (if imageDrv forkedLib "conversation-router" == imageDrv platform "conversation-router" then [ ]
         else [ "scooter.packages.scooter-lib override changed conversation-router, which does not use it" ]);
 
-  allProblems = packageProblems ++ uploadsProblems ++ sysTaskProblems ++ askUserProblems ++ hookProblems ++ providerProblems ++ disabledContribProblems ++ settingsTabProblems ++ uiManifestProblems ++ conversationUiProblems ++ contribApiProblems ++ dirSkillProblems ++ legacyRootProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ imagegenProblems ++ atProblems ++ googleProblems ++ ghOwnersProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems' ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ contribCoverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ volumeProblems ++ approvalProblems ++ awaitingNotifyProblems ++ stage2Problems ++ contribDbProblems ++ contribGrantProblems ++ retireProblems ++ initGrantProblems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems ++ conversationServiceProblems ++ selfAccessProblems ++ npProblems ++ sandboxOriginProblems ++ enforceProblems ++ folderServiceProblems;
+  allProblems = packageProblems ++ uploadsProblems ++ sysTaskProblems ++ askUserProblems ++ hookProblems ++ providerProblems ++ disabledContribProblems ++ settingsTabProblems ++ uiManifestProblems ++ conversationUiProblems ++ contribApiProblems ++ dirSkillProblems ++ legacyRootProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ imagegenProblems ++ atProblems ++ googleProblems ++ ghOwnersProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ puProblems ++ mdProblems ++ ngProblems' ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ contribCoverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ volumeProblems ++ approvalProblems ++ awaitingNotifyProblems ++ stage2Problems ++ contribDbProblems ++ contribGrantProblems ++ retireProblems ++ initGrantProblems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems ++ conversationServiceProblems ++ selfAccessProblems ++ npProblems ++ sandboxOriginProblems ++ enforceProblems ++ uaProblems ++ folderServiceProblems;
 in
 if allProblems == [ ]
 then "ok: deployments = ${haveDeps}; datadog + airtable + brave + kagi + duckduckgo (three search providers, each with its own tool) + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every scooter.* namespace and every shipped contrib's own options; skills gated on the contrib being built; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; the renamed root (agentSandbox.*) fails the render; contribs reach the platform eval and configuring an unshipped one fails the render; deploy-time Jobs are spec-hash named; a scooter.packages override reaches exactly the images that use it\n"

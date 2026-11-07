@@ -35,7 +35,7 @@ import { UserSkillError, type UserSkill, type UserSkillStore } from "../session/
 import type { SandboxResources } from "../session/resources.js";
 import { fitAdvice, fitSummary } from "../session/resourceFit.js";
 import type { SandboxSizePreset } from "../session/resources.js";
-import { PRIORITY_INTERRUPT, type AguiEvent, type ApproverIdentity, type SessionBridge } from "../bridge.js";
+import { PRIORITY_INTERRUPT, userAssertionOf, type AguiEvent, type ApproverIdentity, type SessionBridge } from "../bridge.js";
 import { formatError, logger } from "../log.js";
 import type { AccessCheck } from "../session/access.js";
 import { isVisibility } from "../session/visibility.js";
@@ -941,7 +941,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
     // means no identity claims.
     const approver = ctx.user.anonymous
       ? undefined
-      : { id: ctx.user.id, email: ctx.user.email, name: ctx.user.name };
+      : { id: ctx.user.id, email: ctx.user.email, name: ctx.user.name, assertion: userAssertionOf(ctx.req) };
     const outcome = await deps.answerInterrupt(
       ctx.params.id as SessionId,
       { interruptId: ctx.params.toolCallId, status: "resolved", payload: { optionId: body.optionId } },
@@ -968,7 +968,11 @@ export function createManagementApi(deps: ManagementDeps): Router {
     if (!owner || owner !== by.id) {
       return { status: 403, json: { error: "only the conversation's owner can answer" } };
     }
-    const approver: ApproverIdentity = { id: by.id, ...(typeof by.email === "string" ? { email: by.email } : {}) };
+    const approver: ApproverIdentity = {
+      id: by.id,
+      ...(typeof by.email === "string" ? { email: by.email } : {}),
+      assertion: userAssertionOf(ctx.req),
+    };
     const payload = { optionId: body.optionId, ...(body.result !== undefined ? { result: body.result } : {}) };
     const outcome = await deps.answerInterrupt(
       id as SessionId,
@@ -984,7 +988,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
   r.get("/conversations/:id/approvals/:contrib/:requestId/can-approve", async (ctx) => {
     if (!deps.canApproveRequest) return { json: { canApprove: true } }; // unwired → don't block
     if (ctx.user.anonymous) return { json: { canApprove: false } };
-    const approver = { id: ctx.user.id, email: ctx.user.email, name: ctx.user.name };
+    const approver = { id: ctx.user.id, email: ctx.user.email, name: ctx.user.name, assertion: userAssertionOf(ctx.req) };
     const canApprove = await deps
       .canApproveRequest(ctx.params.id, ctx.params.contrib, ctx.params.requestId, approver)
       .catch(() => false); // fail closed (greyed) on any error

@@ -12,6 +12,7 @@ from scooter_lib.svcauth import Review, Verifier, bearer_token, parse_allowlist,
 from scooter_broker_lib.types import Identity
 from ..config import settings
 from .conv_token import CONV_TOKEN_HEADER, ConvTokenError, verify_conv_token
+from .user_assertion import USER_ASSERTION_HEADER, UserAssertionError, verify_user_assertion
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,36 @@ def _relayed_user(request: Request, username: str) -> str | None:
     return user or None
 
 
+async def _relayed_approver(request: Request) -> object:
+    """The JSON body's `approver`, or None when the body has none."""
+    if request.method in ("GET", "HEAD", "DELETE"):
+        return None
+    try:
+        body = await request.json()
+    except ValueError:
+        return None
+    return body.get("approver") if isinstance(body, dict) else None
+
+
+async def _check_user_assertion(request: Request, username: str) -> None:
+    """403 unless a relayed approver comes with a router assertion vouching for it."""
+    if not settings.user_assertion_secret:
+        return
+    approver = await _relayed_approver(request)
+    if approver is None:
+        return
+    try:
+        asserted = verify_user_assertion(
+            request.headers.get(USER_ASSERTION_HEADER, "").strip(), settings.user_assertion_secret)
+    except UserAssertionError as exc:
+        # The reason goes to the log only, never the 403 body.
+        logger.warning("rejected a user assertion", extra={"service_account": username, "reason": str(exc)})
+        raise HTTPException(status_code=403, detail="approver not proven") from exc
+    if not asserted.vouches_for(approver):
+        logger.warning("user assertion names another user", extra={"service_account": username})
+        raise HTTPException(status_code=403, detail="approver not proven")
+
+
 async def authenticate(request: Request) -> Identity:
     """FastAPI dependency: validate the Bearer SA token and return Identity."""
     token = _bearer(request)
@@ -93,6 +124,7 @@ async def authenticate(request: Request) -> Identity:
     # Approver SAs are not sandboxes: they have no conversation_id but may approve.
     approvers = _csv(settings.approver_service_accounts)
     if username in approvers:
+        await _check_user_assertion(request, username)
         return Identity(conversation_id="", namespace=settings.sandbox_namespace,
                         service_account=username, is_approver=True,
                         relayed_user=relayed_user)
