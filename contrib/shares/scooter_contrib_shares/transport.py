@@ -208,7 +208,8 @@ def create_shares_router(
     # and nosniff stops the browser re-interpreting an asset as an executable type.
     def _serve_headers() -> dict[str, str]:
         return {
-            "Content-Security-Policy": f"frame-ancestors {frame_ancestors}",
+            # sandbox: opaque origin even top-level, matching the Embed iframe.
+            "Content-Security-Policy": f"sandbox allow-scripts allow-popups; frame-ancestors {frame_ancestors}",
             "X-Content-Type-Options": "nosniff",
         }
 

@@ -131,6 +131,8 @@ Notes:
 - `share:` must be one of YOUR shares (a UUID or `/s/<uuid>/`). External URLs are
   rejected — the embed can only ever point at a published share.
 - The frame is sandboxed (`allow-scripts`, no same-origin), so interactive JS
-  charts work but the page can't touch the conversation. The broker also sends a
-  `frame-ancestors` CSP so shares embed only in the Scooter UI, nowhere else.
+  charts work but the page can't touch the conversation. The broker sends the
+  same sandbox as a CSP, so it applies when the link is opened directly too:
+  inline your data or load it with `<script src>`, not `fetch()`, cookies or
+  `localStorage`. A `frame-ancestors` CSP lets shares embed only in the Scooter UI.
 - Publish/update the share first (above), then embed it by its UUID.

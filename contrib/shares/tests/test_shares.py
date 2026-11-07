@@ -143,12 +143,15 @@ async def test_disallowed_extension_rejected(store):
 
 
 @pytest.mark.asyncio
-async def test_serve_sets_frame_ancestors_csp(store):
+async def test_serve_sets_sandbox_and_frame_ancestors_csp(store):
     c = _client(store, frame_ancestors="https://scooter.example.com")
     uuid = c.post("/shares", json=_inline("<h1>hi</h1>")).json()["uuid"]
-    served = c.get(f"/s/{uuid}/")
-    assert served.headers["content-security-policy"] == "frame-ancestors https://scooter.example.com"
-    assert served.headers["x-content-type-options"] == "nosniff"
+    for url in (f"/s/{uuid}/", f"/s/{uuid}/v/1/"):
+        served = c.get(url)
+        assert served.headers["content-security-policy"] == (
+            "sandbox allow-scripts allow-popups; frame-ancestors https://scooter.example.com"
+        )
+        assert served.headers["x-content-type-options"] == "nosniff"
 
 
 @pytest.mark.asyncio
