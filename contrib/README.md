@@ -600,31 +600,32 @@ option's description.
 `pythonDeps` dependency, as below), never its SQL. There are no foreign keys
 across databases.
 
-### Static sidebar folders (`/static-folders`)
+### Locked sidebar folders
 
-A contrib's service can add folders that every user has, listed below Starred.
-Allow its ServiceAccount with
-`scooter.conversationController.folderServices = [ "<sa>" ]`, then call the
-router with its projected token (audience `scooter-router`):
+A contrib's service can manage folders in a user's sidebar that the user can't
+change, such as a kanban board. Allow its ServiceAccount with
+`scooter.conversationController.folderServices = [ "<sa>" ]`. Then call the
+router's `/folders` routes with its projected token (audience `scooter-router`)
+and the user in `X-Scooter-User`:
 
 ```
-PUT /static-folders/mycontrib-inbox
-{"name": "Inbox", "icon": "inbox", "conversationLifetimeHours": 0}
+POST /folders
+{"name": "Inbox", "locked": true}
+PATCH /folders/{id}
+{"icon": "inbox", "conversationLifetimeHours": 0}
 ```
 
-- `icon` is optional, a name from services/ui/src/FolderGlyph.tsx.
-- `conversationLifetimeHours` is optional. It's how long a conversation filed
-  there may sit idle before agent-host deletes it; 0 keeps it, and null leaves
-  `scooter.retentionMaxAgeMs` in charge.
-- `PUT` is idempotent, so a service can register its folders on every start.
-  Only the service that registered an id may change it or
-  `DELETE /static-folders/{id}`. `GET /static-folders` lists them all.
-- Users file conversations in a static folder but can't rename, move, delete or
-  nest folders in it. Deleting one unfiles its conversations.
+- The user can file conversations into a locked folder and take them out. They
+  can't rename, re-icon, move or delete it, nest folders in it, or change its
+  lifetime. A folder service can do all of those.
+- A locked folder goes at the top level or inside another locked folder.
+- `icon` is a name from services/ui/src/FolderGlyph.tsx.
+- `conversationLifetimeHours` is how long a conversation filed there may sit
+  idle before agent-host deletes it; 0 keeps it, and null inherits.
 
 A contrib that keeps folder ids in its own database must reconcile them against
-`GET /folders` or `GET /static-folders`. Folders can disappear, and there are no
-foreign keys across databases.
+`GET /folders`. Folders can disappear, and there are no foreign keys across
+databases.
 
 ### Depending on another contrib
 

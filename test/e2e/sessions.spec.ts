@@ -310,7 +310,7 @@ test.describe("session selector & titles", () => {
     await request.delete(`${base}/folders/${a}?subfolders=delete`);
   });
 
-  test("a static folder is listed after Starred and can't be changed", async ({ chat, page, request, baseURL }) => {
+  test("a locked folder can't be changed by its user", async ({ chat, page, request, baseURL }) => {
     const base = baseURL ?? "http://localhost:5173";
     await chat.open();
     const head = page.locator(folders.head("e2e-design"));

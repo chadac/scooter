@@ -19,10 +19,10 @@ export const STARRED = "starred";
 /** Folders nest this deep; a top-level folder is depth 1. */
 export const MAX_FOLDER_DEPTH = 3;
 
-const STARRED_FOLDER: ConversationFolder = { id: STARRED, name: "Starred", kind: "starred", static: true, position: 0, conversationLifetimeHours: 0 };
+const STARRED_FOLDER: ConversationFolder = { id: STARRED, name: "Starred", kind: "starred", locked: true, position: 0, conversationLifetimeHours: 0 };
 
 export type FolderState = {
-  /** Starred, then static folders, then user folders by position. */
+  /** Starred, then user folders by position. */
   folders: ConversationFolder[];
   /** Server conversation id → folder id. */
   placements: Record<string, string>;
@@ -59,6 +59,8 @@ const set = (next: FolderState) => {
 
 const byId = (id: string) => state.folders.find((f) => f.id === id);
 const isUser = (f?: ConversationFolder): f is ConversationFolder => f?.kind === "user";
+/** A folder its user may move, rename or nest in. */
+const isOpen = (f?: ConversationFolder): f is ConversationFolder => isUser(f) && !f.locked;
 /** A user folder's siblings, in order; "" is the top level. */
 const siblings = (parentId: string) => state.folders.filter((f) => isUser(f) && (f.parentId ?? "") === parentId);
 
@@ -77,9 +79,9 @@ function folderHeight(id: string): number {
 
 /** Whether `id` may move into `parentId` (null: the top level). */
 export function canMoveInto(id: string, parentId: string | null): boolean {
-  if (!isUser(byId(id))) return false;
+  if (!isOpen(byId(id))) return false;
   if (parentId === null) return true;
-  if (!isUser(byId(parentId))) return false;
+  if (!isOpen(byId(parentId))) return false;
   for (let p: string | undefined = parentId; p; p = byId(p)?.parentId) if (p === id) return false;
   return folderDepth(parentId) + folderHeight(id) <= MAX_FOLDER_DEPTH;
 }
@@ -134,20 +136,20 @@ export const folderStore = {
 
   rename(id: string, name: string): Promise<boolean> {
     const n = name.trim();
-    if (!n || !isUser(byId(id))) return Promise.resolve(false);
+    if (!n || !isOpen(byId(id))) return Promise.resolve(false);
     return write({ ...state, folders: patched(id, { name: n }) }, () => updateFolder(agentHostConfig, id, { name: n }));
   },
 
   /** Set a folder's Lucide icon; "" restores the folder glyph. */
   setIcon(id: string, icon: string): Promise<boolean> {
-    if (!isUser(byId(id))) return Promise.resolve(false);
+    if (!isOpen(byId(id))) return Promise.resolve(false);
     const i = icon.trim();
     return write({ ...state, folders: patched(id, { icon: i || undefined }) }, () => updateFolder(agentHostConfig, id, { icon: i }));
   },
 
   /** Set idle lifetime hours; 0 is forever, null inherits. */
   setLifetime(id: string, hours: number | null): Promise<boolean> {
-    if (!isUser(byId(id))) return Promise.resolve(false);
+    if (!isOpen(byId(id))) return Promise.resolve(false);
     const folders = patched(id, { conversationLifetimeHours: hours ?? undefined });
     return write({ ...state, folders }, () => updateFolder(agentHostConfig, id, { conversationLifetimeHours: hours }));
   },
@@ -163,7 +165,7 @@ export const folderStore = {
   /** Delete a folder, lifting its contents; `subfolders` drops them instead. */
   remove(id: string, subfolders = false): Promise<boolean> {
     const f = byId(id);
-    if (!isUser(f)) return Promise.resolve(false);
+    if (!isOpen(f)) return Promise.resolve(false);
     const gone = new Set([id]);
     if (subfolders) {
       for (let grew = true; grew; ) {
@@ -187,11 +189,11 @@ export const folderStore = {
     return write({ ...state, folders, placements }, () => deleteFolder(agentHostConfig, id, subfolders));
   },
 
-  /** Move a folder beside or into another; statics mean top. */
+  /** Move a folder beside or into another; Starred: top. */
   reorder(id: string, targetId: string, place: DropPlace = "before"): Promise<boolean> {
     const moving = byId(id);
     const target = byId(targetId);
-    if (!isUser(moving) || !target || id === targetId) return Promise.resolve(false);
+    if (!isOpen(moving) || !target || id === targetId) return Promise.resolve(false);
     let parentId: string;
     let index: number;
     if (!isUser(target)) {
@@ -218,7 +220,7 @@ export const folderStore = {
   /** Append a folder to `parentId`; null is the top level. */
   moveInto(id: string, parentId: string | null): Promise<boolean> {
     const f = byId(id);
-    if (!isUser(f) || (f.parentId ?? null) === parentId || !canMoveInto(id, parentId)) return Promise.resolve(false);
+    if (!isOpen(f) || (f.parentId ?? null) === parentId || !canMoveInto(id, parentId)) return Promise.resolve(false);
     const last = siblings(parentId ?? "").at(-1);
     const position = positionBetween(last?.position, undefined);
     const folders = patched(id, { position, parentId: parentId ?? undefined }).sort(folderOrder);
@@ -306,8 +308,8 @@ export type FolderSection = {
   icon?: string;
   /** Starred, which the star button fills. */
   starred: boolean;
-  /** Fixed by the deployment: no menu, drag or subfolders. */
-  static: boolean;
+  /** Starred or service-managed: no menu, drag or subfolders. */
+  locked: boolean;
   depth: number;
   /** This folder's own lifetime; undefined inherits. */
   conversationLifetimeHours?: number;
@@ -324,7 +326,7 @@ export function buildFolders(rows: SidebarRow[], fs: FolderState): { folders: Fo
       name: f.name,
       icon: f.icon,
       starred: f.kind === "starred",
-      static: !!f.static,
+      locked: !!f.locked,
       depth: folderDepth(f.id, fs.folders),
       conversationLifetimeHours: f.conversationLifetimeHours ?? undefined,
       rows: [],

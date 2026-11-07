@@ -1023,8 +1023,8 @@ in
         Age is measured from last activity, so a recently-used conversation is
         never reaped however old it is. STARRED conversations are exempt. 0
         keeps them (the default — opt in for a real deployment, e.g. 30 days =
-        2592000000). A folder's conversation lifetime, set by its owner or a static
-        folder's `conversationLifetimeHours`, replaces this for the conversations filed in
+        2592000000). A folder's conversation lifetime, set by its owner or a folder
+        service, replaces this for the conversations filed in
         it, even at 0. Runs on a slow cadence (retentionSweepIntervalMs, default 6h).
       '';
     };
@@ -1424,15 +1424,9 @@ in
         conversation_folders = {
           writers = [ "conversation-router" ];
           note = ''
-            Per-user sidebar folders, including each user's built-in Starred and static folders.
+            Per-user sidebar folders, including each user's built-in Starred and locked folders.
             The router serves the CRUD; agent-host, the database owner, reads folder lifetimes
             for its retention reap.'';
-        };
-        static_folders = {
-          writers = [ "conversation-router" ];
-          note = ''
-            Folders every user sees, registered by allowlisted services through the router's
-            /static-folders API. agent-host, the database owner, reads their lifetimes.'';
         };
         user_conversation_metadata = {
           writers = [ "conversation-router" ];

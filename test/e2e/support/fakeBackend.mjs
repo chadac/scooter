@@ -96,10 +96,10 @@ must("atlas", ["migrate", "apply", "--dir", "file://agent_host/migrations", "--u
   cwd: join(REPO_ROOT, "lib/sql"),
 });
 
-// One static folder, as a service would register through PUT /static-folders/{id}.
+// A locked folder for the anonymous user, as services make.
 must("psql", [DSN, "-q", "-c",
-  `INSERT INTO static_folders (id, service_account, name, icon, conversation_lifetime_hours, created_at)
-   VALUES ('e2e-design', 'e2e', 'Design', 'palette', 0, 0)`]);
+  `INSERT INTO conversation_folders (id, owner, name, icon, locked, conversation_lifetime_hours, position, created_at)
+   VALUES ('e2e-design', '', 'Design', 'palette', true, 0, -1, 0)`]);
 
 log("createdb webhooks");
 must("createdb", ["-h", "127.0.0.1", "-p", PG_PORT, "-U", "postgres", "webhooks"]);

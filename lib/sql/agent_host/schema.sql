@@ -103,28 +103,14 @@ CREATE INDEX "conversations_by_parent" ON "conversations" ("parent_id");
 -- router's assembleList are the only two places that must agree on which changes push).
 -- Assignment changes notify 'conversation_assignment' instead, for the router.
 
--- Folders every user sees, registered by services through the router.
-CREATE TABLE "static_folders" (
-  "id"         text   NOT NULL CHECK ("id" ~ '^[a-z][a-z0-9-]{0,62}$'),
-  -- The registering service account; only it may change the folder.
-  "service_account" text NOT NULL,
-  "name"       text   NOT NULL CHECK (length("name") BETWEEN 1 AND 100),
-  "icon"       text   CHECK ("icon" ~ '^[a-z0-9-]{1,40}$'),
-  -- Idle hours before deletion; 0 keeps them, null defaults.
-  "conversation_lifetime_hours" integer CHECK ("conversation_lifetime_hours" >= 0),
-  "created_at" bigint NOT NULL,
-  PRIMARY KEY ("id")
-);
-
--- Per-user sidebar FOLDERS, nested 3 deep, plus Starred and statics.
+-- Per-user sidebar FOLDERS, nested 3 deep, plus a built-in Starred each.
 CREATE TABLE "conversation_folders" (
   "id"         text   NOT NULL,
   -- Ingress identity; empty when the deployment has none.
   "owner"      text   NOT NULL,
-  -- A static row holds an owner's placements in a static folder.
-  "kind"       text   NOT NULL DEFAULT 'user' CHECK ("kind" IN ('starred', 'static', 'user')),
-  -- The static_folders id; null for other kinds.
-  "static_id"  text,
+  "kind"       text   NOT NULL DEFAULT 'user' CHECK ("kind" IN ('starred', 'user')),
+  -- Only a folder service changes it; users just file conversations.
+  "locked"     boolean NOT NULL DEFAULT false,
   -- The enclosing user folder; null at the top level.
   "parent_id"  text,
   "name"       text   NOT NULL CHECK (length("name") BETWEEN 1 AND 100),
@@ -136,13 +122,10 @@ CREATE TABLE "conversation_folders" (
   "position"   double precision NOT NULL,
   "created_at" bigint NOT NULL,
   PRIMARY KEY ("id"),
-  CONSTRAINT "conversation_folders_static_id" CHECK (("kind" = 'static') = ("static_id" IS NOT NULL)),
-  CONSTRAINT "conversation_folders_parent" FOREIGN KEY ("parent_id") REFERENCES "conversation_folders" ("id") ON DELETE CASCADE,
-  CONSTRAINT "conversation_folders_static_folder" FOREIGN KEY ("static_id") REFERENCES "static_folders" ("id") ON DELETE CASCADE
+  CONSTRAINT "conversation_folders_parent" FOREIGN KEY ("parent_id") REFERENCES "conversation_folders" ("id") ON DELETE CASCADE
 );
 CREATE UNIQUE INDEX "conversation_folders_name" ON "conversation_folders" ("owner", (COALESCE("parent_id", '')), (lower("name"))) WHERE ("kind" = 'user');
 CREATE UNIQUE INDEX "conversation_folders_one_starred" ON "conversation_folders" ("owner") WHERE ("kind" = 'starred');
-CREATE UNIQUE INDEX "conversation_folders_static" ON "conversation_folders" ("static_id", "owner") WHERE ("kind" = 'static');
 CREATE INDEX "conversation_folders_by_parent" ON "conversation_folders" ("parent_id");
 
 -- Per-user metadata on a conversation; for now, its folder.

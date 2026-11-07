@@ -312,7 +312,7 @@ function FolderSectionView({
   const count = (open ? f.rows : everything).filter((r) => r.depth === 0).length;
   const dots = (open ? f.rows : everything).map((r) => turnDot(r.session)).filter((d): d is TurnDot => !!d);
   const rollup = DOT_RANK.find((d) => dots.includes(d));
-  const nestable = !f.static && f.depth < MAX_FOLDER_DEPTH;
+  const nestable = !f.locked && f.depth < MAX_FOLDER_DEPTH;
   const inherited = parent && effectiveLifetime(parent.id);
   const moveTargets = fstate.folders.filter(
     (x) => x.kind === "user" && x.id !== parent?.id && canMoveInto(f.id, x.id),
@@ -343,7 +343,7 @@ function FolderSectionView({
         <div
           data-testid="folder-header"
           data-folder-id={f.id}
-          draggable={!f.static && !renaming}
+          draggable={!f.locked && !renaming}
           onDragStart={(e) => {
             e.dataTransfer.setData(FOLDER_MIME, f.id);
             e.dataTransfer.effectAllowed = "move";
@@ -357,7 +357,7 @@ function FolderSectionView({
             const y = (e.clientY - r.top) / r.height;
             let place: DropPlace = "after";
             let ok = true;
-            if (!f.static) {
+            if (!f.starred) {
               const into = canMoveInto(from, f.id);
               place = into ? (y < 0.25 ? "before" : y > 0.75 ? "after" : "into") : y < 0.5 ? "before" : "after";
               ok = into || canMoveInto(from, parent?.id ?? null);
@@ -426,7 +426,7 @@ function FolderSectionView({
                 className="h-5 min-w-0 flex-1 rounded border border-input bg-background px-1 text-foreground"
               />
             ) : (
-              <span className={cn("truncate font-medium", f.static ? "text-foreground" : "text-foreground/90")}>{f.name}</span>
+              <span className={cn("truncate font-medium", f.locked ? "text-foreground" : "text-foreground/90")}>{f.name}</span>
             )}
             {!f.starred && f.conversationLifetimeHours !== undefined && (
               <span
@@ -450,13 +450,13 @@ function FolderSectionView({
               className={cn(
                 "text-[11px] tabular-nums",
                 // Hidden exactly when the actions button shows in its place.
-                !f.static && "group-hover/folder:invisible group-has-[[data-folder-actions]:focus-visible]/folder:invisible",
+                !f.locked && "group-hover/folder:invisible group-has-[[data-folder-actions]:focus-visible]/folder:invisible",
                 menuOpen && "invisible",
               )}
             >
               {count || ""}
             </span>
-            {!f.static && (
+            {!f.locked && (
               <DropdownMenu.Root open={menuOpen} onOpenChange={setMenuOpen}>
                 <DropdownMenu.Trigger asChild>
                   <button
@@ -713,7 +713,7 @@ export const Sidebar = memo(function Sidebar() {
   // Each conversation lands in exactly one section.
   const fstate = useFolders();
   const { folders: folderSections, recent: recentRows } = buildFolders(rows, fstate);
-  const userIds = folderSections.filter((f) => !f.static).map((f) => f.id);
+  const userIds = folderSections.filter((f) => !f.starred).map((f) => f.id);
   const searching = query.trim() !== "" || providerFilter.length > 0;
   const [filtersOpen, setFiltersOpen] = useState(false);
 

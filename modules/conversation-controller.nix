@@ -161,13 +161,12 @@ in
       default = [ ];
       example = [ "kanban" ];
       description = ''
-        ServiceAccounts (in the platform namespace) that may register static
-        sidebar folders through the router: `GET /static-folders`, and `PUT` or
-        `DELETE /static-folders/{id}` with `{name, icon?, conversationLifetimeHours?}`.
-        Every user sees a static folder below Starred and can file conversations
-        in it, but nobody can rename, move, delete or nest folders in it. Only
-        the service that registered an id may change or remove it; removing it
-        unfiles its conversations. Empty disables the routes.
+        ServiceAccounts (in the platform namespace) that may manage users'
+        locked folders through the router's `/folders` routes, naming the user
+        in `X-Scooter-User`. Such a service may create a folder with
+        `"locked": true` and rename, move, delete or nest in a locked one. Users
+        can only file conversations into a locked folder and take them out.
+        Empty means nobody can create or change a locked folder.
       '';
     };
     spawnsPerSourcePerHour = mkOption {
@@ -529,7 +528,7 @@ in
                   { name = "SPAWNS_PER_SOURCE_PER_HOUR"; value = toString ccfg.spawnsPerSourcePerHour; }
                 ]
                 ++ lib.optional (ccfg.folderServices != [ ])
-                  { name = "STATIC_FOLDER_SERVICE_ACCOUNTS";
+                  { name = "FOLDER_SERVICE_ACCOUNTS";
                     value = lib.concatMapStringsSep "," (sa: "system:serviceaccount:${cfg.namespace}:${sa}") ccfg.folderServices; }
                 ++ lib.optional (ccfg.readers != [ ])
                   { name = "CONVERSATION_READER_SERVICE_ACCOUNTS";

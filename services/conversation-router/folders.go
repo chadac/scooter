@@ -39,16 +39,18 @@ var (
 	errFolderNotFound  = errors.New("folder not found")
 	errFolderTooDeep   = errors.New("folder nesting too deep")
 	errFolderCycle     = errors.New("folder moved inside itself")
+	errFolderLocked    = errors.New("folder is locked")
+	errLockedParent    = errors.New("locked folder outside a locked parent")
 )
 
-// Folder is a GET /folders entry; static folders list first.
+// Folder is a GET /folders entry; Starred lists first.
 type Folder struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Icon string `json:"icon,omitempty"`
 	Kind string `json:"kind"`
-	// Static folders are fixed: no rename, move, delete or subfolders.
-	Static bool `json:"static,omitempty"`
+	// Locked: only a folder service changes it; users file conversations.
+	Locked bool `json:"locked,omitempty"`
 	// ParentID is the enclosing folder; empty at the top level.
 	ParentID string  `json:"parentId,omitempty"`
 	Position float64 `json:"position"`
@@ -88,16 +90,15 @@ type FolderList struct {
 type folderStore interface {
 	Folders(ctx context.Context, owner string) (FolderList, error)
 	// CreateFolder nests in parentID; "" is the top level.
-	CreateFolder(ctx context.Context, owner, name, parentID string) (Folder, error)
-	UpdateFolder(ctx context.Context, owner, id string, p FolderPatch) error
+	// service: the caller is a folder service, allowed locked folders.
+	CreateFolder(ctx context.Context, owner, name, parentID string, locked, service bool) (Folder, error)
+	UpdateFolder(ctx context.Context, owner, id string, p FolderPatch, service bool) error
 	// DeleteFolder lifts its contents a level, or drops subfolders too.
-	DeleteFolder(ctx context.Context, owner, id string, subfolders bool) error
+	DeleteFolder(ctx context.Context, owner, id string, subfolders, service bool) error
 	// PlaceConversation files a conversation; folderID "" unfiles it.
 	PlaceConversation(ctx context.Context, owner, convID, folderID string) error
 	// Unstar unfiles a conversation only from Starred.
 	Unstar(ctx context.Context, owner, convID string) error
-	// IsStatic reports whether id names a static folder.
-	IsStatic(ctx context.Context, id string) (bool, error)
 }
 
 // FolderRoute matches /folders and /folders/<id>.
@@ -122,10 +123,16 @@ func PlacementPut(method, path string) (convID string, ok bool) {
 }
 
 // serveFolders serves the caller's /folders routes.
-func serveFolders(w http.ResponseWriter, r *http.Request, id string, fs folderStore) {
+func serveFolders(w http.ResponseWriter, r *http.Request, id string, fs folderStore, services FolderService) {
 	log := logger("folders")
 	owner := ownerFrom(r)
 	ctx := r.Context()
+	service := false
+	if services != nil && bearerToken(r) != "" {
+		if user, ok := services(ctx, r); ok {
+			owner, service = user, true
+		}
+	}
 	var err error
 	switch {
 	case id == "" && r.Method == http.MethodGet:
@@ -138,6 +145,7 @@ func serveFolders(w http.ResponseWriter, r *http.Request, id string, fs folderSt
 		var body struct {
 			Name     string `json:"name"`
 			ParentID string `json:"parentId"`
+			Locked   bool   `json:"locked"`
 		}
 		if decodeBody(r, &body) != nil {
 			writeJSONError(w, http.StatusBadRequest, "invalid JSON body")
@@ -148,24 +156,22 @@ func serveFolders(w http.ResponseWriter, r *http.Request, id string, fs folderSt
 			writeJSONError(w, http.StatusBadRequest, msg)
 			return
 		}
+		if body.Locked && !service {
+			writeJSONError(w, http.StatusForbidden, "only a folder service can create a locked folder")
+			return
+		}
 		var f Folder
-		if f, err = fs.CreateFolder(ctx, owner, name, body.ParentID); err == nil {
+		if f, err = fs.CreateFolder(ctx, owner, name, body.ParentID, body.Locked, service); err == nil {
 			writeJSON(w, http.StatusCreated, f)
 			return
 		}
 	case id != "" && (r.Method == http.MethodPatch || r.Method == http.MethodDelete):
-		static := id == StarredFolderID
-		if !static {
-			if static, err = fs.IsStatic(ctx, id); err != nil {
-				break
-			}
-		}
-		if static {
-			writeJSONError(w, http.StatusConflict, "static folders can't be renamed, moved or deleted")
+		if id == StarredFolderID {
+			writeJSONError(w, http.StatusConflict, "Starred can't be renamed, moved or deleted")
 			return
 		}
 		if r.Method == http.MethodDelete {
-			err = fs.DeleteFolder(ctx, owner, id, r.URL.Query().Get("subfolders") == "delete")
+			err = fs.DeleteFolder(ctx, owner, id, r.URL.Query().Get("subfolders") == "delete", service)
 			break
 		}
 		var body FolderPatch
@@ -177,7 +183,7 @@ func serveFolders(w http.ResponseWriter, r *http.Request, id string, fs folderSt
 			writeJSONError(w, http.StatusBadRequest, msg)
 			return
 		}
-		err = fs.UpdateFolder(ctx, owner, id, body)
+		err = fs.UpdateFolder(ctx, owner, id, body, service)
 	default:
 		w.Header().Set("Allow", "GET, POST, PATCH, DELETE")
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -190,6 +196,10 @@ func serveFolders(w http.ResponseWriter, r *http.Request, id string, fs folderSt
 		writeJSONError(w, http.StatusConflict, "you already have a folder with that name there")
 	case errors.Is(err, errFolderTooDeep):
 		writeJSONError(w, http.StatusConflict, fmt.Sprintf("folders nest at most %d deep", MaxFolderDepth))
+	case errors.Is(err, errFolderLocked):
+		writeJSONError(w, http.StatusConflict, "this folder is locked; only its service can change it")
+	case errors.Is(err, errLockedParent):
+		writeJSONError(w, http.StatusConflict, "a locked folder goes at the top level or in a locked folder")
 	case errors.Is(err, errFolderCycle):
 		writeJSONError(w, http.StatusConflict, "a folder can't go inside itself")
 	case errors.Is(err, errFolderNotFound):
@@ -334,56 +344,39 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// runFolderListener tells the changed owners' list streams to refetch folders.
+// runFolderListener tells an owner's list streams to refetch folders.
 func runFolderListener(ctx context.Context, store *Store, hub *sseHub) {
 	if store == nil {
 		return
 	}
 	frame := sseData([]byte(`{"kind":"folders"}`))
 	listenLoop(ctx, logger("folders-listen"), foldersChannel, store.NewListenConn, func(payload string) {
-		if match, ok := folderNotifyMatch(payload); ok {
-			hub.deliver(frame, match)
+		if owner, ok := folderNotifyOwner(payload); ok {
+			hub.deliver(frame, func(s *sseSub) bool { return s.callerOwner == owner })
 		}
 	})
 }
 
-// folderNotifyMatch picks streams: one owner's, or all for statics.
-func folderNotifyMatch(payload string) (func(*sseSub) bool, bool) {
+// folderNotifyOwner parses a payload; "" is the anonymous owner.
+func folderNotifyOwner(payload string) (string, bool) {
 	var c struct {
 		Owner *string `json:"owner"`
-		All   bool    `json:"all"`
 	}
-	switch {
-	case json.Unmarshal([]byte(payload), &c) != nil:
-		return nil, false
-	case c.All:
-		return func(*sseSub) bool { return true }, true
-	case c.Owner == nil:
-		return nil, false
+	if err := json.Unmarshal([]byte(payload), &c); err != nil || c.Owner == nil {
+		return "", false
 	}
-	owner := *c.Owner
-	return func(s *sseSub) bool { return s.callerOwner == owner }, true
+	return *c.Owner, true
 }
 
 // Folders reads the caller's folders and visible placements.
 func (s *WriteStore) Folders(ctx context.Context, owner string) (FolderList, error) {
 	forever := 0
 	out := FolderList{
-		Folders:    []Folder{{ID: StarredFolderID, Name: "Starred", Kind: "starred", Static: true, ConversationLifetimeHours: &forever}},
+		Folders:    []Folder{{ID: StarredFolderID, Name: "Starred", Kind: "starred", Locked: true, ConversationLifetimeHours: &forever}},
 		Placements: map[string]string{},
 	}
-	statics, err := s.StaticFolders(ctx)
-	if err != nil {
-		return out, err
-	}
-	for i, f := range statics {
-		out.Folders = append(out.Folders, Folder{
-			ID: f.ID, Name: f.Name, Icon: f.Icon, Kind: "static", Static: true,
-			Position: float64(i + 1), ConversationLifetimeHours: f.ConversationLifetimeHours,
-		})
-	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, name, COALESCE(icon, ''), COALESCE(parent_id, ''), conversation_lifetime_hours, position
+		SELECT id, name, COALESCE(icon, ''), COALESCE(parent_id, ''), locked, conversation_lifetime_hours, position
 		FROM conversation_folders
 		WHERE owner = $1 AND kind = 'user' ORDER BY position, created_at`, owner)
 	if err != nil {
@@ -391,7 +384,7 @@ func (s *WriteStore) Folders(ctx context.Context, owner string) (FolderList, err
 	}
 	for rows.Next() {
 		f := Folder{Kind: "user"}
-		if err := rows.Scan(&f.ID, &f.Name, &f.Icon, &f.ParentID, &f.ConversationLifetimeHours, &f.Position); err != nil {
+		if err := rows.Scan(&f.ID, &f.Name, &f.Icon, &f.ParentID, &f.Locked, &f.ConversationLifetimeHours, &f.Position); err != nil {
 			rows.Close()
 			return out, err
 		}
@@ -403,7 +396,7 @@ func (s *WriteStore) Folders(ctx context.Context, owner string) (FolderList, err
 	}
 	rows, err = s.pool.Query(ctx, `
 		SELECT p.conversation_id,
-		       CASE f.kind WHEN 'starred' THEN $2 WHEN 'static' THEN f.static_id ELSE f.id END
+		       CASE f.kind WHEN 'starred' THEN $2 ELSE f.id END
 		FROM user_conversation_metadata p
 		JOIN conversation_folders f ON f.id = p.folder_id
 		JOIN conversations c ON c.id = p.conversation_id
@@ -463,9 +456,12 @@ func nextPosition(ctx context.Context, tx pgx.Tx, owner, parentID string) (float
 }
 
 // CreateFolder appends a user folder after its last sibling.
-func (s *WriteStore) CreateFolder(ctx context.Context, owner, name, parentID string) (Folder, error) {
-	f := Folder{ID: uuid.NewString(), Name: name, Kind: "user", ParentID: parentID}
+func (s *WriteStore) CreateFolder(ctx context.Context, owner, name, parentID string, locked, service bool) (Folder, error) {
+	f := Folder{ID: uuid.NewString(), Name: name, Kind: "user", ParentID: parentID, Locked: locked}
 	err := s.folderTx(ctx, owner, func(tx pgx.Tx) error {
+		if err := checkParent(ctx, tx, owner, parentID, locked, service); err != nil {
+			return err
+		}
 		if parentID != "" {
 			depth, err := folderDepth(ctx, tx, owner, parentID)
 			if err != nil {
@@ -481,18 +477,25 @@ func (s *WriteStore) CreateFolder(ctx context.Context, owner, name, parentID str
 		}
 		f.Position = pos
 		_, err = tx.Exec(ctx, `
-			INSERT INTO conversation_folders (id, owner, kind, parent_id, name, position, created_at)
-			VALUES ($1, $2, 'user', NULLIF($3, ''), $4, $5, $6)`,
-			f.ID, owner, parentID, name, pos, time.Now().UnixMilli())
+			INSERT INTO conversation_folders (id, owner, kind, parent_id, name, locked, position, created_at)
+			VALUES ($1, $2, 'user', NULLIF($3, ''), $4, $5, $6, $7)`,
+			f.ID, owner, parentID, name, locked, pos, time.Now().UnixMilli())
 		return err
 	})
 	return f, err
 }
 
 // UpdateFolder applies a patch to a user folder, checking any move.
-func (s *WriteStore) UpdateFolder(ctx context.Context, owner, id string, p FolderPatch) error {
+func (s *WriteStore) UpdateFolder(ctx context.Context, owner, id string, p FolderPatch, service bool) error {
 	return s.folderTx(ctx, owner, func(tx pgx.Tx) error {
+		locked, err := checkLock(ctx, tx, owner, id, service)
+		if err != nil {
+			return err
+		}
 		if p.ParentID != nil {
+			if err := checkParent(ctx, tx, owner, *p.ParentID, locked, service); err != nil {
+				return err
+			}
 			if err := checkMove(ctx, tx, owner, id, *p.ParentID); err != nil {
 				return err
 			}
@@ -516,6 +519,32 @@ func (s *WriteStore) UpdateFolder(ctx context.Context, owner, id string, p Folde
 		}
 		return err
 	})
+}
+
+// checkLock reads a folder's lock, refusing users a locked one.
+func checkLock(ctx context.Context, tx pgx.Tx, owner, id string, service bool) (bool, error) {
+	var locked bool
+	err := tx.QueryRow(ctx,
+		`SELECT locked FROM conversation_folders WHERE id = $1 AND owner = $2 AND kind = 'user'`, id, owner).Scan(&locked)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return false, errFolderNotFound
+	case err == nil && locked && !service:
+		return locked, errFolderLocked
+	}
+	return locked, err
+}
+
+// checkParent keeps users out of locked parents, locked folders in.
+func checkParent(ctx context.Context, tx pgx.Tx, owner, parentID string, locked, service bool) error {
+	if parentID == "" {
+		return nil
+	}
+	parentLocked, err := checkLock(ctx, tx, owner, parentID, service)
+	if err == nil && locked && !parentLocked {
+		return errLockedParent
+	}
+	return err
 }
 
 // checkMove refuses cycles and moves past the depth cap.
@@ -551,8 +580,11 @@ func checkMove(ctx context.Context, tx pgx.Tx, owner, id, parentID string) error
 }
 
 // DeleteFolder lifts its contents a level, or drops the subtree.
-func (s *WriteStore) DeleteFolder(ctx context.Context, owner, id string, subfolders bool) error {
+func (s *WriteStore) DeleteFolder(ctx context.Context, owner, id string, subfolders, service bool) error {
 	return s.folderTx(ctx, owner, func(tx pgx.Tx) error {
+		if _, err := checkLock(ctx, tx, owner, id, service); err != nil {
+			return err
+		}
 		var parent *string
 		var pos float64
 		err := tx.QueryRow(ctx, `
@@ -608,14 +640,6 @@ func (s *WriteStore) PlaceConversation(ctx context.Context, owner, convID, folde
 			return err
 		}
 		folderID, kind = id, "starred"
-	} else if folderID != "" {
-		id, err := s.ensureStatic(ctx, owner, folderID)
-		if err != nil {
-			return err
-		}
-		if id != "" {
-			folderID, kind = id, "static"
-		}
 	}
 	return s.placementTx(ctx, convID, func(tx pgx.Tx) error {
 		if folderID == "" {
@@ -675,26 +699,6 @@ func (s *WriteStore) ensureStarred(ctx context.Context, owner string) (string, e
 	var id string
 	err = s.pool.QueryRow(ctx,
 		`SELECT id FROM conversation_folders WHERE owner = $1 AND kind = 'starred'`, owner).Scan(&id)
-	return id, err
-}
-
-// ensureStatic returns the owner's static folder row, or "".
-func (s *WriteStore) ensureStatic(ctx context.Context, owner, staticID string) (string, error) {
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO conversation_folders (id, owner, kind, static_id, name, position, created_at)
-		SELECT $1, $2, 'static', id, name, 0, $4 FROM static_folders WHERE id = $3
-		ON CONFLICT (static_id, owner) WHERE kind = 'static' DO NOTHING`,
-		uuid.NewString(), owner, staticID, time.Now().UnixMilli())
-	if err != nil {
-		return "", err
-	}
-	var id string
-	err = s.pool.QueryRow(ctx,
-		`SELECT id FROM conversation_folders WHERE owner = $1 AND kind = 'static' AND static_id = $2`,
-		owner, staticID).Scan(&id)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil
-	}
 	return id, err
 }
 

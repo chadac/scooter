@@ -89,8 +89,8 @@ func main() {
 	var spawner TrustedCaller
 	// Verifies owned-read callers; nil disables GET /conversations/{id}/owned.
 	var reader TrustedCaller
-	// Verifies static folder services; nil refuses /static-folders.
-	var folderAdmin ServiceCaller
+	// Verifies folder services; nil leaves locked folders unchangeable.
+	var folderServices FolderService
 	// The apiserver credentials, for the self-access TokenReview; nil in dev mode.
 	var kubeCfg *rest.Config
 	if devModeEnabled() {
@@ -124,7 +124,7 @@ func main() {
 		trusted = buildTrustedCaller(kubeCfg, log)
 		spawner = buildSpawner(kubeCfg, log)
 		reader = buildReader(kubeCfg, log)
-		folderAdmin = buildFolderAdmin(kubeCfg, log)
+		folderServices = buildFolderServices(kubeCfg, log)
 	}
 
 	// Optional read-only Postgres handle on the agent_host database, from which GET /conversations is served.
@@ -222,7 +222,7 @@ func main() {
 	go runAwaitingListener(ctx, store, links, hub)
 	go runFolderListener(ctx, store, hub)
 
-	handler := newRouter(ctx, cfg, resolver, creator, trusted, spawner, reader, folderAdmin, store, writeStore, links, hub)
+	handler := newRouter(ctx, cfg, resolver, creator, trusted, spawner, reader, folderServices, store, writeStore, links, hub)
 	mainGate, sandboxGate := buildGateways(kubeCfg, log)
 	srv := &http.Server{Addr: cfg.listenAddr, Handler: guarded(mainGate, handler)}
 	if self := buildSelfServer(kubeCfg, cfg, store, handler, log); self != nil {
@@ -275,7 +275,7 @@ func main() {
 }
 
 // newRouter builds the HTTP handler: resolve the target, reverse-proxy, and on a dial failure to the owner IP retry once via the fallback Service.
-func newRouter(shutdownCtx context.Context, cfg config, resolver ownerResolver, creator ConversationCreator, trusted, spawner, reader TrustedCaller, folderAdmin ServiceCaller, store *Store, writeStore *WriteStore, links *LinkStore, hub *sseHub) http.Handler {
+func newRouter(shutdownCtx context.Context, cfg config, resolver ownerResolver, creator ConversationCreator, trusted, spawner, reader TrustedCaller, folderServices FolderService, store *Store, writeStore *WriteStore, links *LinkStore, hub *sseHub) http.Handler {
 	fallback := cfg.fallback
 	// A typed-nil *Store in an interface is not nil.
 	var parents parentLookup
@@ -330,15 +330,6 @@ func newRouter(shutdownCtx context.Context, cfg config, resolver ownerResolver, 
 			}
 			return
 		}
-		// Static folders are managed by services (staticfolders.go).
-		if id, ok := StaticFolderRoute(r.URL.Path); ok {
-			if writeStore == nil {
-				writeJSONError(w, http.StatusServiceUnavailable, "conversation store unavailable")
-				return
-			}
-			serveStaticFolders(w, r, id, folderAdmin, writeStore)
-			return
-		}
 		// Folders and stars are per-user, served here (folders.go).
 		folderID, isFolders := FolderRoute(r.URL.Path)
 		placeID, isPlace := PlacementPut(r.Method, r.URL.Path)
@@ -351,7 +342,7 @@ func newRouter(shutdownCtx context.Context, cfg config, resolver ownerResolver, 
 				return
 			}
 			if isFolders {
-				serveFolders(w, r, folderID, writeStore)
+				serveFolders(w, r, folderID, writeStore, folderServices)
 			} else {
 				servePlacement(w, r, placeID, store, writeStore)
 			}
@@ -633,20 +624,20 @@ func buildReader(kubeCfg *rest.Config, log *slog.Logger) TrustedCaller {
 	return newTrustedCaller(review, allowed)
 }
 
-// buildFolderAdmin verifies static folder services; nil when none allowed.
-func buildFolderAdmin(kubeCfg *rest.Config, log *slog.Logger) ServiceCaller {
-	allowed := staticFolderServiceAccounts()
+// buildFolderServices verifies folder services; nil when none allowed.
+func buildFolderServices(kubeCfg *rest.Config, log *slog.Logger) FolderService {
+	allowed := folderServiceAccounts()
 	if len(allowed) == 0 {
 		return nil
 	}
 	audiences := env("WEBHOOKS_TOKEN_AUDIENCE", "agent-host") + "," + env("ROUTER_TOKEN_AUDIENCE", "scooter-router")
 	review, err := newTokenReviewer(kubeCfg, audiences)
 	if err != nil {
-		log.Warn("TokenReview client init failed: static folder changes are refused", errAttr(err))
+		log.Warn("TokenReview client init failed: locked folders can't be changed", errAttr(err))
 		return nil
 	}
-	log.Info("static folder API enabled", slog.Int("static_folder_service_accounts", len(allowed)))
-	return newServiceCaller(review, allowed)
+	log.Info("folder services enabled", slog.Int("folder_service_accounts", len(allowed)))
+	return newFolderService(review, allowed)
 }
 
 // buildSelfServer returns the sandbox self-access listener (see selfaccess.go), or nil when SELF_LISTEN_ADDR is unset or it cannot verify tokens.

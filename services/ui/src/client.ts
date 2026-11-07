@@ -237,9 +237,9 @@ export interface ConversationFolder {
   name: string;
   /** A Lucide icon name shown instead of the folder glyph. */
   icon?: string;
-  kind: "starred" | "static" | "user";
-  /** Fixed by the deployment: no rename, move, delete or subfolders. */
-  static?: boolean;
+  kind: "starred" | "user";
+  /** Only a folder service changes it; users file conversations. */
+  locked?: boolean;
   /** The enclosing folder; absent at the top level. */
   parentId?: string;
   /** Ordered among siblings. */

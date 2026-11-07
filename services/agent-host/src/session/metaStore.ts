@@ -180,15 +180,11 @@ export function createPgMetaStore(config: PgMetaStoreConfig): MetaStore {
       // The owner's nearest set lifetime wins; the longest across placements.
       const res = await db.execute<{ id: string; hours: number }>(sql`
         WITH RECURSIVE up AS (
-          SELECT c.id, f.parent_id,
-                 CASE f.kind WHEN 'static' THEN s.conversation_lifetime_hours ELSE f.conversation_lifetime_hours END
-                   AS lifetime_hours,
-                 1 AS depth
+          SELECT c.id, f.parent_id, f.conversation_lifetime_hours AS lifetime_hours, 1 AS depth
           FROM conversations c
           JOIN user_conversation_metadata p ON p.conversation_id = c.id
             AND (c.owner IS NULL OR p.owner = c.owner OR p.owner = '')
           JOIN conversation_folders f ON f.id = p.folder_id
-          LEFT JOIN static_folders s ON s.id = f.static_id
           WHERE c.id IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})
           UNION ALL
           SELECT up.id, f.parent_id, f.conversation_lifetime_hours, up.depth + 1
