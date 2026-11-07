@@ -463,181 +463,198 @@ function Board({
         </p>
       )}
       <div className="flex min-h-0 flex-1">
-        {conversations.length === 0 && !showing && !editing ? (
-          <EmptyState
-            className="flex-1"
-            title="No conversations on this board yet."
-            description="Start one here, or file conversations into its stages from the sidebar."
-          />
-        ) : (
-          <div className="flex min-h-0 min-w-0 flex-1 gap-3 overflow-x-auto p-4">
-            {stages.map((col, i) => (
-              <section
-                key={col.id}
-                data-testid="kanban-lane"
-                data-column={col.id}
-                aria-label={col.label}
-                onDragOver={(e) => {
-                  if (!dragging) return;
-                  e.preventDefault();
-                  if (dropAt?.column !== col.id || dropAt.before) setDropAt({ column: col.id });
-                }}
-                onDrop={(e) => {
-                  const id = e.dataTransfer.getData(CARD_MIME) || dragging;
-                  e.preventDefault();
-                  setDragging(null);
-                  setDropAt(null);
-                  if (id) void move(id, col.id, dropAt?.column === col.id ? dropAt.before : undefined);
-                }}
-                className={cn(
-                  "flex w-64 shrink-0 flex-col rounded-lg bg-muted/40",
-                  dropAt?.column === col.id && !dropAt.before && "ring-2 ring-primary/50",
+        <div className="flex min-h-0 min-w-0 flex-1 gap-3 overflow-x-auto p-4">
+          {stages.map((col, i) => (
+            <section
+              key={col.id}
+              data-testid="kanban-lane"
+              data-column={col.id}
+              aria-label={col.label}
+              onDragOver={(e) => {
+                if (!dragging) return;
+                e.preventDefault();
+                if (dropAt?.column !== col.id || dropAt.before) setDropAt({ column: col.id });
+              }}
+              onDrop={(e) => {
+                const id = e.dataTransfer.getData(CARD_MIME) || dragging;
+                e.preventDefault();
+                setDragging(null);
+                setDropAt(null);
+                if (id) void move(id, col.id, dropAt?.column === col.id ? dropAt.before : undefined);
+              }}
+              className={cn(
+                "flex w-64 shrink-0 flex-col rounded-lg bg-muted/40",
+                dropAt?.column === col.id && !dropAt.before && "ring-2 ring-primary/50",
+              )}
+            >
+              <header className="flex items-center justify-between gap-1 px-3 py-2 text-sm font-medium">
+                <span className="truncate">{col.label}</span>
+                {editing ? (
+                  <span className="flex shrink-0 items-center" data-testid="kanban-stage-tools">
+                    <Button
+                      size="icon-xs"
+                      variant="ghost"
+                      aria-label={`Move ${col.label} left`}
+                      disabled={i === 0}
+                      onClick={() => shiftStage(i, -1)}
+                    >
+                      <ChevronLeft aria-hidden />
+                    </Button>
+                    <Button
+                      size="icon-xs"
+                      variant="ghost"
+                      aria-label={`Move ${col.label} right`}
+                      disabled={i === stages.length - 1}
+                      onClick={() => shiftStage(i, 1)}
+                    >
+                      <ChevronRight aria-hidden />
+                    </Button>
+                    <Button
+                      size="icon-xs"
+                      variant="ghost"
+                      aria-label={`Rename ${col.label}`}
+                      data-testid="kanban-rename-stage"
+                      onClick={() => {
+                        const name = window.prompt("Rename the stage", col.label)?.trim();
+                        if (name && name !== col.label) {
+                          void changeStages(stageCalls.update(folder.id, col.id, { name }), "rename the stage");
+                        }
+                      }}
+                    >
+                      <Pencil aria-hidden />
+                    </Button>
+                    <Button
+                      size="icon-xs"
+                      variant="ghost"
+                      aria-label={`Delete ${col.label}`}
+                      data-testid="kanban-delete-stage"
+                      disabled={stages.length <= 1}
+                      onClick={() => {
+                        const to = (i === 0 ? stages[1] : stages[0])?.label;
+                        if (window.confirm(`Delete the "${col.label}" stage? Its cards move to "${to}".`)) {
+                          void changeStages(stageCalls.remove(folder.id, col.id), "delete the stage");
+                        }
+                      }}
+                    >
+                      <Trash2 aria-hidden />
+                    </Button>
+                  </span>
+                ) : (
+                  <span className="text-xs tabular-nums text-muted-foreground">{lanes[col.id]?.length ?? 0}</span>
                 )}
-              >
-                <header className="flex items-center justify-between gap-1 px-3 py-2 text-sm font-medium">
-                  <span className="truncate">{col.label}</span>
-                  {editing ? (
-                    <span className="flex shrink-0 items-center" data-testid="kanban-stage-tools">
-                      <Button
-                        size="icon-xs"
-                        variant="ghost"
-                        aria-label={`Move ${col.label} left`}
-                        disabled={i === 0}
-                        onClick={() => shiftStage(i, -1)}
-                      >
-                        <ChevronLeft aria-hidden />
-                      </Button>
-                      <Button
-                        size="icon-xs"
-                        variant="ghost"
-                        aria-label={`Move ${col.label} right`}
-                        disabled={i === stages.length - 1}
-                        onClick={() => shiftStage(i, 1)}
-                      >
-                        <ChevronRight aria-hidden />
-                      </Button>
-                      <Button
-                        size="icon-xs"
-                        variant="ghost"
-                        aria-label={`Rename ${col.label}`}
-                        data-testid="kanban-rename-stage"
+              </header>
+              <ol className="flex min-h-16 flex-1 flex-col gap-2 overflow-y-auto px-2 pt-1 pb-2">
+                {i === 0 && !editing && (
+                  <li
+                    onDragOver={(e) => {
+                      // A drop on the tile goes to the top of the lane.
+                      const top = lanes[col.id]?.[0]?.id;
+                      if (!dragging || !top || top === dragging) return;
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (dropAt?.before !== top) setDropAt({ column: col.id, before: top });
+                    }}
+                  >
+                    <button
+                      type="button"
+                      data-testid="kanban-stage-new"
+                      aria-label={`New conversation in ${col.label}`}
+                      onClick={() => {
+                        newConversation({ folderId: col.id });
+                        setPanel(true);
+                      }}
+                      className="flex w-full items-center gap-1.5 rounded-md border border-dashed px-2 py-1.5 text-xs text-muted-foreground hover:border-foreground/30 hover:bg-background hover:text-foreground"
+                    >
+                      <Plus aria-hidden className="size-3.5" /> New conversation
+                    </button>
+                  </li>
+                )}
+                {(lanes[col.id] ?? []).map((conv) => {
+                  const card = cards[conv.id]?.card;
+                  const open = showing && conv.id === openId;
+                  return (
+                    <li
+                      key={conv.id}
+                      data-testid="kanban-card"
+                      data-conversation-id={conv.id}
+                      data-open={open || undefined}
+                      draggable
+                      onDragStart={(e) => {
+                        e.dataTransfer.setData(CARD_MIME, conv.id);
+                        e.dataTransfer.effectAllowed = "move";
+                        setDragging(conv.id);
+                      }}
+                      onDragEnd={() => {
+                        setDragging(null);
+                        setDropAt(null);
+                      }}
+                      onDragOver={(e) => {
+                        if (!dragging || dragging === conv.id) return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (dropAt?.before !== conv.id) setDropAt({ column: col.id, before: conv.id });
+                      }}
+                      className={cn(
+                        "rounded-md border bg-background p-2 text-sm shadow-xs",
+                        open && "ring-2 ring-primary",
+                        dragging === conv.id && "opacity-50",
+                        dropAt?.before === conv.id && "border-t-2 border-t-primary",
+                      )}
+                    >
+                      <button
+                        type="button"
                         onClick={() => {
-                          const name = window.prompt("Rename the stage", col.label)?.trim();
-                          if (name && name !== col.label) {
-                            void changeStages(stageCalls.update(folder.id, col.id, { name }), "rename the stage");
-                          }
+                          openConversation(conv.id);
+                          setPanel(true);
                         }}
+                        className="flex w-full items-start gap-2 text-start"
+                        title={conv.title}
                       >
-                        <Pencil aria-hidden />
-                      </Button>
-                      <Button
-                        size="icon-xs"
-                        variant="ghost"
-                        aria-label={`Delete ${col.label}`}
-                        data-testid="kanban-delete-stage"
-                        disabled={stages.length <= 1}
-                        onClick={() => {
-                          const to = (i === 0 ? stages[1] : stages[0])?.label;
-                          if (window.confirm(`Delete the "${col.label}" stage? Its cards move to "${to}".`)) {
-                            void changeStages(stageCalls.remove(folder.id, col.id), "delete the stage");
-                          }
-                        }}
-                      >
-                        <Trash2 aria-hidden />
-                      </Button>
-                    </span>
-                  ) : (
-                    <span className="text-xs tabular-nums text-muted-foreground">{lanes[col.id]?.length ?? 0}</span>
-                  )}
-                </header>
-                <ol className="flex min-h-16 flex-1 flex-col gap-2 overflow-y-auto px-2 pt-1 pb-2">
-                  {(lanes[col.id] ?? []).map((conv) => {
-                    const card = cards[conv.id]?.card;
-                    const open = showing && conv.id === openId;
-                    return (
-                      <li
-                        key={conv.id}
-                        data-testid="kanban-card"
-                        data-conversation-id={conv.id}
-                        data-open={open || undefined}
-                        draggable
-                        onDragStart={(e) => {
-                          e.dataTransfer.setData(CARD_MIME, conv.id);
-                          e.dataTransfer.effectAllowed = "move";
-                          setDragging(conv.id);
-                        }}
-                        onDragEnd={() => {
-                          setDragging(null);
-                          setDropAt(null);
-                        }}
-                        onDragOver={(e) => {
-                          if (!dragging || dragging === conv.id) return;
-                          e.preventDefault();
-                          e.stopPropagation();
-                          if (dropAt?.before !== conv.id) setDropAt({ column: col.id, before: conv.id });
-                        }}
-                        className={cn(
-                          "rounded-md border bg-background p-2 text-sm shadow-xs",
-                          open && "ring-2 ring-primary",
-                          dragging === conv.id && "opacity-50",
-                          dropAt?.before === conv.id && "border-t-2 border-t-primary",
-                        )}
-                      >
-                        <button
-                          type="button"
-                          onClick={() => {
-                            openConversation(conv.id);
-                            setPanel(true);
-                          }}
-                          className="flex w-full items-start gap-2 text-start"
-                          title={conv.title}
-                        >
-                          {conv.dot && <StatusDot dot={conv.dot} />}
-                          <span className="line-clamp-2 font-medium">{conv.title}</span>
-                        </button>
-                        {card?.note && (
-                          <p data-testid="kanban-card-note" className="mt-1 line-clamp-3 text-xs text-muted-foreground">
-                            {card.note}
-                          </p>
-                        )}
-                        <p className="mt-1.5 text-[11px] text-muted-foreground">
-                          {card ? `${card.updated_by === "agent" ? "Agent" : "You"} · ${ago(card.updated_at)}` : "No status yet"}
+                        {conv.dot && <StatusDot dot={conv.dot} />}
+                        <span className="line-clamp-2 font-medium">{conv.title}</span>
+                      </button>
+                      {card?.note && (
+                        <p data-testid="kanban-card-note" className="mt-1 line-clamp-3 text-xs text-muted-foreground">
+                          {card.note}
                         </p>
-                      </li>
-                    );
-                  })}
-                </ol>
-              </section>
-            ))}
-            {editing && (
-              <form
-                data-testid="kanban-add-stage"
-                className="flex w-64 shrink-0 flex-col gap-2 self-start rounded-lg border border-dashed p-3"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  const name = newStage.trim();
-                  if (!name) return;
-                  void changeStages(
-                    stageCalls.add(folder.id, name).then(() => setNewStage("")),
-                    "add the stage",
+                      )}
+                      <p className="mt-1.5 text-[11px] text-muted-foreground">
+                        {card ? `${card.updated_by === "agent" ? "Agent" : "You"} · ${ago(card.updated_at)}` : "No status yet"}
+                      </p>
+                    </li>
                   );
-                }}
-              >
-                <input
-                  aria-label="New stage name"
-                  data-testid="kanban-new-stage-name"
-                  className={cn(inputClass, "min-w-0")}
-                  placeholder="New stage, e.g. Backlog"
-                  value={newStage}
-                  onChange={(e) => setNewStage(e.currentTarget.value)}
-                />
-                <Button type="submit" size="sm" variant="outline" disabled={!newStage.trim()}>
-                  <Plus aria-hidden /> Add stage
-                </Button>
-              </form>
-            )}
-          </div>
-        )}
+                })}
+              </ol>
+            </section>
+          ))}
+          {editing && (
+            <form
+              data-testid="kanban-add-stage"
+              className="flex w-64 shrink-0 flex-col gap-2 self-start rounded-lg border border-dashed p-3"
+              onSubmit={(e) => {
+                e.preventDefault();
+                const name = newStage.trim();
+                if (!name) return;
+                void changeStages(
+                  stageCalls.add(folder.id, name).then(() => setNewStage("")),
+                  "add the stage",
+                );
+              }}
+            >
+              <input
+                aria-label="New stage name"
+                data-testid="kanban-new-stage-name"
+                className={cn(inputClass, "min-w-0")}
+                placeholder="New stage, e.g. Backlog"
+                value={newStage}
+                onChange={(e) => setNewStage(e.currentTarget.value)}
+              />
+              <Button type="submit" size="sm" variant="outline" disabled={!newStage.trim()}>
+                <Plus aria-hidden /> Add stage
+              </Button>
+            </form>
+          )}
+        </div>
         {showing && (
           <aside data-testid="kanban-chat" className="flex w-[min(42rem,50%)] shrink-0 flex-col border-s">
             <div className="flex items-center gap-1 border-b px-2 py-1.5 text-xs">
