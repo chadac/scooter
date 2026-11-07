@@ -43,7 +43,7 @@ def configure(
 ) -> None:
     global _store, _agent_host, _spawner, _owners, _cards, _require_approval
     _store, _agent_host, _owners = store, agent_host, owners
-    _spawner = Spawner(agent_host, base_url) if agent_host else None
+    _spawner = Spawner(agent_host, base_url, owners) if agent_host else None
     _cards = cards or NoCards()
     _require_approval = require_approval
 
@@ -102,10 +102,16 @@ async def handoff_spawn(
     }))
 
 
+async def _reads_owned(source_id: str) -> bool:
+    """True when the owner alone wrote this private conversation."""
+    access = await _owners.access(source_id) if _owners and source_id else None
+    return access is not None and access.acting_user is not None
+
+
 @mcp.tool
 async def handoff_search(query: str, limit: int = 10, ctx: ToolContext = ToolContextDep) -> ToolResult:
     """Search past conversations by what was said in them: every shared one and, from
-    a private conversation, this user's own private ones. Full-text with English
+    a private conversation only this user wrote, their own private ones. Full-text with English
     stemming; quotes, OR and -word work. Returns one hit per conversation with a
     snippet; read one with handoff_read. Subagents are never indexed, and shared conversations trail live
     activity by a few minutes.
@@ -116,7 +122,7 @@ async def handoff_search(query: str, limit: int = 10, ctx: ToolContext = ToolCon
         return ToolResult.error("query is required")
     limit = max(1, min(limit, 25))
     source_id = ctx.identity.conversation_id
-    owned = await _agent_host.owned(source_id) if source_id else []
+    owned = await _agent_host.owned(source_id) if await _reads_owned(source_id) else []
     owner = next((row.get("owner") for row in owned if row.get("id") == source_id), None)
     if owner:
         try:
@@ -141,8 +147,8 @@ async def handoff_search(query: str, limit: int = 10, ctx: ToolContext = ToolCon
 async def handoff_read(
     conversation_id: str, before: int = 0, limit: int = 600, ctx: ToolContext = ToolContextDep
 ) -> ToolResult:
-    """Read a shared conversation or, from a private conversation, one of this
-    user's own private ones: its user and assistant messages, newest page first.
+    """Read a shared conversation or, from a private conversation only this user
+    wrote, one of their own private ones: its user and assistant messages, newest page first.
 
     Each message is clipped to 2000 characters. To page back, pass the returned
     `next_before` as `before`; it is null at the start of the conversation. `limit`
@@ -153,7 +159,8 @@ async def handoff_read(
     before, limit = before if before > 0 else 2**53 - 1, max(1, min(limit, 3000))
     source_id = ctx.identity.conversation_id
     page = None
-    if source_id:
+    reads_owned = await _reads_owned(source_id)
+    if reads_owned:
         page = await _agent_host.owned_messages(source_id, conversation_id, before=before, limit=limit)
     if page is None:
         page = await _agent_host.messages(conversation_id, before=before, limit=limit)
@@ -165,7 +172,7 @@ async def handoff_read(
         if m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str) and m["content"].strip()
     ]
     conv = await _agent_host.conversation(conversation_id)
-    if conv is None and source_id:
+    if conv is None and reads_owned:
         conv = next((row for row in await _agent_host.owned(source_id) if row.get("id") == conversation_id), None)
     conv = conv or {}
     return ToolResult.ok(json.dumps({

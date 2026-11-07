@@ -4,6 +4,7 @@ import json
 
 import httpx
 import pytest
+from scooter_broker_lib.owner import OwnerResolver
 
 from scooter_broker_lib.testing import create_schema, sqlite_config
 from scooter_contrib_handoff.agent_host import AgentHost
@@ -23,16 +24,27 @@ class FakeRouter:
         # id -> list row; "visibility" private rows answer 404 like the real router.
         self.rows: dict[str, dict] = {}
         self.transcripts: dict[str, list[dict]] = {}
+        self.authors: dict[str, tuple[str | None, ...]] = {}
         self.spawns: list[tuple[str, dict]] = []
         self.spawn_status = 201
         # False mimics a router without the broker in conversationController.readers.
         self.owned_enabled = True
 
     def add(self, cid: str, *, title: str = "", owner: str = "alice", at: int = 1000,
-            visibility: str = "shared", messages: list[tuple[str, str]] = (), parent: str | None = None) -> None:
+            visibility: str = "shared", messages: list[tuple[str, str]] = (), parent: str | None = None,
+            authors: tuple[str | None, ...] | None = None) -> None:
         self.rows[cid] = {"id": cid, "title": title, "owner": owner, "lastActivityAt": at,
                           "visibility": visibility, "parentId": parent}
         self.transcripts[cid] = [{"role": r, "content": t} for r, t in messages]
+        self.authors[cid] = (owner,) if authors is None else authors
+
+    async def view(self, cid: str) -> dict | None:
+        """agent-host's view of one conversation, as OwnerResolver fetches it."""
+        row = self.rows.get(cid)
+        if row is None:
+            return None
+        return {"owner": row["owner"], "visibility": row["visibility"],
+                "authors": [{"user": u} for u in self.authors[cid]]}
 
     def _visible(self, cid: str) -> dict | None:
         row = self.rows.get(cid)
@@ -84,3 +96,8 @@ def router() -> FakeRouter:
 @pytest.fixture
 def agent_host(router: FakeRouter) -> AgentHost:
     return AgentHost("http://router.test", transport=httpx.MockTransport(router.handler))
+
+
+@pytest.fixture
+def owners(router: FakeRouter) -> OwnerResolver:
+    return OwnerResolver(router.view, ttl=0)

@@ -31,7 +31,7 @@ def handoff(ctx: BrokerContext) -> Provider:
     store = HandoffStore(ctx.contrib_store_config("handoff"))
     agent_host = AgentHost(settings.agent_host_url) if settings.agent_host_url else None
     transport.store, transport.agent_host = store, agent_host
-    transport.spawner = Spawner(agent_host, settings.handoff_public_base_url) if agent_host else None
+    transport.spawner = Spawner(agent_host, settings.handoff_public_base_url, ctx.owners) if agent_host else None
     mcp_tools.configure(
         store, agent_host, settings.handoff_public_base_url,
         owners=ctx.owners,

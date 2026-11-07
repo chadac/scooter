@@ -60,7 +60,7 @@ def configured(store, agent_host, cards, links):
 
 @pytest.fixture
 def app(store, agent_host, configured):
-    transport = Handoff(store=store, agent_host=agent_host, spawner=Spawner(agent_host, "https://scooter.test"))
+    transport = Handoff(store=store, agent_host=agent_host, spawner=Spawner(agent_host, "https://scooter.test", OwnerResolver(fetch, ttl=0)))
     caller: dict[str, Identity] = {}
 
     async def authed() -> Identity:
@@ -175,10 +175,10 @@ async def test_no_known_owner_is_refused(router, configured):
     assert r.is_error and "owner" in r.text
 
 
-def test_card_elides_a_long_brief():
+def test_card_shows_the_whole_brief():
     r = SpawnRequest("r1", "src", "alice", "x" * 5000, "", "opus", "pending")
     c = card(r)
-    assert len(c["message"]) < 1700 and c["message"].endswith(" …") and "model opus" in c["message"]
+    assert c["message"].endswith("x" * 5000) and "model opus" in c["message"]
     assert c["data"]["brief"] == "x" * 5000
 
 
@@ -193,3 +193,13 @@ async def test_host_cards_post_to_the_approvals_route():
     await HostCards("http://host.test", transport=httpx.MockTransport(handler)).raise_(r)
     assert seen[0].url.path == "/conversations/src/approvals/handoff"
     assert json.loads(seen[0].content)["request_id"] == "r1"
+
+
+async def test_approve_refuses_once_another_author_writes_in_the_source(app, router, monkeypatch):
+    router.add("src")
+    monkeypatch.setitem(VIEWS, "src", {"owner": "alice", "visibility": "private", "authors": [{"user": "alice"}]})
+    rid = await request()
+    VIEWS["src"] = {"owner": "alice", "visibility": "private", "authors": [{"user": "alice"}, {"user": None}]}
+    async with as_approver(app) as c:
+        r = (await c.post(f"/handoff/spawns/{rid}/approve", json=answer("alice"))).json()
+    assert "failed" in r and "didn't write" in r["agent_message"] and router.spawns == []

@@ -21,19 +21,15 @@ logger = logging.getLogger(__name__)
 CONTRIB = "handoff"
 KIND = "handoff.spawn"
 
-# Brief characters shown on the card; the rest is elided.
-_CARD_BRIEF = 1500
-
 
 def card(r: SpawnRequest) -> dict:
     """The approval request the host raises; the generic card shows `message`."""
-    brief = r.brief if len(r.brief) <= _CARD_BRIEF else r.brief[:_CARD_BRIEF] + " …"
     head = f"The agent wants to hand off to a new conversation: {r.title or 'Handoff'}"
     if r.model:
         head += f" (model {r.model})"
     return {
         "request_id": r.id,
-        "message": f"{head}.\n\nBrief:\n{brief}",
+        "message": f"{head}.\n\nBrief:\n{r.brief}",
         "kind": KIND,
         "data": {"title": r.title, "model": r.model, "brief": r.brief},
     }

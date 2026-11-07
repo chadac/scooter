@@ -14,8 +14,8 @@ from scooter_contrib_handoff.mcp_tools import handoff_read, handoff_search, hand
 
 
 @pytest.fixture
-def links(store, agent_host, monkeypatch):
-    mcp_tools.configure(store, agent_host, "https://scooter.test", require_approval=False)
+def links(store, agent_host, owners, monkeypatch):
+    mcp_tools.configure(store, agent_host, "https://scooter.test", owners=owners, require_approval=False)
     posted: list[tuple[str, object]] = []
 
     async def post_link(url, conversation_id, link):
@@ -123,3 +123,24 @@ async def test_a_shared_conversation_reaches_none_of_its_owners_private_ones(rou
     router.add("mine", visibility="private", messages=[("user", "router 503")])
     assert (await handoff_search(query="router 503", ctx=ctx("here"))).text == "No conversation matches."
     assert (await handoff_read(conversation_id="mine", ctx=ctx("here"))).is_error
+
+
+async def test_a_private_conversation_with_another_author_reads_only_shared_ones(router, links, store, agent_host):
+    router.add("here", visibility="private", authors=("alice", None))
+    router.add("shared", messages=[("user", "router 503")])
+    router.add("mine", visibility="private", messages=[("user", "router 503")])
+    await reindex(store, agent_host)
+    hits = json.loads((await handoff_search(query="router 503", ctx=ctx("here"))).text)
+    assert [h["conversation_id"] for h in hits] == ["shared"]
+    assert (await handoff_read(conversation_id="mine", ctx=ctx("here"))).is_error
+
+
+async def test_a_private_conversation_with_another_author_cannot_spawn(router, links):
+    router.add("src", visibility="private", authors=("alice", "bob"))
+    r = await handoff_spawn(brief="go", ctx=ctx("src"))
+    assert r.is_error and "didn't write" in r.text and router.spawns == []
+
+
+async def test_spawn_refuses_an_unknown_source(router, links):
+    r = await handoff_spawn(brief="go", ctx=ctx("nowhere"))
+    assert r.is_error and router.spawns == []
