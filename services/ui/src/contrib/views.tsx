@@ -9,7 +9,7 @@ import { useMemo } from "react";
 import { promptConversation } from "../client.js";
 import { agentHostConfig } from "../config.js";
 import { folderStore, moveTo, STARRED, useFolders as useFolderState } from "../folders.js";
-import { sessionStore, turnDot, useSessions, type TurnDot } from "../sessions.js";
+import { sessionStore, turnDot, useSessions, type SessionLink, type TurnDot } from "../sessions.js";
 import { useRoute, viewStore } from "../view.js";
 
 import { ChatPanel as Panel } from "../ChatPage.js";
@@ -59,7 +59,14 @@ export interface ViewConversation {
   dot?: TurnDot;
   /** The user's folder it is filed in; null when unfiled or Starred. */
   folderId: string | null;
+  /** The PRs, issues and threads it is linked to. */
+  links: ViewLink[];
 }
+
+/** An external resource a conversation is linked to, e.g. a GitHub pull request. */
+export type ViewLink = SessionLink;
+
+const NO_LINKS: SessionLink[] = [];
 
 /** Every top-level conversation the user can see, newest activity first. */
 export function useConversations(): ViewConversation[] {
@@ -81,6 +88,7 @@ export function useConversations(): ViewConversation[] {
             running: s.runStartedAt !== undefined,
             dot: turnDot(s),
             folderId: f && f !== STARRED ? f : null,
+            links: s.links ?? NO_LINKS,
           };
         }),
     [sessions, placements],

@@ -149,3 +149,7 @@ export { LinkedAccountTab, type LinkedAccountTabProps } from "./LinkedAccountTab
 
 /** What a contrib view (`ui.views`) builds on; see ./views.tsx. */
 export * from "./views.js";
+
+export { Markdown } from "./Markdown.js";
+export { LinkedResourcesPanel } from "../LinkedResources.js";
+export { SourceBadge } from "../sourceIcon.js";
