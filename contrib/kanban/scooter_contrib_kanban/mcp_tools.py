@@ -6,15 +6,20 @@ argument, so an agent can only move its own card.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 
+import httpx
 from fastmcp import FastMCP
 
 from scooter_broker_lib.mcp import ToolContext, ToolContextDep, ToolResult
 
 from .config import Column
+from .keys import CardKeys
 from .store import KanbanStore
 from .transport import view
+
+logger = logging.getLogger(__name__)
 
 mcp = FastMCP(name="kanban")
 
@@ -22,11 +27,29 @@ mcp = FastMCP(name="kanban")
 _store: KanbanStore | None = None
 _columns: list[Column] = []
 _stale_after = timedelta(minutes=30)
+_keys: CardKeys | None = None
 
 
-def configure(store: KanbanStore | None, columns: list[Column], stale_after: timedelta) -> None:
-    global _store, _columns, _stale_after
-    _store, _columns, _stale_after = store, columns, stale_after
+def configure(store: KanbanStore | None, columns: list[Column], stale_after: timedelta, keys: CardKeys | None) -> None:
+    global _store, _columns, _stale_after, _keys
+    _store, _columns, _stale_after, _keys = store, columns, stale_after, keys
+
+
+async def _card_key(ctx: ToolContext) -> tuple[str | None, str]:
+    """The caller's card key, or None and why not."""
+    conversation_id = ctx.identity.conversation_id
+    if not conversation_id:
+        return None, "kanban needs a conversation identity."
+    if _keys is None:
+        return None, "kanban cannot reach the agent-host on this deployment."
+    try:
+        key = await _keys.key(conversation_id)
+    except httpx.HTTPError as e:
+        logger.warning("kanban card key lookup failed", extra={"conversation_id": conversation_id, "error": str(e)})
+        return None, "kanban could not look up this conversation; try again shortly."
+    if key is None:
+        return None, "kanban does not know this conversation."
+    return key, ""
 
 
 def _column_list() -> str:
@@ -57,9 +80,9 @@ async def kanban_set_status(column: str, note: str = "", ctx: ToolContext = Tool
     """
     if _store is None:
         return ToolResult.error("kanban is not configured on this deployment.")
-    key = ctx.identity.conversation_id
-    if not key:
-        return ToolResult.error("kanban needs a conversation identity.")
+    key, why = await _card_key(ctx)
+    if key is None:
+        return ToolResult.error(why)
     if column not in {c.id for c in _columns}:
         return ToolResult.error(f"`{column}` is not a column. Use one of: {_column_list()}.")
     card = await _store.put(key, column=column, by="agent", note=note.strip() or None)
@@ -73,9 +96,9 @@ async def kanban_get_status(ctx: ToolContext = ToolContextDep) -> ToolResult:
     valid columns."""
     if _store is None:
         return ToolResult.error("kanban is not configured on this deployment.")
-    key = ctx.identity.conversation_id
-    if not key:
-        return ToolResult.error("kanban needs a conversation identity.")
+    key, why = await _card_key(ctx)
+    if key is None:
+        return ToolResult.error(why)
     v = view(await _store.card(key), _columns, stale_after=_stale_after, now=datetime.now(timezone.utc))
     return ToolResult.ok(_describe(v))
 

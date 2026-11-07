@@ -16,6 +16,7 @@ from scooter_broker_lib.types import Identity, Provider
 from scooter_contrib_kanban import mcp_tools
 from scooter_contrib_kanban.config import DEFAULT_COLUMNS, parse_columns
 from scooter_contrib_kanban.folders import FolderError, RouterFolders
+from scooter_contrib_kanban.keys import CardKeys
 from scooter_contrib_kanban.store import KanbanStore, _Base
 from scooter_contrib_kanban.transport import Kanban, is_stale
 
@@ -177,27 +178,66 @@ async def test_a_bad_move_is_refused(app, payload):
 
 # --- tools -------------------------------------------------------------------------
 
+def _keys(sandboxes: dict[str, str] | None = None, calls: list[str] | None = None) -> CardKeys:
+    """A fake agent-host naming each thread's Sandbox; thread-1 runs in conv-k1."""
+    sandboxes = {"thread-1": "conv-k1"} if sandboxes is None else sandboxes
+
+    def handle(req: httpx.Request) -> httpx.Response:
+        conv = req.url.path.removeprefix("/conversations/")
+        if calls is not None:
+            calls.append(conv)
+        if conv not in sandboxes:
+            return httpx.Response(404, json={"error": "not found"})
+        return httpx.Response(200, json={"id": conv, "sandbox": {"name": sandboxes[conv], "namespace": "ns"}})
+
+    return CardKeys("http://agent-host", transport=httpx.MockTransport(handle))
+
+
 async def test_the_agent_sets_and_reads_its_status(store):
-    mcp_tools.configure(store, COLUMNS, timedelta(minutes=30))
-    out = await mcp_tools.kanban_set_status(column="in-progress", note="  building the board  ", ctx=_ctx())
+    mcp_tools.configure(store, COLUMNS, timedelta(minutes=30), _keys())
+    out = await mcp_tools.kanban_set_status(column="in-progress", note="  building the board  ", ctx=_ctx("thread-1"))
     assert not out.is_error and "`in-progress`" in out.text
-    card = await store.card("conv-1")
+    card = await store.card("k1")
     assert (card.column, card.note, card.updated_by) == ("in-progress", "building the board", "agent")
-    got = await mcp_tools.kanban_get_status(ctx=_ctx())
+    got = await mcp_tools.kanban_get_status(ctx=_ctx("thread-1"))
     assert '"building the board"' in got.text and "`review` (Review)" in got.text
 
 
+async def test_the_agent_writes_the_card_the_board_and_hooks_read(app, store):
+    mcp_tools.configure(store, COLUMNS, timedelta(minutes=30), _keys())
+    await mcp_tools.kanban_set_status(column="review", ctx=_ctx("thread-1"))
+    assert await store.card("thread-1") is None
+    async with as_(app, user="alice") as c:
+        assert (await c.get("/kanban/conversation/k1/card")).json()["column"] == "review"
+
+
+async def test_the_card_key_is_looked_up_once(store):
+    calls: list[str] = []
+    mcp_tools.configure(store, COLUMNS, timedelta(minutes=30), _keys(calls=calls))
+    await mcp_tools.kanban_set_status(column="review", ctx=_ctx("thread-1"))
+    await mcp_tools.kanban_get_status(ctx=_ctx("thread-1"))
+    assert calls == ["thread-1"]
+
+
+async def test_an_unknown_conversation_writes_no_card(store):
+    mcp_tools.configure(store, COLUMNS, timedelta(minutes=30), _keys({}))
+    out = await mcp_tools.kanban_set_status(column="review", ctx=_ctx("thread-1"))
+    assert out.is_error and "does not know" in out.text
+    assert await store.card("thread-1") is None
+
+
 async def test_the_agent_cannot_pick_an_unknown_column(store):
-    mcp_tools.configure(store, COLUMNS, timedelta(minutes=30))
-    out = await mcp_tools.kanban_set_status(column="backlog", ctx=_ctx())
+    mcp_tools.configure(store, COLUMNS, timedelta(minutes=30), _keys())
+    out = await mcp_tools.kanban_set_status(column="backlog", ctx=_ctx("thread-1"))
     assert out.is_error and "not a column" in out.text
-    assert await store.card("conv-1") is None
+    assert await store.card("k1") is None
 
 
 async def test_the_agent_moves_only_its_own_card(store):
-    mcp_tools.configure(store, COLUMNS, timedelta(minutes=30))
-    await mcp_tools.kanban_set_status(column="done", ctx=_ctx("conv-a"))
-    assert await store.card("conv-b") is None
+    mcp_tools.configure(store, COLUMNS, timedelta(minutes=30), _keys({"thread-a": "conv-a", "thread-b": "conv-b"}))
+    await mcp_tools.kanban_set_status(column="done", ctx=_ctx("thread-a"))
+    assert (await store.card("a")).column == "done"
+    assert await store.card("b") is None
 
 
 # --- boards ------------------------------------------------------------------------
