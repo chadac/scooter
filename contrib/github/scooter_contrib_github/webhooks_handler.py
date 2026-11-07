@@ -16,6 +16,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from scooter_webhooks_lib import store as db
 from scooter_webhooks_lib.resources import link_variants as _lib_link_variants
 from scooter_webhooks_lib.store import PENDING_CONVERSATION_ID, is_pending
+from scooter_webhooks_lib.vars import ConversationVars
 
 from .config import settings
 from scooter_webhooks_lib.agent_host_client import (
@@ -182,6 +183,8 @@ async def handle_github_webhook(
         await _handle_issue_event(payload)
     elif event_type == "pull_request":
         await _handle_pr_event(payload)
+    elif event_type == "push":
+        await _handle_push(payload)
     else:
         logger.debug("ignoring event type", extra={**_C, "source": "github", "event_type": event_type})
 
@@ -594,9 +597,100 @@ async def _handle_pr_dequeued(payload: dict):
     await _forward_or_ignore(_resource_id(owner, repo, number), message, actor_on(payload, pr))
 
 
+# Seconds to wait before each mergeability read, while GitHub recomputes it.
+_MERGEABLE_DELAYS = (2, 4, 8, 16)
+
+
+async def _pull(owner: str, repo: str, number: int) -> dict | None:
+    """The PR's REST representation once its mergeability is known, or None."""
+    from .responses import _headers_for_repo, GITHUB_API
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        for delay in _MERGEABLE_DELAYS:
+            await asyncio.sleep(delay)
+            resp = await client.get(
+                f"{GITHUB_API}/repos/{owner}/{repo}/pulls/{number}",
+                headers=await _headers_for_repo(owner, repo),
+            )
+            resp.raise_for_status()
+            pr = resp.json()
+            if pr.get("mergeable") is not None:
+                return pr
+    return None
+
+
+async def _notify_if_conflicting(owner: str, repo: str, number: int) -> None:
+    """Tell a linked PR's conversation it conflicts with its base, once per head commit."""
+    res_id = _resource_id(owner, repo, number)
+    conversation = await _resolve_conversation("pull_request", res_id)
+    if not conversation or is_pending(conversation):
+        return
+    try:
+        pr = await _pull(owner, repo, number)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "mergeability lookup failed",
+            extra={**_C, "source": "github", "resource_id": res_id, "error": str(e)},
+        )
+        return
+    if pr is None or pr.get("mergeable") is not False or pr.get("state") != "open":
+        return
+    head = pr.get("head", {}).get("sha", "")
+    if not await ConversationVars(conversation, "github").claim(f"conflict_head:{res_id}", head):
+        return
+    base = pr.get("base", {}).get("ref", "base")
+    message = (
+        f"PR #{number} in {owner}/{repo} now has MERGE CONFLICTS with `{base}`.\n\n---\n\n"
+        f"Rebase the branch on the latest `{base}`, resolve the conflicts, and push "
+        f"(`git push --force-with-lease`)."
+    )
+    await send_message(conversation, message, source="github")
+
+
+async def _check_pulls_into(owner: str, repo: str, base: str) -> None:
+    """Check every open PR into `base` for a new conflict."""
+    try:
+        from .responses import _headers_for_repo, GITHUB_API
+
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{GITHUB_API}/repos/{owner}/{repo}/pulls",
+                headers=await _headers_for_repo(owner, repo),
+                params={"base": base, "state": "open", "per_page": 100},
+            )
+            resp.raise_for_status()
+            pulls = resp.json()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "open-PR lookup failed; skipping the conflict check",
+            extra={**_C, "source": "github", "base": base, "error": str(e)},
+        )
+        return
+    await asyncio.gather(*(_notify_if_conflicting(owner, repo, p["number"]) for p in pulls))
+
+
+async def _handle_push(payload: dict):
+    """push: a moved branch can make the PRs into it conflict, which GitHub never announces."""
+    ref = payload.get("ref", "")
+    if payload.get("deleted") or not ref.startswith("refs/heads/"):
+        return
+    repo_data = payload.get("repository", {})
+    owner = repo_data.get("owner", {}).get("login", "")
+    repo = repo_data.get("name", "")
+    # Mergeability takes seconds to settle, longer than GitHub waits for a reply.
+    asyncio.create_task(_check_pulls_into(owner, repo, ref.removeprefix("refs/heads/")))
+
+
 async def _handle_pr_event(payload: dict):
-    """Handle pull_request event (labeled, closed, dequeued)."""
+    """Handle pull_request event (labeled, closed, dequeued, synchronize)."""
     action = payload.get("action", "")
+    if action == "synchronize":
+        pr = payload.get("pull_request", {})
+        repo_data = payload.get("repository", {})
+        asyncio.create_task(_notify_if_conflicting(
+            repo_data.get("owner", {}).get("login", ""), repo_data.get("name", ""), pr.get("number"),
+        ))
+        return
     if action == "closed":
         await _handle_pr_closed(payload)
         return

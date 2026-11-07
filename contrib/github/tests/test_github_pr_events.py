@@ -234,7 +234,7 @@ class TestPrClosed:
     @pytest.mark.asyncio
     async def test_other_actions_are_still_ignored(self, forwarded):
         payload = self._closed(merged=True)
-        payload["action"] = "synchronize"
+        payload["action"] = "edited"
         await gh._handle_pr_event(payload)
         assert not forwarded.called
 

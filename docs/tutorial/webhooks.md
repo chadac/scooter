@@ -84,7 +84,7 @@ kubectl -n scooter rollout restart deploy/agent-webhooks
 
 **Triggers:** a mention in an issue or PR comment, a review or a review comment, or adding
 the trigger label to an issue or PR. Once a conversation is linked, later comments and
-reviews are forwarded to it, and so are CI results on its PRs (`workflow_run`: a failure, and the first success after one) and a PR being merged or closed.
+reviews are forwarded to it, and so are CI results on its PRs (`workflow_run`: a failure, and the first success after one), a PR being merged or closed, and a PR starting to conflict with its base branch (`push`).
 
 1. **Generate a webhook secret** and add it to the Secret as `GITHUB_WEBHOOK_SECRET`.
 
@@ -95,7 +95,7 @@ reviews are forwarded to it, and so are CI results on its PRs (`workflow_run`: a
     - **Webhook URL:** `https://scooter-webhooks.example.com/webhooks/github`
     - **Webhook secret:** the `GITHUB_WEBHOOK_SECRET` value
     - **Subscribe to events:** *Issues*, *Issue comment*, *Pull request*, *Pull request
-      review*, *Pull request review comment* and *Workflow run*
+      review*, *Pull request review comment*, *Push* and *Workflow run*
 
     A plain repository or org webhook works too (Settings → Webhooks, content type
     `application/json`, the same URL, secret and events).
