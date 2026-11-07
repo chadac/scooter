@@ -18,6 +18,7 @@ from scooter_broker_lib.mcp import ToolContext, ToolContextDep, ToolResult
 
 from .boards import BoardError, Blocker, Boards, quote_blockers
 from .keys import CardKeys
+from .store import PRIORITIES
 from .transport import view
 
 logger = logging.getLogger(__name__)
@@ -61,12 +62,23 @@ def _describe(v: dict, blockers: list[Blocker]) -> str:
     )
     card = v["card"]
     if card is None:
-        return f'No status set yet; the card shows in "{v["column"]}". Stages: {stages}.{blocked}{_describe_tags(v)}'
+        return (
+            f'No status set yet; the card shows in "{v["column"]}". Stages: {stages}.'
+            f"{blocked}{_describe_tags(v)}{_describe_details(v)}"
+        )
     note = f' Note: "{card["note"]}".' if card["note"] else ""
     return (
         f'The card is in "{v["column"]}", last set by the {card["updated_by"]} at {card["updated_at"]}.'
-        f"{note} Stages: {stages}.{blocked}{_describe_tags(v)}"
+        f"{note} Stages: {stages}.{blocked}{_describe_tags(v)}{_describe_details(v)}"
     )
+
+
+def _describe_details(v: dict) -> str:
+    """The card's priority and description; nothing for those not set."""
+    d = v["details"]
+    priority = f" Priority: {d['priority']}." if d["priority"] != "none" else ""
+    description = f"\n\nDescription:\n{d['description']}" if d["description"] else ""
+    return priority + description
 
 
 def _describe_tags(v: dict) -> str:
@@ -111,13 +123,17 @@ async def kanban_set_status(column: str, note: str = "", ctx: ToolContext = Tool
     except BoardError as e:
         return ToolResult.error(f"{e.detail}.")
     tags = await _boards.tag_view(key, where.place.board)
-    v = view(card, where.stages, where.stage, **tags, stale_after=_stale_after, now=datetime.now(timezone.utc))
+    v = view(
+        card, where.stages, where.stage, **tags, details=await _boards.store.details(key),
+        stale_after=_stale_after, now=datetime.now(timezone.utc),
+    )
     return ToolResult.ok(_describe(v, blockers))
 
 
 @mcp.tool
 async def kanban_get_status(ctx: ToolContext = ToolContextDep) -> ToolResult:
-    """Read this conversation's stage, note and blockers on its kanban board, and the board's stages."""
+    """Read this conversation's card on its kanban board: its stage, note, blockers, tags,
+    priority and description, and the board's stages."""
     key = await _key(ctx)
     if isinstance(key, ToolResult):
         return key
@@ -129,7 +145,10 @@ async def kanban_get_status(ctx: ToolContext = ToolContextDep) -> ToolResult:
         return ToolResult.error(f"{e.detail}.")
     card = await _boards.store.card(key)
     tags = await _boards.tag_view(key, where.place.board)
-    v = view(card, where.stages, where.stage, **tags, stale_after=_stale_after, now=datetime.now(timezone.utc))
+    v = view(
+        card, where.stages, where.stage, **tags, details=await _boards.store.details(key),
+        stale_after=_stale_after, now=datetime.now(timezone.utc),
+    )
     return ToolResult.ok(_describe(v, blockers))
 
 
@@ -223,8 +242,37 @@ async def kanban_set_tags(tags: list[str], ctx: ToolContext = ToolContextDep) ->
         return ToolResult.error(f"{e.detail}.")
     card = await _boards.store.card(key)
     tagged = await _boards.tag_view(key, where.place.board)
-    v = view(card, where.stages, where.stage, **tagged, stale_after=_stale_after, now=datetime.now(timezone.utc))
+    v = view(
+        card, where.stages, where.stage, **tagged, details=await _boards.store.details(key),
+        stale_after=_stale_after, now=datetime.now(timezone.utc),
+    )
     return ToolResult.ok(_describe(v, blockers))
+
+
+@mcp.tool
+async def kanban_set_details(
+    description: str | None = None, priority: str | None = None, ctx: ToolContext = ToolContextDep
+) -> ToolResult:
+    """Set this conversation's card's description or priority on its kanban board; leave
+    one out to keep it.
+
+    `description` is markdown on what the card is for and what done looks like; write it
+    once the scope is clear and edit it when the scope changes, not every run. "" clears
+    it. `priority` is one of none, low, medium, high, urgent. The user may edit both.
+    """
+    key = await _key(ctx)
+    if isinstance(key, ToolResult):
+        return key
+    assert _boards is not None
+    if description is None and priority is None:
+        return ToolResult.error(f"Give a description, a priority ({', '.join(PRIORITIES)}), or both.")
+    try:
+        where = await _boards.locate(key)
+        details = await _boards.set_details(key, by="agent", description=description, priority=priority)
+    except BoardError as e:
+        return ToolResult.error(f"{e.detail}.")
+    said = "a description" if details.description else "no description"
+    return ToolResult.ok(f'The card in "{where.stage.name}" has priority {details.payload()["priority"]} and {said}.')
 
 
 def kanban_mcp_server() -> FastMCP:

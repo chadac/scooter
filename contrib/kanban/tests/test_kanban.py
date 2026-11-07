@@ -799,3 +799,78 @@ async def test_a_board_without_tags_says_nothing_of_them(app, boards, folders):
     folders.placements[("alice", "conv-1")] = board["folder"]
     mcp_tools.configure(boards, timedelta(minutes=30), _keys())
     assert "Tags" not in (await mcp_tools.kanban_get_status(ctx=_ctx())).text
+
+
+# --- details -----------------------------------------------------------------------
+
+async def test_the_user_edits_a_card_s_description_and_priority(app, boards, folders, store):
+    await _cards(app, boards, folders, "api")
+    async with as_(app, user="alice") as c:
+        r = await c.patch("/kanban/conversation/key-api/details", json={"description": "Add **routes**", "priority": "High"})
+        assert r.status_code == 200, r.text
+        assert (r.json()["description"], r.json()["priority"], r.json()["updated_by"]) == ("Add **routes**", "high", "user")
+        r = await c.patch("/kanban/conversation/key-api/details", json={"priority": "none"})
+        assert (r.json()["description"], r.json()["priority"]) == ("Add **routes**", "none")
+        assert (await c.get("/kanban/conversation/key-api/card")).json()["priority"] == "none"
+    # Editing details is not a move, so the agent owes no status for it.
+    assert await store.card("key-api") is None
+
+
+async def test_bad_details_are_refused(app, boards, folders):
+    await _cards(app, boards, folders, "api")
+    async with as_(app, user="alice") as c:
+        for body in [{}, {"priority": "soon"}, {"priority": 3}, {"description": ["x"]}]:
+            assert (await c.patch("/kanban/conversation/key-api/details", json=body)).status_code == 400, body
+    async with as_(app, user="bob") as c:
+        assert (await c.patch("/kanban/conversation/key-api/details", json={"priority": "low"})).status_code == 404
+
+
+async def test_the_agent_sets_its_card_s_details(app, boards, folders, store):
+    await _cards(app, boards, folders, "api")
+    api = _ctx("thread-api")
+    assert (await mcp_tools.kanban_set_details(ctx=api)).is_error
+    assert "one of none" in (await mcp_tools.kanban_set_details(priority="asap", ctx=api)).text
+    out = await mcp_tools.kanban_set_details(description="Routes for the board.", priority="urgent", ctx=api)
+    assert not out.is_error and "priority urgent" in out.text
+    assert (await store.details("key-api")).updated_by == "agent"
+    got = (await mcp_tools.kanban_get_status(ctx=api)).text
+    assert "Priority: urgent." in got and got.endswith("Description:\nRoutes for the board.")
+
+
+async def test_the_hooks_read_the_card_s_details(app, boards, folders):
+    board = await _cards(app, boards, folders, "api")
+    await mcp_tools.kanban_set_details(description="Routes.", ctx=_ctx("thread-api"))
+    async with as_(app, conversation="key-api") as c:
+        r = (await c.get("/kanban/card", params={"folder": _stage(board, "Design")})).json()
+    assert (r["details"]["description"], r["details"]["priority"]) == ("Routes.", "none")
+
+
+async def test_the_user_sets_blockers_and_sees_what_a_card_blocks(app, boards, folders):
+    await _cards(app, boards, folders, "ui", "api", "schema")
+    async with as_(app, user="alice") as c:
+        r = await c.put("/kanban/conversation/key-ui/card/blockers", json={"blocked_by": ["conv-api"]})
+        assert r.status_code == 200, r.text
+        assert [b["id"] for b in r.json()["blockers"]] == ["conv-api"]
+        r = await c.put("/kanban/conversation/key-api/card/blockers", json={"blocked_by": ["conv-ui"]})
+        assert r.status_code == 409 and "already waits on" in r.json()["detail"]
+        assert (await c.put("/kanban/conversation/key-ui/card/blockers", json={"blocked_by": "conv-api"})).status_code == 400
+        api = (await c.get("/kanban/conversation/key-api/details")).json()
+        assert api["blocking"] == [{"id": "conv-ui", "title": "Ui", "stage": "Design", "done": False}]
+        assert api["blocked_by"] == []
+        ui = (await c.get("/kanban/conversation/key-ui/details")).json()
+        assert [b["id"] for b in ui["blocked_by"]] == ["conv-api"]
+    async with as_(app, user="bob") as c:
+        r = await c.put("/kanban/conversation/key-ui/card/blockers", json={"blocked_by": []})
+        assert r.status_code == 409
+
+
+async def test_clearing_the_last_open_blocker_tells_the_agent(app, boards, folders):
+    sent = Sent()
+    boards.send = sent
+    await _cards(app, boards, folders, "ui", "api")
+    async with as_(app, user="alice") as c:
+        await c.put("/kanban/conversation/key-ui/card/blockers", json={"blocked_by": ["conv-api"]})
+        assert sent.messages == []
+        await c.put("/kanban/conversation/key-ui/card/blockers", json={"blocked_by": []})
+        await c.put("/kanban/conversation/key-ui/card/blockers", json={"blocked_by": []})
+    assert [c for c, _ in sent.messages] == ["conv-ui"] and "removed" in sent.messages[0][1]

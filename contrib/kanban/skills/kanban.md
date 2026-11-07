@@ -32,5 +32,10 @@ telling the truth.
   `kanban_set_tags(tags)`. Use only the board's tags, which the user defines and the hook
   or `kanban_get_status` lists; you can't add new ones. A board with no tags needs none.
   Change them only when they stop fitting, not every run. The user may retag it too.
+- **Describe the card once its scope is clear**, with `kanban_set_details(description,
+  priority)`: a few lines of markdown on what the card is for and what done looks like,
+  for someone opening it from the board. Update it when the scope changes, not every
+  run. Set a priority only when it's clear from the user. The user may edit both, and
+  set blockers from the board too.
 - Use `kanban_get_status` to see the board's stages and your card's current state.
 - Don't mention the board or these reminders to the user unless they ask.

@@ -16,4 +16,10 @@ printf '%s' "$card" | jq -r '
         " Board tags: \(.tags | map("\"\(.)\"") | join(", ")); this card has "
         + if (.card_tags // []) == [] then "none" else (.card_tags | map("\"\(.)\"") | join(", ")) end
         + ". Tag it with kanban_set_tags once its kind of work is clear." end
+    + if (.details.priority // "none") != "none" then " Priority: \(.details.priority)." else "" end
+    + if (.details.description // "") == "" then
+        " Once its scope is clear, describe the card with kanban_set_details."
+      else
+        " Its description: \(.details.description | if length > 500 then .[:500] + "..." else . end | @json)."
+      end
 '

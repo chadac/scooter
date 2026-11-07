@@ -13,13 +13,16 @@ import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
-from sqlalchemy import Float, String, Text, delete, func, select
+from sqlalchemy import Float, Integer, String, Text, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from scooter_broker_lib.store import StoreConfig, open_sessions
 
 MAX_NOTE_CHARS = 280
+MAX_DESCRIPTION_CHARS = 10_000
+# A priority's name is its index, as kanban_card_details stores it.
+PRIORITIES = ("none", "low", "medium", "high", "urgent")
 
 
 class _Base(DeclarativeBase):
@@ -90,6 +93,29 @@ class _CardTag(_Base):
 
     conversation_id: Mapped[str] = mapped_column(String, primary_key=True)
     tag_id: Mapped[str] = mapped_column(String, primary_key=True, index=True)
+
+
+class _Details(_Base):
+    """Mirrors `kanban_card_details` in contrib/kanban/sql/schema.sql."""
+
+    __tablename__ = "kanban_card_details"
+
+    conversation_id: Mapped[str] = mapped_column(String, primary_key=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    priority: Mapped[int] = mapped_column(Integer, default=0)
+    updated_by: Mapped[str] = mapped_column(String)
+    updated_at: Mapped[str] = mapped_column(String)
+
+
+@dataclass(frozen=True)
+class Details:
+    description: str = ""
+    priority: int = 0
+    updated_by: str = ""
+    updated_at: str = ""
+
+    def payload(self) -> dict:
+        return {**asdict(self), "priority": PRIORITIES[self.priority]}
 
 
 @dataclass(frozen=True)
@@ -336,6 +362,36 @@ class KanbanStore:
         async with self._session() as s, s.begin():
             await s.execute(delete(_CardTag).where(_CardTag.conversation_id == conversation_id))
             s.add_all(_CardTag(conversation_id=conversation_id, tag_id=t) for t in tag_ids)
+
+    async def details(self, conversation_id: str) -> Details:
+        """A card's description and priority; empty when none were set."""
+        async with self._session() as s:
+            row = await s.get(_Details, conversation_id)
+            return _details(row) if row else Details()
+
+    async def set_details(
+        self, conversation_id: str, *, by: str, description: str | None = None, priority: int | None = None
+    ) -> Details:
+        """Change a card's description or priority; None keeps it."""
+        async with self._session() as s, s.begin():
+            row = await s.get(_Details, conversation_id)
+            if row is None:
+                row = _Details(conversation_id=conversation_id, description="", priority=0)
+                s.add(row)
+            if description is not None:
+                row.description = description[:MAX_DESCRIPTION_CHARS]
+            if priority is not None:
+                row.priority = priority
+            row.updated_by = by
+            row.updated_at = now_iso()
+            await s.flush()
+            return _details(row)
+
+
+def _details(row: _Details) -> Details:
+    return Details(
+        description=row.description or "", priority=row.priority or 0, updated_by=row.updated_by, updated_at=row.updated_at
+    )
 
 
 def _tag(row: _Tag) -> Tag:

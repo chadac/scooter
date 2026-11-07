@@ -30,6 +30,7 @@ import {
   type ViewConversation,
   type ViewFolder,
 } from "@/src/contrib/sdk";
+import { CardDetails, PriorityMark } from "./Details.js";
 
 interface Stage {
   id: string;
@@ -71,12 +72,15 @@ interface CardView {
   blockers?: BlockerRow[];
   // Ids from any board; only this board's show.
   tags?: string[];
+  priority?: string;
 }
 
 // Agents move their own cards, and nothing pushes that here.
 const POLL_MS = 15_000;
 const CARD_MIME = "application/x-scooter-kanban-card";
 const MAX_CARD_TAGS = 5;
+// `tagging` while the Details tab's tag field is open.
+const DETAILS_TAGS = "details";
 
 // Literal class strings, so Tailwind sees each palette key's classes.
 const TAG_CLASS: Record<string, string> = {
@@ -215,6 +219,10 @@ function TagInput({
       )}
     </div>
   );
+}
+
+function updatedLine(card: CardRow | null | undefined): string {
+  return card ? `${card.updated_by === "agent" ? "Agent" : "You"} · ${ago(card.updated_at)}` : "No status yet";
 }
 
 function ago(iso: string): string {
@@ -447,6 +455,7 @@ function Board({
   const [newTag, setNewTag] = useState("");
   // The card whose tag field is open.
   const [tagging, setTagging] = useState<string | null>(null);
+  const [tab, setTab] = useState<"chat" | "details">("chat");
   const openId = useOpenConversation();
   const live = useRef(true);
   useEffect(() => {
@@ -500,6 +509,9 @@ function Board({
   const order = useMemo(() => stages.flatMap((s) => lanes[s.id] ?? []), [stages, lanes]);
   const at = order.findIndex((c) => c.id === openId);
   const showing = panel && (at >= 0 || openId === null);
+  const openConv = at >= 0 ? order[at] : undefined;
+  // A new conversation has no card yet, so it shows its chat.
+  const shownTab = openConv ? tab : "chat";
   const step = (by: -1 | 1) => {
     const next = order[at + by];
     if (next) openConversation(next.id);
@@ -566,7 +578,7 @@ function Board({
   const setTags = useCallback(
     async (id: string, next: string[]) => {
       const prev = cards[id];
-      setCards((p) => ({ ...p, [id]: { card: p[id]?.card ?? null, tags: next } }));
+      setCards((p) => ({ ...p, [id]: { ...p[id], card: p[id]?.card ?? null, tags: next } }));
       const ok = await conversationApi("kanban", id, "card/tags", { method: "PUT", json: { tags: next } })
         .then((r) => r.ok)
         .catch(() => false);
@@ -924,6 +936,7 @@ function Board({
                         >
                           {conv.dot && <StatusDot dot={conv.dot} />}
                           <span className="line-clamp-2 font-medium">{conv.title}</span>
+                          <PriorityMark priority={cards[conv.id]?.priority} />
                         </button>
                         <Button
                           size="icon-xs"
@@ -966,7 +979,7 @@ function Board({
                         </p>
                       )}
                       <div className="mt-1.5 flex items-center gap-2 text-[11px] text-muted-foreground">
-                        <span>{card ? `${card.updated_by === "agent" ? "Agent" : "You"} · ${ago(card.updated_at)}` : "No status yet"}</span>
+                        <span>{updatedLine(card)}</span>
                         {waiting.length > 0 && (
                           <span
                             data-testid="kanban-blocked-by"
@@ -1036,9 +1049,65 @@ function Board({
                 Close
               </Button>
             </div>
-            <div className="min-h-0 flex-1">
+            <div role="tablist" aria-label="Card" className="flex gap-1 border-b px-2 text-sm">
+              {(["chat", "details"] as const).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  role="tab"
+                  data-testid={`kanban-tab-${t}`}
+                  aria-selected={shownTab === t}
+                  disabled={t === "details" && !openConv}
+                  onClick={() => setTab(t)}
+                  className={cn(
+                    "-mb-px border-b-2 px-2 py-1.5 disabled:opacity-50",
+                    shownTab === t ? "border-primary font-medium" : "border-transparent text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {t === "chat" ? "Chat" : "Details"}
+                </button>
+              ))}
+            </div>
+            {/* Hidden, not unmounted, so the draft and scroll survive a switch. */}
+            <div role="tabpanel" className={cn("min-h-0 flex-1", shownTab !== "chat" && "hidden")}>
               <ChatPanel />
             </div>
+            {shownTab === "details" && openConv && (
+              <div role="tabpanel" className="flex min-h-0 flex-1 flex-col">
+                <CardDetails
+                  key={openConv.id}
+                  conv={openConv}
+                  stages={stages}
+                  stage={stageOf(openConv)}
+                  note={cards[openConv.id]?.card?.note}
+                  updated={updatedLine(cards[openConv.id]?.card)}
+                  board={order}
+                  move={(column) => void move(openConv.id, column)}
+                  open={openConversation}
+                  changed={() => void loadCard(openConv.id).catch(() => undefined)}
+                  tagField={
+                    tagging === DETAILS_TAGS ? (
+                      <TagInput
+                        tags={tags}
+                        chosen={tagsOf(openConv.id)}
+                        change={(ids) => void setTags(openConv.id, ids)}
+                        create={createTag}
+                        close={() => setTagging(null)}
+                      />
+                    ) : (
+                      <div className="flex flex-wrap items-center gap-1">
+                        {tagsOf(openConv.id).map((t) => (
+                          <TagChip key={t.id} tag={t} />
+                        ))}
+                        <Button size="sm" variant="ghost" data-testid="kanban-details-edit-tags" onClick={() => setTagging(DETAILS_TAGS)}>
+                          <TagIcon aria-hidden /> {tagsOf(openConv.id).length ? "Edit" : "Add tags"}
+                        </Button>
+                      </div>
+                    )
+                  }
+                />
+              </div>
+            )}
           </aside>
         )}
       </div>

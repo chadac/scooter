@@ -33,6 +33,8 @@ async function serveKanban(page: Page, request: APIRequestContext, base: string)
   const cards: Record<string, { column: string; position: number; note: string; updated_by: string; updated_at: string }> = {};
   const puts: Array<{ id: string; body: { column: string } }> = [];
   const blockers: Record<string, string[]> = {};
+  const details: Record<string, { description: string; priority: string }> = {};
+  const related = (ids: string[]) => ids.map((b) => ({ id: b, title: b, stage: "Design", done: false }));
   const folder = async (name: string, parentId?: string) =>
     ((await (await request.post(`${base}/folders`, { data: { name, parentId } })).json()) as { id: string }).id;
   const board = async (name: string) => {
@@ -114,12 +116,29 @@ async function serveKanban(page: Page, request: APIRequestContext, base: string)
       contentType: "application/json",
       body: JSON.stringify({
         card: card && { conversation_id: id, ...card },
-        blockers: (blockers[id] ?? []).map((b) => ({ id: b, title: b, stage: "Design", done: false })),
+        blockers: related(blockers[id] ?? []),
         tags: cardTags[id] ?? [],
+        priority: details[id]?.priority ?? "none",
       }),
     });
   });
-  return { boards, cards, cardTags, puts, board, blockers };
+  await page.route(/\/conversations\/([^/]+)\/contrib-api\/kanban\/card\/blockers$/, async (route) => {
+    const id = /\/conversations\/([^/]+)\//.exec(route.request().url())![1];
+    blockers[id] = (route.request().postDataJSON() as { blocked_by: string[] }).blocked_by;
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ blockers: related(blockers[id]) }) });
+  });
+  await page.route(/\/conversations\/([^/]+)\/contrib-api\/kanban\/details$/, async (route) => {
+    const id = /\/conversations\/([^/]+)\//.exec(route.request().url())![1];
+    const row = (details[id] ??= { description: "", priority: "none" });
+    if (route.request().method() === "PATCH") Object.assign(row, route.request().postDataJSON());
+    const blocking = Object.keys(blockers).filter((k) => blockers[k].includes(id));
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ...row, updated_by: "user", updated_at: "", blocked_by: related(blockers[id] ?? []), blocking: related(blocking) }),
+    });
+  });
+  return { boards, cards, cardTags, puts, board, blockers, details };
 }
 
 const threadId = (page: Page) => new URL(page.url()).searchParams.get("thread");
@@ -421,5 +440,66 @@ fastOnly("the kanban broker routes are stubbed in the browser")("kanban /boards 
     await expect(card(api)).toHaveAttribute("data-blocked", "true", { timeout: 20_000 });
     await expect(card(api).getByTestId("kanban-blocked-by")).toHaveText("Blocked by 1");
     await expect(card(schema).getByTestId("kanban-blocked-by")).toHaveCount(0);
+  });
+
+  test("the Details tab edits a card's priority, description and blockers, and keeps the chat", async ({ chat, page, request, baseURL }) => {
+    const base = baseURL ?? "http://localhost:5173";
+    const kanban = await serveKanban(page, request, base);
+    const board = await kanban.board(`e2e-board-details-${Date.now()}`);
+    const design = board.stages[0].id;
+    const ids: string[] = [];
+    for (const text of ["schema work", "api work"]) {
+      await chat.open();
+      await page.locator('[data-testid="new-session"]').click();
+      await chat.send(text);
+      await chat.waitForReply(/dummy agent/i);
+      await expect.poll(() => threadId(page)).not.toBe(ids.at(-1) ?? null);
+      ids.push(threadId(page)!);
+      await request.put(`${base}/conversations/${ids.at(-1)}/folder`, { data: { folderId: design } });
+    }
+    const [schema, api] = ids;
+    const card = (id: string) => page.locator(`[data-testid="kanban-card"][data-conversation-id="${id}"]`);
+
+    await page.goto(`/boards/${board.folder}`);
+    await card(api).getByRole("button").first().click();
+    const side = page.getByTestId("kanban-chat");
+    await expect(side.getByTestId("kanban-tab-chat")).toHaveAttribute("aria-selected", "true");
+    await side.getByTestId("kanban-tab-details").click();
+    const details = side.getByTestId("kanban-details");
+    await expect(details).toBeVisible();
+
+    // High priority marks the card on the board.
+    await expect(card(api).getByTestId("kanban-card-priority")).toHaveCount(0);
+    await details.getByTestId("kanban-details-priority").selectOption("high");
+    await expect.poll(() => kanban.details[api]?.priority).toBe("high");
+    await expect(card(api).getByTestId("kanban-card-priority")).toHaveText("High");
+
+    // The description saves on blur and renders as markdown.
+    await details.getByTestId("kanban-description-add").click();
+    await details.getByTestId("kanban-description-edit").fill("Add the **details** route");
+    await details.getByText("Priority").click();
+    await expect.poll(() => kanban.details[api]?.description).toBe("Add the **details** route");
+    await expect(details.getByTestId("kanban-description").locator("strong")).toHaveText("details");
+
+    // A blocker found by title blocks the card; removing it frees it.
+    await details.getByTestId("kanban-add-blocker").click();
+    await details.getByTestId("kanban-blocker-search").fill("schema");
+    await details.getByTestId("kanban-blocker-choice").first().click();
+    await expect.poll(() => kanban.blockers[api]).toEqual([schema]);
+    await expect(details.getByTestId("kanban-related")).toHaveCount(1);
+    await expect(card(api)).toHaveAttribute("data-blocked", "true");
+    await details.getByTestId("kanban-remove-blocker").click();
+    await expect.poll(() => kanban.blockers[api]).toEqual([]);
+    await expect(card(api)).not.toHaveAttribute("data-blocked");
+
+    // The blocked card lists what it blocks, read-only.
+    kanban.blockers[api] = [schema];
+    await card(schema).getByRole("button").first().click();
+    await expect(details.getByTestId("kanban-details-blocking").getByTestId("kanban-related")).toHaveCount(1);
+    await expect(details.getByTestId("kanban-remove-blocker")).toHaveCount(0);
+
+    // Back on Chat, the open card's thread is there.
+    await side.getByTestId("kanban-tab-chat").click();
+    await expect(side.getByText(/schema work/).first()).toBeVisible();
   });
 });
