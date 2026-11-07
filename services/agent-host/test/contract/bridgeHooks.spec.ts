@@ -6,7 +6,7 @@ import { createSessionBridge, type AguiEvent } from "../../src/bridge.js";
 import type { AcpClient, PromptParams, SessionUpdate } from "../../src/acp/client.js";
 import { createFakeSandboxApi } from "../fakes/fakeSandboxApi.js";
 import { createSandboxExecBackend } from "../../src/exec/sandboxExec.js";
-import type { HookEvent, HookOutcome, HookRunner } from "../../src/hooks/types.js";
+import type { HookEvent, HookFolder, HookOutcome, HookRunner } from "../../src/hooks/types.js";
 
 type Turn = { text?: string; updates?: SessionUpdate[] };
 
@@ -58,7 +58,11 @@ function scriptedHooks(answer: (event: HookEvent, input: Record<string, unknown>
   return { runner, calls };
 }
 
-function makeBridge(agent: AcpClient, hooks: HookRunner, extra: { maxStopBlocks?: number; parentId?: () => string | undefined; untitled?: () => boolean } = {}) {
+function makeBridge(
+  agent: AcpClient,
+  hooks: HookRunner,
+  extra: { maxStopBlocks?: number; parentId?: () => string | undefined; untitled?: () => boolean; folder?: () => Promise<HookFolder | null> } = {},
+) {
   const exec = createSandboxExecBackend(createFakeSandboxApi());
   const bridge = createSessionBridge({
     config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
@@ -216,5 +220,32 @@ describe("bridge untitled fact", () => {
 
   it("counts a <title> marker whose save is still in flight as named", async () => {
     expect(await stopFacts(() => true, "<title>Fix the thing</title>Done.")).toBe(false);
+  });
+});
+
+describe("bridge folder fact", () => {
+  it("tells every hook the owner's folder, reading it once per run", async () => {
+    const agent = scriptedAgent([{ text: "Done." }]);
+    const hooks = scriptedHooks(() => undefined);
+    let reads = 0;
+    const folder = async () => {
+      reads++;
+      return { id: "f1", name: "Infra" };
+    };
+    const { bridge } = makeBridge(agent.client, hooks.runner, { folder });
+    await bridge.prompt({ threadId: "t", text: "fix it" });
+    const seen = hooks.calls.map((c) => (c.input.scooter as Record<string, unknown>).folder);
+    expect(seen.length).toBeGreaterThan(1);
+    for (const f of seen) expect(f).toEqual({ id: "f1", name: "Infra" });
+    expect(reads).toBe(1);
+  });
+
+  it("passes null when the read fails, so filed hooks skip", async () => {
+    const agent = scriptedAgent([{ text: "Done." }]);
+    const hooks = scriptedHooks(() => undefined);
+    const { bridge } = makeBridge(agent.client, hooks.runner, { folder: () => Promise.reject(new Error("db down")) });
+    await bridge.prompt({ threadId: "t", text: "fix it" });
+    const stop = hooks.calls.find((c) => c.event === "Stop")!;
+    expect((stop.input.scooter as Record<string, unknown>).folder).toBeNull();
   });
 });

@@ -89,6 +89,19 @@ export interface ContribMarkdownFence {
   entry: string;
 }
 
+
+/** A contrib's alternate view at `/<id>`, keyed by that id. */
+export interface ContribView {
+  /** The contrib that declared it. */
+  contrib: string;
+  /** Its name in the header's view switcher. */
+  label: string;
+  /** Sort key among contrib views in the switcher. */
+  order: number;
+  /** `<contrib>/ui/<file>.tsx`, the key into the lazy module table (contribTabs.tsx). */
+  entry: string;
+}
+
 /** The whole `/contrib/manifest.json` document, normalized: the loader fills every
  *  absent key with an empty value, so consumers never branch on undefined. */
 export interface ContribManifest {
@@ -110,4 +123,6 @@ export interface ContribManifest {
   panels: Record<string, ContribPanel>;
   /** Contrib fenced-block renderers, keyed by fence language. */
   markdownFences: Record<string, ContribMarkdownFence>;
+  /** Contrib alternate views, keyed by view id. */
+  views: Record<string, ContribView>;
 }

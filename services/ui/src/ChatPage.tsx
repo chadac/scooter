@@ -9,7 +9,7 @@
  * see it (or it doesn't exist), which the page says rather than showing an empty thread.
  */
 
-import { useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import { ExternalLink } from "lucide-react";
 
 import { RuntimeProvider, useConversationInterrupts } from "./RuntimeProvider.js";
@@ -17,7 +17,7 @@ import { ConversationArea, SandboxStatusPill } from "./App.js";
 import { HeaderConversationTitle } from "./HeaderConversationTitle.js";
 import { InterruptList } from "./InterruptPanel.js";
 import { ThemePicker } from "./ThemePicker.js";
-import { useSessions } from "./sessions.js";
+import { sessionStore, useSessions } from "./sessions.js";
 import { appPathFor } from "./chatRoute.js";
 import { SCOOTER_MARK } from "./brandMark.js";
 
@@ -61,11 +61,44 @@ function Placeholder({ testId, children }: { testId: string; children: React.Rea
   );
 }
 
-export function ChatPage({ conversationId }: { conversationId: string }) {
+/** Whether `conversationId` is listed, and open, so its thread may render. */
+function usePinned(conversationId: string | undefined) {
   const { sessions, currentId } = useSessions();
   const loaded = useSyncExternalStore(chatListStatus.subscribe, chatListStatus.get, chatListStatus.get);
+  if (conversationId === undefined) return { listed: true, loaded, ready: true };
   const listed = sessions.some((s) => s.id === conversationId);
-  const ready = listed && currentId === conversationId;
+  return { listed, loaded, ready: listed && currentId === conversationId };
+}
+
+/**
+ * One conversation's pending approvals and thread, without the app around it: the body of
+ * this page, and what a contrib view embeds. With an id it opens that conversation;
+ * without one it shows whichever is open, a fresh draft included.
+ */
+export function ChatPanel({ conversationId }: { conversationId?: string }) {
+  const { listed, loaded, ready } = usePinned(conversationId);
+  useEffect(() => {
+    if (conversationId !== undefined && listed) sessionStore.requestSelect(conversationId);
+  }, [conversationId, listed]);
+  if (ready) {
+    return (
+      <div data-testid="chat-panel" className="flex h-full min-h-0 flex-col">
+        <PendingApprovals />
+        <div className="min-h-0 flex-1">
+          <ConversationArea />
+        </div>
+      </div>
+    );
+  }
+  return loaded && !listed ? (
+    <Placeholder testId="chat-page-not-found">This conversation doesn't exist, or you don't have access to it.</Placeholder>
+  ) : (
+    <Placeholder testId="chat-page-loading">Loading conversation…</Placeholder>
+  );
+}
+
+export function ChatPage({ conversationId }: { conversationId: string }) {
+  const { ready } = usePinned(conversationId);
 
   return (
     <RuntimeProvider>
@@ -94,20 +127,7 @@ export function ChatPage({ conversationId }: { conversationId: string }) {
           </div>
         </header>
         <main className="flex min-h-0 flex-1 flex-col">
-          {ready ? (
-            <>
-              <PendingApprovals />
-              <div className="min-h-0 flex-1">
-                <ConversationArea />
-              </div>
-            </>
-          ) : loaded && !listed ? (
-            <Placeholder testId="chat-page-not-found">
-              This conversation doesn't exist, or you don't have access to it.
-            </Placeholder>
-          ) : (
-            <Placeholder testId="chat-page-loading">Loading conversation…</Placeholder>
-          )}
+          <ChatPanel conversationId={conversationId} />
         </main>
       </div>
     </RuntimeProvider>

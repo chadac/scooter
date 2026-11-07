@@ -915,3 +915,40 @@ export async function requestRemoteAgentJoinToken(config: AgentHostConfig): Prom
   }
   return (await res.json()) as JoinTokenResult;
 }
+
+const PROMPT_ACCEPT_MS = 5000;
+
+/** Queue a user message on a conversation, resolving once the agent-host accepted it. */
+export async function promptConversation(config: AgentHostConfig, conversationId: string, text: string): Promise<boolean> {
+  const ctl = new AbortController();
+  try {
+    const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/agui`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+        ...(config.token ? { Authorization: `Bearer ${config.token}` } : {}),
+      },
+      body: JSON.stringify({ threadId: conversationId, messages: [{ role: "user", content: text }] }),
+      credentials: "same-origin",
+      signal: ctl.signal,
+    });
+    if (!res.ok || !res.body) {
+      console.warn(`[client] promptConversation ${conversationId}: HTTP ${res.status}`);
+      return false;
+    }
+    // A quiet stream means queued; only a first RUN_ERROR is a refusal.
+    const reader = res.body.getReader();
+    const first = await Promise.race([
+      reader.read(),
+      new Promise<null>((r) => setTimeout(() => r(null), PROMPT_ACCEPT_MS)),
+    ]);
+    if (!first || first.done) return first === null;
+    return !/"type"\s*:\s*"RUN_ERROR"/.test(new TextDecoder().decode(first.value));
+  } catch (e) {
+    console.warn(`[client] promptConversation ${conversationId} failed:`, e);
+    return false;
+  } finally {
+    ctl.abort();
+  }
+}

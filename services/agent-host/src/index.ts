@@ -88,6 +88,7 @@ import { createPgUserSkillStore } from "./session/userSkillStore.js";
 import { createHookRunner, parseHooks } from "./hooks/runner.js";
 import { createSkillProviderRegistry, parseSkillProviders, type SkillProviderDef } from "./agent/skillProviders.js";
 import type { HookDef, HookRunner } from "./hooks/types.js";
+import { createPgFolderReader } from "./hooks/folderReader.js";
 import { createPgUserHookSettingsStore } from "./hooks/userHookSettingsStore.js";
 import { createMemoryIdentityRegistry, createPgIdentityRegistry } from "./session/identityRegistry.js";
 import { conversationTree, createMemoryAuthorStore, createPgAuthorStore, isOwnText, type Author } from "./session/authorStore.js";
@@ -1086,6 +1087,7 @@ export async function main(
     : createMemoryAuthorStore({ family: (id) => conversationTree(sessions, id) });
   // Without a database every hook stays on.
   const userHookSettings = agentHostDsn ? createPgUserHookSettingsStore({ dsn: agentHostDsn }) : undefined;
+  const hookFolders = agentHostDsn && (config.hooks ?? []).length > 0 ? createPgFolderReader({ dsn: agentHostDsn }) : undefined;
   const hooksLog = logger("hooks");
   hostLog.info("conversation hooks", {
     hooks: (config.hooks ?? []).map((h) => `${h.id}@${h.event}`),
@@ -2216,6 +2218,7 @@ export async function main(
         const c = sessions.get(conversationId as SessionId);
         return c !== undefined && !c.userTitled && isPlaceholderTitle(c.title);
       },
+      folder: hookFolders ? () => hookFolders.folderOf(owner ?? "", conversationId) : undefined,
       onRunComplete: ({ acpSessionId, durationMs, outcome }) => {
         // Attribute cost to the conversation owner, resolving the email async without
         // blocking the run.

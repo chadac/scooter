@@ -66,6 +66,7 @@ export function matches(matcher: string, target: string | undefined): boolean {
 export function holds(when: HookCondition | undefined, input: Record<string, unknown>): boolean {
   if (when === undefined) return true;
   const facts = (input.scooter ?? {}) as Record<string, unknown>;
+  if (when === "filed") return facts.folder != null;
   return facts[when] === true;
 }
 

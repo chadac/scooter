@@ -19,7 +19,7 @@ in
         When the hook runs. `Stop` fires each time the agent tries to end its turn, and a
         block sends it back to work with the hook's reason. `PreToolUse` can refuse or rewrite
         a tool call. Inputs and outputs follow Claude Code's hooks reference, plus a `scooter`
-        object (conversation_id, owner, provider, run_id, source, and stop_blocks on Stop).
+        object (conversation_id, owner, provider, run_id, source, folder, and stop_blocks on Stop).
       '';
     };
 
@@ -45,11 +45,12 @@ in
     };
 
     when = mkOption {
-      type = types.nullOr (types.enum [ "untitled" ]);
+      type = types.nullOr (types.enum [ "untitled" "filed" ]);
       default = null;
       description = ''
         A precondition agent-host checks itself before running the hook, so other events
         cost no sandbox exec. `untitled`: the conversation has no title yet (Stop only).
+        `filed`: the owner filed the conversation in one of their folders.
       '';
     };
 

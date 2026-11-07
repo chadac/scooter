@@ -4,8 +4,14 @@ export const HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "PreToolUse", "P
 export type HookEvent = (typeof HOOK_EVENTS)[number];
 
 /** In-process preconditions, so a rare hook costs no sandbox exec. */
-export const HOOK_CONDITIONS = ["untitled"] as const;
+export const HOOK_CONDITIONS = ["untitled", "filed"] as const;
 export type HookCondition = (typeof HOOK_CONDITIONS)[number];
+
+/** The owner's folder for a conversation, as hooks see it. */
+export interface HookFolder {
+  id: string;
+  name: string;
+}
 
 /** One row of AGENT_HOOKS_JSON. */
 export interface HookDef {

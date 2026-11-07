@@ -5,6 +5,7 @@
  *   /                     -> chat
  *   /settings             -> settings, first tab
  *   /settings/<tab>       -> settings, that tab (built-in or contrib; see resolveTab)
+ *   /<view>[/<path>]      -> a contrib view from the manifest (`ui.views`), reading `path`
  *
  * Navigation uses history.pushState and listens to popstate so Back/Forward work, and
  * nginx serves the SPA with `try_files $uri $uri/ /index.html` so a hard refresh on a
@@ -13,7 +14,17 @@
 
 import { useSyncExternalStore } from "react";
 
-export type View = "chat" | "settings";
+import { contribViews } from "./contribManifest.js";
+
+export type View = "chat" | "settings" | "contrib";
+
+/** Where the app is; `viewId` and `viewPath` are set only on a contrib view. */
+export interface Route {
+  view: View;
+  tab: SettingsTab;
+  viewId?: string;
+  viewPath?: string;
+}
 
 /** The built-in settings tabs; `id` is the URL segment and `order` places them among
  *  contrib tabs (contrib/README.md tells contribs to pick around these). */
@@ -40,9 +51,13 @@ export const isBuiltinTab = (v: string): v is BuiltinTab => SETTINGS_TABS.some((
 
 /** Parse a pathname into the view and tab. A slug-shaped segment is kept as-is even if it
  *  is not a built-in, since it may be a contrib tab; resolveTab decides once the manifest
- *  is in. Anything else falls back to the default tab. */
-export function parsePath(pathname: string): { view: View; tab: SettingsTab } {
+ *  is in. Anything else falls back to the default tab. A first segment naming one of
+ *  `views` is that contrib view, and the rest of the path is its own. */
+export function parsePath(pathname: string, views: readonly string[] = Object.keys(contribViews())): Route {
   const parts = pathname.split("/").filter(Boolean);
+  if (parts[0] && views.includes(parts[0])) {
+    return { view: "contrib", tab: DEFAULT_TAB, viewId: parts[0], viewPath: parts.slice(1).join("/") };
+  }
   if (parts[0] !== "settings") return { view: "chat", tab: DEFAULT_TAB };
   const seg = parts[1] ?? "";
   return { view: "settings", tab: TAB_SLUG.test(seg) ? seg : DEFAULT_TAB };
@@ -74,14 +89,13 @@ export function resolveTab(tab: SettingsTab, list: readonly TabRow[]): SettingsT
   return list.some((t) => t.id === tab) ? tab : DEFAULT_TAB;
 }
 
-/** The URL for a view/tab — the single place paths are constructed. */
-export function pathFor(view: View, tab: SettingsTab = DEFAULT_TAB): string {
+/** The URL for a route — the single place paths are constructed. */
+export function pathFor(view: View, tab: SettingsTab = DEFAULT_TAB, viewId?: string, viewPath = ""): string {
+  if (view === "contrib" && viewId) return viewPath ? `/${viewId}/${viewPath}` : `/${viewId}`;
   return view === "settings" ? `/settings/${tab}` : "/";
 }
 
-let state: { view: View; tab: SettingsTab } = parsePath(
-  globalThis.location?.pathname ?? "/",
-);
+let state: Route = parsePath(globalThis.location?.pathname ?? "/");
 let snapshot = state; // stable reference for useSyncExternalStore
 const listeners = new Set<() => void>();
 const emit = () => {
@@ -89,16 +103,22 @@ const emit = () => {
   listeners.forEach((l) => l());
 };
 
+const same = (a: Route, b: Route) =>
+  a.view === b.view && a.tab === b.tab && a.viewId === b.viewId && a.viewPath === b.viewPath;
+
 /** Apply a state change and push it to the URL; `replace` skips the history entry. */
-function go(next: { view: View; tab: SettingsTab }, replace = false) {
-  if (next.view === state.view && next.tab === state.tab) return;
+function go(next: Route, replace = false) {
+  if (same(next, state)) return;
   state = next;
   const url = new URL(globalThis.location.href);
-  url.pathname = pathFor(next.view, next.tab);
+  url.pathname = pathFor(next.view, next.tab, next.viewId, next.viewPath);
   // Preserving ?thread= means Back to chat restores the same conversation.
   if (!replace) globalThis.history.pushState(null, "", url);
   emit();
 }
+
+/** A view path without leading or trailing slashes. */
+const trimSlashes = (p: string) => p.split("/").filter(Boolean).join("/");
 
 export const viewStore = {
   /** Switch the top-level view; settings lands on the default tab. */
@@ -109,16 +129,21 @@ export const viewStore = {
   setTab(tab: SettingsTab) {
     go({ view: "settings", tab });
   },
+  /** Open a contrib view, at `path` within it. */
+  openView(viewId: string, path = "") {
+    go({ view: "contrib", tab: state.tab, viewId, viewPath: trimSlashes(path) });
+  },
   get(): View {
     return state.view;
   },
   getTab(): SettingsTab {
     return state.tab;
   },
-  /** Re-derive from the current URL — for popstate (Back/Forward). */
+  /** Re-derive from the current URL — for popstate (Back/Forward), and once the manifest
+   *  has named the contrib views. */
   syncFromUrl() {
     const next = parsePath(globalThis.location?.pathname ?? "/");
-    if (next.view === state.view && next.tab === state.tab) return;
+    if (same(next, state)) return;
     state = next;
     emit();
   },
@@ -142,4 +167,9 @@ export function useView(): View {
 
 export function useSettingsTab(): SettingsTab {
   return useSyncExternalStore(subscribe, () => snapshot.tab, () => snapshot.tab);
+}
+
+/** The whole route, for a contrib view's id and path. */
+export function useRoute(): Route {
+  return useSyncExternalStore(subscribe, () => snapshot, () => snapshot);
 }

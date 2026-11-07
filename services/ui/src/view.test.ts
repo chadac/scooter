@@ -102,3 +102,23 @@ describe("tab list and resolution", () => {
     expect(resolveTab("skills", settingsTabList({}))).toBe("skills");
   });
 });
+
+describe("contrib view routing", () => {
+  const views = ["roadmap"];
+
+  it("routes /<view> and /<view>/<path> to that view", () => {
+    expect(parsePath("/roadmap", views)).toEqual({ view: "contrib", tab: DEFAULT_TAB, viewId: "roadmap", viewPath: "" });
+    expect(parsePath("/roadmap/f1/x/", views)).toEqual({ view: "contrib", tab: DEFAULT_TAB, viewId: "roadmap", viewPath: "f1/x" });
+  });
+
+  it("treats a view the manifest does not ship as chat", () => {
+    expect(parsePath("/roadmap", []).view).toBe("chat");
+    expect(parsePath("/other", views).view).toBe("chat");
+  });
+
+  it("round-trips through pathFor", () => {
+    expect(pathFor("contrib", DEFAULT_TAB, "roadmap")).toBe("/roadmap");
+    expect(pathFor("contrib", DEFAULT_TAB, "roadmap", "f1")).toBe("/roadmap/f1");
+    expect(parsePath(pathFor("contrib", DEFAULT_TAB, "roadmap", "f1"), views).viewPath).toBe("f1");
+  });
+});

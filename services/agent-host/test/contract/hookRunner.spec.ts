@@ -185,13 +185,24 @@ describe("hook preconditions (when)", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("runs a filed hook only in a conversation filed in a folder", async () => {
+    const { exec, calls } = fakeExec(() => ok("", 2, "update the card"));
+    const runner = createHookRunner({ exec, hooks: [hook({ when: "filed" })] });
+    expect((await runner.run("Stop", { scooter: { folder: null } })).block).toBeUndefined();
+    expect((await runner.run("Stop", { scooter: {} })).block).toBeUndefined();
+    expect(calls).toHaveLength(0);
+    expect((await runner.run("Stop", { scooter: { folder: { id: "f", name: "Work" } } })).block).toBe("update the card");
+    expect(calls).toHaveLength(1);
+  });
+
   it("parses known conditions and drops rows with unknown ones", () => {
     const out = parseHooks(
       JSON.stringify([
         { id: "a", event: "Stop", command: "x", when: "untitled" },
         { id: "b", event: "Stop", command: "x", when: "sunny" },
+        { id: "c", event: "Stop", command: "x", when: "filed" },
       ]),
     );
-    expect(out.map((h) => [h.id, h.when])).toEqual([["a", "untitled"]]);
+    expect(out.map((h) => [h.id, h.when])).toEqual([["a", "untitled"], ["c", "filed"]]);
   });
 });

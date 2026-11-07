@@ -22,6 +22,7 @@ import {
   contribInterruptRenderers,
   contribPanels,
   contribMarkdownFences,
+  contribViews,
 } from "./contribManifest.js";
 import { sourceLabel, SourceBadge } from "./sourceIcon.js";
 import { matchToolCall } from "./toolCallView.js";
@@ -321,5 +322,34 @@ describe("panels and markdown fences", () => {
     await loadContribManifest();
     expect(contribPanels()).toEqual({});
     expect(contribMarkdownFences()).toEqual({});
+  });
+});
+
+describe("views", () => {
+  const ROADMAP = { contrib: "demo", label: "Roadmap", order: 100, entry: "demo/ui/Roadmap.tsx" };
+
+  it("keeps a well-formed view", async () => {
+    serve({ views: { roadmap: ROADMAP } });
+    await loadContribManifest();
+    expect(contribViews()).toEqual({ roadmap: ROADMAP });
+  });
+
+  it("drops a view with a bad id, another contrib's module or no order", async () => {
+    serve({
+      views: {
+        roadmap: ROADMAP,
+        Roadmap: ROADMAP,
+        foreign: { ...ROADMAP, entry: "other/ui/Roadmap.tsx" },
+        unordered: { contrib: "demo", label: "X", entry: "demo/ui/Roadmap.tsx" },
+      },
+    });
+    await loadContribManifest();
+    expect(Object.keys(contribViews())).toEqual(["roadmap"]);
+  });
+
+  it("is empty when the manifest has none", async () => {
+    serve({});
+    await loadContribManifest();
+    expect(contribViews()).toEqual({});
   });
 });

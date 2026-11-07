@@ -1,6 +1,6 @@
 /**
  * The deployment's contrib UI metadata (brand rows, tool cards, filter chips,
- * settings tabs, Approvals-tab cards, right-panel tabs, fenced-block renderers),
+ * settings tabs, Approvals-tab cards, right-panel tabs, fenced-block renderers, views),
  * fetched at runtime from `/contrib/manifest.json`, which the UI's nginx serves from
  * the contrib set that deployment enabled. Loading never throws: a 404, a network
  * error, a timeout or a malformed body all mean "no contribs", and the app renders its
@@ -14,6 +14,7 @@ import type {
   ContribInterruptRenderer,
   ContribManifest,
   ContribMarkdownFence,
+  ContribView,
   ContribPanel,
   ContribSettingsTab,
   ContribSource,
@@ -37,6 +38,7 @@ const EMPTY: ContribManifest = {
   interruptRenderers: {},
   panels: {},
   markdownFences: {},
+  views: {},
 };
 
 let manifest: ContribManifest = EMPTY;
@@ -112,6 +114,16 @@ function asMarkdownFence(lang: string, v: unknown): ContribMarkdownFence | undef
   return { contrib: r.contrib, entry: r.entry };
 }
 
+/** A view row; the id is a slug and the entry sits in its contrib's ui/. */
+const VIEW_ID = /^[a-z][a-z0-9-]{0,39}$/;
+function asView(id: string, v: unknown): ContribView | undefined {
+  const r = asRecord(v);
+  if (!VIEW_ID.test(id) || !isStr(r.contrib) || !isStr(r.label) || !isStr(r.entry)) return undefined;
+  if (typeof r.order !== "number" || !Number.isFinite(r.order)) return undefined;
+  if (!r.entry.startsWith(`${r.contrib}/ui/`)) return undefined;
+  return { contrib: r.contrib, label: r.label, order: r.order, entry: r.entry };
+}
+
 /** Keep the rows that validate, drop the ones that don't. */
 function rows<T>(v: unknown, as: (x: unknown, key: string) => T | undefined): Record<string, T> {
   const out: Record<string, T> = {};
@@ -135,6 +147,7 @@ function parse(doc: unknown): ContribManifest {
     interruptRenderers: rows(d.interruptRenderers, (v, kind) => asInterruptRenderer(kind, v)),
     panels: rows(d.panels, (v, contrib) => asPanel(contrib, v)),
     markdownFences: rows(d.markdownFences, (v, lang) => asMarkdownFence(lang, v)),
+    views: rows(d.views, (v, id) => asView(id, v)),
     // A link provider whose source row failed validation would be a chip with no
     // icon, so it is dropped too.
     linkProviders: (Array.isArray(d.linkProviders) ? d.linkProviders : []).filter(
@@ -204,4 +217,9 @@ export function contribPanels(): Record<string, ContribPanel> {
 /** Contrib fenced-block renderers, by fence language. */
 export function contribMarkdownFences(): Record<string, ContribMarkdownFence> {
   return manifest.markdownFences;
+}
+
+/** Contrib alternate views, by view id. */
+export function contribViews(): Record<string, ContribView> {
+  return manifest.views;
 }

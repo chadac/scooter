@@ -39,7 +39,7 @@ const DOT: Record<TurnDot, { cls: string; label: string; hint: string }> = {
   failed: { cls: "bg-destructive", label: "Sandbox failed", hint: "The sandbox could not run." },
 };
 
-function StatusDot({ dot }: { dot: TurnDot }) {
+export function StatusDot({ dot }: { dot: TurnDot }) {
   const { cls, label, hint } = DOT[dot];
   return (
     <TooltipProvider delayDuration={150}>

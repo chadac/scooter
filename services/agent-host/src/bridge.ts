@@ -30,7 +30,7 @@ import { modelAllowedFor, defaultFor, type ModelCatalog } from "./agent/models.j
 import { fingerprintOffered, type OfferedMcpServer } from "./agent/mcpServerRegistry.js";
 
 import { errorText, formatError, logger } from "./log.js";
-import type { HookEvent, HookOutcome, HookRunner } from "./hooks/types.js";
+import type { HookEvent, HookFolder, HookOutcome, HookRunner } from "./hooks/types.js";
 import { inlineImage, replaceInlineImages, toImageRef, type StageAsset } from "./session/mediaRefs.js";
 
 const log = logger("bridge");
@@ -480,6 +480,8 @@ export interface BridgeDeps {
   parentId?: () => string | undefined;
   /** Whether the conversation is unnamed, for `when: untitled` hooks; read each stop. */
   untitled?: () => boolean;
+  /** The owner's folder for this conversation, for `when: filed` hooks. */
+  folder?: () => Promise<HookFolder | null>;
 }
 
 // Event ids must stay unique across agent-host restarts, so each is a UUID with a
@@ -760,6 +762,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     lastText: string;
     // Hook feedback delivered when the agent tries to stop.
     hookFeedback: string[];
+    // The owner's folder, read once per run for hook input.
+    folder?: Promise<HookFolder | null>;
     // Awaited before the turn may end.
     pendingHooks: Promise<unknown>[];
     toolInfo: Map<string, { name: string; input: unknown }>;
@@ -987,6 +991,17 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
 
   const emitHookNote = (text: string) => emit({ type: "SYSTEM_MESSAGE", messageId: nextId("sys"), source: "hook", text });
 
+  // A failed read is no folder, so filed hooks skip rather than block.
+  const readFolder = (): Promise<HookFolder | null> =>
+    deps.folder
+      ? deps.folder().catch((err: unknown) => {
+          log.warn("hook folder read failed", { error: String((err as Error)?.message ?? err) });
+          return null;
+        })
+      : Promise.resolve(null);
+  const runFolder = (st: RunState | undefined): Promise<HookFolder | null> =>
+    st ? (st.folder ??= readFolder()) : readFolder();
+
   // Run an event's hooks and show the user what they refused.
   const fireHooks = async (
     st: RunState | undefined,
@@ -995,6 +1010,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     target?: string,
     scooterExtra: Record<string, unknown> = {},
   ): Promise<HookOutcome> => {
+    const folder = await runFolder(st);
     const out = await deps.hooks!.run(
       event,
       {
@@ -1009,6 +1025,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           provider: currentProviderKind ?? null,
           run_id: st?.runId ?? null,
           source: st?.source ?? null,
+          folder,
           ...scooterExtra,
         },
       },

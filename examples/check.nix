@@ -1471,7 +1471,18 @@ let
     ++ (if convUiThrow { contribs.echo.enable = nixpkgsLib.mkForce true; contribs.echo.ui.markdownFences."scooter-embed".entry = "ui/SettingsTab.tsx"; } then [ ]
         else [ "two contribs claiming one fence language rendered" ])
     ++ (if convUiThrow { contribs.shares.ui.panel.entry = nixpkgsLib.mkForce "ui/Missing.tsx"; } then [ ]
-        else [ "a panel whose entry does not exist rendered" ]);
+        else [ "a panel whose entry does not exist rendered" ])
+    ++ (let probe = enable: uiManifestOf {
+          contribs.echo.enable = nixpkgsLib.mkForce enable;
+          contribs.echo.ui.views.probe = { label = "Probe"; entry = "ui/SettingsTab.tsx"; };
+        }; in
+        (if ((probe true).views.probe.entry or null) == "echo/ui/SettingsTab.tsx" then [ ]
+         else [ "an enabled contrib's view is not in the UI's mounted manifest" ])
+        ++ (if (probe false).views or { } ? probe then [ "a disabled contrib's view is in the UI manifest" ] else [ ]))
+    ++ (if convUiThrow { contribs.echo.enable = nixpkgsLib.mkForce true; contribs.echo.ui.views.settings = { label = "X"; entry = "ui/SettingsTab.tsx"; }; } then [ ]
+        else [ "a view shadowing /settings rendered" ])
+    ++ (if convUiThrow { contribs.echo.enable = nixpkgsLib.mkForce true; contribs.echo.ui.views.usersboard = { label = "X"; entry = "ui/SettingsTab.tsx"; }; } then [ ]
+        else [ "a view under the proxied /users prefix rendered" ]);
 
   # scooter.uploads: the body-limit formula, and that every layer gets it. The example
   # sets 50MB x 4 on an nginx-class Ingress.

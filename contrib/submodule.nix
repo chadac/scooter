@@ -165,6 +165,40 @@ let
     };
   };
 
+  # An alternate view of the app at /<id>, beside the chat view.
+  viewModule = {
+    options = {
+      label = mkOption {
+        type = types.str;
+        example = "Roadmap";
+        description = "The view's name in the header's view switcher.";
+      };
+      order = mkOption {
+        type = types.int;
+        default = 100;
+        description = "Sort key among contrib views in the switcher, after Chat; ties sort by id.";
+      };
+      entry = mkOption {
+        type = types.str;
+        example = "ui/Roadmap.tsx";
+        description = ''
+          The view's module, relative to this contrib's directory and inside its `ui/`.
+          Its default export is a React component with no props; it reads what it needs
+          from @/src/contrib/sdk. Same import rules as a settings tab's `entry`.
+        '';
+      };
+      api = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Open the /contrib-api relays to this contrib's broker routes, for itself and per
+          conversation, as a settings tab's or panel's `api` does. Needs
+          `services.broker.enable`.
+        '';
+      };
+    };
+  };
+
   # Renders one fenced code block language in assistant messages.
   markdownFenceModule = {
     options.entry = mkOption {
@@ -286,6 +320,20 @@ let
         description = "This contrib's section in the right-hand panel's Session tab. Checked by contrib/conversation-ui.nix.";
       };
 
+      views = mkOption {
+        type = types.attrsOf (types.submodule viewModule);
+        default = { };
+        example = literalExpression ''
+          { roadmap = { label = "Roadmap"; entry = "ui/Roadmap.tsx"; api = true; }; }
+        '';
+        description = ''
+          Alternate views this contrib adds beside the chat view, keyed by id: the view owns
+          everything below the header at `/<id>/*`, and reads the path below it with
+          `useViewRoute()`. An id may not shadow a route the app or its proxy already
+          serves. Checked by contrib/conversation-ui.nix.
+        '';
+      };
+
       markdownFences = mkOption {
         type = types.attrsOf (types.submodule markdownFenceModule);
         default = { };
@@ -303,7 +351,7 @@ let
 
     config.enable = lib.mkDefault
       (config.source != null || config.tools != { } || config.settingsTabs != [ ] || config.interruptRenderers != { }
-        || config.panel != null || config.markdownFences != { });
+        || config.panel != null || config.markdownFences != { } || config.views != { });
   };
 
   # One recurring task this contrib ships, built by mkScooterTask (contrib/tasks.nix)

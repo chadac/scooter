@@ -1,6 +1,6 @@
 /**
  * The supported surface for contrib UI code (contrib/<name>/ui/*.tsx: settings tabs,
- * interrupt renderers, Session-tab sections and fenced-block renderers). Such a module may
+ * interrupt renderers, Session-tab sections, fenced-block renderers and views). Such a module may
  * import only from here, @/components/*, @/lib/* and services/ui/package.json deps; the
  * ESLint rule in services/ui/eslint.config.js enforces it.
  * Anything a module needs from the app belongs here, so
@@ -146,3 +146,6 @@ export interface InterruptRendererProps {
 
 /** A settings tab for linking the user's forge account (scooter_broker_lib.user_auth). */
 export { LinkedAccountTab, type LinkedAccountTabProps } from "./LinkedAccountTab.js";
+
+/** What a contrib view (`ui.views`) builds on; see ./views.tsx. */
+export * from "./views.js";

@@ -73,10 +73,10 @@ else if (viewStore.get() === "chat") sessionStore.startFresh();
 
 installTitleSync();
 
-// Reflect the selected conversation in the URL via replaceState, but never while on a
-// /settings/<tab> path, where it would rewrite the settings URL.
+// Reflect the selected conversation in the URL via replaceState, but only on the chat
+// view, so a settings or contrib page URL is left alone.
 sessionStore.subscribe(() => {
-  if (chatId || viewStore.get() === "settings") return;
+  if (chatId || viewStore.get() !== "chat") return;
   // Reflect the server's id, never the local key `currentId`, which the server would
   // 404; before it arrives there is nothing to reflect.
   const id = currentConversation()?.serverId();
@@ -92,6 +92,8 @@ sessionStore.subscribe(() => {
 // paint waits for it; the loader's 1.5s timeout degrades a missing manifest to the
 // built-in sources rather than a blank page.
 void loadContribManifest().then(() => {
+  // A contrib view's path is only known once the manifest names it.
+  viewStore.syncFromUrl();
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
       {chatId ? <ChatPage conversationId={chatId} /> : <App />}

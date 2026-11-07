@@ -243,12 +243,13 @@ let
       backend.service = { name = "agent-broker"; port.number = 8080; };
     }) uiContribData.brokerPublicPaths);
 
-  # The contribs whose settings tab or panel opened the /contrib-api relay (`api = true`),
+  # The contribs whose settings tab, panel or view opened the /contrib-api relay (`api = true`),
   # and where the agent-host reaches their broker routes. Read off the declarations, so a
   # disabled contrib contributes no row and its relay answers 404.
   contribUserApi = lib.mapAttrs (name: _: { brokerPrefix = "/${name}"; })
     (lib.filterAttrs (_: c: c.enable && c.ui.enable
-      && (lib.any (t: t.api) c.ui.settingsTabs || (c.ui.panel != null && c.ui.panel.api))) config.contribs);
+      && (lib.any (t: t.api) c.ui.settingsTabs || (c.ui.panel != null && c.ui.panel.api)
+        || lib.any (v: v.api) (lib.attrValues c.ui.views))) config.contribs);
   # The contribs whose broker half hears when a conversation waits on the user, and
   # the route the agent-host posts each pending interrupt to.
   awaitingInputNotify = lib.mapAttrs (name: _: { path = "/${name}/awaiting-input"; })

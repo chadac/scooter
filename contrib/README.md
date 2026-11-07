@@ -658,7 +658,7 @@ ui = {
 ```
 
 `enable` defaults to true as soon as `source`, `tools`, `settingsTabs`,
-`interruptRenderers`, `panel` or `markdownFences` is set, so a declared row cannot
+`interruptRenderers`, `panel`, `markdownFences` or `views` is set, so a declared row cannot
 silently render nothing.
 
 #### Settings tabs (`ui.settingsTabs`)
@@ -772,6 +772,45 @@ ui.markdownFences."scooter-embed".entry = "ui/Embed.tsx";
   that text, so validate it before you use it.
 - **Failure is contained.** A block that fails to load or throws shows an error card
   in place of that block only.
+
+#### Views (`ui.views`)
+
+A contrib can offer a different way of working with conversations, beside the chat view,
+such as a roadmap at `/roadmap`:
+
+```nix
+ui.views.roadmap = {
+  label = "Roadmap";             # in the header's view switcher, after Chat
+  entry = "ui/Roadmap.tsx";
+  api = true;                    # open the /contrib-api relays, as a tab's or panel's api does
+};
+```
+
+- **Id and URL.** The key is the URL: the view owns everything below the header at `/roadmap`
+  and `/roadmap/<path>`. `contrib/conversation-ui.nix` throws at eval on an id that would
+  shadow a route the app or its nginx already serves (`/settings`, `/conversations`, …), on
+  two contribs claiming one id, and on an `entry` that does not exist.
+- **The module.** Same file and import rules as a settings tab. Its default export takes no
+  props: it composes what it needs from `@/src/contrib/sdk`, the same stores and components
+  the chat view uses, so nothing is fetched twice.
+  - Route: `useViewRoute()` gives `path` and `navigate(path)`.
+  - Live data: `useConversations()` (from the conversation stream: status, run state, dot,
+    folder), `useFolders()`, `useOpenConversation()`.
+  - Actions: `openConversation(id)`, `openInChat(id)`, `newConversation({ folderId })`,
+    `send(id, text)` as the user, `createFolder`, `renameFolder`, `moveToFolder`.
+  - Components: `<ChatPanel conversationId? />` (the thread, composer and pending approvals;
+    one open conversation at a time, shared with the chat view), `<ConversationSidebar />`,
+    `<StatusDot />`.
+  - Its own backend: `contribFetch(contrib, path)` and `conversationApi(contrib, id, path, init)`.
+- **Failure is contained.** A missing entry, a chunk that fails to load or a render that
+  throws shows an error in that view only. A deployment that does not ship the contrib
+  serves its URL as the chat.
+
+#### Hooks on filed conversations
+
+Every hook's input carries the owner's folder for the conversation as `scooter.folder`
+(`{ id, name }`, or null when unfiled or Starred). A hook with `when = "filed"` runs only
+when there is one, so a contrib that works with folders pays no sandbox exec elsewhere.
 
 #### Tools that wait on the user (`agent.blockingTools`)
 

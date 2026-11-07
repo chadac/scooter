@@ -4,6 +4,7 @@
  * live as the agent works in the sandbox.
  */
 
+import { Fragment } from "react";
 import { Menu, PanelRight, PictureInPicture2, Settings } from "lucide-react";
 
 import { RuntimeProvider, useConversationInterrupts } from "./RuntimeProvider.js";
@@ -16,7 +17,9 @@ import { ThemePicker } from "./ThemePicker.js";
 import { ToolCallView } from "./ToolCallView.js";
 import { ToolGroupOpen } from "./ToolGroupOpen.js";
 import { SettingsPage } from "./SettingsPage.js";
-import { viewStore, useView } from "./view.js";
+import { ContribViewHost } from "./ContribView.js";
+import { contribViews } from "./contribManifest.js";
+import { viewStore, useRoute } from "./view.js";
 import { currentConversation, useSessions } from "./sessions.js";
 import { chatPath } from "./chatRoute.js";
 import { HeaderConversationTitle } from "./HeaderConversationTitle.js";
@@ -100,17 +103,54 @@ function MobileDrawerBackdrop() {
   );
 }
 
+/** Chat and the contribs' alternate views; absent when no contrib ships one. `current` is
+ *  "chat", a view id, or undefined in settings. */
+function ViewSwitcher({ current }: { current?: string }) {
+  const views = Object.entries(contribViews()).sort(([a, x], [b, y]) => x.order - y.order || (a < b ? -1 : 1));
+  if (views.length === 0) return null;
+  const item = (id: string, label: string, go: () => void) => (
+    <button
+      key={id}
+      type="button"
+      data-testid={`view-switch-${id}`}
+      aria-pressed={current === id}
+      onClick={() => {
+        mobileNav.close();
+        go();
+      }}
+      className={cn(
+        "rounded px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground",
+        current === id && "bg-background text-foreground shadow-xs",
+      )}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <nav aria-label="Views" data-testid="view-switcher" className="flex shrink-0 items-center gap-0.5 rounded-md bg-muted p-0.5">
+      {item("chat", "Chat", () => viewStore.set("chat"))}
+      {views.map(([id, v]) => item(id, v.label, () => viewStore.openView(id)))}
+    </nav>
+  );
+}
+
 export function App() {
-  const view = useView();
+  const route = useRoute();
+  const view = route.view;
+  const chat = view === "chat";
+  const contribView = route.viewId ? contribViews()[route.viewId] : undefined;
+  // A contrib view sits outside the runtime keyed on the open conversation, so switching
+  // conversations keeps its state. Its <ChatPanel> brings its own.
+  const Shell = route.viewId && contribView ? Fragment : RuntimeProvider;
   const drawer = useDrawer(); // for the header toggles' pressed state
   return (
-    <RuntimeProvider>
+    <Shell>
       <div className="flex h-dvh flex-col">
         <header className="flex h-11 items-center justify-between gap-3 border-b bg-header px-3 pl-4 text-sm">
           {/* Compact wordmark: mark + name. */}
           <div className="flex min-w-0 flex-1 items-center gap-2">
             {/* Mobile-only sessions-drawer toggle, hidden at desk+ and in settings. */}
-            {view !== "settings" && (
+            {chat && (
               <Button
                 data-testid="mobile-nav-open"
                 variant="ghost"
@@ -127,7 +167,8 @@ export function App() {
             <span className="text-[15px] leading-none" aria-hidden>{SCOOTER_MARK}</span>
             {/* The wordmark gives way below sm, so the title and its actions fit a phone header. */}
             <span className="hidden text-[13.5px] font-semibold tracking-tight sm:inline">scooter</span>
-            {view !== "settings" && <HeaderConversationTitle actions />}
+            <ViewSwitcher current={chat ? "chat" : route.viewId} />
+            {chat && <HeaderConversationTitle actions />}
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {/* Live pod status, desktop-only. */}
@@ -135,7 +176,7 @@ export function App() {
               <SandboxStatusPill />
             </span>
             {/* Mobile-only right-panel toggle, hidden at desk+. */}
-            {view !== "settings" && (
+            {chat && (
               <Button
                 data-testid="mobile-panel-open"
                 variant="ghost"
@@ -149,7 +190,7 @@ export function App() {
                 <PanelRight />
               </Button>
             )}
-            {view !== "settings" && <PopOutChatButton />}
+            {chat && <PopOutChatButton />}
             {/* Light / dark / system theme toggle. */}
             <ThemePicker />
             {/* Settings toggles the main pane. */}
@@ -178,6 +219,10 @@ export function App() {
           <div className="min-h-0 flex-1">
             <SettingsPage />
           </div>
+        ) : route.viewId && contribView ? (
+          <div className="min-h-0 flex-1">
+            <ContribViewHost id={route.viewId} view={contribView} />
+          </div>
         ) : (
           <div className="relative flex min-h-0 flex-1">
             <Sidebar />
@@ -194,6 +239,6 @@ export function App() {
           </div>
         )}
       </div>
-    </RuntimeProvider>
+    </Shell>
   );
 }
