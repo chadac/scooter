@@ -6,7 +6,7 @@
  * new-session.
  */
 
-import { memo, useEffect, useState, type ReactNode } from "react";
+import { memo, useEffect, useState, type DragEvent, type ReactNode } from "react";
 import { Bot, Check, ChevronRight, CornerDownRight, FolderPlus, Hourglass, InfinityIcon, Lock, MoreHorizontal, Plus, Star } from "lucide-react";
 import { DropdownMenu, Popover } from "radix-ui";
 
@@ -317,6 +317,16 @@ function FolderSectionView({
   const moveTargets = fstate.folders.filter(
     (x) => x.kind === "user" && x.id !== parent?.id && canMoveInto(f.id, x.id),
   );
+  const dropAt = (e: DragEvent<HTMLElement>): { place: DropPlace; ok: boolean } | null => {
+    const from = draggingFolder;
+    if (!from || from === f.id) return null;
+    if (f.starred) return { place: "after", ok: true };
+    const r = e.currentTarget.getBoundingClientRect();
+    const y = (e.clientY - r.top) / r.height;
+    const into = canMoveInto(from, f.id);
+    const place: DropPlace = into ? (y < 0.25 ? "before" : y > 0.75 ? "after" : "into") : y < 0.5 ? "before" : "after";
+    return { place, ok: into || canMoveInto(from, parent?.id ?? null) };
+  };
   return (
     <div className="relative" data-testid="folder" data-folder-id={f.id} data-depth={f.depth}>
       {drop && drop.place !== "into" && (
@@ -351,27 +361,20 @@ function FolderSectionView({
           }}
           onDragEnd={() => (draggingFolder = null)}
           onDragOver={(e) => {
-            const from = draggingFolder;
-            if (!from || from === f.id) return;
-            const r = e.currentTarget.getBoundingClientRect();
-            const y = (e.clientY - r.top) / r.height;
-            let place: DropPlace = "after";
-            let ok = true;
-            if (!f.starred) {
-              const into = canMoveInto(from, f.id);
-              place = into ? (y < 0.25 ? "before" : y > 0.75 ? "after" : "into") : y < 0.5 ? "before" : "after";
-              ok = into || canMoveInto(from, parent?.id ?? null);
-            }
-            if (ok) e.preventDefault();
-            if (drop?.place !== place || drop.ok !== ok) setDrop({ place, ok });
+            const at = dropAt(e);
+            if (!at) return;
+            if (at.ok) e.preventDefault();
+            if (drop?.place !== at.place || drop.ok !== at.ok) setDrop(at);
           }}
           onDragLeave={(e) => {
             if (!e.currentTarget.contains(e.relatedTarget as Node)) setDrop(null);
           }}
           onDrop={(e) => {
-            if (!drop?.ok || !draggingFolder) return;
+            // Read the event, not state: drops can outrun re-renders.
+            const at = dropAt(e);
+            if (!at?.ok || !draggingFolder) return;
             e.preventDefault();
-            void folderStore.reorder(draggingFolder, f.id, drop.place);
+            void folderStore.reorder(draggingFolder, f.id, at.place);
             setDrop(null);
           }}
           className={cn(
