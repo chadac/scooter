@@ -9,6 +9,14 @@ import type { ToolResult } from "./mcpServer.js";
 import type { Conversation } from "../session/manager.js";
 import type { SandboxResources } from "../session/resources.js";
 import type { Visibility } from "../session/visibility.js";
+import type { SandboxRef } from "../types.js";
+import { formatPodWait, podWaitStatus } from "../exec/podReadiness.js";
+
+/** " — but the sandbox pod has not been Ready for 3m" while a readiness wait on this sandbox hasn't succeeded. */
+function podWaitNote(sandbox: SandboxRef | undefined, now: number): string {
+  const w = sandbox && podWaitStatus(sandbox, now);
+  return w ? ` — but ${formatPodWait(w, now)}` : "";
+}
 
 /** What the conversation tools need from the agent-host. */
 export interface ConversationToolsWiring {
@@ -65,7 +73,7 @@ export async function handleConversationStatus(
         ? "the sandbox acts as the owner (their SSH key and commit identity)"
         : "anyone who can see it may prompt it; no personal credentials (see make_conversation_private)"),
     `model: ${self.model ?? "(host default)"}`,
-    `sandbox: ${root.status}`,
+    `sandbox: ${root.status}` + podWaitNote(root.sandbox, now),
     `age: ${formatDuration(now - self.createdAt)}; last activity ${formatDuration(now - self.lastActivityAt)} ago`,
   ];
   if (deps.resources) {

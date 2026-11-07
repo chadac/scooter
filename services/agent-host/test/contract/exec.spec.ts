@@ -175,6 +175,26 @@ describe("ExecBackend hard command timeout (P0 — runaway-command deadlock fix)
     }
   });
 
+  it("says the command never started when the pod wasn't Ready, instead of 'narrow it'", async () => {
+    vi.useFakeTimers();
+    try {
+      const api = { ...hangingApi(), waitingFor: () => "the sandbox pod has not been Ready for 5s" };
+      const exec = createSandboxExecBackend(api, { commandTimeoutMs: 5000 });
+      const term = exec.spawn({ command: "echo", args: ["ok"] });
+      const chunks: string[] = [];
+      term.onOutput((c) => chunks.push(c));
+      const exitP = term.waitForExit();
+      await vi.advanceTimersByTimeAsync(5000);
+      const { exitCode } = await exitP;
+      const out = chunks.join("");
+      expect(exitCode).toBe(124);
+      expect(out).toMatch(/never started: the sandbox pod has not been Ready/);
+      expect(out).not.toMatch(/narrow it/);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does NOT time out a command that finishes in time", async () => {
     vi.useFakeTimers();
     try {

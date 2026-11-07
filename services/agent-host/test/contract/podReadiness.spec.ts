@@ -1,0 +1,46 @@
+/**
+ * A readiness poll that can't find a Ready pod records the wait, so a command that times
+ * out before reaching the pod says it never started, and conversation_status says so too.
+ */
+
+import { describe, it, expect, beforeEach } from "vitest";
+
+import { formatPodWait, podWaitStatus, setPodWaitStatus } from "../../src/exec/podReadiness.js";
+import { pollForReadyPod } from "../../src/exec/k8sExec.js";
+import type { SandboxRef } from "../../src/types.js";
+
+const REF: SandboxRef = { name: "conv-nt4eo0", namespace: "agent-manager" };
+const pending = {
+  metadata: { name: "conv-nt4eo0" },
+  status: { phase: "Pending", containerStatuses: [{ ready: false, state: { waiting: { reason: "ContainerCreating" } } }] },
+};
+
+describe("pod readiness wait", () => {
+  beforeEach(() => setPodWaitStatus(REF, undefined));
+
+  it("records a failed wait for conversation_status", async () => {
+    const err = await pollForReadyPod(REF, {
+      listCandidates: async () => [pending as never],
+      sleep: async () => {},
+      deadlineMs: -1,
+    }).catch((e: Error) => e);
+    expect(String(err)).toMatch(/no ready pod for sandbox agent-manager\/conv-nt4eo0/);
+    const w = podWaitStatus(REF);
+    expect(w).toBeDefined();
+    expect(formatPodWait(w!, w!.since + 12 * 60_000)).toBe("the sandbox pod has not been Ready for 12m");
+  });
+
+  it("clears the wait once the pod is Ready", async () => {
+    setPodWaitStatus(REF, { since: Date.now(), checkedAt: Date.now() });
+    await pollForReadyPod(REF, {
+      listCandidates: async () => [{ metadata: { name: "p" }, status: { phase: "Running", containerStatuses: [{ ready: true }] } } as never],
+      sleep: async () => {},
+    });
+    expect(podWaitStatus(REF)).toBeUndefined();
+  });
+
+  it("forgets a wait not seen for 5 minutes", () => {
+    setPodWaitStatus(REF, { since: Date.now(), checkedAt: Date.now() });
+    expect(podWaitStatus(REF, Date.now() + 6 * 60_000)).toBeUndefined();
+  });
+});

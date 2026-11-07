@@ -64,6 +64,7 @@ import { createAcpClient, type BlockingTool } from "./acp/client.js";
 import { createRecorder } from "./transcript/recorder.js";
 import { createSandboxExecBackend, connectSandbox } from "./exec/sandboxExec.js";
 import { bumpSandboxEpoch, createEpochConnector, sandboxEpoch } from "./exec/deferredConnect.js";
+import { formatPodWait, podWaitStatus } from "./exec/podReadiness.js";
 import { createLocalSandboxApiClient } from "./exec/localExec.js";
 import { resolvePodTarget } from "./exec/k8sExec.js";
 import { createWake, createWebServiceProxy } from "./proxy/webServiceProxy.js";
@@ -2267,6 +2268,11 @@ function deferredSandboxApi(sandbox: SandboxRef, ensureRunning?: () => Promise<v
   const ensure = createEpochConnector(() => connectSandbox(sandbox, { ensureRunning }), () => sandboxEpoch(sandbox));
   return {
     mode: "k8s-exec" as const,
+    // Set only while a readiness poll is waiting on this sandbox's pod.
+    waitingFor() {
+      const w = podWaitStatus(sandbox);
+      return w && formatPodWait(w);
+    },
     // Forward the AbortSignal so kill()'s abort reaches the k8s exec layer.
     async execute(req: Parameters<Awaited<ReturnType<typeof connectSandbox>>["execute"]>[0], signal?: AbortSignal) {
       return (await ensure()).execute(req, signal);

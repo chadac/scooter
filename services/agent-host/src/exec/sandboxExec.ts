@@ -27,6 +27,8 @@ export interface SandboxApiClient {
   uploadBinary(path: string, base64: string): Promise<void>;
   /** How the exec stream is reached. "k8s-exec" in production. */
   readonly mode: "k8s-exec" | "direct";
+  /** Set while commands can't start because the sandbox pod isn't Ready; undefined once it is. */
+  waitingFor?(): string | undefined;
 }
 
 /** Resolves a SandboxRef to a pod-exec client; implemented in ./k8sExec.ts and re-exported here as the public seam. */
@@ -75,11 +77,14 @@ export function createSandboxExecBackend(api: SandboxApiClient, opts: SandboxExe
       // `timedOut` distinguishes the hard timeout from a user kill so goose gets an
       // actionable "timed out" result.
       let timedOut = false;
+      // Captured when the timer fires: set means the command never reached the pod.
+      let notReady: string | undefined;
       const timeoutMs = req.timeoutMs ?? commandTimeoutMs;
       const timer =
         timeoutMs > 0
           ? setTimeout(() => {
               timedOut = true;
+              notReady = api.waitingFor?.();
               controller.abort();
             }, timeoutMs)
           : undefined;
@@ -114,7 +119,10 @@ export function createSandboxExecBackend(api: SandboxApiClient, opts: SandboxExe
           const formatted = formatError(err);
           const detail = String(formatted.message ?? JSON.stringify(formatted));
           log.errorWith("spawn execute failed", err);
-          const msg = timedOut
+          const msg = notReady
+            ? `the command never started: ${notReady}. This is the platform, not your command, and ` +
+              `/workspace is safe. Tell the user, and retry in a few minutes rather than narrowing the command`
+            : timedOut
             ? `command timed out after ${Math.round(timeoutMs / 1000)}s and was terminated — ` +
               `narrow it (e.g. scope the path, avoid scanning /nix/store or /) or run it in the background`
             : `exec failed: ${detail}`;

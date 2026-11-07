@@ -14,6 +14,7 @@ import { KubeConfig, Exec, CoreV1Api, type V1Pod, type V1Status } from "@kuberne
 import type { ExecRequest, ExecResult, SandboxRef } from "../types.js";
 import type { SandboxApiClient } from "./sandboxExec.js";
 import { describeSandboxDisruption } from "./podDisruption.js";
+import { setPodWaitStatus } from "./podReadiness.js";
 
 const log = logger("k8sExec");
 
@@ -182,6 +183,8 @@ export async function pollForReadyPod(ref: SandboxRef, deps: ResolveReadyPodDeps
         (p.status?.containerStatuses ?? []).every((c) => c.ready),
     );
     if (ready?.metadata?.name) {
+      // Cleared only on success: after a failed wait it stays (for a while) for conversation_status.
+      setPodWaitStatus(ref, undefined);
       const waitedMs = Date.now() - started;
       // A wait that spanned more than one poll is latency the caller's turn is eating, so record it.
       if (waitedMs > 2_000) {
@@ -194,6 +197,8 @@ export async function pollForReadyPod(ref: SandboxRef, deps: ResolveReadyPodDeps
       }
       return ready;
     }
+    // Lets a command that times out here say it never started, and conversation_status say why.
+    setPodWaitStatus(ref, { since: started, checkedAt: Date.now() });
     if (!waitLogged) {
       waitLogged = true;
       log.info("waiting for a ready pod", {
