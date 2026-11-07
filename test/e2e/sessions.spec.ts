@@ -5,7 +5,7 @@
  */
 
 import { test, expect } from "./fixtures.js";
-import { fastOnly } from "./target.js";
+import { fastOnly, fullOnly } from "./target.js";
 
 const sidebar = {
   list: '[data-testid="session-list"]',
@@ -563,3 +563,29 @@ fastOnly("the locked folder is seeded by the fake backend")("session selector & 
     expect((await request.patch(`${base}/folders/e2e-design`, { data: { name: "x" } })).status()).toBe(409);
   });
 });
+
+fullOnly("registers the locked folder as the broker, through the kubectl hook")(
+  "session selector & titles — locked folders registered by a service",
+  () => {
+    test("a service's locked folder can't be changed by its user", async ({ chat, page, request, baseURL }) => {
+      const base = baseURL ?? "http://localhost:5173";
+      const hook = process.env.E2E_ROLLOUT_HOOK;
+      test.skip(!hook, "no rollout hook configured for this run");
+      const user = ((await (await request.get(`${base}/whoami`)).json()) as { id: string }).id;
+      const made = await request.post(`${hook}/locked-folder`, { data: { user, name: `locked ${Date.now()}` } });
+      expect(made.status(), await made.text()).toBe(201);
+      const id = ((await made.json()) as { id: string }).id;
+      try {
+        await chat.open();
+        const head = page.locator(folders.head(id));
+        await expect(head).toBeVisible();
+        await expect(head).toHaveAttribute("draggable", "false");
+        await expect(head.getByRole("button", { name: /folder actions/ })).toHaveCount(0);
+        expect((await request.patch(`${base}/folders/${id}`, { data: { name: "x" } })).status()).toBe(409);
+        expect((await request.delete(`${base}/folders/${id}`)).status()).toBe(409);
+      } finally {
+        await request.delete(`${hook}/locked-folder/${id}`, { headers: { "X-Scooter-User": user } });
+      }
+    });
+  },
+);

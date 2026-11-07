@@ -5,15 +5,20 @@ The browser cannot run kubectl, so specs POST here to disturb the cluster mid-co
 POST /restart rollout-restarts the agent-host Deployment and waits, and POST /move/<thread>
 deletes the pod hosting <thread>'s conversation so the controller reassigns it. The warm-store
 stories read and disturb the overlay pool: GET /overlay/<thread>, GET /pool, POST and GET
-/canary/<thread>, POST /warm-store/scale/<n>. Stdlib only, shells out to kubectl on PATH.
+/canary/<thread>, POST /warm-store/scale/<n>. POST /locked-folder and DELETE /locked-folder/<id>
+manage a user's locked folder as the broker, the only way to make one. Stdlib only, shells out
+to kubectl on PATH.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import socket
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 NS = "agent-sandbox"
@@ -41,6 +46,34 @@ def pv_view(pv: dict) -> dict:
         "claim": ref.get("name"),
         "storageClass": pv["spec"].get("storageClassName"),
     }
+
+def as_folder_service(method: str, path: str, user: str, body: dict | None = None) -> tuple[int, str]:
+    """Call the router's /folders as agent-broker, an allowlisted folder service."""
+    tok = sh("kubectl", "-n", NS, "create", "token", "agent-broker", "--audience", "scooter-router")
+    if tok.returncode != 0:
+        return 500, tok.stderr
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    # svc/agent-host fronts the conversation-router.
+    pf = subprocess.Popen(["kubectl", "-n", NS, "port-forward", "svc/agent-host", f"{port}:8080"],
+                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        if "Forwarding from" not in (pf.stdout.readline() if pf.stdout else ""):
+            return 500, "port-forward to the router failed"
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}{path}", method=method,
+            data=None if body is None else json.dumps(body).encode(),
+            headers={"Authorization": f"Bearer {tok.stdout.strip()}", "X-Scooter-User": user,
+                     "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return r.status, r.read().decode()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read().decode()
+    finally:
+        pf.terminate()
+        pf.wait()
 
 def thread_ok(thread: str) -> bool:
     return re.fullmatch(r"[A-Za-z0-9-]+", thread) is not None
@@ -100,6 +133,13 @@ class Hook(BaseHTTPRequestHandler):
                    "sh", "-c", f"echo {body} > {CANARY} && sync")
             return self._reply(200 if r.returncode == 0 else 500, r.stdout + r.stderr)
 
+        if self.path == "/locked-folder":
+            req = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+            if not (isinstance(req.get("user"), str) and req["user"] and isinstance(req.get("name"), str)):
+                return self._reply(400, "want {user, name}")
+            code, out = as_folder_service("POST", "/folders", req["user"], {"name": req["name"], "locked": True})
+            return self._reply(code, out)
+
         m = re.fullmatch(r"/warm-store/scale/([01])", self.path)
         if m:
             r = sh("kubectl", "-n", NS, "scale", "deployment/warm-store-controller", f"--replicas={m[1]}")
@@ -150,6 +190,14 @@ class Hook(BaseHTTPRequestHandler):
             return self._reply(200 if r.returncode == 0 else 404, r.stdout.strip() or r.stderr)
 
         return self._reply(404, "unknown hook")
+
+    def do_DELETE(self) -> None:  # noqa: N802 — BaseHTTPRequestHandler contract
+        m = re.fullmatch(r"/locked-folder/([A-Za-z0-9-]+)", self.path)
+        user = self.headers.get("X-Scooter-User") or ""
+        if not (m and user):
+            return self._reply(404, "unknown hook")
+        code, out = as_folder_service("DELETE", f"/folders/{m[1]}?subfolders=delete", user)
+        return self._reply(code, out)
 
     def _json(self, code: int, body: object) -> None:
         self._reply(code, json.dumps(body))
