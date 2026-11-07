@@ -127,6 +127,22 @@ func TestSpawnDefaultsSourceTag(t *testing.T) {
 	}
 }
 
+func TestSpawnModelIsDefaultUnlessAsked(t *testing.T) {
+	c := newSpawnCase(aSource("src-1", ""))
+	if w := c.post(t, "src-1", `{"prompt":"hi"}`); w.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d", w.Code)
+	}
+	if m, has := c.creator.calls[0].spec["model"]; has {
+		t.Errorf("no model must not inherit the source's, got %v", m)
+	}
+	if w := c.post(t, "src-1", `{"prompt":"hi","model":"model-big"}`); w.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d", w.Code)
+	}
+	if m := c.creator.calls[1].spec["model"]; m != "model-big" {
+		t.Errorf("an asked-for model must pass through, got %v", m)
+	}
+}
+
 // Every refusal before the source is proven answers 404 and creates nothing.
 func TestSpawnRefusesUnverifiedCallers(t *testing.T) {
 	for name, spawner := range map[string]TrustedCaller{"disabled": nil, "unverified": denyAll} {

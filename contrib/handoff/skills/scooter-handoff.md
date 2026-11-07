@@ -32,6 +32,8 @@ sandbox and its own place in the sidebar, and nothing reports back to you.
 - **Write the brief to stand alone.** The new agent sees none of this conversation.
   Give the goal, what is done, what is left, the repos and branches, and the decisions
   already made. Ask yourself whether a stranger could start from it.
+- **Leave `model` empty.** The new conversation then starts on the default model,
+  not yours. Pass one only when the user asks for it or the task needs it.
 - **Files don't travel.** Push work in progress to a branch and name it in the brief.
 - It has the same owner and visibility as this conversation. A private conversation's
   handoff is private. A private conversation that holds text from anyone but its

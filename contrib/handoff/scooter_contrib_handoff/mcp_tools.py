@@ -68,6 +68,9 @@ async def handoff_spawn(
     alone: the goal, what is done, what is left, repos, branches and decisions.
     Push work in progress to a branch first and name it.
 
+    Leave `model` empty so the new conversation starts on the default model, not
+    yours. Set it only when the user asks for a model or the task needs one.
+
     Usually the conversation's owner must approve it first: the call returns at once,
     and a message tells you the new conversation, or that it was denied.
     """

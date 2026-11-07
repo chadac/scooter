@@ -182,6 +182,11 @@ def test_card_shows_the_whole_brief():
     assert c["data"]["brief"] == "x" * 5000
 
 
+def test_card_names_the_default_model_when_none_is_set():
+    r = SpawnRequest("r1", "src", "alice", "brief", "", "", "pending")
+    assert "(default model)" in card(r)["message"]
+
+
 async def test_host_cards_post_to_the_approvals_route():
     seen: list[httpx.Request] = []
 

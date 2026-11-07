@@ -25,8 +25,7 @@ KIND = "handoff.spawn"
 def card(r: SpawnRequest) -> dict:
     """The approval request the host raises; the generic card shows `message`."""
     head = f"The agent wants to hand off to a new conversation: {r.title or 'Handoff'}"
-    if r.model:
-        head += f" (model {r.model})"
+    head += f" (model {r.model})" if r.model else " (default model)"
     return {
         "request_id": r.id,
         "message": f"{head}.\n\nBrief:\n{r.brief}",
