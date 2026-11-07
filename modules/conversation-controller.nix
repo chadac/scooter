@@ -156,6 +156,19 @@ in
         the routes.
       '';
     };
+    folderServices = mkOption {
+      type = types.listOf (types.strMatching "[a-z0-9]([-a-z0-9]*[a-z0-9])?");
+      default = [ ];
+      example = [ "kanban" ];
+      description = ''
+        ServiceAccounts (in the platform namespace) that may manage users'
+        locked folders through the router's `/folders` routes, naming the user
+        in `X-Scooter-User`. Such a service may create a folder with
+        `"locked": true` and rename, move, delete or nest in a locked one. Users
+        can only file conversations into a locked folder and take them out.
+        Empty means nobody can create or change a locked folder.
+      '';
+    };
     spawnsPerSourcePerHour = mkOption {
       type = types.ints.positive;
       default = 10;
@@ -514,6 +527,9 @@ in
                     value = lib.concatMapStringsSep "," (sa: "system:serviceaccount:${cfg.namespace}:${sa}") ccfg.spawners; }
                   { name = "SPAWNS_PER_SOURCE_PER_HOUR"; value = toString ccfg.spawnsPerSourcePerHour; }
                 ]
+                ++ lib.optional (ccfg.folderServices != [ ])
+                  { name = "FOLDER_SERVICE_ACCOUNTS";
+                    value = lib.concatMapStringsSep "," (sa: "system:serviceaccount:${cfg.namespace}:${sa}") ccfg.folderServices; }
                 ++ lib.optional (ccfg.readers != [ ])
                   { name = "CONVERSATION_READER_SERVICE_ACCOUNTS";
                     value = lib.concatMapStringsSep "," (sa: "system:serviceaccount:${cfg.namespace}:${sa}") ccfg.readers; }

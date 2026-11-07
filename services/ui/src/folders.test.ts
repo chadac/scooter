@@ -1,10 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { FolderList } from "./client.js";
-import { buildFolders, currentBranch, folderOf, folderStore, moveTo, positionBetween, STARRED, type FolderState } from "./folders.js";
+import {
+  allRows,
+  buildFolders,
+  canMoveInto,
+  currentBranch,
+  effectiveLifetime,
+  folderOf,
+  folderPath,
+  folderStore,
+  moveTo,
+  positionBetween,
+  STARRED,
+  type FolderState,
+} from "./folders.js";
 import { conversationFor, sessionStore, setConversationMinter, type Session, type SidebarRow } from "./sessions.js";
 
-const STARRED_FOLDER = { id: STARRED, name: "Starred", kind: "starred" as const, position: 0 };
+const STARRED_FOLDER = { id: STARRED, name: "Starred", kind: "starred" as const, locked: true, position: 0, conversationLifetimeHours: 0 };
 const WORK = { id: "f-work", name: "Work", kind: "user" as const, position: 1 };
 const HOME = { id: "f-home", name: "Home", kind: "user" as const, position: 2 };
 
@@ -55,7 +68,7 @@ describe("buildFolders: each conversation renders in exactly one section", () =>
 
   it("routes by placement, Starred first, and everything unfiled to Recent", () => {
     const { folders, recent } = buildFolders([row({ id: "a" }), row({ id: "b" }), row({ id: "c" })], fs({ a: STARRED, b: WORK.id }));
-    expect(folders.map((f) => [f.id, f.builtin, ids(f.rows)])).toEqual([
+    expect(folders.map((f) => [f.id, f.locked, ids(f.rows)])).toEqual([
       [STARRED, true, ["a"]],
       [WORK.id, false, ["b"]],
     ]);
@@ -174,9 +187,9 @@ describe("folder edits", () => {
     const calls = stubFetch({ folders: [STARRED_FOLDER, WORK, HOME, PLAY], placements: {} });
     await folderStore.load();
     const order = () => folderStore.get().folders.map((f) => f.id);
-    await folderStore.reorder(WORK.id, PLAY.id, true);
+    await folderStore.reorder(WORK.id, PLAY.id, "after");
     expect(order()).toEqual([STARRED, HOME.id, PLAY.id, WORK.id]);
-    await folderStore.reorder(PLAY.id, STARRED, true);
+    await folderStore.reorder(PLAY.id, STARRED, "after");
     expect(order()).toEqual([STARRED, PLAY.id, HOME.id, WORK.id]);
     await folderStore.nudge(HOME.id, 1);
     expect(order()).toEqual([STARRED, PLAY.id, WORK.id, HOME.id]);
@@ -187,7 +200,7 @@ describe("folder edits", () => {
     const calls = stubFetch({ folders: [STARRED_FOLDER, WORK, HOME], placements: {} });
     await folderStore.load();
     expect(await folderStore.reorder(WORK.id, HOME.id)).toBe(false);
-    expect(await folderStore.reorder(WORK.id, STARRED, true)).toBe(false);
+    expect(await folderStore.reorder(WORK.id, STARRED, "after")).toBe(false);
     expect(await folderStore.reorder(WORK.id, STARRED)).toBe(false);
     expect(await folderStore.nudge(WORK.id, -1)).toBe(false);
     expect(await folderStore.nudge(HOME.id, 1)).toBe(false);
@@ -258,5 +271,106 @@ describe("newIn: a conversation started inside a folder", () => {
     const key = folderStore.newIn(WORK.id);
     expect(folderStore.newIn(null)).toBe(key);
     expect(folderOf(current(key))).toBeNull();
+  });
+});
+
+describe("nested folders", () => {
+  // Work > Scooter > UI, plus Home at the top.
+  const SCOOTER = { id: "f-scooter", name: "Scooter", kind: "user" as const, position: 1, parentId: WORK.id };
+  const UI = { id: "f-ui", name: "UI", kind: "user" as const, position: 1, parentId: SCOOTER.id };
+  const DESIGN = { id: "f-design", name: "Design", kind: "user" as const, locked: true, position: 0, conversationLifetimeHours: 0 };
+  const tree = [STARRED_FOLDER, DESIGN, WORK, HOME, SCOOTER, UI];
+  const load = async (placements: Record<string, string> = {}) => {
+    const calls = stubFetch({ folders: tree, placements });
+    await folderStore.load();
+    return calls;
+  };
+
+  it("buildFolders nests sections and counts a subtree", () => {
+    const row = (id: string): SidebarRow => ({ session: { id, title: id, createdAt: 1, lastActivityAt: 1 }, depth: 0, childCount: 0 });
+    const fs: FolderState = { folders: tree, placements: { a: WORK.id, b: UI.id, c: DESIGN.id }, collapsed: {}, drafts: {} };
+    const { folders } = buildFolders([row("a"), row("b"), row("c")], fs);
+    expect(folders.map((f) => [f.id, f.locked])).toEqual([
+      [STARRED, true],
+      [DESIGN.id, true],
+      [WORK.id, false],
+      [HOME.id, false],
+    ]);
+    const work = folders[2];
+    expect(work.children.map((c) => c.id)).toEqual([SCOOTER.id]);
+    expect(work.children[0].children[0]).toMatchObject({ id: UI.id, depth: 3 });
+    expect(allRows(work).map((r) => r.session.id)).toEqual(["a", "b"]);
+    expect(folders[1].rows.map((r) => r.session.id)).toEqual(["c"]);
+  });
+
+  it("refuses moves past three levels or into the folder's own subtree", async () => {
+    await load();
+    expect(canMoveInto(HOME.id, UI.id)).toBe(false); // 4th level
+    expect(canMoveInto(HOME.id, SCOOTER.id)).toBe(true);
+    expect(canMoveInto(WORK.id, HOME.id)).toBe(false); // its 3 levels would become 4
+    expect(canMoveInto(WORK.id, UI.id)).toBe(false); // own subtree
+    expect(canMoveInto(HOME.id, DESIGN.id)).toBe(false); // locked folders take no subfolders
+    expect(canMoveInto(DESIGN.id, null)).toBe(false);
+    expect(await folderStore.reorder(HOME.id, UI.id, "into")).toBe(false);
+    expect(await folderStore.create("Too deep", UI.id)).toBeNull();
+  });
+
+  it("drops into a folder, beside a subfolder, and back to the top", async () => {
+    const calls = await load();
+    await folderStore.reorder(HOME.id, SCOOTER.id, "into");
+    expect(folderStore.get().folders.find((f) => f.id === HOME.id)?.parentId).toBe(SCOOTER.id);
+    expect(JSON.parse(calls.at(-1)!.body!)).toEqual({ position: 2, parentId: SCOOTER.id });
+    await folderStore.reorder(HOME.id, SCOOTER.id, "before");
+    expect(JSON.parse(calls.at(-1)!.body!)).toEqual({ position: 0, parentId: WORK.id });
+    await folderStore.moveInto(HOME.id, null);
+    expect(folderStore.get().folders.find((f) => f.id === HOME.id)?.parentId).toBeUndefined();
+    expect(JSON.parse(calls.at(-1)!.body!)).toMatchObject({ parentId: "" });
+    expect(folderPath(UI.id)).toBe("Work / Scooter / UI");
+  });
+
+  it("deleting lifts contents a level, or drops the subtree", async () => {
+    let calls = await load({ c1: SCOOTER.id, c2: UI.id });
+    await folderStore.remove(SCOOTER.id);
+    let { folders, placements } = folderStore.get();
+    expect(folders.find((f) => f.id === UI.id)?.parentId).toBe(WORK.id);
+    expect(placements).toEqual({ c1: WORK.id, c2: UI.id });
+    expect(calls.at(-1)).toMatchObject({ method: "DELETE" });
+    expect(calls.at(-1)!.url).not.toContain("subfolders");
+
+    calls = await load({ c1: SCOOTER.id, c2: UI.id, c3: HOME.id });
+    await folderStore.remove(WORK.id, true);
+    ({ folders, placements } = folderStore.get());
+    expect(folders.map((f) => f.id)).toEqual([STARRED, DESIGN.id, HOME.id]);
+    expect(placements).toEqual({ c3: HOME.id });
+    expect(calls.at(-1)!.url).toContain("?subfolders=delete");
+  });
+
+  it("a lifetime is set, cleared, and inherited from the nearest folder", async () => {
+    const calls = await load();
+    await folderStore.setLifetime(WORK.id, 24);
+    expect(effectiveLifetime(UI.id)).toMatchObject({ hours: 24, from: { id: WORK.id } });
+    await folderStore.setLifetime(SCOOTER.id, 0);
+    expect(effectiveLifetime(UI.id)).toMatchObject({ hours: 0, from: { id: SCOOTER.id } });
+    await folderStore.setLifetime(SCOOTER.id, null);
+    expect(effectiveLifetime(UI.id)?.hours).toBe(24);
+    expect(effectiveLifetime(HOME.id)).toBeUndefined();
+    expect(calls.map((c) => c.body).filter(Boolean)).toEqual([
+      JSON.stringify({ conversationLifetimeHours: 24 }),
+      JSON.stringify({ conversationLifetimeHours: 0 }),
+      JSON.stringify({ conversationLifetimeHours: null }),
+    ]);
+    expect(await folderStore.setLifetime(DESIGN.id, 24)).toBe(false);
+  });
+
+  it("locked folders can't be renamed, moved or deleted", async () => {
+    const calls = await load();
+    expect(await folderStore.rename(DESIGN.id, "x")).toBe(false);
+    expect(await folderStore.remove(DESIGN.id)).toBe(false);
+    expect(await folderStore.reorder(DESIGN.id, WORK.id)).toBe(false);
+    expect(await folderStore.moveInto(DESIGN.id, WORK.id)).toBe(false);
+    expect(calls).toHaveLength(1); // just the load
+    // Others still drop beside it.
+    await folderStore.reorder(HOME.id, DESIGN.id, "after");
+    expect(folderStore.get().folders.filter((f) => f.kind === "user" && !f.parentId).map((f) => f.id)).toEqual([DESIGN.id, HOME.id, WORK.id]);
   });
 });

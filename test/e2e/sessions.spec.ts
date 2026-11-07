@@ -27,6 +27,8 @@ const header = {
 const folders = {
   section: (id: string) => `[data-testid="folder-section"][data-folder-id="${id}"]`,
   header: '[data-testid="folder-header"]',
+  head: (id: string) => `[data-testid="folder-header"][data-folder-id="${id}"]`,
+  folder: (id: string) => `[data-testid="folder"][data-folder-id="${id}"]`,
   recent: '[data-testid="recent-section"]',
 };
 
@@ -239,13 +241,14 @@ test.describe("session selector & titles", () => {
     const section = (id: string) => page.locator(folders.section(id));
     await expect.poll(ours).toEqual(["starred", a, b, c]);
 
+    const head = (id: string) => page.locator(folders.head(id));
     // Onto Starred: the top of the user's folders, never above Starred.
-    await section(c).locator(folders.header).dragTo(section("starred"));
+    await head(c).dragTo(head("starred"));
     await expect.poll(ours).toEqual(["starred", c, a, b]);
 
-    // The bottom half of a folder drops below it.
-    const box = (await section(b).boundingBox())!;
-    await section(a).locator(folders.header).dragTo(section(b), { targetPosition: { x: 20, y: box.height - 3 } });
+    // The bottom quarter of a folder's header drops below it.
+    const box = (await head(b).boundingBox())!;
+    await head(a).dragTo(head(b), { targetPosition: { x: 20, y: box.height - 3 } });
     await expect.poll(ours).toEqual(["starred", c, b, a]);
     // Focus left in the dragged header must not blank its count.
     await page.mouse.move(900, 900);
@@ -258,6 +261,66 @@ test.describe("session selector & titles", () => {
     await page.reload();
     await expect.poll(ours, { timeout: 30_000 }).toEqual(["starred", c, a, b]);
     for (const id of [a, b, c]) await request.delete(`${base}/folders/${id}`);
+  });
+
+  test("folders nest three deep: drag into, the depth cap, lifetimes, and delete lifts", async ({ chat, page, request, baseURL }) => {
+    const base = baseURL ?? "http://localhost:5173";
+    const stamp = Date.now();
+    const mk = async (n: string, parentId?: string) =>
+      ((await (await request.post(`${base}/folders`, { data: { name: `e2e-nest-${n}-${stamp}`, parentId } })).json()) as { id: string }).id;
+    const a = await mk("a");
+    const b = await mk("b", a);
+    const c = await mk("c", b);
+    const d = await mk("d");
+    await page.setViewportSize({ width: 1280, height: 1600 });
+    await chat.open();
+    const head = (id: string) => page.locator(folders.head(id));
+    const depth = (id: string) => page.locator(folders.folder(id)).getAttribute("data-depth");
+    await expect(head(c)).toBeVisible();
+    expect(await depth(c)).toBe("3");
+
+    // The middle of a header drops into that folder.
+    await head(d).dragTo(head(a));
+    await expect.poll(() => depth(d)).toBe("2");
+
+    // Level 3 has no "into"; the drop lands beside it.
+    await head(d).dragTo(head(c));
+    await expect.poll(() => depth(d)).toBe("3");
+
+    await page.locator(folders.folder(c)).getByRole("button", { name: /folder actions/ }).first().click();
+    await expect(page.getByRole("menuitem", { name: /New subfolder/ })).toHaveAttribute("data-disabled", "");
+    await page.keyboard.press("Escape");
+
+    // A lifetime shows on the header and reaches the server.
+    await page.locator(folders.folder(a)).getByRole("button", { name: /folder actions/ }).first().click();
+    await page.getByRole("menuitem", { name: /Delete conversations after/ }).hover();
+    await page.getByRole("menuitemradio", { name: "1 day" }).click();
+    await expect(head(a).getByTestId("folder-lifetime")).toBeVisible();
+    const list = async () =>
+      ((await (await request.get(`${base}/folders`)).json()) as { folders: Array<{ id: string; parentId?: string; conversationLifetimeHours?: number }> }).folders;
+    await expect.poll(async () => (await list()).find((f) => f.id === a)?.conversationLifetimeHours).toBe(24);
+
+    // Deleting b keeps what's inside: c and d join a.
+    await page.locator(folders.folder(b)).getByRole("button", { name: /folder actions/ }).first().click();
+    await page.getByRole("menuitem", { name: /Delete folder/ }).hover();
+    await page.getByRole("menuitem", { name: /Keep what's inside/ }).click();
+    await expect.poll(async () => (await list()).filter((f) => f.parentId === a).map((f) => f.id).sort()).toEqual([c, d].sort());
+    await page.reload();
+    await expect.poll(() => depth(c), { timeout: 30_000 }).toBe("2");
+    await request.delete(`${base}/folders/${a}?subfolders=delete`);
+  });
+
+  test("a locked folder can't be changed by its user", async ({ chat, page, request, baseURL }) => {
+    const base = baseURL ?? "http://localhost:5173";
+    await chat.open();
+    const head = page.locator(folders.head("e2e-design"));
+    await expect(head).toBeVisible();
+    const ids = await page.locator(folders.header).evaluateAll((els) => els.map((e) => e.getAttribute("data-folder-id")));
+    expect(ids.slice(0, 2)).toEqual(["starred", "e2e-design"]);
+    await expect(head).toHaveAttribute("draggable", "false");
+    await expect(head.getByRole("button", { name: /folder actions/ })).toHaveCount(0);
+    await expect(head.getByTestId("folder-lifetime")).toBeVisible();
+    expect((await request.patch(`${base}/folders/e2e-design`, { data: { name: "x" } })).status()).toBe(409);
   });
 
   test("new-session button starts a fresh conversation", async ({ chat, page }) => {

@@ -227,7 +227,7 @@ function MoveTo({ session: s }: { session: Session }) {
           />
           {options.map((f) => (
             <button key={f.id} type="button" className={item} onClick={() => pick(f.id)}>
-              <FolderGlyph builtin={f.id === STARRED} icon={f.icon} className={f.id === STARRED ? undefined : "text-muted-foreground"} />
+              <FolderGlyph starred={f.id === STARRED} icon={f.icon} className={f.id === STARRED ? undefined : "text-muted-foreground"} />
               <span className="flex-1 truncate">{f.name}</span>
               {current === f.id && <Check className="size-3.5" />}
             </button>

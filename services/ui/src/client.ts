@@ -238,7 +238,14 @@ export interface ConversationFolder {
   /** A Lucide icon name shown instead of the folder glyph. */
   icon?: string;
   kind: "starred" | "user";
+  /** Only a folder service changes it; users file conversations. */
+  locked?: boolean;
+  /** The enclosing folder; absent at the top level. */
+  parentId?: string;
+  /** Ordered among siblings. */
   position: number;
+  /** Idle hours before deletion; 0 is forever, absent inherits. */
+  conversationLifetimeHours?: number;
 }
 
 /** GET /folders: folders, and conversation id → folder id. */
@@ -274,23 +281,24 @@ export async function fetchFolders(config: AgentHostConfig): Promise<FolderList 
 }
 
 /** Create a folder, returning it or null on error (a taken name included). */
-export async function createFolder(config: AgentHostConfig, name: string): Promise<ConversationFolder | null> {
-  const res = await folderRequest(config, "createFolder", foldersUrl(config), "POST", { name });
+export async function createFolder(config: AgentHostConfig, name: string, parentId?: string): Promise<ConversationFolder | null> {
+  const res = await folderRequest(config, "createFolder", foldersUrl(config), "POST", { name, parentId });
   return res ? ((await res.json()) as ConversationFolder) : null;
 }
 
-/** Rename and/or reposition a folder; true on success. */
+/** Patch a folder; a null lifetime inherits. True on success. */
 export async function updateFolder(
   config: AgentHostConfig,
   id: string,
-  patch: { name?: string; icon?: string; position?: number },
+  patch: { name?: string; icon?: string; position?: number; parentId?: string; conversationLifetimeHours?: number | null },
 ): Promise<boolean> {
   return (await folderRequest(config, "updateFolder", foldersUrl(config, id), "PATCH", patch)) !== null;
 }
 
-/** Delete a folder, returning its conversations to Recent; true on success. */
-export async function deleteFolder(config: AgentHostConfig, id: string): Promise<boolean> {
-  return (await folderRequest(config, "deleteFolder", foldersUrl(config, id), "DELETE")) !== null;
+/** Delete a folder; `subfolders` drops its subtree too. True on success. */
+export async function deleteFolder(config: AgentHostConfig, id: string, subfolders = false): Promise<boolean> {
+  const url = foldersUrl(config, id) + (subfolders ? "?subfolders=delete" : "");
+  return (await folderRequest(config, "deleteFolder", url, "DELETE")) !== null;
 }
 
 /** File a conversation, or unfile it with null; true on success. */

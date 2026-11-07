@@ -33,6 +33,8 @@ export interface MetaStore {
   readLastActivity(id: SessionId): Promise<number | undefined>;
   /** The router-owned star and title; undefined without a row, throws on failure. */
   readRouterMeta(id: SessionId): Promise<RouterMeta | undefined>;
+  /** Filed conversations' folder lifetimes in hours, 0 = forever; throws. */
+  readLifetimes(ids: SessionId[]): Promise<Map<SessionId, number>>;
   /** Set the visibility of `rootId` and all its descendants in one statement; throws on failure. */
   setVisibility(rootId: SessionId, visibility: Visibility): Promise<void>;
   /** The row's owner and visibility, undefined when there is no row; throws on a failed read. */
@@ -172,6 +174,26 @@ export function createPgMetaStore(config: PgMetaStoreConfig): MetaStore {
         ...(r.owner == null ? {} : { owner: r.owner }),
         visibility: r.visibility === "private" ? "private" : "shared",
       };
+    },
+
+    async readLifetimes(ids) {
+      // The owner's nearest set lifetime wins; the longest across placements.
+      const res = await db.execute<{ id: string; hours: number }>(sql`
+        WITH RECURSIVE up AS (
+          SELECT c.id, f.parent_id, f.conversation_lifetime_hours AS lifetime_hours, 1 AS depth
+          FROM conversations c
+          JOIN user_conversation_metadata p ON p.conversation_id = c.id
+            AND (c.owner IS NULL OR p.owner = c.owner OR p.owner = '')
+          JOIN conversation_folders f ON f.id = p.folder_id
+          WHERE c.id IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})
+          UNION ALL
+          SELECT up.id, f.parent_id, f.conversation_lifetime_hours, up.depth + 1
+          FROM up JOIN conversation_folders f ON f.id = up.parent_id
+          WHERE up.lifetime_hours IS NULL AND up.depth < 4
+        )
+        SELECT id, CASE WHEN bool_or(lifetime_hours = 0) THEN 0 ELSE max(lifetime_hours) END AS hours
+        FROM up WHERE lifetime_hours IS NOT NULL GROUP BY id`);
+      return new Map(res.rows.map((r) => [r.id, Number(r.hours)]));
     },
 
     async touchActivity(id, at) {

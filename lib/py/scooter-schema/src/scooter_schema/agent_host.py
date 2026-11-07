@@ -4,7 +4,7 @@
 from typing import Optional
 import datetime
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, Double, ForeignKeyConstraint, Index, PrimaryKeyConstraint, Text, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, Double, ForeignKeyConstraint, Index, Integer, PrimaryKeyConstraint, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -58,10 +58,13 @@ class ConversationEvents(Base):
 class ConversationFolders(Base):
     __tablename__ = 'conversation_folders'
     __table_args__ = (
+        CheckConstraint('conversation_lifetime_hours >= 0', name='conversation_folders_conversation_lifetime_hours_check'),
         CheckConstraint("icon ~ '^[a-z0-9-]{1,40}$'::text", name='conversation_folders_icon_check'),
         CheckConstraint("kind = ANY (ARRAY['starred'::text, 'user'::text])", name='conversation_folders_kind_check'),
         CheckConstraint('length(name) >= 1 AND length(name) <= 100', name='conversation_folders_name_check'),
+        ForeignKeyConstraint(['parent_id'], ['conversation_folders.id'], ondelete='CASCADE', name='conversation_folders_parent'),
         PrimaryKeyConstraint('id', name='conversation_folders_pkey'),
+        Index('conversation_folders_by_parent', 'parent_id'),
         Index('conversation_folders_name', 'owner', postgresql_where="(kind = 'user'::text)", unique=True),
         Index('conversation_folders_one_starred', 'owner', postgresql_where="(kind = 'starred'::text)", unique=True)
     )
@@ -69,11 +72,16 @@ class ConversationFolders(Base):
     id: Mapped[str] = mapped_column(Text, primary_key=True)
     owner: Mapped[str] = mapped_column(Text, nullable=False)
     kind: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'user'::text"))
+    locked: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('false'))
     name: Mapped[str] = mapped_column(Text, nullable=False)
     position: Mapped[float] = mapped_column(Double(53), nullable=False)
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    parent_id: Mapped[Optional[str]] = mapped_column(Text)
     icon: Mapped[Optional[str]] = mapped_column(Text)
+    conversation_lifetime_hours: Mapped[Optional[int]] = mapped_column(Integer)
 
+    parent: Mapped[Optional['ConversationFolders']] = relationship('ConversationFolders', remote_side=[id], back_populates='parent_reverse')
+    parent_reverse: Mapped[list['ConversationFolders']] = relationship('ConversationFolders', remote_side=[parent_id], back_populates='parent')
     user_conversation_metadata: Mapped[list['UserConversationMetadata']] = relationship('UserConversationMetadata', back_populates='folder')
 
 

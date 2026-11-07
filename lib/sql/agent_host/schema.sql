@@ -103,22 +103,30 @@ CREATE INDEX "conversations_by_parent" ON "conversations" ("parent_id");
 -- router's assembleList are the only two places that must agree on which changes push).
 -- Assignment changes notify 'conversation_assignment' instead, for the router.
 
--- Per-user flat sidebar FOLDERS, including one built-in Starred each.
+-- Per-user sidebar FOLDERS, nested 3 deep, plus a built-in Starred each.
 CREATE TABLE "conversation_folders" (
   "id"         text   NOT NULL,
   -- Ingress identity; empty when the deployment has none.
   "owner"      text   NOT NULL,
   "kind"       text   NOT NULL DEFAULT 'user' CHECK ("kind" IN ('starred', 'user')),
+  -- Only a folder service changes it; users just file conversations.
+  "locked"     boolean NOT NULL DEFAULT false,
+  -- The enclosing user folder; null at the top level.
+  "parent_id"  text,
   "name"       text   NOT NULL CHECK (length("name") BETWEEN 1 AND 100),
   -- An optional Lucide icon name shown instead of the folder glyph.
   "icon"       text   CHECK ("icon" ~ '^[a-z0-9-]{1,40}$'),
-  -- Fractional, so a reorder rewrites one row.
+  -- Idle hours before deletion; 0 is forever, null inherits.
+  "conversation_lifetime_hours" integer CHECK ("conversation_lifetime_hours" >= 0),
+  -- Fractional, so a reorder rewrites one row; ordered among siblings.
   "position"   double precision NOT NULL,
   "created_at" bigint NOT NULL,
-  PRIMARY KEY ("id")
+  PRIMARY KEY ("id"),
+  CONSTRAINT "conversation_folders_parent" FOREIGN KEY ("parent_id") REFERENCES "conversation_folders" ("id") ON DELETE CASCADE
 );
-CREATE UNIQUE INDEX "conversation_folders_name" ON "conversation_folders" ("owner", (lower("name"))) WHERE ("kind" = 'user');
+CREATE UNIQUE INDEX "conversation_folders_name" ON "conversation_folders" ("owner", (COALESCE("parent_id", '')), (lower("name"))) WHERE ("kind" = 'user');
 CREATE UNIQUE INDEX "conversation_folders_one_starred" ON "conversation_folders" ("owner") WHERE ("kind" = 'starred');
+CREATE INDEX "conversation_folders_by_parent" ON "conversation_folders" ("parent_id");
 
 -- Per-user metadata on a conversation; for now, its folder.
 CREATE TABLE "user_conversation_metadata" (

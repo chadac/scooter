@@ -7,11 +7,24 @@
  */
 
 import { memo, useEffect, useState, type ReactNode } from "react";
-import { Bot, ChevronRight, CornerDownRight, FolderPlus, Lock, MoreHorizontal, Plus, Star } from "lucide-react";
+import { Bot, Check, ChevronRight, CornerDownRight, FolderPlus, Hourglass, InfinityIcon, Lock, MoreHorizontal, Plus, Star } from "lucide-react";
 import { DropdownMenu, Popover } from "radix-ui";
 
 import { FolderGlyph, IconPicker } from "./FolderGlyph.js";
-import { buildFolders, currentBranch, folderStore, moveTo, useFolders, type FolderSection } from "./folders.js";
+import {
+  allRows,
+  buildFolders,
+  canMoveInto,
+  currentBranch,
+  effectiveLifetime,
+  folderPath,
+  folderStore,
+  MAX_FOLDER_DEPTH,
+  moveTo,
+  useFolders,
+  type DropPlace,
+  type FolderSection,
+} from "./folders.js";
 import {
   sessionStore,
   useSessions,
@@ -211,6 +224,8 @@ function DropZone({
       data-folder-id={folderId ?? undefined}
       onDragOver={(e) => {
         if (!e.dataTransfer.types.includes(CONV_MIME)) return;
+        // The innermost folder takes it, not every ancestor.
+        e.stopPropagation();
         e.preventDefault();
         setOver(true);
       }}
@@ -220,6 +235,8 @@ function DropZone({
       onDrop={(e) => {
         setOver(false);
         const id = e.dataTransfer.getData(CONV_MIME);
+        if (!id) return;
+        e.stopPropagation();
         const s = sessionStore.get().sessions.find((x) => x.id === id);
         if (s) void moveTo(s, folderId);
       }}
@@ -230,80 +247,137 @@ function DropZone({
   );
 }
 
+/** Lifetimes offered in a folder's menu, in hours. */
+const LIFETIMES: Array<[number, string]> = [
+  [0, "Never"],
+  [24, "1 day"],
+  [168, "1 week"],
+  [720, "30 days"],
+];
+
+/** "1 day", "3 days", "12 hours" or "never". */
+function lifetimeLabel(hours: number): string {
+  if (hours === 0) return "never";
+  if (hours === 168) return "1 week";
+  if (hours % 24 === 0) return hours === 24 ? "1 day" : `${hours / 24} days`;
+  return hours === 1 ? "1 hour" : `${hours} hours`;
+}
+
+const menuItem =
+  "cursor-pointer rounded px-2 py-1 outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[highlighted]:bg-accent data-[state=open]:bg-accent";
+const menuContent = "z-50 min-w-36 rounded-md border bg-popover p-1 text-sm text-popover-foreground shadow-md";
+
+/** Does this section, or a subfolder, hold `currentId`? */
+const holds = (f: FolderSection, currentId: string): boolean =>
+  f.rows.some((r) => r.session.id === currentId) || f.children.some((c) => holds(c, currentId));
+
 function FolderSectionView({
   section: f,
-  open,
+  parent,
   first,
   last,
+  closed,
+  searching,
   currentId,
   labelMode,
 }: {
   section: FolderSection;
-  /** First or last of the user's folders, for Move up/down. */
+  parent?: FolderSection;
+  /** First or last among its siblings, for Move up/down. */
   first?: boolean;
   last?: boolean;
-  /** Collapsed still shows the branch to the open conversation. */
-  open: boolean;
+  /** An ancestor is collapsed: show only the open conversation's branch. */
+  closed?: boolean;
+  searching: boolean;
   currentId: string;
   labelMode: LabelMode;
 }) {
-  const builtin = f.builtin;
+  const fstate = useFolders();
   const [renaming, setRenaming] = useState(false);
+  const [addingSub, setAddingSub] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [picking, setPicking] = useState(false);
-  const [dropSide, setDropSide] = useState<"before" | "after" | null>(null);
+  const [drop, setDrop] = useState<{ place: DropPlace; ok: boolean } | null>(null);
   // A cancelled drag never fires dragleave here, so clear on dragend.
   useEffect(() => {
-    if (!dropSide) return;
-    const clear = () => setDropSide(null);
+    if (!drop) return;
+    const clear = () => setDrop(null);
     document.addEventListener("dragend", clear);
     return () => document.removeEventListener("dragend", clear);
-  }, [dropSide]);
+  }, [drop]);
+  const open = !closed && (searching || !fstate.collapsed[f.id]);
   const shown = open ? f.rows : currentBranch(f.rows, currentId);
-  const top = f.rows.filter((r) => r.depth === 0);
-  const dots = f.rows.map((r) => turnDot(r.session)).filter((d): d is TurnDot => !!d);
+  const kids = f.children.filter((c) => (searching ? allRows(c).length > 0 : open || holds(c, currentId)));
+  const everything = allRows(f);
+  const count = (open ? f.rows : everything).filter((r) => r.depth === 0).length;
+  const dots = (open ? f.rows : everything).map((r) => turnDot(r.session)).filter((d): d is TurnDot => !!d);
   const rollup = DOT_RANK.find((d) => dots.includes(d));
+  const nestable = !f.locked && f.depth < MAX_FOLDER_DEPTH;
+  const inherited = parent && effectiveLifetime(parent.id);
+  const moveTargets = fstate.folders.filter(
+    (x) => x.kind === "user" && x.id !== parent?.id && canMoveInto(f.id, x.id),
+  );
   return (
-    <div
-      className="relative"
-      onDragOver={(e) => {
-        if (!draggingFolder || draggingFolder === f.id) return;
-        e.preventDefault();
-        const r = e.currentTarget.getBoundingClientRect();
-        setDropSide(builtin || e.clientY > r.top + r.height / 2 ? "after" : "before");
-      }}
-      onDragLeave={(e) => {
-        if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropSide(null);
-      }}
-      onDrop={(e) => {
-        if (!dropSide || !draggingFolder) return;
-        e.preventDefault();
-        void folderStore.reorder(draggingFolder, f.id, dropSide === "after");
-        setDropSide(null);
-      }}
-    >
-      {dropSide && (
+    <div className="relative" data-testid="folder" data-folder-id={f.id} data-depth={f.depth}>
+      {drop && drop.place !== "into" && (
         <div
           aria-hidden
           data-testid="folder-drop-line"
+          data-ok={drop.ok}
           className={cn(
-            "pointer-events-none absolute inset-x-1 z-10 h-0.5 rounded bg-primary",
-            dropSide === "before" ? "-top-[3px]" : "-bottom-[3px]",
+            "pointer-events-none absolute inset-x-1 z-10 h-0.5 rounded",
+            drop.ok ? "bg-primary" : "bg-muted-foreground/40",
+            drop.place === "before" ? "-top-[3px]" : "-bottom-[3px]",
           )}
         />
+      )}
+      {drop && !drop.ok && (
+        <span
+          role="status"
+          className="pointer-events-none absolute end-1 top-0 z-20 rounded bg-foreground px-1.5 py-0.5 text-[11px] text-background"
+        >
+          Too deep: max {MAX_FOLDER_DEPTH} levels
+        </span>
       )}
       <DropZone folderId={f.id} className="mb-1 rounded-md">
         <div
           data-testid="folder-header"
           data-folder-id={f.id}
-          draggable={!builtin && !renaming}
+          draggable={!f.locked && !renaming}
           onDragStart={(e) => {
             e.dataTransfer.setData(FOLDER_MIME, f.id);
             e.dataTransfer.effectAllowed = "move";
             draggingFolder = f.id;
           }}
           onDragEnd={() => (draggingFolder = null)}
-          className="group/folder flex h-7 items-center gap-1 rounded-md px-1 text-[13px] text-muted-foreground hover:bg-accent/60"
+          onDragOver={(e) => {
+            const from = draggingFolder;
+            if (!from || from === f.id) return;
+            const r = e.currentTarget.getBoundingClientRect();
+            const y = (e.clientY - r.top) / r.height;
+            let place: DropPlace = "after";
+            let ok = true;
+            if (!f.starred) {
+              const into = canMoveInto(from, f.id);
+              place = into ? (y < 0.25 ? "before" : y > 0.75 ? "after" : "into") : y < 0.5 ? "before" : "after";
+              ok = into || canMoveInto(from, parent?.id ?? null);
+            }
+            if (ok) e.preventDefault();
+            if (drop?.place !== place || drop.ok !== ok) setDrop({ place, ok });
+          }}
+          onDragLeave={(e) => {
+            if (!e.currentTarget.contains(e.relatedTarget as Node)) setDrop(null);
+          }}
+          onDrop={(e) => {
+            if (!drop?.ok || !draggingFolder) return;
+            e.preventDefault();
+            void folderStore.reorder(draggingFolder, f.id, drop.place);
+            setDrop(null);
+          }}
+          className={cn(
+            "group/folder flex h-7 items-center gap-1 rounded-md px-1 text-[13px] text-muted-foreground hover:bg-accent/60",
+            drop?.place === "into" && "bg-primary/10 ring-1 ring-primary",
+          )}
         >
           <button
             type="button"
@@ -315,7 +389,7 @@ function FolderSectionView({
             <Popover.Root open={picking} onOpenChange={setPicking}>
               <Popover.Anchor asChild>
                 <span className="flex">
-                  <FolderGlyph builtin={builtin} icon={f.icon} />
+                  <FolderGlyph starred={f.starred} icon={f.icon} />
                 </span>
               </Popover.Anchor>
               <Popover.Portal>
@@ -352,7 +426,20 @@ function FolderSectionView({
                 className="h-5 min-w-0 flex-1 rounded border border-input bg-background px-1 text-foreground"
               />
             ) : (
-              <span className={cn("truncate font-medium", builtin ? "text-foreground" : "text-foreground/90")}>{f.name}</span>
+              <span className={cn("truncate font-medium", f.locked ? "text-foreground" : "text-foreground/90")}>{f.name}</span>
+            )}
+            {!f.starred && f.conversationLifetimeHours !== undefined && (
+              <span
+                data-testid="folder-lifetime"
+                title={
+                  f.conversationLifetimeHours === 0
+                    ? "Conversations here are kept forever"
+                    : `Conversations here are deleted after ${lifetimeLabel(f.conversationLifetimeHours)} idle`
+                }
+                className="flex shrink-0 text-muted-foreground/70"
+              >
+                {f.conversationLifetimeHours === 0 ? <InfinityIcon className="size-3" aria-hidden /> : <Hourglass className="size-3" aria-hidden />}
+              </span>
             )}
           </button>
           {!open && rollup && <StatusDot dot={rollup} />}
@@ -363,76 +450,161 @@ function FolderSectionView({
               className={cn(
                 "text-[11px] tabular-nums",
                 // Hidden exactly when the actions button shows in its place.
-                !builtin && "group-hover/folder:invisible group-has-[[data-folder-actions]:focus-visible]/folder:invisible",
+                !f.locked && "group-hover/folder:invisible group-has-[[data-folder-actions]:focus-visible]/folder:invisible",
                 menuOpen && "invisible",
               )}
             >
-              {top.length || ""}
+              {count || ""}
             </span>
-          {!builtin && (
-            <DropdownMenu.Root open={menuOpen} onOpenChange={setMenuOpen}>
-              <DropdownMenu.Trigger asChild>
-                <button
-                  type="button"
-                  data-folder-actions
-                  aria-label={`${f.name} folder actions`}
-                  className="absolute inset-y-0 end-0 my-auto flex size-5 items-center justify-center rounded opacity-0 hover:bg-accent focus-visible:opacity-100 group-hover/folder:opacity-100 data-[state=open]:opacity-100"
-                >
-                  <MoreHorizontal className="size-3.5" />
-                </button>
-              </DropdownMenu.Trigger>
-              <DropdownMenu.Portal>
-                <DropdownMenu.Content
-                  align="start"
-                  sideOffset={4}
-                  className="z-50 min-w-32 rounded-md border bg-popover p-1 text-sm text-popover-foreground shadow-md"
-                >
-                  <DropdownMenu.Item
-                    onSelect={() => setTimeout(() => setRenaming(true))}
-                    className="cursor-pointer rounded px-2 py-1 outline-none data-[highlighted]:bg-accent"
+            {!f.locked && (
+              <DropdownMenu.Root open={menuOpen} onOpenChange={setMenuOpen}>
+                <DropdownMenu.Trigger asChild>
+                  <button
+                    type="button"
+                    data-folder-actions
+                    aria-label={`${f.name} folder actions`}
+                    className="absolute inset-y-0 end-0 my-auto flex size-5 items-center justify-center rounded opacity-0 hover:bg-accent focus-visible:opacity-100 group-hover/folder:opacity-100 data-[state=open]:opacity-100"
                   >
-                    Rename
-                  </DropdownMenu.Item>
-                  <DropdownMenu.Item
-                    onSelect={() => setTimeout(() => setPicking(true))}
-                    className="cursor-pointer rounded px-2 py-1 outline-none data-[highlighted]:bg-accent"
-                  >
-                    {f.icon ? "Change icon" : "Set icon"}
-                  </DropdownMenu.Item>
-                  <DropdownMenu.Item
-                    disabled={first}
-                    onSelect={() => void folderStore.nudge(f.id, -1)}
-                    className="cursor-pointer rounded px-2 py-1 outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[highlighted]:bg-accent"
-                  >
-                    Move up
-                  </DropdownMenu.Item>
-                  <DropdownMenu.Item
-                    disabled={last}
-                    onSelect={() => void folderStore.nudge(f.id, 1)}
-                    className="cursor-pointer rounded px-2 py-1 outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[highlighted]:bg-accent"
-                  >
-                    Move down
-                  </DropdownMenu.Item>
-                  <DropdownMenu.Item
-                    onSelect={() => {
-                      if (top.length === 0 || window.confirm(`Delete "${f.name}"? Its ${top.length} conversation(s) move to Recent.`))
-                        void folderStore.remove(f.id);
-                    }}
-                    className="cursor-pointer rounded px-2 py-1 text-destructive outline-none data-[highlighted]:bg-destructive/10"
-                  >
-                    Delete folder
-                  </DropdownMenu.Item>
-                </DropdownMenu.Content>
-              </DropdownMenu.Portal>
-            </DropdownMenu.Root>
-          )}
+                    <MoreHorizontal className="size-3.5" />
+                  </button>
+                </DropdownMenu.Trigger>
+                <DropdownMenu.Portal>
+                  <DropdownMenu.Content align="start" sideOffset={4} className={menuContent}>
+                    <DropdownMenu.Item onSelect={() => setTimeout(() => setRenaming(true))} className={menuItem}>
+                      Rename
+                    </DropdownMenu.Item>
+                    <DropdownMenu.Item onSelect={() => setTimeout(() => setPicking(true))} className={menuItem}>
+                      {f.icon ? "Change icon" : "Set icon"}
+                    </DropdownMenu.Item>
+                    <DropdownMenu.Item
+                      disabled={!nestable}
+                      onSelect={() => {
+                        if (!open) folderStore.toggleCollapsed(f.id);
+                        setTimeout(() => setAddingSub(true));
+                      }}
+                      className={cn(menuItem, "flex justify-between gap-3")}
+                    >
+                      New subfolder
+                      {!nestable && <span className="text-xs text-muted-foreground">max depth</span>}
+                    </DropdownMenu.Item>
+                    <DropdownMenu.Sub>
+                      <DropdownMenu.SubTrigger className={cn(menuItem, "flex justify-between gap-3")}>
+                        Delete conversations after <ChevronRight className="size-3.5" aria-hidden />
+                      </DropdownMenu.SubTrigger>
+                      <DropdownMenu.Portal>
+                        <DropdownMenu.SubContent sideOffset={4} className={menuContent}>
+                          <DropdownMenu.RadioGroup
+                            value={f.conversationLifetimeHours === undefined ? "inherit" : String(f.conversationLifetimeHours)}
+                            onValueChange={(v) => void folderStore.setLifetime(f.id, v === "inherit" ? null : Number(v))}
+                          >
+                            <DropdownMenu.RadioItem value="inherit" className={cn(menuItem, "flex gap-2")}>
+                              <span className="w-3.5">
+                                <DropdownMenu.ItemIndicator>
+                                  <Check className="size-3.5" />
+                                </DropdownMenu.ItemIndicator>
+                              </span>
+                              {inherited ? `Same as ${parent!.name} (${lifetimeLabel(inherited.hours)})` : "Default"}
+                            </DropdownMenu.RadioItem>
+                            {LIFETIMES.map(([h, label]) => (
+                              <DropdownMenu.RadioItem key={h} value={String(h)} className={cn(menuItem, "flex gap-2")}>
+                                <span className="w-3.5">
+                                  <DropdownMenu.ItemIndicator>
+                                    <Check className="size-3.5" />
+                                  </DropdownMenu.ItemIndicator>
+                                </span>
+                                {label}
+                              </DropdownMenu.RadioItem>
+                            ))}
+                          </DropdownMenu.RadioGroup>
+                          <p className="max-w-52 px-2 pb-1 pt-1.5 text-xs text-muted-foreground">
+                            Conversations idle longer than this are deleted.
+                          </p>
+                        </DropdownMenu.SubContent>
+                      </DropdownMenu.Portal>
+                    </DropdownMenu.Sub>
+                    <DropdownMenu.Separator className="my-1 h-px bg-border" />
+                    <DropdownMenu.Item disabled={first} onSelect={() => void folderStore.nudge(f.id, -1)} className={menuItem}>
+                      Move up
+                    </DropdownMenu.Item>
+                    <DropdownMenu.Item disabled={last} onSelect={() => void folderStore.nudge(f.id, 1)} className={menuItem}>
+                      Move down
+                    </DropdownMenu.Item>
+                    <DropdownMenu.Sub>
+                      <DropdownMenu.SubTrigger className={cn(menuItem, "flex justify-between gap-3")}>
+                        Move to… <ChevronRight className="size-3.5" aria-hidden />
+                      </DropdownMenu.SubTrigger>
+                      <DropdownMenu.Portal>
+                        <DropdownMenu.SubContent sideOffset={4} className={cn(menuContent, "max-h-72 overflow-y-auto")}>
+                          <DropdownMenu.Item
+                            disabled={!parent}
+                            onSelect={() => void folderStore.moveInto(f.id, null)}
+                            className={menuItem}
+                          >
+                            Top level
+                          </DropdownMenu.Item>
+                          {moveTargets.map((x) => (
+                            <DropdownMenu.Item
+                              key={x.id}
+                              onSelect={() => void folderStore.moveInto(f.id, x.id)}
+                              className={cn(menuItem, "flex items-center gap-2")}
+                            >
+                              <FolderGlyph starred={false} icon={x.icon} className="text-muted-foreground" />
+                              <span className="truncate">{folderPath(x.id, fstate.folders)}</span>
+                            </DropdownMenu.Item>
+                          ))}
+                        </DropdownMenu.SubContent>
+                      </DropdownMenu.Portal>
+                    </DropdownMenu.Sub>
+                    <DropdownMenu.Separator className="my-1 h-px bg-border" />
+                    {f.children.length === 0 ? (
+                      <DropdownMenu.Item
+                        onSelect={() => {
+                          if (count === 0 || window.confirm(`Delete "${f.name}"? Its ${count} conversation(s) move to ${parent ? parent.name : "Recent"}.`))
+                            void folderStore.remove(f.id);
+                        }}
+                        className={cn(menuItem, "text-destructive data-[highlighted]:bg-destructive/10")}
+                      >
+                        Delete folder
+                      </DropdownMenu.Item>
+                    ) : (
+                      <DropdownMenu.Sub>
+                        <DropdownMenu.SubTrigger className={cn(menuItem, "flex justify-between gap-3 text-destructive")}>
+                          Delete folder <ChevronRight className="size-3.5" aria-hidden />
+                        </DropdownMenu.SubTrigger>
+                        <DropdownMenu.Portal>
+                          <DropdownMenu.SubContent sideOffset={4} className={menuContent}>
+                            <DropdownMenu.Item onSelect={() => void folderStore.remove(f.id)} className={menuItem}>
+                              Keep what's inside
+                              <span className="block text-xs text-muted-foreground">
+                                Moves it up to {parent ? parent.name : "the top level"}
+                              </span>
+                            </DropdownMenu.Item>
+                            <DropdownMenu.Item
+                              onSelect={() => {
+                                const n = everything.filter((r) => r.depth === 0).length;
+                                if (window.confirm(`Delete "${f.name}" and its subfolders? Their ${n} conversation(s) move to Recent.`))
+                                  void folderStore.remove(f.id, true);
+                              }}
+                              className={cn(menuItem, "text-destructive data-[highlighted]:bg-destructive/10")}
+                            >
+                              Delete subfolders too
+                              <span className="block text-xs text-muted-foreground">Conversations move to Recent</span>
+                            </DropdownMenu.Item>
+                          </DropdownMenu.SubContent>
+                        </DropdownMenu.Portal>
+                      </DropdownMenu.Sub>
+                    )}
+                  </DropdownMenu.Content>
+                </DropdownMenu.Portal>
+              </DropdownMenu.Root>
+            )}
           </span>
         </div>
-        {shown.length > 0 || open ? (
-          <div className="ps-3">
-            {open && f.rows.length === 0 && (
+        {shown.length > 0 || kids.length > 0 || open ? (
+          <div className="ms-[10px] border-s border-sidebar-border ps-0.5">
+            {open && f.rows.length === 0 && f.children.length === 0 && !addingSub && (
               <p className="px-2 py-1 text-xs text-muted-foreground">
-                {builtin ? "Star a conversation to pin it here." : "Drag conversations here."}
+                {f.starred ? "Star a conversation to pin it here." : "Drag conversations here."}
               </p>
             )}
             {shown.map(({ session: s, depth, childCount }) => (
@@ -455,10 +627,52 @@ function FolderSectionView({
                 <Plus className="size-3.5" aria-hidden /> New conversation
               </button>
             )}
+            {kids.map((c, i) => (
+              <FolderSectionView
+                key={c.id}
+                section={c}
+                parent={f}
+                first={i === 0}
+                last={i === f.children.length - 1}
+                closed={!open}
+                searching={searching}
+                currentId={currentId}
+                labelMode={labelMode}
+              />
+            ))}
+            {addingSub && (
+              <FolderNameInput
+                label="New subfolder name"
+                onDone={(name) => {
+                  setAddingSub(false);
+                  if (name) void folderStore.create(name, f.id);
+                }}
+              />
+            )}
           </div>
         ) : null}
       </DropZone>
     </div>
+  );
+}
+
+/** An inline folder-name field; Enter or blur commits, Escape cancels. */
+function FolderNameInput({ label, onDone }: { label: string; onDone: (name: string) => void }) {
+  return (
+    <input
+      autoFocus
+      placeholder="Folder name"
+      aria-label={label}
+      onBlur={(e) => onDone(e.currentTarget.value.trim())}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.currentTarget.blur();
+        if (e.key === "Escape") {
+          e.currentTarget.value = "";
+          e.currentTarget.blur();
+        }
+      }}
+      className="ms-1.5 h-7 w-[calc(100%-0.375rem)] rounded-md border border-input bg-background px-2 text-[13px]"
+    />
   );
 }
 
@@ -478,19 +692,12 @@ function NewFolder() {
     );
   }
   return (
-    <input
-      autoFocus
-      placeholder="Folder name"
-      aria-label="New folder name"
-      onBlur={(e) => {
-        void folderStore.create(e.currentTarget.value);
+    <FolderNameInput
+      label="New folder name"
+      onDone={(name) => {
         setEditing(false);
+        if (name) void folderStore.create(name);
       }}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") e.currentTarget.blur();
-        if (e.key === "Escape") setEditing(false);
-      }}
-      className="ms-1.5 h-7 w-[calc(100%-0.375rem)] rounded-md border border-input bg-background px-2 text-[13px]"
     />
   );
 }
@@ -506,7 +713,7 @@ export const Sidebar = memo(function Sidebar() {
   // Each conversation lands in exactly one section.
   const fstate = useFolders();
   const { folders: folderSections, recent: recentRows } = buildFolders(rows, fstate);
-  const userIds = fstate.folders.filter((f) => f.kind === "user").map((f) => f.id);
+  const userIds = folderSections.filter((f) => !f.starred).map((f) => f.id);
   const searching = query.trim() !== "" || providerFilter.length > 0;
   const [filtersOpen, setFiltersOpen] = useState(false);
 
@@ -529,7 +736,7 @@ export const Sidebar = memo(function Sidebar() {
         // Mobile: off-canvas left drawer over the thread, below the h-11 header.
         "fixed bottom-0 left-0 top-11 z-40 w-[86vw] max-w-72 -translate-x-full shadow-xl transition-transform duration-200 ease-out",
         // Desktop (desk, ≥1200px): a static in-flow column.
-        "desk:static desk:h-full desk:w-64 desk:max-w-none desk:translate-x-0 desk:shadow-none desk:transition-none",
+        "desk:static desk:h-full desk:w-72 desk:max-w-none desk:translate-x-0 desk:shadow-none desk:transition-none",
         drawer === "sessions" && "translate-x-0",
       )}
     >
@@ -690,14 +897,14 @@ export const Sidebar = memo(function Sidebar() {
           </p>
         )}
         {folderSections
-          .filter((f) => !searching || f.rows.length > 0)
+          .filter((f) => !searching || allRows(f).length > 0)
           .map((f) => (
             <FolderSectionView
               key={f.id}
               section={f}
               first={f.id === userIds[0]}
               last={f.id === userIds.at(-1)}
-              open={searching || !fstate.collapsed[f.id]}
+              searching={searching}
               currentId={currentId}
               labelMode={labelMode}
             />

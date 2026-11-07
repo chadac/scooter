@@ -16,10 +16,13 @@ import { serverKeyOf, sessionStore, type Session, type SidebarRow } from "./sess
 
 export const STARRED = "starred";
 
-const STARRED_FOLDER: ConversationFolder = { id: STARRED, name: "Starred", kind: "starred", position: 0 };
+/** Folders nest this deep; a top-level folder is depth 1. */
+export const MAX_FOLDER_DEPTH = 3;
+
+const STARRED_FOLDER: ConversationFolder = { id: STARRED, name: "Starred", kind: "starred", locked: true, position: 0, conversationLifetimeHours: 0 };
 
 export type FolderState = {
-  /** Starred first, then the user's folders in position order. */
+  /** Starred, then user folders by position. */
   folders: ConversationFolder[];
   /** Server conversation id → folder id. */
   placements: Record<string, string>;
@@ -27,6 +30,9 @@ export type FolderState = {
   /** Unsent conversation key → the folder it was started in. */
   drafts: Record<string, string>;
 };
+
+/** Where a dragged folder lands relative to a target. */
+export type DropPlace = "before" | "after" | "into";
 
 const COLLAPSED_KEY = "scooter.folders.collapsed.v1";
 
@@ -51,7 +57,42 @@ const set = (next: FolderState) => {
   for (const l of listeners) l();
 };
 
-const userFolders = () => state.folders.filter((f) => f.kind === "user");
+const byId = (id: string) => state.folders.find((f) => f.id === id);
+const isUser = (f?: ConversationFolder): f is ConversationFolder => f?.kind === "user";
+/** A folder its user may move, rename or nest in. */
+const isOpen = (f?: ConversationFolder): f is ConversationFolder => isUser(f) && !f.locked;
+/** A user folder's siblings, in order; "" is the top level. */
+const siblings = (parentId: string) => state.folders.filter((f) => isUser(f) && (f.parentId ?? "") === parentId);
+
+/** A user folder's level, 1 at the top; 0 if unknown. */
+export function folderDepth(id: string, folders = state.folders): number {
+  let depth = 0;
+  for (let f = folders.find((x) => x.id === id); f && depth <= MAX_FOLDER_DEPTH; f = folders.find((x) => x.id === f!.parentId)) depth++;
+  return depth;
+}
+
+/** Levels in a folder's subtree, counting itself. */
+function folderHeight(id: string): number {
+  const kids = state.folders.filter((f) => f.parentId === id);
+  return 1 + Math.max(0, ...kids.map((k) => folderHeight(k.id)));
+}
+
+/** Whether `id` may move into `parentId` (null: the top level). */
+export function canMoveInto(id: string, parentId: string | null): boolean {
+  if (!isOpen(byId(id))) return false;
+  if (parentId === null) return true;
+  if (!isOpen(byId(parentId))) return false;
+  for (let p: string | undefined = parentId; p; p = byId(p)?.parentId) if (p === id) return false;
+  return folderDepth(parentId) + folderHeight(id) <= MAX_FOLDER_DEPTH;
+}
+
+/** The nearest set lifetime and its folder; undefined is the default. */
+export function effectiveLifetime(id: string): { hours: number; from: ConversationFolder } | undefined {
+  for (let f = byId(id); f; f = f.parentId ? byId(f.parentId) : undefined) {
+    if (f.conversationLifetimeHours !== undefined && f.conversationLifetimeHours !== null) return { hours: f.conversationLifetimeHours, from: f };
+  }
+  return undefined;
+}
 
 // Each load bumps this, so a slow response never overwrites a newer one.
 let loadSeq = 0;
@@ -63,6 +104,10 @@ async function write(next: FolderState, persist: () => Promise<boolean>): Promis
   if (!ok) await folderStore.load();
   return ok;
 }
+
+/** Replace one folder's fields. */
+const patched = (id: string, patch: Partial<ConversationFolder>) =>
+  state.folders.map((f) => (f.id === id ? { ...f, ...patch } : f));
 
 export const folderStore = {
   get: () => state,
@@ -79,11 +124,11 @@ export const folderStore = {
     set({ ...state, folders: got.folders, placements: got.placements });
   },
 
-  /** Create a folder, resolving to its id or null (a taken name included). */
-  async create(name: string): Promise<string | null> {
+  /** Create a folder, optionally nested; resolves to its id or null. */
+  async create(name: string, parentId?: string): Promise<string | null> {
     const n = name.trim();
-    if (!n) return null;
-    const f = await createFolder(agentHostConfig, n);
+    if (!n || (parentId && folderDepth(parentId) >= MAX_FOLDER_DEPTH)) return null;
+    const f = await createFolder(agentHostConfig, n, parentId);
     if (!f) return null;
     if (!state.folders.some((x) => x.id === f.id)) set({ ...state, folders: [...state.folders, f] });
     return f.id;
@@ -91,17 +136,22 @@ export const folderStore = {
 
   rename(id: string, name: string): Promise<boolean> {
     const n = name.trim();
-    if (!n || id === STARRED) return Promise.resolve(false);
-    const folders = state.folders.map((f) => (f.id === id ? { ...f, name: n } : f));
-    return write({ ...state, folders }, () => updateFolder(agentHostConfig, id, { name: n }));
+    if (!n || !isOpen(byId(id))) return Promise.resolve(false);
+    return write({ ...state, folders: patched(id, { name: n }) }, () => updateFolder(agentHostConfig, id, { name: n }));
   },
 
   /** Set a folder's Lucide icon; "" restores the folder glyph. */
   setIcon(id: string, icon: string): Promise<boolean> {
-    if (id === STARRED) return Promise.resolve(false);
+    if (!isOpen(byId(id))) return Promise.resolve(false);
     const i = icon.trim();
-    const folders = state.folders.map((f) => (f.id === id ? { ...f, icon: i || undefined } : f));
-    return write({ ...state, folders }, () => updateFolder(agentHostConfig, id, { icon: i }));
+    return write({ ...state, folders: patched(id, { icon: i || undefined }) }, () => updateFolder(agentHostConfig, id, { icon: i }));
+  },
+
+  /** Set idle lifetime hours; 0 is forever, null inherits. */
+  setLifetime(id: string, hours: number | null): Promise<boolean> {
+    if (!isOpen(byId(id))) return Promise.resolve(false);
+    const folders = patched(id, { conversationLifetimeHours: hours ?? undefined });
+    return write({ ...state, folders }, () => updateFolder(agentHostConfig, id, { conversationLifetimeHours: hours }));
   },
 
   /** Start a conversation in `folderId`; null means Recent. */
@@ -112,36 +162,76 @@ export const folderStore = {
     return key;
   },
 
-  /** Delete a folder; its conversations go back to Recent. */
-  remove(id: string): Promise<boolean> {
-    if (id === STARRED) return Promise.resolve(false);
-    const placements = Object.fromEntries(Object.entries(state.placements).filter(([, f]) => f !== id));
-    const folders = state.folders.filter((f) => f.id !== id);
-    return write({ ...state, folders, placements }, () => deleteFolder(agentHostConfig, id));
+  /** Delete a folder, lifting its contents; `subfolders` drops them instead. */
+  remove(id: string, subfolders = false): Promise<boolean> {
+    const f = byId(id);
+    if (!isOpen(f)) return Promise.resolve(false);
+    const gone = new Set([id]);
+    if (subfolders) {
+      for (let grew = true; grew; ) {
+        grew = false;
+        for (const x of state.folders) {
+          if (!x.parentId || !gone.has(x.parentId) || gone.has(x.id)) continue;
+          gone.add(x.id);
+          grew = true;
+        }
+      }
+    }
+    const lifted = subfolders ? undefined : f.parentId;
+    const placements: Record<string, string> = {};
+    for (const [conv, folder] of Object.entries(state.placements)) {
+      if (!gone.has(folder)) placements[conv] = folder;
+      else if (lifted) placements[conv] = lifted;
+    }
+    const folders = state.folders
+      .filter((x) => !gone.has(x.id))
+      .map((x) => (x.parentId === id ? { ...x, parentId: f.parentId } : x));
+    return write({ ...state, folders, placements }, () => deleteFolder(agentHostConfig, id, subfolders));
   },
 
-  /** Move a user folder beside `targetId`; after Starred means first. */
-  reorder(id: string, targetId: string, after = false): Promise<boolean> {
-    const all = userFolders();
-    const from = all.findIndex((f) => f.id === id);
-    const rest = all.filter((f) => f.id !== id);
-    const at = targetId === STARRED ? -1 : rest.findIndex((f) => f.id === targetId);
-    const known = at >= 0 || (targetId === STARRED && after);
-    if (from < 0 || id === targetId || !known) return Promise.resolve(false);
-    const index = at + (after ? 1 : 0);
-    if (index === from) return Promise.resolve(false);
+  /** Move a folder beside or into another; Starred: top. */
+  reorder(id: string, targetId: string, place: DropPlace = "before"): Promise<boolean> {
+    const moving = byId(id);
+    const target = byId(targetId);
+    if (!isOpen(moving) || !target || id === targetId) return Promise.resolve(false);
+    let parentId: string;
+    let index: number;
+    if (!isUser(target)) {
+      parentId = "";
+      index = 0;
+    } else if (place === "into") {
+      parentId = targetId;
+      index = siblings(targetId).filter((f) => f.id !== id).length;
+    } else {
+      parentId = target.parentId ?? "";
+      index = siblings(parentId).filter((f) => f.id !== id).findIndex((f) => f.id === targetId) + (place === "after" ? 1 : 0);
+    }
+    if (!canMoveInto(id, parentId || null)) return Promise.resolve(false);
+    const rest = siblings(parentId).filter((f) => f.id !== id);
+    const sameParent = (moving.parentId ?? "") === parentId;
+    if (sameParent && siblings(parentId).findIndex((f) => f.id === id) === index) return Promise.resolve(false);
     const position = positionBetween(rest[index - 1]?.position, rest[index]?.position);
-    rest.splice(index, 0, { ...all[from], position });
-    return write({ ...state, folders: [STARRED_FOLDER, ...rest] }, () =>
-      updateFolder(agentHostConfig, id, { position }),
+    const folders = patched(id, { position, parentId: parentId || undefined }).sort(folderOrder);
+    return write({ ...state, folders }, () =>
+      updateFolder(agentHostConfig, id, sameParent ? { position } : { position, parentId }),
     );
   },
 
-  /** Move a user folder one place up (-1) or down (1). */
+  /** Append a folder to `parentId`; null is the top level. */
+  moveInto(id: string, parentId: string | null): Promise<boolean> {
+    const f = byId(id);
+    if (!isOpen(f) || (f.parentId ?? null) === parentId || !canMoveInto(id, parentId)) return Promise.resolve(false);
+    const last = siblings(parentId ?? "").at(-1);
+    const position = positionBetween(last?.position, undefined);
+    const folders = patched(id, { position, parentId: parentId ?? undefined }).sort(folderOrder);
+    return write({ ...state, folders }, () => updateFolder(agentHostConfig, id, { position, parentId: parentId ?? "" }));
+  },
+
+  /** Move a folder up (-1) or down (1) among siblings. */
   nudge(id: string, by: -1 | 1): Promise<boolean> {
-    const all = userFolders();
-    const next = all[all.findIndex((f) => f.id === id) + by];
-    return next ? folderStore.reorder(id, next.id, by > 0) : Promise.resolve(false);
+    const sibs = siblings(byId(id)?.parentId ?? "");
+    const next = sibs[sibs.findIndex((f) => f.id === id) + by];
+    return next ? folderStore.reorder(id, next.id, by > 0 ? "after" : "before") : Promise.resolve(false);
   },
 
   toggleCollapsed(id: string) {
@@ -154,6 +244,10 @@ export const folderStore = {
     set({ ...state, collapsed });
   },
 };
+
+/** Static folders keep their order first; user folders sort by position. */
+const folderOrder = (a: ConversationFolder, b: ConversationFolder) =>
+  isUser(a) && isUser(b) ? a.position - b.position : isUser(a) ? 1 : isUser(b) ? -1 : 0;
 
 /** A position between two neighbors, either possibly missing. */
 export function positionBetween(before?: number, after?: number): number {
@@ -179,6 +273,14 @@ export const folderOf = (s: Session): string | null => {
   return f && state.folders.some((x) => x.id === f) ? f : null;
 };
 
+/** A folder's name with its ancestors, like "Work / Scooter". */
+export function folderPath(id: string, folders = state.folders): string {
+  const names: string[] = [];
+  for (let f = folders.find((x) => x.id === id); f && names.length <= MAX_FOLDER_DEPTH; f = folders.find((x) => x.id === f!.parentId))
+    names.unshift(f.name);
+  return names.join(" / ");
+}
+
 // File drafts once sent; forget discarded ones.
 sessionStore.subscribe(() => {
   const keys = Object.keys(state.drafts);
@@ -200,24 +302,59 @@ sessionStore.subscribe(() => {
 
 export const useFolders = () => useSyncExternalStore(folderStore.subscribe, folderStore.get, folderStore.get);
 
-export type FolderSection = { id: string; name: string; icon?: string; builtin: boolean; rows: SidebarRow[] };
+export type FolderSection = {
+  id: string;
+  name: string;
+  icon?: string;
+  /** Starred, which the star button fills. */
+  starred: boolean;
+  /** Starred or service-managed: no menu, drag or subfolders. */
+  locked: boolean;
+  depth: number;
+  /** This folder's own lifetime; undefined inherits. */
+  conversationLifetimeHours?: number;
+  rows: SidebarRow[];
+  children: FolderSection[];
+};
 
-/** Section the rows; subagents follow parents, duplicates render once. */
+/** Section rows into a folder tree; duplicates render once. */
 export function buildFolders(rows: SidebarRow[], fs: FolderState): { folders: FolderSection[]; recent: SidebarRow[] } {
-  const sections: FolderSection[] = fs.folders.map((f) => ({ id: f.id, name: f.name, icon: f.icon, builtin: f.kind === "starred", rows: [] }));
-  const byId = new Map(sections.map((s) => [s.id, s.rows]));
+  const all = new Map<string, FolderSection>();
+  for (const f of fs.folders) {
+    all.set(f.id, {
+      id: f.id,
+      name: f.name,
+      icon: f.icon,
+      starred: f.kind === "starred",
+      locked: !!f.locked,
+      depth: folderDepth(f.id, fs.folders),
+      conversationLifetimeHours: f.conversationLifetimeHours ?? undefined,
+      rows: [],
+      children: [],
+    });
+  }
+  const roots: FolderSection[] = [];
+  for (const f of fs.folders) {
+    const parent = f.parentId ? all.get(f.parentId) : undefined;
+    (parent ? parent.children : roots).push(all.get(f.id)!);
+  }
   const recent: SidebarRow[] = [];
   const seen = new Set<string>();
   // undefined: a duplicate parent, so its children drop too.
   let bucket: SidebarRow[] | undefined = recent;
   for (const r of rows) {
     const key = serverKeyOf(r.session);
-    if (r.depth === 0) bucket = seen.has(key) ? undefined : (byId.get(fs.placements[key] ?? fs.drafts[r.session.id]) ?? recent);
+    if (r.depth === 0) bucket = seen.has(key) ? undefined : (all.get(fs.placements[key] ?? fs.drafts[r.session.id])?.rows ?? recent);
     if (!bucket || seen.has(key)) continue;
     seen.add(key);
     bucket.push(r);
   }
-  return { folders: sections, recent };
+  return { folders: roots, recent };
+}
+
+/** Every row in a section and its subfolders. */
+export function allRows(f: FolderSection): SidebarRow[] {
+  return [...f.rows, ...f.children.flatMap(allRows)];
 }
 
 /** `currentId`'s row and its ancestors; empty if absent. */

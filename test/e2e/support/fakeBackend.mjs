@@ -96,6 +96,11 @@ must("atlas", ["migrate", "apply", "--dir", "file://agent_host/migrations", "--u
   cwd: join(REPO_ROOT, "lib/sql"),
 });
 
+// A locked folder for the anonymous user, as services make.
+must("psql", [DSN, "-q", "-c",
+  `INSERT INTO conversation_folders (id, owner, name, icon, locked, conversation_lifetime_hours, position, created_at)
+   VALUES ('e2e-design', '', 'Design', 'palette', true, 0, -1, 0)`]);
+
 log("createdb webhooks");
 must("createdb", ["-h", "127.0.0.1", "-p", PG_PORT, "-U", "postgres", "webhooks"]);
 

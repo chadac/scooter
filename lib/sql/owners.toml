@@ -31,8 +31,9 @@ conversation_authors       = { writers = ["agent-host"], readers = [] }
 # these are full transcripts; the router's grant is table-scoped to `conversations` so it can't
 # read them.
 conversation_events        = { writers = ["agent-host"], readers = [] }
-# Per-user sidebar folders, including each user's built-in Starred. Pure UI state with
-# no pod involved, so the router serves the CRUD and nothing else touches it.
+# Per-user sidebar folders, including each user's built-in Starred and locked folders.
+# The router serves the CRUD; agent-host, the database owner, reads folder lifetimes
+# for its retention reap.
 conversation_folders       = { writers = ["conversation-router"], readers = [] }
 # The background-job registry. Was jobs.json on the emptyDir that every rollout wipes.
 conversation_jobs          = { writers = ["agent-host"], readers = [] }

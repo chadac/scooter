@@ -1096,6 +1096,62 @@ describe("SessionManager", () => {
       expect(provisioner.destroy).not.toHaveBeenCalled();
     });
 
+    describe("folder lifetimes", () => {
+      const withLifetimes = (hours: Record<string, number>): ConversationStore => ({
+        ...inMemoryStore(),
+        readLifetimes: async (ids) => new Map(ids.filter((id) => id in hours).map((id) => [id, hours[id]])),
+      });
+
+      it("a folder's lifetime overrides the default, shorter or longer", async () => {
+        const provisioner = fakeProvisioner();
+        const hours: Record<string, number> = {};
+        const sessions = createSessionManager({ provisioner, store: withLifetimes(hours) });
+        const short = await sessions.start("finished");
+        const long = await sessions.start("archive");
+        const unfiled = await sessions.start("unfiled");
+        hours[short.id] = 24;
+        hours[long.id] = 90 * 24;
+
+        // Day 2: past the 1-day folder only.
+        const reaped = await sessions.sweepRetention(30 * DAY, short.lastActivityAt + 2 * DAY);
+        expect(reaped).toEqual([short.id]);
+        expect(sessions.get(unfiled.id)?.status).toBe("running");
+
+        // Day 60: past the default, inside 90 days.
+        const later = await sessions.sweepRetention(30 * DAY, short.lastActivityAt + 60 * DAY);
+        expect(later).toEqual([unfiled.id]);
+        expect(sessions.get(long.id)?.status).toBe("running");
+      });
+
+      it("0 keeps forever, and a lifetime applies with the default off", async () => {
+        const provisioner = fakeProvisioner();
+        const hours: Record<string, number> = {};
+        const sessions = createSessionManager({ provisioner, store: withLifetimes(hours) });
+        const kept = await sessions.start("design");
+        const done = await sessions.start("finished");
+        hours[kept.id] = 0;
+        hours[done.id] = 24;
+
+        const reaped = await sessions.sweepRetention(0, kept.lastActivityAt + 3650 * DAY);
+        expect(reaped).toEqual([done.id]);
+        expect(sessions.get(kept.id)?.status).toBe("running");
+      });
+
+      it("reaps nothing when the lifetimes can't be read", async () => {
+        const provisioner = fakeProvisioner();
+        const store: ConversationStore = {
+          ...inMemoryStore(),
+          readLifetimes: async () => {
+            throw new Error("db down");
+          },
+        };
+        const sessions = createSessionManager({ provisioner, store });
+        const conv = await sessions.start("maybe-kept");
+        await expect(sessions.sweepRetention(30 * DAY, conv.lastActivityAt + 365 * DAY)).rejects.toThrow("db down");
+        expect(provisioner.destroy).not.toHaveBeenCalled();
+      });
+    });
+
     it("EXEMPTS a conversation the router starred behind this replica's back", async () => {
       const provisioner = fakeProvisioner();
       const sessions = createSessionManager({ provisioner, store: inMemoryStore() });

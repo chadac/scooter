@@ -177,7 +177,7 @@ export interface AgentHostConfig {
   idleSuspendMs: number;
   /** How often the idle sweep runs (ms). */
   idleSweepIntervalMs: number;
-  /** Retention reap: destroy unstarred conversations inactive longer than this (ms); 0 = off. */
+  /** Default retention for unfiled conversations, in ms; 0 keeps them. */
   retentionMaxAgeMs: number;
   /** How often the retention reap runs (ms), defaulting to 6h. */
   retentionSweepIntervalMs: number;
@@ -233,7 +233,7 @@ export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
     // Defaults to suspending after 30 min idle with a sweep every minute, and 0 disables.
     idleSuspendMs: Number(process.env.IDLE_SUSPEND_MS ?? 30 * 60 * 1000),
     idleSweepIntervalMs: Number(process.env.IDLE_SWEEP_INTERVAL_MS ?? 60 * 1000),
-    // Retention reap: destroy unstarred conversations inactive this long; off by default.
+    // Unfiled conversations are kept by default.
     retentionMaxAgeMs: Number(process.env.RETENTION_MAX_AGE_MS ?? 0),
     retentionSweepIntervalMs: Number(process.env.RETENTION_SWEEP_INTERVAL_MS ?? 6 * 60 * 60 * 1000),
     // Hard per-command exec timeout, defaulting to 5 min, with COMMAND_TIMEOUT_MS=0 disabling it.
@@ -683,6 +683,7 @@ export async function main(
           touchActivity: (id: SessionId, at: number) => metaStore.touchActivity(id, at),
           readLastActivity: (id: SessionId) => metaStore.readLastActivity(id),
           readRouterMeta: (id: SessionId) => metaStore.readRouterMeta(id),
+          readLifetimes: (ids: SessionId[]) => metaStore.readLifetimes(ids),
           setVisibility: (id: SessionId, v: Visibility) => metaStore.setVisibility(id, v),
           readAccess: (id: SessionId) => metaStore.readAccess(id),
           listConversations: () => metaStore.listConversations(),
@@ -1793,16 +1794,15 @@ export async function main(
     sweepTimer.unref?.();
   }
 
-  // Retention reap: destroy unstarred conversations inactive past the window, on its own
-  // slow cadence.
+  // Always on: any folder can set a lifetime.
   let retentionTimer: ReturnType<typeof setInterval> | undefined;
-  if (config.retentionMaxAgeMs > 0) {
+  {
     const reap = () =>
       void sessions.sweepRetention(config.retentionMaxAgeMs).then((ids) => {
         if (ids.length)
           hostLog.info("retention-reaped conversations", {
             count: ids.length,
-            inactive_over_ms: config.retentionMaxAgeMs,
+            default_max_age_ms: config.retentionMaxAgeMs,
             conversation_ids: ids,
           });
         reportSandboxCounts();
