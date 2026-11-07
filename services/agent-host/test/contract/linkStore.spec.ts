@@ -163,6 +163,22 @@ describe("linked resources in Postgres", () => {
     expect(listed[0].url).toBe(pr().url);
   });
 
+  it("deleteByConversation also drops the conversation's hidden vars, even when the links delete fails", async () => {
+    const deletes: Array<{ text: string; values: unknown[] }> = [];
+    const client = {
+      async query(cfg: { text: string; values?: unknown[] }, params: unknown[] = []) {
+        deletes.push({ text: cfg.text, values: cfg.values ?? params });
+        if (/resource_links/.test(cfg.text)) throw new Error("links table unavailable");
+        return { rows: [], rowCount: 0 };
+      },
+    };
+    const store = createPgLinkStore({ db: drizzle(client as never) });
+    await store.deleteByConversation(CONV);
+
+    const vars = deletes.find((d) => /delete from "conversation_vars"/i.test(d.text));
+    expect(vars?.values).toEqual([CONV]);
+  });
+
   it("dedupes: the same resource posted twice is ONE link", async () => {
     const { db, rows } = fakeDb();
     const store = createPgLinkStore({ db });

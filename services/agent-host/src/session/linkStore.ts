@@ -21,7 +21,7 @@ import type { SessionId } from "../types.js";
 
 const log = logger("linkStore");
 
-const { resourceLinks } = webhooks;
+const { conversationVars, resourceLinks } = webhooks;
 
 /** The store seam the ConversationStore's link methods delegate to. */
 export interface LinkStore {
@@ -33,7 +33,7 @@ export interface LinkStore {
     resourceType: string,
     resourceId: string,
   ): Promise<string | undefined>;
-  /** Drop every link of a deleted conversation, so an orphan row cannot block a later conversation
+  /** Drop every link and hidden variable of a deleted conversation. An orphan link would block a later conversation
    *  from linking the same resource on the global unique. */
   deleteByConversation(id: SessionId): Promise<void>;
   close(): Promise<void>;
@@ -210,6 +210,15 @@ export function createPgLinkStore(config: PgLinkStoreConfig): LinkStore {
         await db.delete(resourceLinks).where(eq(resourceLinks.conversationId, id));
       } catch (e) {
         log.error("deleteByConversation failed (links may outlive the deleted conversation)", {
+          conversation_id: id,
+          error: formatError(e),
+        });
+      }
+      // Separate try: a failure here must not keep the links alive, or vice versa.
+      try {
+        await db.delete(conversationVars).where(eq(conversationVars.conversationId, id));
+      } catch (e) {
+        log.error("deleting conversation vars failed (they may outlive the deleted conversation)", {
           conversation_id: id,
           error: formatError(e),
         });

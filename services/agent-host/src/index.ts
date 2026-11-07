@@ -692,8 +692,7 @@ export async function main(
           removeConversation: async (id: SessionId) => {
             await metaStore.removeConversation(id);
             await fileStore.removeConversation?.(id);
-            // The shared PG resource_links table needs an explicit delete, or an orphaned row
-            // collides with a later re-link.
+            // Its links and hidden vars live in the webhooks database, beyond any foreign key.
             await linkStore?.deleteByConversation(id);
             // No foreign key reaches the awaiting-input database, so its row goes here.
             await awaitingInput?.set(id, null);

@@ -177,6 +177,12 @@ in
       owner = "webhooks";
       tables = {
         conversation_map = { writers = [ "webhooks" ]; readers = [ "agent-host" ]; };
+        conversation_vars = {
+          writers = [ "webhooks" "agent-host" ];
+          note = ''
+            Hidden per-conversation state for contribs. Webhooks reads and writes it;
+            agent-host only deletes a conversation's rows when the conversation is removed.'';
+        };
         resource_links = {
           writers = [ "webhooks" "agent-host" ];
           readers = [ "conversation-router" ];

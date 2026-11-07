@@ -87,10 +87,13 @@ task_runs              = { writers = ["scheduler"], readers = [] }
 owner = "webhooks"
 
 [webhooks.tables]
-conversation_map = { writers = ["webhooks"], readers = ["agent-host"] }
-pending_messages = { writers = ["webhooks"], readers = [] }
+conversation_map  = { writers = ["webhooks"], readers = ["agent-host"] }
+# Hidden per-conversation state for contribs. Webhooks reads and writes it;
+# agent-host only deletes a conversation's rows when the conversation is removed.
+conversation_vars = { writers = ["webhooks", "agent-host"], readers = [] }
+pending_messages  = { writers = ["webhooks"], readers = [] }
 # Webhooks OWNS this table; agent-host also WRITES it (the conversation link panel).
 # Two writers, one table — the same shape as byoc.remote_agents.
 # conversation-router READS it (SELECT-only) to enrich the conversation list with link badges.
-resource_links   = { writers = ["webhooks", "agent-host"], readers = ["conversation-router"] }
-user_identity    = { writers = ["agent-host"], readers = ["webhooks"] }
+resource_links    = { writers = ["webhooks", "agent-host"], readers = ["conversation-router"] }
+user_identity     = { writers = ["agent-host"], readers = ["webhooks"] }

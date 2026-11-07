@@ -34,6 +34,19 @@ class ConversationMap(Base):
     slack_ts: Mapped[Optional[str]] = mapped_column(String)
 
 
+class ConversationVars(Base):
+    __tablename__ = 'conversation_vars'
+    __table_args__ = (
+        PrimaryKeyConstraint('conversation_id', 'namespace', 'key', name='conversation_vars_pkey'),
+    )
+
+    conversation_id: Mapped[str] = mapped_column(String, primary_key=True)
+    namespace: Mapped[str] = mapped_column(String, primary_key=True)
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    value: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime(True), nullable=False, server_default=text('now()'))
+
+
 class PendingMessages(Base):
     __tablename__ = 'pending_messages'
     __table_args__ = (

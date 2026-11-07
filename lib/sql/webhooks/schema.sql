@@ -58,6 +58,18 @@ CREATE TABLE "resource_links" (
   CONSTRAINT "resource_links_source_resource_type_resource_id_key" UNIQUE ("source", "resource_type", "resource_id")
 );
 
+-- Hidden per-conversation state for services; never shown to the agent or UI.
+-- No foreign key reaches conversations, so agent-host deletes these with one.
+CREATE TABLE "conversation_vars" (
+  "conversation_id" character varying NOT NULL,
+  -- The contrib or service that owns the key, e.g. "github".
+  "namespace"       character varying NOT NULL,
+  "key"             character varying NOT NULL,
+  "value"           jsonb NOT NULL,
+  "updated_at"      timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY ("conversation_id", "namespace", "key")
+);
+
 -- Buffered messages for conversations still being created.
 CREATE TABLE "pending_messages" (
   "id"            serial NOT NULL,
