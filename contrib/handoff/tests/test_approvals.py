@@ -208,3 +208,43 @@ async def test_approve_refuses_once_another_author_writes_in_the_source(app, rou
     async with as_approver(app) as c:
         r = (await c.post(f"/handoff/spawns/{rid}/approve", json=answer("alice"))).json()
     assert "failed" in r and "didn't write" in r["agent_message"] and router.spawns == []
+
+
+
+# --- filing the new conversation in a folder ---------------------------------------
+
+async def test_a_handoff_names_its_folder_and_is_filed_on_approve(app, router, cards, configured):
+    router.add("src")
+    r = await handoff_spawn(brief="Spec the retry policy.", title="Retry spec", folder=" f-design ", ctx=ctx("src"))
+    assert not r.is_error, r.text
+    rid = json.loads(r.text)["request_id"]
+    assert "new conversation: Retry spec, filed in folder f-design" in card(cards.raised[0])["message"]
+    async with as_approver(app) as c:
+        out = (await c.post(f"/handoff/spawns/{rid}/approve", json=answer("alice"))).json()
+    assert router.filed == [("alice", "new-1", "f-design")]
+    assert out["filed"] is True and "filed in folder f-design" in out["agent_message"]
+
+
+async def test_a_handoff_that_will_not_file_still_counts(app, router, store, configured):
+    router.add("src")
+    router.file_status = 500
+    rid = json.loads((await handoff_spawn(brief="go", folder="f-infra", ctx=ctx("src"))).text)["request_id"]
+    async with as_approver(app) as c:
+        out = (await c.post(f"/handoff/spawns/{rid}/approve", json=answer("alice"))).json()
+    assert out["filed"] is False and "could not be filed in folder f-infra" in out["agent_message"]
+    assert (await store.spawn_request(rid)).spawned_id == "new-1"
+
+
+async def test_a_folder_must_be_the_owner_s(router, cards, configured):
+    router.add("src")
+    router.folders["bob"] = [{"id": "f-bob", "name": "Bob's"}]
+    r = await handoff_spawn(brief="go", folder="f-bob", ctx=ctx("src"))
+    assert r.is_error and "not one of the user's folders" in r.text and cards.raised == []
+
+
+async def test_a_plain_handoff_files_nowhere(app, router, configured):
+    router.add("src")
+    rid = await request()
+    async with as_approver(app) as c:
+        out = (await c.post(f"/handoff/spawns/{rid}/approve", json=answer("alice"))).json()
+    assert router.filed == [] and "filed" not in out

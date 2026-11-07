@@ -144,3 +144,10 @@ async def test_a_private_conversation_with_another_author_cannot_spawn(router, l
 async def test_spawn_refuses_an_unknown_source(router, links):
     r = await handoff_spawn(brief="go", ctx=ctx("nowhere"))
     assert r.is_error and router.spawns == []
+
+
+async def test_spawn_without_approval_files_at_once(router, links):
+    router.add("src")
+    r = await handoff_spawn(brief="go", folder="f-design", ctx=ctx("src"))
+    assert not r.is_error, r.text
+    assert json.loads(r.text)["filed"] is True and router.filed == [("alice", "new-1", "f-design")]

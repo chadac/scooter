@@ -37,6 +37,8 @@ CREATE TABLE "handoff_spawn_requests" (
   "model"           character varying NOT NULL,
   "status"          character varying NOT NULL,
   "spawned_id"      character varying NULL,
+  -- The owner's folder to file the new conversation in.
+  "folder"          character varying NULL,
   "created_at"      bigint NOT NULL,
   "decided_at"      bigint NULL,
   PRIMARY KEY ("id")

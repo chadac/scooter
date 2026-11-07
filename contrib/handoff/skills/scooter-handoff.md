@@ -25,6 +25,8 @@ sandbox and its own place in the sidebar, and nothing reports back to you.
 - **Default to `spawn_subagent`.** Hand off only when the user asks for it, or agrees
   when you offer because the work outlives this turn, needs a clean sandbox, or the
   user should drive it separately.
+- **`folder` files the new conversation** in one of the user's folders, by id. For a
+  kanban card, that is a stage id from `kanban_list_cards`.
 - **The user approves it first** (unless the deployment turned that off). The call
   returns `pending_approval` at once and the user sees an approval card with the
   title, model and brief. A message tells you the new conversation's id and url, or

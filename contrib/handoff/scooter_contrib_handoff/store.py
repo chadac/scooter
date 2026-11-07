@@ -57,6 +57,7 @@ class _SpawnRequest(_Base):
     model: Mapped[str] = mapped_column(String)
     status: Mapped[str] = mapped_column(String)
     spawned_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    folder: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[int] = mapped_column(BigInteger)
     decided_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
@@ -83,11 +84,14 @@ class SpawnRequest:
     model: str
     status: str
     spawned_id: str | None = None
+    # The owner's folder to file the new conversation in.
+    folder: str | None = None
 
 
 def _request(row: _SpawnRequest) -> SpawnRequest:
     return SpawnRequest(
         row.id, row.conversation_id, row.owner, row.brief, row.title, row.model, row.status, row.spawned_id,
+        row.folder,
     )
 
 
@@ -146,6 +150,7 @@ class HandoffStore:
 
     async def request_spawn(
         self, conversation_id: str, owner: str, *, brief: str, title: str, model: str,
+        folder: str | None = None,
     ) -> SpawnRequest:
         """A spawn waiting for the owner's approval; Refused past MAX_PENDING."""
         async with self._session() as s, s.begin():
@@ -156,7 +161,7 @@ class HandoffStore:
                 raise Refused(f"this conversation already has {waiting} handoffs waiting for approval")
             row = _SpawnRequest(
                 id=str(uuid.uuid4()), conversation_id=conversation_id, owner=owner, brief=brief,
-                title=title, model=model, status="pending", created_at=_now_ms(),
+                title=title, model=model, status="pending", folder=folder, created_at=_now_ms(),
             )
             s.add(row)
         return _request(row)

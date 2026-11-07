@@ -136,7 +136,8 @@ async def kanban_get_status(ctx: ToolContext = ToolContextDep) -> ToolResult:
 @mcp.tool
 async def kanban_list_cards(ctx: ToolContext = ToolContextDep) -> ToolResult:
     """List the cards on this conversation's kanban board: each one's conversation id,
-    title, stage and blockers. Use the ids with kanban_set_blockers.
+    title, stage and blockers, and the board's stages with their ids. Use the card ids
+    with kanban_set_blockers, and a `stage_id` as handoff_spawn's `folder`.
     """
     key = await _key(ctx)
     if isinstance(key, ToolResult):
@@ -149,7 +150,9 @@ async def kanban_list_cards(ctx: ToolContext = ToolContextDep) -> ToolResult:
         return ToolResult.error(f"{e.detail}.")
     for c in cards:
         c["this"] = c["id"] == where.conversation.id
-    return ToolResult.ok(json.dumps({"stages": [s.name for s in where.stages], "cards": cards}))
+    return ToolResult.ok(json.dumps({
+        "stages": [{"name": s.name, "stage_id": s.folder} for s in where.stages], "cards": cards,
+    }))
 
 
 @mcp.tool

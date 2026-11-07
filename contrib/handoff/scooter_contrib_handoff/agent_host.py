@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from scooter_broker_lib.autolink import router_headers
+from scooter_lib.svcauth import USER_HEADER
 
 
 class SpawnError(Exception):
@@ -83,6 +85,22 @@ class AgentHost:
             return None
         r.raise_for_status()
         return r.json()
+
+    async def has_folder(self, owner: str, folder: str) -> bool:
+        """True when `folder` is one of `owner`'s folders."""
+        async with self._client() as c:
+            r = await c.get("/folders", headers={USER_HEADER: owner})
+        r.raise_for_status()
+        return any(f.get("id") == folder for f in r.json().get("folders") or [])
+
+    async def file(self, owner: str, conversation_id: str, folder: str) -> None:
+        """File `owner`'s conversation in their folder, as the broker's folder service."""
+        async with self._client() as c:
+            r = await c.put(
+                f"/conversations/{quote(conversation_id, safe='')}/folder",
+                json={"folderId": folder}, headers={USER_HEADER: owner},
+            )
+        r.raise_for_status()
 
     async def spawn(self, source_id: str, *, prompt: str, title: str, model: str, source: str) -> dict[str, Any]:
         """Open a conversation for the source's owner; raises SpawnError with the router's reason."""

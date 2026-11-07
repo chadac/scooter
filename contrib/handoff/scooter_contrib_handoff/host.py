@@ -25,12 +25,13 @@ KIND = "handoff.spawn"
 def card(r: SpawnRequest) -> dict:
     """The approval request the host raises; the generic card shows `message`."""
     head = f"The agent wants to hand off to a new conversation: {r.title or 'Handoff'}"
+    head += f", filed in folder {r.folder}" if r.folder else ""
     head += f" (model {r.model})" if r.model else " (default model)"
     return {
         "request_id": r.id,
         "message": f"{head}.\n\nBrief:\n{r.brief}",
         "kind": KIND,
-        "data": {"title": r.title, "model": r.model, "brief": r.brief},
+        "data": {"title": r.title, "model": r.model, "brief": r.brief, "folder": r.folder},
     }
 
 

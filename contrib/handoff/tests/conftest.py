@@ -27,6 +27,12 @@ class FakeRouter:
         self.authors: dict[str, tuple[str | None, ...]] = {}
         self.spawns: list[tuple[str, dict]] = []
         self.spawn_status = 201
+        self.filed: list[tuple[str, str, str]] = []
+        self.file_status = 204
+        # owner -> their folders, as GET /folders lists them.
+        self.folders: dict[str, list[dict]] = {"alice": [
+            {"id": "f-infra", "name": "Infra"}, {"id": "f-design", "name": "Design", "parentId": "f-infra"},
+        ]}
         # False mimics a router without the broker in conversationController.readers.
         self.owned_enabled = True
 
@@ -71,6 +77,11 @@ class FakeRouter:
             return httpx.Response(404, json={"error": "not owned"})
         if request.method == "GET" and parts == ["conversations"]:
             return httpx.Response(200, json=[r for r in self.rows.values() if r["visibility"] == "shared"])
+        if request.method == "GET" and parts == ["folders"]:
+            return httpx.Response(200, json={"folders": self.folders.get(request.headers.get("x-scooter-user", ""), []), "placements": {}})
+        if request.method == "PUT" and len(parts) == 3 and parts[2] == "folder":
+            self.filed.append((request.headers.get("x-scooter-user", ""), parts[1], json.loads(request.content)["folderId"]))
+            return httpx.Response(self.file_status)
         if request.method == "POST" and len(parts) == 3 and parts[2] == "spawns":
             body = json.loads(request.content)
             self.spawns.append((parts[1], body))

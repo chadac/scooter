@@ -40,6 +40,19 @@ def _label(r: SpawnRequest) -> str:
     return f'"{r.title}"' if r.title else "request"
 
 
+def _started(r: SpawnRequest, made: dict) -> str:
+    """The agent's news of an approved spawn, and where it was filed."""
+    out = (
+        f"The user approved your handoff {_label(r)}. It started as conversation "
+        f"{made['conversation_id']} ({made['url']}) with your brief as its first message."
+    )
+    if r.folder and made.get("filed"):
+        out += f" It is filed in folder {r.folder}."
+    elif r.folder:
+        out += f" It could not be filed in folder {r.folder}; the user can file it from the sidebar."
+    return out
+
+
 @dataclass
 class Handoff(Transport):
     name: str = "handoff"
@@ -97,15 +110,15 @@ class Handoff(Transport):
             except Refused as e:
                 return {"refused": str(e)}
             try:
-                made = await self.spawner.spawn(r.conversation_id, brief=r.brief, title=r.title, model=r.model)
+                made = await self.spawner.spawn(
+                    r.conversation_id, brief=r.brief, title=r.title, model=r.model,
+                    folder=r.folder,
+                )
             except SpawnFailed as e:
                 await self._ready().record_spawn(r.id, spawned_id=None, status="failed")
                 return {"failed": str(e), "agent_message": f"The user approved your handoff {_label(r)}, but {e}"}
             await self._ready().record_spawn(r.id, spawned_id=made["conversation_id"], status="spawned")
-            return {**made, "agent_message": (
-                f"The user approved your handoff {_label(r)}. It started as conversation "
-                f"{made['conversation_id']} ({made['url']}) with your brief as its first message."
-            )}
+            return {**made, "agent_message": _started(r, made)}
 
         @router.post("/spawns/{request_id}/deny", dependencies=approver)
         async def deny(request_id: str, body: dict = Body(default={})) -> dict:

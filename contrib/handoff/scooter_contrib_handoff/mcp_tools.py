@@ -54,7 +54,7 @@ def conversation_url(conversation_id: str) -> str:
 
 @mcp.tool
 async def handoff_spawn(
-    brief: str, title: str = "", model: str = "",
+    brief: str, title: str = "", model: str = "", folder: str = "",
     ctx: ToolContext = ToolContextDep,
 ) -> ToolResult:
     """Hand a task to a NEW top-level conversation, with its own sandbox and its own
@@ -71,6 +71,9 @@ async def handoff_spawn(
     Leave `model` empty so the new conversation starts on the default model, not
     yours. Set it only when the user asks for a model or the task needs one.
 
+    `folder` files the new conversation in one of the user's folders, by id: for
+    a kanban card, a stage id from kanban_list_cards. Empty leaves it unfiled.
+
     Usually the conversation's owner must approve it first: the call returns at once,
     and a message tells you the new conversation, or that it was denied.
     """
@@ -79,15 +82,19 @@ async def handoff_spawn(
     source_id = ctx.identity.conversation_id
     if not source_id:
         return ToolResult.error("no conversation for this caller")
-    brief, title, model = brief.strip(), title.strip(), model.strip()
+    brief, title, model, folder = brief.strip(), title.strip(), model.strip(), folder.strip()
     if not brief:
         return ToolResult.error("brief is required")
     if len(brief) > _MAX_BRIEF:
         return ToolResult.error(f"brief exceeds {_MAX_BRIEF} bytes; push detail to a branch and name it")
+    refused = await _check_folder(source_id, folder) if folder else None
+    if refused:
+        return ToolResult.error(refused)
 
     if not _require_approval:
         try:
-            return ToolResult.ok(json.dumps(await _spawner.spawn(source_id, brief=brief, title=title, model=model)))
+            made = await _spawner.spawn(source_id, brief=brief, title=title, model=model, folder=folder or None)
+            return ToolResult.ok(json.dumps(made))
         except SpawnFailed as e:
             return ToolResult.error(str(e))
 
@@ -95,7 +102,10 @@ async def handoff_spawn(
     if access is None or not access.owner:
         return ToolResult.error("handoff needs the owner's approval, and this conversation has no known owner")
     try:
-        req = await _store.request_spawn(source_id, access.owner, brief=brief, title=title, model=model)
+        req = await _store.request_spawn(
+            source_id, access.owner, brief=brief, title=title, model=model,
+            folder=folder or None,
+        )
     except Refused as e:
         return ToolResult.error(f"handoff refused: {e}")
     await _cards.raise_(req)
@@ -103,6 +113,21 @@ async def handoff_spawn(
         "status": "pending_approval", "request_id": req.id,
         "note": "The user must approve this handoff. A message will tell you the outcome; do not retry.",
     }))
+
+
+async def _check_folder(source_id: str, folder: str) -> str | None:
+    """Why the new conversation can't be filed in `folder`, or None if it can."""
+    access = await _owners.access(source_id) if _owners else None
+    if access is None or not access.owner or _agent_host is None:
+        return "filing needs this conversation's owner, and it has no known owner"
+    try:
+        owned = await _agent_host.has_folder(access.owner, folder)
+    except httpx.HTTPError as e:
+        logger.warning("folder lookup failed", extra={"conversation_id": source_id, "error": str(e)})
+        return "could not read the user's folders; try again shortly"
+    if not owned:
+        return f"`{folder}` is not one of the user's folders"
+    return None
 
 
 async def _reads_owned(source_id: str) -> bool:

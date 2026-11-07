@@ -624,6 +624,7 @@ async def test_a_planner_adds_cards_and_lists_them(app, boards, folders):
     assert not out.is_error and 'blocked by "Schema"' in out.text
     assert folders.placements[("alice", "conv-api")] == _stage(board, "Design")
     listed = json.loads((await mcp_tools.kanban_list_cards(ctx=plan)).text)
+    assert listed["stages"][0] == {"name": "Design", "stage_id": _stage(board, "Design")}
     by_id = {c["id"]: c for c in listed["cards"]}
     assert by_id["conv-plan"]["this"] and not by_id["conv-api"]["this"]
     assert by_id["conv-api"]["blocked_by"] == [{"id": "conv-schema", "title": "Schema", "stage": "Design", "done": False}]

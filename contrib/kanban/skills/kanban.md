@@ -32,5 +32,8 @@ telling the truth.
   `kanban_set_tags(tags)`. Use only the board's tags, which the user defines and the hook
   or `kanban_get_status` lists; you can't add new ones. A board with no tags needs none.
   Change them only when they stop fitting, not every run. The user may retag it too.
+- **To start a card in a given stage**, pass that stage's `stage_id` from
+  `kanban_list_cards` to `handoff_spawn` as `folder`. The approval card shows where it
+  goes, and the new conversation is filed there once it starts.
 - Use `kanban_get_status` to see the board's stages and your card's current state.
 - Don't mention the board or these reminders to the user unless they ask.
