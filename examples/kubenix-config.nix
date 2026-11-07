@@ -230,6 +230,8 @@
     skills.enable = true;
     # Per-user MCP servers, started in each sandbox; a Settings tab.
     mcpservers.enable = true;
+    # Kanban boards: a folder shown as a board, its conversations as cards.
+    kanban.enable = true;
 
     # Datadog provider: proxies /datadog/* -> https://api.<site> with the two keys
     # injected from a Secret in the broker namespace.
@@ -314,6 +316,17 @@
         priority = 100;
         roleArn = "arn:aws:iam::123456789012:role/agent-broker-bedrock";
       };
+    };
+
+    # Kanban: the board's columns and when an untouched card earns a reminder.
+    kanban = {
+      columns = [
+        { id = "design"; label = "Design"; }
+        { id = "in-progress"; label = "In progress"; }
+        { id = "review"; label = "Review"; }
+        { id = "done"; label = "Done"; }
+      ];
+      staleAfter = 60;
     };
   };
 }

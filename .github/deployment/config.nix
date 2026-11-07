@@ -30,6 +30,7 @@
     };
     jira.enable = true;
     kagi.enable = true;
+    kanban.enable = true;
     marimo.enable = true;
     mcpservers.enable = true;
     personalization.enable = true;
