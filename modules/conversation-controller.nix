@@ -169,7 +169,8 @@ in
     };
     folderServices = mkOption {
       type = types.listOf (types.strMatching "[a-z0-9]([-a-z0-9]*[a-z0-9])?");
-      default = [ ];
+      default = lib.optional cfg.broker.enable "agent-broker";
+      defaultText = lib.literalExpression ''lib.optional config.scooter.broker.enable "agent-broker"'';
       example = [ "kanban" ];
       description = ''
         ServiceAccounts (in the platform namespace) that may manage users'
@@ -177,7 +178,8 @@ in
         in `X-Scooter-User`. Such a service may create a folder with
         `"locked": true` and rename, move, delete or nest in a locked one. Users
         can only file conversations into a locked folder and take them out.
-        Empty means nobody can create or change a locked folder.
+        The broker (kanban's boards) is on by default. Empty means nobody can
+        create or change a locked folder.
       '';
     };
     spawnsPerSourcePerHour = mkOption {

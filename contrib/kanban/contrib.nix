@@ -42,8 +42,6 @@
         tables.kanban_boards = { };
       };
 
-      # Boards are locked folders the broker makes; the deployment must set
-      # scooter.conversationController.folderServices = [ "agent-broker" ].
       services.broker = {
         enable = true;
         pythonDeps = ps: [ ps.aiosqlite ];
