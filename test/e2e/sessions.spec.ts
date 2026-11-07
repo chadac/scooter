@@ -5,7 +5,7 @@
  */
 
 import { test, expect } from "./fixtures.js";
-import { fastOnly } from "./target.js";
+import { fastOnly, fullOnly } from "./target.js";
 
 const sidebar = {
   list: '[data-testid="session-list"]',
@@ -310,19 +310,6 @@ test.describe("session selector & titles", () => {
     await request.delete(`${base}/folders/${a}?subfolders=delete`);
   });
 
-  test("a locked folder can't be changed by its user", async ({ chat, page, request, baseURL }) => {
-    const base = baseURL ?? "http://localhost:5173";
-    await chat.open();
-    const head = page.locator(folders.head("e2e-design"));
-    await expect(head).toBeVisible();
-    const ids = await page.locator(folders.header).evaluateAll((els) => els.map((e) => e.getAttribute("data-folder-id")));
-    expect(ids.slice(0, 2)).toEqual(["starred", "e2e-design"]);
-    await expect(head).toHaveAttribute("draggable", "false");
-    await expect(head.getByRole("button", { name: /folder actions/ })).toHaveCount(0);
-    await expect(head.getByTestId("folder-lifetime")).toBeVisible();
-    expect((await request.patch(`${base}/folders/e2e-design`, { data: { name: "x" } })).status()).toBe(409);
-  });
-
   test("new-session button starts a fresh conversation", async ({ chat, page }) => {
     await chat.open();
     await chat.send("first conversation");
@@ -559,5 +546,49 @@ fastOnly("an API-seeded conversation with no run is not served by the multi-pod 
       1,
     );
   });
+  },
+);
+
+fastOnly("the locked folder is seeded by the fake backend")("session selector & titles — locked folders", () => {
+  test("a locked folder can't be changed by its user", async ({ chat, page, request, baseURL }) => {
+    const base = baseURL ?? "http://localhost:5173";
+    await chat.open();
+    const head = page.locator(folders.head("e2e-design"));
+    await expect(head).toBeVisible();
+    const ids = await page.locator(folders.header).evaluateAll((els) => els.map((e) => e.getAttribute("data-folder-id")));
+    expect(ids.slice(0, 2)).toEqual(["starred", "e2e-design"]);
+    await expect(head).toHaveAttribute("draggable", "false");
+    await expect(head.getByRole("button", { name: /folder actions/ })).toHaveCount(0);
+    await expect(head.getByTestId("folder-lifetime")).toBeVisible();
+    expect((await request.patch(`${base}/folders/e2e-design`, { data: { name: "x" } })).status()).toBe(409);
+  });
+});
+
+fullOnly("registers the locked folder as the broker, through the kubectl hook")(
+  "session selector & titles — locked folders registered by a service",
+  () => {
+    // Anonymous is "" to the router but "anonymous" in /whoami, so sign in.
+    const user = "e2e-locked-folder";
+    test.use({ extraHTTPHeaders: { "x-auth-user": user } });
+
+    test("a service's locked folder can't be changed by its user", async ({ chat, page, request, baseURL }) => {
+      const base = baseURL ?? "http://localhost:5173";
+      const hook = process.env.E2E_ROLLOUT_HOOK;
+      test.skip(!hook, "no rollout hook configured for this run");
+      const made = await request.post(`${hook}/locked-folder`, { data: { user, name: `locked ${Date.now()}` } });
+      expect(made.status(), await made.text()).toBe(201);
+      const id = ((await made.json()) as { id: string }).id;
+      try {
+        await chat.open();
+        const head = page.locator(folders.head(id));
+        await expect(head).toBeVisible();
+        await expect(head).toHaveAttribute("draggable", "false");
+        await expect(head.getByRole("button", { name: /folder actions/ })).toHaveCount(0);
+        expect((await request.patch(`${base}/folders/${id}`, { data: { name: "x" } })).status()).toBe(409);
+        expect((await request.delete(`${base}/folders/${id}`)).status()).toBe(409);
+      } finally {
+        await request.delete(`${hook}/locked-folder/${id}`, { headers: { "X-Scooter-User": user } });
+      }
+    });
   },
 );
