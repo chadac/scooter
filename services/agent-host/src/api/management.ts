@@ -196,6 +196,10 @@ export interface ManagementDeps {
     status(owner: string): Promise<{ connected: boolean; lastAuthFailure: { reason: string; at: string } | null }>;
     /** Whether this owner's remote agent is connected right now (durable via the DB when one is wired). */
     isConnected(owner: string): Promise<boolean>;
+    /** The owner's registered devices; null when device auth is off. */
+    listDevices?(owner: string): Promise<{ id: string; label?: string; lastSeen: number }[] | null>;
+    /** Revoke one of the owner's devices. */
+    deregisterDevice?(owner: string, deviceId: string): Promise<void>;
   };
 }
 
@@ -435,6 +439,33 @@ export function createManagementApi(deps: ManagementDeps): Router {
     // container does not look like one never started.
     const st = await deps.remoteAgent.status(ctx.user.id);
     return { json: { connected: st.connected, owner: ctx.user.id, lastAuthFailure: st.lastAuthFailure } };
+  });
+
+  // Settings device list, relayed to the controller's internal port.
+  r.get("/remote-agent/devices", async (ctx) => {
+    const ra = deps.remoteAgent;
+    if (!ra?.listDevices) return { status: 404, json: { error: "device auth not enabled" } };
+    if (ctx.user.anonymous) return { status: 401, json: { error: "authentication required" } };
+    try {
+      const devices = await ra.listDevices(ctx.user.id);
+      return devices ? { json: devices } : { status: 404, json: { error: "device auth not enabled" } };
+    } catch (err) {
+      remoteAgentLog.errorWith("device list failed", err, { user_id: ctx.user.id });
+      return { status: 503, json: { error: "The BYOC controller is unreachable." } };
+    }
+  });
+
+  r.del("/remote-agent/devices/:id", async (ctx) => {
+    const ra = deps.remoteAgent;
+    if (!ra?.deregisterDevice) return { status: 404, json: { error: "device auth not enabled" } };
+    if (ctx.user.anonymous) return { status: 401, json: { error: "authentication required" } };
+    try {
+      await ra.deregisterDevice(ctx.user.id, ctx.params.id);
+      return { status: 204, json: null };
+    } catch (err) {
+      remoteAgentLog.errorWith("device deregister failed", err, { user_id: ctx.user.id });
+      return { status: 503, json: { error: "The BYOC controller is unreachable." } };
+    }
   });
 
   // Reverse identity lookup for the webhooks service: the Scooter user id for an exact

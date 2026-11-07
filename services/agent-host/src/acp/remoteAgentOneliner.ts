@@ -32,6 +32,13 @@ export interface RemoteAgentStatus {
   lastAuthFailure: { reason: string; at: string } | null;
 }
 
+/** A registered laptop as the controller summarises it, never key material. */
+export interface RemoteAgentDevice {
+  id: string;
+  label?: string;
+  lastSeen: number;
+}
+
 export interface RemoteAgentUiDeps {
   joinSecret: string;
   /** The BYOC controller's in-cluster base URL, where the session is minted. */
@@ -54,6 +61,7 @@ export interface RemoteAgentUiDeps {
 /** The `remoteAgent` dep the management API's Settings routes consume. */
 export function createRemoteAgentUi(deps: RemoteAgentUiDeps) {
   const doFetch = deps.fetchImpl ?? fetch;
+  const controller = deps.controllerUrl.replace(/\/$/, "");
   return {
     /** Mint a session on the controller, then build the one-liner around it. */
     async mint(owner: string) {
@@ -76,6 +84,21 @@ export function createRemoteAgentUi(deps: RemoteAgentUiDeps) {
     async status(owner: string): Promise<RemoteAgentStatus> {
       if (deps.statusAsync) return deps.statusAsync(owner);
       return { connected: await this.isConnected(owner), lastAuthFailure: null };
+    },
+    /** The owner's devices; null when device auth is off. */
+    async listDevices(owner: string): Promise<RemoteAgentDevice[] | null> {
+      const res = await doFetch(`${controller}/byoc/devices`, { headers: { "x-auth-request-user": owner } });
+      if (res.status === 404) return null;
+      if (!res.ok) throw new Error(`could not list BYOC devices (${res.status})`);
+      return (await res.json()) as RemoteAgentDevice[];
+    },
+    /** Revoke a device; the controller scopes it to the owner. */
+    async deregisterDevice(owner: string, deviceId: string): Promise<void> {
+      const res = await doFetch(`${controller}/byoc/devices/${encodeURIComponent(deviceId)}`, {
+        method: "DELETE",
+        headers: { "x-auth-request-user": owner },
+      });
+      if (!res.ok) throw new Error(`could not deregister the BYOC device (${res.status})`);
     },
     /** Whether the owner's agent is connected, preferring the durable check over the live registry. */
     async isConnected(owner: string): Promise<boolean> {

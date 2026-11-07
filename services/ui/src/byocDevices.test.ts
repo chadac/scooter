@@ -59,7 +59,7 @@ describe("byoc device list", () => {
     }) as unknown as typeof fetch;
     await deregisterDevice("d1", { fetchImpl });
     expect(calls[0].method).toBe("DELETE");
-    expect(calls[0].url).toContain("/byoc/devices/d1");
+    expect(calls[0].url).toContain("/remote-agent/devices/d1");
   });
 
   it("deregister URL-ENCODES the id (a crafted id must not escape the path)", async () => {

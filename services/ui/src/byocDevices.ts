@@ -3,7 +3,7 @@
  * only public keys and never returns key material, so this module deals in summaries
  * (`id`, `label`, `lastSeen`); deregistering is a complete revocation, and the laptop
  * cannot re-register without a fresh join token. Kept separate from client.ts because
- * it targets the BYOC controller, not the agent-host.
+ * it targets the agent-host's /remote-agent routes, which relay to the BYOC controller.
  */
 
 export interface ByocDevice {
@@ -14,7 +14,7 @@ export interface ByocDevice {
 }
 
 export interface ByocDevicesConfig {
-  /** Base URL of the BYOC surface (same origin in the deployed UI). */
+  /** Base URL of the agent-host API (same origin in the deployed UI). */
   baseUrl?: string;
   fetchImpl?: typeof fetch;
 }
@@ -24,11 +24,11 @@ const base = (c: ByocDevicesConfig): string => (c.baseUrl ?? "").replace(/\/$/, 
 /** The caller's registered devices, most-recently-seen first. */
 export async function loadDevices(config: ByocDevicesConfig = {}): Promise<ByocDevice[]> {
   const doFetch = config.fetchImpl ?? fetch;
-  const res = await doFetch(`${base(config)}/byoc/devices`, { credentials: "same-origin" });
+  const res = await doFetch(`${base(config)}/remote-agent/devices`, { credentials: "same-origin" });
   // 404 (device auth not enabled) and 401 (anonymous) both mean nothing to show, not an error.
   if (res.status === 404 || res.status === 401) return [];
   if (!res.ok) throw new Error(`Failed to load devices (${res.status})`);
-  // Without the BYOC controller the SPA catch-all serves index.html with a 200, so a non-JSON body means device auth is not available here.
+  // A non-JSON 200 is the SPA fallback, so no device route.
   const ctype = res.headers.get("content-type") ?? "";
   if (!ctype.includes("application/json")) return [];
   try {
@@ -42,7 +42,7 @@ export async function loadDevices(config: ByocDevicesConfig = {}): Promise<ByocD
 /** Revoke a device; the laptop's key stops working immediately. */
 export async function deregisterDevice(id: string, config: ByocDevicesConfig = {}): Promise<void> {
   const doFetch = config.fetchImpl ?? fetch;
-  const res = await doFetch(`${base(config)}/byoc/devices/${encodeURIComponent(id)}`, {
+  const res = await doFetch(`${base(config)}/remote-agent/devices/${encodeURIComponent(id)}`, {
     method: "DELETE",
     credentials: "same-origin",
   });
