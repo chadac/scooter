@@ -182,8 +182,7 @@ let
   contribSkills = lib.mapAttrs (_: c: c.skills)
     (lib.filterAttrs (_: c: c.enable && c.skills != { }) config.contribs);
 
-  # The contribs that raise human approvals and how the agent-host reaches their
-  # verbs; each contrib's deployment.nix sets its own row inside its own `mkIf`.
+  # The contribs that raise human approvals and how the agent-host reaches their verbs.
   approvalContribsJson =
     if cfg.approvals == { } then null else builtins.toJSON cfg.approvals;
 
@@ -293,7 +292,7 @@ in
   # ./testing.nix is absent on purpose (test-only overrides are opted into by a test
   # manifest), and the contribs arrive via `contribModules`, each declaring its own
   # `contribs.<name>` options and manifests with contrib/spec.nix as their schema.
-  imports = [ kubenix.modules.k8s ./images.nix ./scooter-packages.nix ./db-spec.nix ./postgres.nix ./db-migrate.nix ./contrib-db.nix ./contrib-env.nix ./broker.nix ./sandbox-pod.nix ./sandbox-volumes.nix ./webhooks.nix ./byoc.nix ./scheduler.nix ./conversation-controller.nix ./warm-store-controller.nix ./network-policy.nix ./legacy-state-migration.nix ./event-backfill.nix ./skills ]
+  imports = [ kubenix.modules.k8s ./images.nix ./scooter-packages.nix ./db-spec.nix ./postgres.nix ./db-migrate.nix ./contrib-db.nix ./contrib-env.nix ./contrib-approvals.nix ./broker.nix ./sandbox-pod.nix ./sandbox-volumes.nix ./webhooks.nix ./byoc.nix ./scheduler.nix ./conversation-controller.nix ./warm-store-controller.nix ./network-policy.nix ./legacy-state-migration.nix ./event-backfill.nix ./skills ]
     ++ contribModules;
 
   # Declared only so a definition on the old root reaches `legacyRoot`'s message; no
@@ -343,10 +342,12 @@ in
         Rendered into APPROVAL_CONTRIBS_JSON for the agent-host, which relays a user's
         Approve/Deny there.
 
-        A contrib sets its own row from its DEPLOYMENT module, inside that module's
-        `mkIf`, so a deployment that does not run the contrib contributes nothing and
-        no separate gate is needed here. Relaying an answer to a broker that never
-        mounted the route would turn a security decision into a 404 nobody sees.
+        Every enabled contrib with `approvals` set gets a row pointing at
+        `/<name>/approvals`, where `scooter_broker_lib.approvals` mounts its routes.
+        A contrib whose routes live elsewhere sets its own row from its DEPLOYMENT
+        module, inside that module's `mkIf`, and it wins. Relaying an answer to a
+        broker that never mounted the route would turn a security decision into a
+        404 nobody sees.
 
         A verb's JSON answer may carry `agent_message`, contrib-rendered prose the
         agent-host prompts the agent with, since nothing else tells it the card was

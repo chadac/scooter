@@ -159,6 +159,10 @@ in
       owner = "broker";
       tables = {
         sandbox_size = { writers = [ "broker" ]; };
+        approval_requests = {
+          writers = [ "broker" ];
+          note = "Every approval contrib's requests (scooter_broker_lib.approvals), scoped by `contrib`.";
+        };
       };
     };
   }

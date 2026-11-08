@@ -10,6 +10,7 @@ description = "The broker extension surface — provider/transport/source contra
 requires-python = ">=3.11"
 dependencies = [
   "scooter-lib",
+  "scooter-schema",
   "fastapi",
   "httpx",
   "sqlalchemy",

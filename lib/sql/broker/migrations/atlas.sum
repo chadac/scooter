@@ -1,5 +1,6 @@
-h1:uTJUHIeHeAWNabcO7ecMHvKCBlDMQnNmO1LKnid1Xg0=
+h1:kW95sruNJiWQwEBvmvSVjvYwDxBc95k478BIiA0qLAA=
 20260827201646_baseline.sql h1:lPrsp/RM2WIUCsvk0KDCUsKkbm1WpLKLHFRG10gYSHM=
 20260831182350_add_static_shares.sql h1:kHIkshhnxHK7YkhUdXa5rj5AeLrnIXa+92qaK1Lnc2E=
 20261015181054_add_annotations.sql h1:2eajdCDCL/98/lurG/guNRIfnIPCSDNgNqO3a/tsIEw=
 20261020200000_drop_module_registry.sql h1:TTFQN4nUDADkUQ+Ii3q8VMwFDj45+ow0kxcwYJDkcjY=
+20261108142655_add_approval_requests.sql h1:rsICF7jONCf+RTAr1u5r5FDI3BuqLgT5G4ywq6DVJUQ=

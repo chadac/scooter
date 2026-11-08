@@ -62,6 +62,8 @@ owner = "broker"
 
 [broker.tables]
 annotations           = { writers = ["broker"], readers = [] }
+# Every approval contrib's requests (scooter_broker_lib.approvals), scoped by `contrib`.
+approval_requests     = { writers = ["broker"], readers = [] }
 permission_requests   = { writers = ["broker"], readers = [] }
 sandbox_size          = { writers = ["broker"], readers = [] }
 static_share_versions = { writers = ["broker"], readers = [] }

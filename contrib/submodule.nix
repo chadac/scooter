@@ -710,12 +710,10 @@ in
 
         This is the PRESENTATION half, and it is build-time metadata: it rides the
         contrib manifest into the UI image. Where the contrib's verbs actually live
-        on the broker is DEPLOYMENT config — an operator can run the same contrib
-        against a differently-mounted broker — so it is declared by the contrib's
-        platform module as `scooter.approvals.<name>`, which is also already
-        gated on that deployment enabling the contrib.
-
-        Neither fact is stated twice; they simply belong to different lifecycles.
+        on the broker is DEPLOYMENT config, `scooter.approvals.<name>`. Setting this
+        option derives that row, at `/<name>/approvals` where
+        `scooter_broker_lib.approvals` mounts, for a deployment that enables both
+        the contrib and the broker; the contrib's deployment module can override it.
       '';
       type = types.nullOr (types.submodule {
         options = {

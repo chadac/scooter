@@ -3,7 +3,7 @@
 
 from typing import Optional
 
-from sqlalchemy import Boolean, Index, Integer, PrimaryKeyConstraint, String, Text
+from sqlalchemy import BigInteger, Boolean, Index, Integer, PrimaryKeyConstraint, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 class Base(DeclarativeBase):
@@ -32,6 +32,26 @@ class Annotations(Base):
     created_at: Mapped[str] = mapped_column(String, nullable=False)
     updated_at: Mapped[str] = mapped_column(String, nullable=False)
     question_id: Mapped[Optional[str]] = mapped_column(String)
+
+
+class ApprovalRequests(Base):
+    __tablename__ = 'approval_requests'
+    __table_args__ = (
+        PrimaryKeyConstraint('id', name='approval_requests_pkey'),
+        Index('ix_approval_requests_conversation', 'contrib', 'conversation_id', 'status'),
+        Index('ix_approval_requests_owner', 'contrib', 'owner', 'status')
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    contrib: Mapped[str] = mapped_column(String, nullable=False)
+    conversation_id: Mapped[str] = mapped_column(String, nullable=False)
+    owner: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    decided_by: Mapped[Optional[str]] = mapped_column(String)
+    decided_at: Mapped[Optional[int]] = mapped_column(BigInteger)
+    expires_at: Mapped[Optional[int]] = mapped_column(BigInteger)
 
 
 class PermissionRequests(Base):

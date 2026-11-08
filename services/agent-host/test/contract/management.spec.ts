@@ -1285,8 +1285,8 @@ describe("management API", () => {
       const fetchFn = mockFetch({});
       vi.stubGlobal("fetch", fetchFn);
       try {
-        await fetchPendingApprovals("http://broker:8080", "/echo/approval/pending", SHORT, {});
-        expect(new URL(fetchFn.mock.calls[0][0] as string).pathname).toBe("/echo/approval/pending");
+        await fetchPendingApprovals("http://broker:8080", "/echo/approvals/pending", SHORT, {});
+        expect(new URL(fetchFn.mock.calls[0][0] as string).pathname).toBe("/echo/approvals/pending");
       } finally {
         vi.unstubAllGlobals();
       }

@@ -44,9 +44,9 @@ def _view(rec: ApprovalRecord) -> dict[str, Any]:
 
 @dataclass
 class EchoApprovals(Transport):
-    """Approval routes at /echo/approval/*, matching the `brokerPrefix` and `pendingPath` shape contrib/echo/default.nix declares for the agent-host."""
+    """Approval routes at /echo/approvals/*, where the derived scooter.approvals.echo row points the agent-host."""
 
-    name: str = "approval"
+    name: str = "approvals"
     #: request_id -> record, process-local.
     requests: dict[str, ApprovalRecord] = field(default_factory=dict)
     #: Set by a test to make can-approve answer False without standing up OpenFGA.
@@ -71,7 +71,7 @@ class EchoApprovals(Transport):
     def routes(self, provider: Provider, authed: AuthDependency) -> APIRouter:
         router = APIRouter()
 
-        @router.post("/approval", status_code=201)
+        @router.post("/approvals", status_code=201)
         async def request_approval(
             identity: Identity = Depends(authed), body: dict = Body(default={})
         ) -> dict[str, Any]:
@@ -85,8 +85,8 @@ class EchoApprovals(Transport):
             self.requests[rec.request_id] = rec
             return _view(rec)
 
-        # Registered before /approval/{request_id} so "pending" is not captured as an id.
-        @router.get("/approval/pending")
+        # Registered before /approvals/{request_id} so "pending" is not captured as an id.
+        @router.get("/approvals/pending")
         async def pending(
             identity: Identity = Depends(authed), conversation_id: str = ""
         ) -> dict[str, Any]:
@@ -100,7 +100,7 @@ class EchoApprovals(Transport):
             ]
             return {"requests": [_view(r) for r in open_]}
 
-        @router.post("/approval/{request_id}/can-approve")
+        @router.post("/approvals/{request_id}/can-approve")
         async def can_approve(
             request_id: str, identity: Identity = Depends(authed), body: dict = Body(default={})
         ) -> dict[str, bool]:
@@ -111,7 +111,7 @@ class EchoApprovals(Transport):
             # An identity that did not survive the relay arrives as None and is refused.
             return {"can_approve": self._approver_of(body) is not None}
 
-        @router.post("/approval/{request_id}/{verb}")
+        @router.post("/approvals/{request_id}/{verb}")
         async def answer(
             request_id: str,
             verb: str,
@@ -139,7 +139,7 @@ class EchoApprovals(Transport):
             rec.status = "approved" if verb == "approve" else "denied"
             return _view(rec)
 
-        @router.get("/approval/{request_id}")
+        @router.get("/approvals/{request_id}")
         async def get_request(
             request_id: str, identity: Identity = Depends(authed)
         ) -> dict[str, Any]:

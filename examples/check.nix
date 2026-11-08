@@ -919,6 +919,9 @@ let
   awsOffApprovals =
     let ctrs = builtins.attrValues (awsOffPlatform.config.kubernetes.resources.deployments.agent-host.spec.template.spec.containers or { });
     in builtins.concatMap (c: c.env or [ ]) ctrs;
+  echoApprovalRow = (evalPlatform {
+    module = { imports = [ ./kubenix-config.nix ]; contribs.echo.enable = nixpkgsLib.mkForce true; };
+  }).config.scooter.approvals.echo or { };
   approvalProblems =
     (if approvalsJson != null then [ ]
      else [ ("host.env.APPROVAL_CONTRIBS_JSON missing — aws declares approvals but the"
@@ -933,6 +936,14 @@ let
                 + " never be re-raised, leaving a blocked agent and a user with nothing to click") ])
     ++ (if approvalsJson == null || (approvalsJson.commits.pendingPath or null) == "/commits/proposals/pending" then [ ]
         else [ "APPROVAL_CONTRIBS_JSON has no commits row with its pendingPath (contrib/commits/deployment.nix)" ])
+    # Every enabled contrib declaring approvals gets a row, by default at /<name>/approvals.
+    ++ map (n: "contribs.${n} declares approvals but APPROVAL_CONTRIBS_JSON has no row with a pendingPath for it")
+        (builtins.filter (n: (approvalsJson.${n}.pendingPath or null) == null)
+          (builtins.attrNames (nixpkgsLib.filterAttrs (_: c: c.enable && c.approvals != null) platform.config.contribs)))
+    ++ (if (echoApprovalRow.brokerPrefix or null) == "/echo/approvals" then [ ]
+        else [ "enabling echo, which declares approvals, did not route it to the derived /echo/approvals" ])
+    ++ (if !(platform.config.scooter.approvals ? echo) then [ ]
+        else [ "echo is disabled but has an APPROVAL_CONTRIBS_JSON row" ])
     # Other contribs may still raise approvals; only aws's row must go.
     ++ (if builtins.all (e: e.name != "APPROVAL_CONTRIBS_JSON" || !(builtins.fromJSON e.value ? aws)) awsOffApprovals then [ ]
         else [ "aws-off: APPROVAL_CONTRIBS_JSON still has an aws row — approvals are not gated on the contrib's own enable" ]);
