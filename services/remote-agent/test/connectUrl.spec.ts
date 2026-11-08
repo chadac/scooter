@@ -111,7 +111,7 @@ describe("client wiring", () => {
 
   it("does NOT put device credentials in the hello frame", () => {
     // The controller reads query params at the upgrade, so a deviceId in the hello is dead code that looks like working auth.
-    const hello = SRC.match(/ws!\.send\(JSON\.stringify\(\{[^}]*protocolVersion[^}]*\}\)\)/s);
+    const hello = SRC.match(/sock\.send\(JSON\.stringify\(\{[^}]*protocolVersion[^}]*\}\)\)/s);
     expect(hello, "hello frame not found").toBeTruthy();
     expect(hello![0]).not.toMatch(/deviceId/);
   });

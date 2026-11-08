@@ -37,7 +37,7 @@ async function until(what: string, ok: () => boolean | Promise<boolean>, ms = 20
   }
 }
 
-/** TCP forwarder: `blackhole` drops traffic, `stall` delays it. */
+/** TCP forwarder: `blackhole` drops, `stall` delays, `cut` closes. */
 async function forwarder(targetPort: number) {
   const live = new Set<{ client: Socket; upstream: Socket; dead: boolean }>();
   // Bytes held during a stall, flushed in order after.
@@ -73,6 +73,12 @@ async function forwarder(targetPort: number) {
     url: `http://127.0.0.1:${port}`,
     blackhole() {
       for (const p of live) p.dead = true;
+    },
+    cut() {
+      for (const p of live) {
+        p.client.destroy();
+        p.upstream.destroy();
+      }
     },
     async stall(ms: number) {
       held = [];
@@ -224,6 +230,25 @@ describe("BYOC reconnect", () => {
     const convo = byoConversation(ctl.url);
     await convo.bridge.prompt({ threadId: "t1", text: "after the redial" });
     await until("the reply", () => convo.said().includes("echo: after the redial"));
+  }, 60_000);
+
+  it("finishes a turn whose container socket drops and comes straight back", async () => {
+    const ctl = controllerHost();
+    await ctl.start();
+    const path = await forwarder(ctl.port);
+    await joinContainer(path.url);
+    await until("the container to attach", async () => (await ctl.status()) === "connected");
+
+    const convo = byoConversation(ctl.url);
+    const turn = convo.bridge.prompt({ threadId: "t1", text: "~sleep 3" });
+    await until("the turn to start", () => convo.said().includes("sleeping 3s"));
+    path.cut();
+    await until("the controller to see the drop", async () => (await ctl.status()) !== "connected");
+    await until("the container to re-attach", async () => (await ctl.status()) === "connected");
+    await turn;
+
+    expect(convo.said()).toContain("slept 3s");
+    expect(convo.said().split("sleeping 3s").length - 1, "the turn died and was retried").toBe(1);
   }, 60_000);
 
   it("rides out a pause longer than one ping interval without failing the turn", async () => {
