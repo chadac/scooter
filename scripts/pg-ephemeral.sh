@@ -7,6 +7,7 @@
 #                                                       # 127.0.0.1:<port>, socket <dir>/sock
 #        scripts/pg-ephemeral.sh stop <dir>             # stop it and remove <dir>
 # On failure, start prints initdb's or the server's log to stderr and removes the dir.
+# The server belongs to start's caller: a later start stops it once the caller is gone.
 set -euo pipefail
 
 # Runs a command as the owner of $1 when we are root.
@@ -19,6 +20,15 @@ as_owner() {
   fi
 }
 
+# Prints a process's start time, which tells a reused pid apart.
+proc_start() {
+  local stat
+  stat="$(cat "/proc/$1/stat" 2>/dev/null)" || return 1
+  # shellcheck disable=SC2086 # split the fields after the command name
+  set -- ${stat##*) }
+  printf '%s\n' "${20}"
+}
+
 stop() {
   local dir="$1"
   [ -d "$dir" ] || return 0
@@ -28,6 +38,18 @@ stop() {
   rm -rf "$dir"
 }
 
+# Stops every server whose caller has died, e.g. from a SIGKILL.
+stop_orphans() {
+  local dir pid since
+  for dir in "$@"; do
+    [ -r "$dir/owner" ] || continue
+    read -r pid since <"$dir/owner" || continue
+    [ "$(proc_start "$pid" || true)" = "$since" ] && continue
+    echo "pg-ephemeral: stopping $dir, its caller $pid is gone" >&2
+    stop "$dir" || true
+  done
+}
+
 start() {
   local port="$1" dir
   if [ "$(id -u)" = 0 ]; then
@@ -35,8 +57,10 @@ start() {
     dir="$(mktemp -d /tmp/pg-ephemeral.XXXXXX)"
     chown "${PGUID:-$(id -u nobody)}:${PGGID:-$(id -g nobody)}" "$dir"
   else
-    dir="$(mktemp -d)"
+    dir="$(mktemp -d "${TMPDIR:-/tmp}/pg-ephemeral.XXXXXX")"
   fi
+  printf '%s %s\n' "$PPID" "$(proc_start "$PPID")" >"$dir/owner"
+  stop_orphans "${dir%/*}"/pg-ephemeral.*
   trap 'stop "$dir"' ERR
   as_owner "$dir" mkdir "$dir/sock"
   if ! as_owner "$dir" initdb -D "$dir/data" -U postgres --auth=trust --no-sync >"$dir/initdb.log" 2>&1; then
