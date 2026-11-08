@@ -7,8 +7,9 @@ first stage.
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import httpx
 
@@ -76,6 +77,56 @@ def quote_blockers(blockers: list[Blocker]) -> str:
     return ", ".join(f'"{b.title or b.id}" ({b.stage})' for b in blockers)
 
 
+def positions(old: list[float | None]) -> list[float]:
+    """Positions for items in this order, keeping the most old ones that stay in order.
+
+    `old` is each item's current position, None for a new one. Keeping positions spares
+    a router call per stage that didn't move.
+    """
+    n = len(old)
+    # Longest strictly increasing run of old positions.
+    best, prev = [0] * n, [-1] * n
+    for i, p in enumerate(old):
+        if p is None:
+            continue
+        best[i] = 1
+        for j in range(i):
+            q = old[j]
+            if q is not None and q < p and best[j] + 1 > best[i]:
+                best[i], prev[i] = best[j] + 1, j
+    out: list[float | None] = [None] * n
+    i = max(range(n), key=lambda k: best[k], default=-1)
+    while i >= 0 and best[i]:
+        out[i] = old[i]
+        i = prev[i]
+    # Spread the rest evenly between their kept neighbours.
+    i = 0
+    while i < n:
+        if out[i] is not None:
+            i += 1
+            continue
+        j = i
+        while j < n and out[j] is None:
+            j += 1
+        lo, hi, k = out[i - 1] if i else None, out[j] if j < n else None, j - i
+        for x in range(k):
+            if lo is None and hi is None:
+                out[i + x] = float(x + 1)
+            elif lo is None:
+                out[i + x] = hi - (k - x)
+            elif hi is None:
+                out[i + x] = lo + x + 1
+            else:
+                out[i + x] = lo + (hi - lo) * (x + 1) / (k + 1)
+        i = j
+    return [p for p in out if p is not None]
+
+
+def _pick_color(used: list[str]) -> str:
+    # The first palette color no tag has yet, cycling once all are used.
+    return min(TAG_COLORS, key=lambda c: (used.count(c), TAG_COLORS.index(c)))
+
+
 @dataclass
 class Boards:
     store: KanbanStore
@@ -98,20 +149,107 @@ class Boards:
             await self.store.add_stage(board, folder, name, float(i + 1))
         return await self.store.stages(board)
 
-    async def list(self, owner: str) -> list[dict]:
+    async def list(self, owner: str, board: str | None = None) -> list[dict]:
+        """`owner`'s boards with their stages and tags; only `board` when given."""
         return [
             {
                 "folder": b,
-                "stages": [s.payload() for s in await self.stages(b, owner)],
-                "tags": [t.payload() for t in await self.store.tags(b)],
+                "stages": [s.payload() for s in stages or await self.stages(b, owner)],
+                "tags": [t.payload() for t in tags],
             }
-            for b in await self.store.boards(owner)
+            for b, stages, tags in await self.store.layout(owner, board)
         ]
 
     async def own(self, owner: str, board: str) -> str:
-        if board not in await self.store.boards(owner):
+        if await self.store.board_owner(board) != owner:
             raise BoardError(404, "no such board")
         return board
+
+    async def save(self, owner: str, board: str, stages: list[Stage], tags: list[Tag]) -> dict:
+        """Make a board's stages and tags these, in this order; returns the board as `list` shows it.
+
+        An item with an empty id is new, a listed one keeps its id, and the rest are deleted.
+        Stage folders change first, as the router can't share kanban's transaction; what they
+        refuse is left as it was, and the store records what happened before the error is raised.
+        """
+        have = {s.folder: s for s in await self.stages(await self.own(owner, board), owner)}
+        old_tags = {t.id: t for t in await self.store.tags(board)}
+        stages, tags = self._check(stages, tags, have, old_tags)
+        at = positions([have[s.folder].position if s.folder else None for s in stages])
+
+        async def put(s: Stage, position: float) -> tuple[Stage | None, FolderError | None]:
+            """The stage as the router now has it, and what it refused."""
+            old = have.get(s.folder)
+            try:
+                folder = s.folder or await self.folders.create(owner, s.name, board)
+            except FolderError as e:
+                return None, e
+            name = None if old and old.name == s.name else s.name
+            moved = None if old and old.position == position else position
+            try:
+                if name is not None or moved is not None:
+                    # The sidebar shows stages in the board's order.
+                    await self.folders.update(owner, folder, name=name, position=moved)
+            except FolderError as e:
+                # The new folder exists even though the update failed.
+                return old or Stage(folder, s.name, position), e
+            return Stage(folder, s.name, position), None
+
+        async def drop(stage: Stage) -> tuple[Stage | None, FolderError | None]:
+            try:
+                # Its conversations move up to the board's first stage.
+                await self.folders.delete(owner, stage.folder)
+            except FolderError as e:
+                if e.status != 404:
+                    return stage, e
+            return None, None
+
+        keep = {s.folder for s in stages}
+        done = await asyncio.gather(
+            *(put(s, p) for s, p in zip(stages, at)), *(drop(s) for f, s in have.items() if f not in keep)
+        )
+        outcome = sorted((st for st, _ in done if st is not None), key=lambda st: st.position)
+        tag_at = positions([old_tags[t.id].position if t.id else None for t in tags])
+        await self.store.save_board(board, outcome, [replace(t, position=p) for t, p in zip(tags, tag_at)])
+        failed = next((e for _, e in done if e is not None), None)
+        if failed is not None:
+            raise _refused(failed)
+        return (await self.list(owner, board))[0]
+
+    def _check(
+        self, stages: list[Stage], tags: list[Tag], have: dict[str, Stage], old_tags: dict[str, Tag]
+    ) -> tuple[list[Stage], list[Tag]]:
+        """The stages and tags a save asks for, cleaned up, or the BoardError refusing them."""
+        if not stages:
+            raise BoardError(409, "a board needs at least one stage")
+        ids = [s.folder for s in stages if s.folder]
+        if any(i not in have for i in ids) or len(set(ids)) != len(ids):
+            raise BoardError(400, "stages must be new or this board's, each once")
+        out_stages = []
+        for s in stages:
+            name = s.name.strip()
+            if not name:
+                raise BoardError(400, "a stage needs a name")
+            out_stages.append(replace(s, name=name))
+        if len(tags) > MAX_BOARD_TAGS:
+            raise BoardError(409, f"a board has at most {MAX_BOARD_TAGS} tags")
+        ids = [t.id for t in tags if t.id]
+        if any(i not in old_tags for i in ids) or len(set(ids)) != len(ids):
+            raise BoardError(400, "tags must be new or this board's, each once")
+        out_tags: list[Tag] = []
+        seen: set[str] = set()
+        for t in tags:
+            name = t.name.strip()
+            if not name:
+                raise BoardError(400, "a tag needs a name")
+            if len(name) > MAX_TAG_CHARS:
+                raise BoardError(400, f"a tag name is at most {MAX_TAG_CHARS} characters")
+            if name.casefold() in seen:
+                raise BoardError(409, f"this board already has a tag named `{name}`")
+            seen.add(name.casefold())
+            color = t.color or (old_tags[t.id].color if t.id else _pick_color([x.color for x in out_tags]))
+            out_tags.append(replace(t, name=name, color=self._color(color)))
+        return out_stages, out_tags
 
     async def own_stage(self, owner: str, board: str, stage: str) -> Stage:
         found = next((s for s in await self.stages(await self.own(owner, board), owner) if s.folder == stage), None)
@@ -490,9 +628,7 @@ class Boards:
             raise BoardError(409, f"a board has at most {MAX_BOARD_TAGS} tags")
         name = await self._tag_name(board, name)
         if color is None:
-            # The first palette color no tag has yet, cycling once all are used.
-            used = [t.color for t in tags]
-            color = min(TAG_COLORS, key=lambda c: (used.count(c), TAG_COLORS.index(c)))
+            color = _pick_color([t.color for t in tags])
         position = (tags[-1].position if tags else 0.0) + 1
         return await self.store.add_tag(board, name, self._color(color), position)
 
@@ -515,17 +651,45 @@ class Boards:
         await self.own_tag(owner, board, tag)
         await self.store.remove_tag(tag)
 
-    async def tag_card(self, owner: str, key: str, tags: list[str]) -> list[str]:
-        """The user replaces a card's tags, all from one of their boards, by id."""
+    async def tag_card(
+        self, owner: str, key: str, tags: list[str], *, board: str = "", create: list[str] | None = None
+    ) -> tuple[list[str], list[Tag]]:
+        """The user replaces a card's tags, all from one of their boards, by id.
+
+        `create` names tags to add to `board` and put on the card too; one the board
+        already has is used as is. Returns the card's tag ids and the tags made.
+        """
         tags = list(dict.fromkeys(tags))
-        if len(tags) > MAX_CARD_TAGS:
-            raise BoardError(400, f"a card has at most {MAX_CARD_TAGS} tags")
+        names = list(dict.fromkeys(n.strip() for n in create or [] if n.strip()))
+        if board:
+            await self.own(owner, board)
+        if names and not board:
+            raise BoardError(400, "board is required to create tags")
         if tags:
-            board_of = {t.id: b for b in await self.store.boards(owner) for t in await self.store.tags(b)}
-            if any(t not in board_of for t in tags) or len({board_of[t] for t in tags}) != 1:
+            board_of = await self.store.tag_boards(owner, tags)
+            on = {board_of.get(t) for t in tags}
+            if None in on or len(on) != 1 or (board and on != {board}):
                 raise BoardError(400, "tags must be ids of one of your boards' tags")
-        await self.store.set_card_tags(key, tags)
-        return tags
+        made: list[Tag] = []
+        if names:
+            have = await self.store.tags(board)
+            by_name = {t.name.casefold(): t for t in have}
+            for n in names:
+                if n.casefold() in by_name:
+                    tags.append(by_name[n.casefold()].id)
+                    continue
+                if len(n) > MAX_TAG_CHARS:
+                    raise BoardError(400, f"a tag name is at most {MAX_TAG_CHARS} characters")
+                used = [t.color for t in [*have, *made]]
+                last = (made or have)[-1].position if made or have else 0.0
+                made.append(Tag("", n, _pick_color(used), last + 1))
+            if len(have) + len(made) > MAX_BOARD_TAGS:
+                raise BoardError(409, f"a board has at most {MAX_BOARD_TAGS} tags")
+            tags = list(dict.fromkeys(tags))
+        if len(tags) + len(made) > MAX_CARD_TAGS:
+            raise BoardError(400, f"a card has at most {MAX_CARD_TAGS} tags")
+        made = await self.store.set_card_tags(key, tags, board_id=board, create=made)
+        return [*tags, *(t.id for t in made)], made
 
     async def set_tags(self, key: str, names: list[str]) -> Located:
         """The agent replaces its card's tags, by name, from its board's tags."""

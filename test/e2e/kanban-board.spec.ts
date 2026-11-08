@@ -34,6 +34,9 @@ async function serveKanban(page: Page, request: APIRequestContext, base: string)
   const puts: Array<{ id: string; body: { column: string } }> = [];
   const blockers: Record<string, string[]> = {};
   const details: Record<string, { description: string; priority: string }> = {};
+  // Every board save and card-tag PUT, to count the requests.
+  const saves: unknown[] = [];
+  const tagPuts: Array<{ tags: string[]; create?: string[] }> = [];
   const related = (ids: string[]) => ids.map((b) => ({ id: b, title: b, stage: "Design", done: false }));
   const folder = async (name: string, parentId?: string) =>
     ((await (await request.post(`${base}/folders`, { data: { name, parentId } })).json()) as { id: string }).id;
@@ -52,56 +55,51 @@ async function serveKanban(page: Page, request: APIRequestContext, base: string)
       }),
     }),
   );
-  await page.route(/\/contrib-api\/kanban\/boards(\/[^/?]+)?(\/stages(\/[^/?]+)?)?$/, async (route) => {
-    const m = /\/boards(?:\/([^/?]+))?(?:\/stages(?:\/([^/?]+))?)?$/.exec(route.request().url())!;
-    const [id, stage] = [m[1], m[2]];
-    const isStages = route.request().url().includes("/stages");
+  await page.route(/\/contrib-api\/kanban\/boards(\/[^/?]+)?$/, async (route) => {
+    const id = /\/boards(?:\/([^/?]+))?$/.exec(route.request().url())![1];
     const method = route.request().method();
-    const body = (route.request().postDataJSON() as { name?: string; position?: number } | null) ?? {};
+    const body = (route.request().postDataJSON() as { name?: string } | null) ?? {};
     const row = boards.find((b) => b.folder === id);
     let made: string | undefined;
     if (!id && method === "POST") made = (await board(body.name ?? "")).folder;
-    if (row && !isStages && method === "PATCH") await request.patch(`${base}/folders/${id}`, { data: { name: body.name } });
-    if (row && !isStages && method === "DELETE") {
+    if (row && method === "PATCH") await request.patch(`${base}/folders/${id}`, { data: { name: body.name } });
+    if (row && method === "DELETE") {
       await request.delete(`${base}/folders/${id}?subfolders=delete`);
       boards.splice(boards.indexOf(row), 1);
     }
-    if (row && isStages && !stage && method === "POST") {
-      const at = (row.stages.at(-1)?.position ?? 0) + 1;
-      row.stages.push({ id: await folder(body.name ?? "", row.folder), label: body.name ?? "", position: at });
-    }
-    const s = row?.stages.find((x) => x.id === stage);
-    if (row && s && method === "PATCH") {
-      await request.patch(`${base}/folders/${s.id}`, { data: body });
-      Object.assign(s, { label: body.name ?? s.label, position: body.position ?? s.position });
-      row.stages.sort((a, b) => a.position - b.position);
-    }
-    if (row && s && method === "DELETE") {
-      await request.delete(`${base}/folders/${s.id}`);
-      row.stages.splice(row.stages.indexOf(s), 1);
+    if (row && method === "PUT") {
+      // One save: the board's stages and tags, as wanted.
+      const want = route.request().postDataJSON() as {
+        stages: Array<{ id?: string; name: string }>;
+        tags: Array<{ id?: string; name: string; color: string }>;
+      };
+      saves.push(want);
+      const keep = new Set(want.stages.map((x) => x.id));
+      for (const old of row.stages.filter((x) => !keep.has(x.id))) await request.delete(`${base}/folders/${old.id}`);
+      const stages: Stage[] = [];
+      for (const [i, x] of want.stages.entries()) {
+        const sid = x.id ?? (await folder(x.name, row.folder));
+        await request.patch(`${base}/folders/${sid}`, { data: { name: x.name, position: i + 1 } });
+        stages.push({ id: sid, label: x.name, position: i + 1 });
+      }
+      const tags = want.tags.map((t, i) => ({ id: t.id ?? `tag-${Date.now()}-${i}`, name: t.name, color: t.color, position: i + 1 }));
+      const ids = new Set(tags.map((t) => t.id));
+      for (const k of Object.keys(cardTags)) cardTags[k] = cardTags[k].filter((x) => ids.has(x));
+      Object.assign(row, { stages, tags });
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ board: row }) });
+      return;
     }
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ boards, folder: made }) });
   });
-  await page.route(/\/contrib-api\/kanban\/boards\/([^/?]+)\/tags(\/[^/?]+)?$/, async (route) => {
-    const [, id, rest] = /\/boards\/([^/?]+)\/tags(?:\/([^/?]+))?$/.exec(route.request().url())!;
-    const row = boards.find((b) => b.folder === id)!;
-    const method = route.request().method();
-    const body = (route.request().postDataJSON() as Partial<Tag> | null) ?? {};
-    if (method === "POST") {
-      row.tags.push({ id: `tag-${Date.now()}-${row.tags.length}`, name: body.name ?? "", color: "gray", position: row.tags.length + 1 });
-    }
-    const t = row.tags.find((x) => x.id === rest);
-    if (t && method === "PATCH") Object.assign(t, body);
-    if (t && method === "DELETE") {
-      row.tags.splice(row.tags.indexOf(t), 1);
-      for (const k of Object.keys(cardTags)) cardTags[k] = cardTags[k].filter((x) => x !== t.id);
-    }
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ boards }) });
-  });
   await page.route(/\/conversations\/([^/]+)\/contrib-api\/kanban\/card\/tags$/, async (route) => {
     const id = /\/conversations\/([^/]+)\//.exec(route.request().url())![1];
-    cardTags[id] = (route.request().postDataJSON() as { tags: string[] }).tags;
-    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ tags: cardTags[id] }) });
+    const body = route.request().postDataJSON() as { tags: string[]; board: string; create?: string[] };
+    tagPuts.push(body);
+    const row = boards.find((b) => b.folder === body.board)!;
+    const created = (body.create ?? []).map((name, i) => ({ id: `tag-${Date.now()}-${i}`, name, color: "gray", position: row.tags.length + i + 1 }));
+    row.tags.push(...created);
+    cardTags[id] = [...body.tags, ...created.map((t) => t.id)];
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ tags: cardTags[id], created }) });
   });
   await page.route(/\/conversations\/([^/]+)\/contrib-api\/kanban\/card$/, async (route) => {
     const id = /\/conversations\/([^/]+)\//.exec(route.request().url())![1];
@@ -138,7 +136,7 @@ async function serveKanban(page: Page, request: APIRequestContext, base: string)
       body: JSON.stringify({ ...row, updated_by: "user", updated_at: "", blocked_by: related(blockers[id] ?? []), blocking: related(blocking) }),
     });
   });
-  return { boards, cards, cardTags, puts, board, blockers, details };
+  return { boards, cards, cardTags, puts, board, blockers, details, saves, tagPuts };
 }
 
 const threadId = (page: Page) => new URL(page.url()).searchParams.get("thread");
@@ -315,8 +313,57 @@ fastOnly("the kanban broker routes are stubbed in the browser")("kanban /boards 
     await page.getByRole("button", { name: "Delete Done" }).click();
     await expect.poll(labels).toEqual(["Backlog", "Design", "In progress", "QA"]);
 
+    // Nothing is sent until Save, and then it is one request.
+    await expect(page.getByTestId("kanban-unsaved")).toBeVisible();
+    expect(kanban.saves).toHaveLength(0);
+    expect(await childNames()).toEqual(STAGES);
+    await expect(page.getByTestId("kanban-edit-stages")).toHaveText("Save");
+    await page.getByTestId("kanban-edit-stages").click();
+    await expect(page.getByTestId("kanban-edit-stages")).toHaveText("Edit board");
+    expect(kanban.saves).toHaveLength(1);
+    await expect.poll(labels).toEqual(["Backlog", "Design", "In progress", "QA"]);
+
     // Each stage is a folder inside the board's.
     await expect.poll(childNames).toEqual(["Backlog", "Design", "In progress", "QA"]);
+  });
+
+  test("Discard drops unsaved board edits, and leaving with some asks first", async ({ page, request, baseURL }) => {
+    const base = baseURL ?? "http://localhost:5173";
+    const kanban = await serveKanban(page, request, base);
+    const board = await kanban.board(`e2e-board-unsaved-${Date.now()}`);
+    const labels = () => page.getByTestId("kanban-lane").evaluateAll((els) => els.map((e) => e.getAttribute("aria-label")));
+    const rename = async (from: string, to: string) => {
+      page.once("dialog", (d) => void d.accept(to));
+      await page.getByRole("button", { name: `Rename ${from}` }).click();
+    };
+
+    await page.goto(`/boards/${board.folder}`);
+    await page.getByTestId("kanban-edit-stages").click();
+    await expect.poll(labels, { timeout: 20_000 }).toEqual(STAGES);
+    await rename("Review", "QA");
+    // Discard drops the edit and closes Edit board.
+    await page.getByTestId("kanban-discard").click();
+    await expect.poll(labels).toEqual(STAGES);
+    await expect(page.getByTestId("kanban-unsaved")).toHaveCount(0);
+    await expect(page.getByTestId("kanban-edit-stages")).toHaveText("Edit board");
+
+    // Cancel stays on the board with the edit.
+    await page.getByTestId("kanban-edit-stages").click();
+    await rename("Review", "QA");
+    const ask = page.getByTestId("kanban-save-changes");
+    await page.getByTestId("kanban-all-boards").click();
+    await expect(ask).toBeVisible();
+    await ask.getByRole("button", { name: "Cancel" }).click();
+    await expect(ask).toHaveCount(0);
+    await expect(page.getByTestId("kanban-board")).toBeVisible();
+    await expect.poll(labels).toEqual(["Design", "In progress", "QA", "Done"]);
+
+    // Save saves it, then leaves.
+    await page.getByTestId("kanban-all-boards").click();
+    await ask.getByRole("button", { name: "Save" }).click();
+    await expect(page.getByTestId("kanban-board")).toHaveCount(0);
+    expect(kanban.saves).toHaveLength(1);
+    expect(kanban.boards[0].stages.map((s) => s.label)).toEqual(["Design", "In progress", "QA", "Done"]);
   });
 
   test("the user makes a board's tags, tags a card by typing, and deleting a tag takes it off", async ({
@@ -346,6 +393,8 @@ fastOnly("the kanban broker routes are stubbed in the browser")("kanban /boards 
       await page.getByTestId("kanban-tags").getByRole("button", { name: /add tag/i }).click();
       await expect(page.getByTestId("kanban-tag-tools")).toHaveCount(i + 1);
     }
+    await page.getByTestId("kanban-edit-stages").click();
+    await expect.poll(() => kanban.boards[0].tags.map((t) => t.name)).toEqual(["bug", "infra"]);
 
     const field = card.getByRole("combobox", { name: "Add a tag" });
     const options = () => card.getByRole("option").allTextContents();
@@ -354,34 +403,39 @@ fastOnly("the kanban broker routes are stubbed in the browser")("kanban /boards 
     await card.getByTestId("kanban-edit-card-tags").click();
     await expect(field).toBeFocused();
 
-    // Typing filters the board's tags; Enter adds the highlighted one.
+    // Typing filters; Enter adds, Backspace on empty removes the last.
     await field.fill("inf");
     await expect.poll(options).toEqual(["infra", "Create “inf”"]);
     await field.press("Enter");
     await expect.poll(editing).toEqual(["infra"]);
+    await field.press("Backspace");
+    await expect.poll(editing).toEqual([]);
     await field.fill("b");
     await card.getByRole("option", { name: "bug" }).click();
-    // Chips follow the board's tag order.
-    await expect.poll(editing).toEqual(["bug", "infra"]);
+    await expect.poll(editing).toEqual(["bug"]);
 
-    // A name the board lacks offers to create it, then puts it on the card.
+    // An unknown name offers to create it, shown at once.
     await field.fill("ui");
     await card.getByRole("option", { name: "Create “ui”" }).click();
-    await expect.poll(editing).toEqual(["bug", "infra", "ui"]);
-    expect(kanban.boards[0].tags.map((t) => t.name)).toEqual(["bug", "infra", "ui"]);
-
-    // × removes a tag, and Backspace in the empty field removes the last.
+    await field.fill("inf");
+    await field.press("Enter");
+    await expect.poll(editing).toEqual(["bug", "ui", "infra"]);
+    // × removes a tag.
     await card.getByRole("button", { name: "Remove infra" }).click();
     await expect.poll(editing).toEqual(["bug", "ui"]);
-    await field.press("Backspace");
-    await expect.poll(editing).toEqual(["bug"]);
+
+    // Closing sends one request, which also makes "ui".
+    expect(kanban.tagPuts).toHaveLength(0);
     await field.press("Escape");
-    await expect.poll(chips).toEqual(["bug"]);
-    await expect.poll(() => kanban.cardTags[id]?.length).toBe(1);
+    await expect.poll(chips).toEqual(["bug", "ui"]);
+    expect(kanban.tagPuts).toHaveLength(1);
+    expect(kanban.tagPuts[0].create).toEqual(["ui"]);
+    expect(kanban.boards[0].tags.map((t) => t.name)).toEqual(["bug", "infra", "ui"]);
+    await expect.poll(() => kanban.cardTags[id]?.length).toBe(2);
 
     // The tags survive a reload, from the card route.
     await page.reload();
-    await expect.poll(chips, { timeout: 20_000 }).toEqual(["bug"]);
+    await expect.poll(chips, { timeout: 20_000 }).toEqual(["bug", "ui"]);
 
     await page.getByTestId("kanban-edit-stages").click();
     page.once("dialog", (d) => {
@@ -389,7 +443,9 @@ fastOnly("the kanban broker routes are stubbed in the browser")("kanban /boards 
       void d.accept();
     });
     await page.getByRole("button", { name: "Delete bug" }).click();
-    await expect.poll(chips).toEqual([]);
+    await expect.poll(chips).toEqual(["ui"]);
+    await page.getByTestId("kanban-edit-stages").click();
+    await expect.poll(() => kanban.cardTags[id]?.length).toBe(1);
   });
 
   test("Rename and Delete board change the board's folder", async ({ page, request, baseURL }) => {

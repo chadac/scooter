@@ -123,40 +123,64 @@ function TagChip({ tag, onRemove }: { tag: Tag; onRemove?: () => void }) {
 
 type TagOption = { tag: Tag; name?: undefined } | { tag?: undefined; name: string };
 
-/** A card's tags as removable chips, with a field that filters the board's tags to add. */
+/** The first palette color the fewest tags have, as kanban picks one for a new tag. */
+const pickColor = (used: string[]) =>
+  TAG_COLORS.reduce((best, c) => (used.filter((u) => u === c).length < used.filter((u) => u === best).length ? c : best));
+
+/**
+ * A card's tags as removable chips, with a field that filters the board's tags to add.
+ *
+ * Changes stay here until the field closes, then `commit` gets them once: the kept ids,
+ * and the names of tags to make.
+ */
 function TagInput({
   tags,
   chosen,
-  change,
-  create,
+  commit,
   close,
 }: {
   tags: Tag[];
   chosen: Tag[];
-  change(ids: string[]): void;
-  // Adds a tag to the board; its id, or null when that failed.
-  create(name: string): Promise<string | null>;
+  commit(ids: string[], create: string[]): void;
   close(): void;
 }) {
+  const [picked, setPicked] = useState(chosen);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const listId = useId();
-  const ids = chosen.map((t) => t.id);
+  // Every way of closing unmounts the field, so commit then.
+  const latest = useRef({ picked, commit });
+  latest.current = { picked, commit };
+  const initial = useRef(chosen.map((t) => t.id).join(","));
+  useEffect(
+    () => () => {
+      const { picked, commit } = latest.current;
+      if (picked.map((t) => t.id).join(",") === initial.current) return;
+      commit(
+        picked.filter((t) => !isNew(t.id)).map((t) => t.id),
+        picked.filter((t) => isNew(t.id)).map((t) => t.name),
+      );
+    },
+    [],
+  );
+  const ids = picked.map((t) => t.id);
   const q = query.trim().toLowerCase();
-  const full = chosen.length >= MAX_CARD_TAGS;
+  const full = picked.length >= MAX_CARD_TAGS;
+  const named = (name: string) => [...tags, ...picked].some((t) => t.name.toLowerCase() === name);
   const options: TagOption[] = full
     ? []
     : [
         ...tags.filter((t) => !ids.includes(t.id) && t.name.toLowerCase().includes(q)).map((tag) => ({ tag })),
-        ...(q && !tags.some((t) => t.name.toLowerCase() === q) ? [{ name: query.trim() }] : []),
+        ...(q && !named(q) ? [{ name: query.trim() }] : []),
       ];
   const at = Math.min(active, options.length - 1);
-  const pick = async (o: TagOption) => {
+  const pick = (o: TagOption) => {
     setQuery("");
     setActive(0);
-    const id = o.tag ? o.tag.id : await create(o.name);
-    if (id) change([...ids, id]);
+    const used = [...tags, ...picked.filter((t) => isNew(t.id))].map((t) => t.color);
+    setPicked((p) => [...p, o.tag ?? { id: `${NEW}${o.name}`, name: o.name, color: pickColor(used), position: 0 }]);
   };
+  const drop = (id: string) => setPicked((p) => p.filter((t) => t.id !== id));
   return (
     <div
       className="mt-1"
@@ -165,8 +189,8 @@ function TagInput({
       }}
     >
       <div data-testid="kanban-tag-input" className="flex flex-wrap items-center gap-1 rounded-md border border-input bg-background p-1">
-        {chosen.map((t) => (
-          <TagChip key={t.id} tag={t} onRemove={() => change(ids.filter((x) => x !== t.id))} />
+        {picked.map((t) => (
+          <TagChip key={t.id} tag={t} onRemove={() => drop(t.id)} />
         ))}
         <input
           autoFocus
@@ -189,11 +213,11 @@ function TagInput({
               setActive((at + by + options.length) % Math.max(options.length, 1));
             } else if (e.key === "Enter") {
               e.preventDefault();
-              if (options[at]) void pick(options[at]);
+              if (options[at]) pick(options[at]);
             } else if (e.key === "Escape") {
               close();
             } else if (e.key === "Backspace" && !query && ids.length) {
-              change(ids.slice(0, -1));
+              drop(ids[ids.length - 1]);
             }
           }}
         />
@@ -209,7 +233,7 @@ function TagInput({
               // Keep focus in the field, so the click lands before blur closes it.
               onMouseDown={(e) => e.preventDefault()}
               onMouseEnter={() => setActive(i)}
-              onClick={() => void pick(o)}
+              onClick={() => pick(o)}
               className={cn("cursor-pointer rounded px-1.5 py-1 text-xs", i === at && "bg-accent")}
             >
               {o.tag ? <TagChip tag={o.tag} /> : <>Create “{o.name}”</>}
@@ -248,47 +272,76 @@ interface BoardsReply {
   folder?: string;
 }
 
+/** A failed kanban call; `status` tells a refusal (4xx) from a partial save (5xx). */
+class CallError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
+/** A board's stages and tags while Edit board is open; new ones have ids from `newId`. */
+interface Draft {
+  stages: Stage[];
+  tags: Tag[];
+}
+
+const NEW = "new:";
+let made = 0;
+const newId = () => `${NEW}${++made}`;
+const isNew = (id: string) => id.startsWith(NEW);
+
+/** The PUT body saving a draft: the board's stages and tags as they should end up. */
+const draftBody = ({ stages, tags }: Draft) => ({
+  stages: stages.map((s) => (isNew(s.id) ? { name: s.label } : { id: s.id, name: s.label })),
+  tags: tags.map((t) => (isNew(t.id) ? { name: t.name, color: t.color } : { id: t.id, name: t.name, color: t.color })),
+});
+
 /** The user's boards and their stages, with calls that change them. */
 function useBoards() {
   const [state, setState] = useState<BoardsReply | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const call = useCallback(async (path: string, method = "GET", json?: unknown) => {
+  const request = useCallback(async <T,>(path: string, method = "GET", json?: unknown): Promise<T> => {
     const res = await contribFetch("kanban", path, { method, json });
-    const body = (await res.json().catch(() => ({}))) as BoardsReply & { detail?: string };
+    const body = (await res.json().catch(() => ({}))) as T & { detail?: string };
     // kanban passes the router's reason through, e.g. a name already taken.
-    if (!res.ok) throw new Error(body.detail ?? `HTTP ${res.status}`);
-    setState(body);
+    if (!res.ok) throw new CallError(body.detail ?? `HTTP ${res.status}`, res.status);
     return body;
   }, []);
+  const call = useCallback(
+    async (path: string, method = "GET", json?: unknown) => {
+      const body = await request<BoardsReply>(path, method, json);
+      setState(body);
+      return body;
+    },
+    [request],
+  );
   useEffect(() => {
     call("boards").catch((e: unknown) => setError(String((e as Error)?.message ?? e)));
   }, [call]);
   const board = (folder: string) => `boards/${encodeURIComponent(folder)}`;
-  const stage = (folder: string, id: string) => `${board(folder)}/stages/${encodeURIComponent(id)}`;
-  const tag = (folder: string, id: string) => `${board(folder)}/tags/${encodeURIComponent(id)}`;
+  const putRow = (folder: string, change: (row: BoardRow) => BoardRow) =>
+    setState((s) => s && { ...s, boards: s.boards.map((b) => (b.folder === folder ? change(b) : b)) });
   return {
     boards: state?.boards ?? null,
     error,
     create: async (name: string) => (await call("boards", "POST", { name })).folder ?? "",
     rename: (folder: string, name: string) => call(board(folder), "PATCH", { name }),
     remove: (folder: string) => call(board(folder), "DELETE"),
-    stages: {
-      add: (folder: string, name: string) => call(`${board(folder)}/stages`, "POST", { name }),
-      update: (folder: string, id: string, patch: { name?: string; position?: number }) =>
-        call(stage(folder, id), "PATCH", patch),
-      remove: (folder: string, id: string) => call(stage(folder, id), "DELETE"),
+    reload: () => call("boards"),
+    /** Saves a board's stages and tags in one request. */
+    save: async (folder: string, draft: Draft) => {
+      const reply = await request<{ board: BoardRow }>(board(folder), "PUT", draftBody(draft));
+      putRow(folder, () => reply.board);
     },
-    tags: {
-      add: (folder: string, name: string) => call(`${board(folder)}/tags`, "POST", { name }),
-      update: (folder: string, id: string, patch: { name?: string; color?: string; position?: number }) =>
-        call(tag(folder, id), "PATCH", patch),
-      remove: (folder: string, id: string) => call(tag(folder, id), "DELETE"),
-    },
+    /** Records tags a card's tag field made on the board. */
+    addTags: (folder: string, tags: Tag[]) => putRow(folder, (row) => ({ ...row, tags: [...row.tags, ...tags] })),
   };
 }
 
-type StageCalls = ReturnType<typeof useBoards>["stages"];
-type TagCalls = ReturnType<typeof useBoards>["tags"];
+type BoardCalls = Pick<ReturnType<typeof useBoards>, "save" | "addTags" | "reload">;
 
 /** Whether a conversation is filed on a board: in its folder or one of its stages. */
 const onBoard = (row: BoardRow, conv: ViewConversation) =>
@@ -298,7 +351,7 @@ export default function BoardsView() {
   const { path, navigate } = useViewRoute();
   const folders = useFolders();
   const conversations = useConversations();
-  const { boards, error, create, rename, remove, stages, tags } = useBoards();
+  const { boards, error, create, rename, remove, save, addTags, reload } = useBoards();
 
   if (error && !boards) return <ErrorState variant="boxed" title="Boards failed to load." error={error} />;
   if (!boards) {
@@ -325,8 +378,7 @@ export default function BoardsView() {
         navigate={navigate}
         rename={(name) => rename(current.folder.id, name)}
         remove={() => remove(current.folder.id).then(() => navigate(""))}
-        stageCalls={stages}
-        tagCalls={tags}
+        calls={{ save, addTags, reload }}
       />
     );
   }
@@ -422,15 +474,14 @@ function BoardList({
 
 function Board({
   folder,
-  stages,
-  tags,
+  stages: savedStages,
+  tags: savedTags,
   boards,
   conversations,
   navigate,
   rename,
   remove,
-  stageCalls,
-  tagCalls,
+  calls,
 }: {
   folder: ViewFolder;
   stages: Stage[];
@@ -440,8 +491,7 @@ function Board({
   navigate(path: string): void;
   rename(name: string): Promise<unknown>;
   remove(): Promise<unknown>;
-  stageCalls: StageCalls;
-  tagCalls: TagCalls;
+  calls: BoardCalls;
 }) {
   const [cards, setCards] = useState<Record<string, CardView>>({});
   // Local moves, shown until the folder update arrives.
@@ -450,7 +500,18 @@ function Board({
   const [dragging, setDragging] = useState<string | null>(null);
   const [dropAt, setDropAt] = useState<{ column: string; before?: string } | null>(null);
   const [panel, setPanel] = useState(false);
-  const [editing, setEditing] = useState(false);
+  // Edit board's unsaved stages and tags; null when not editing.
+  const [draft, setDraft] = useState<Draft | null>(null);
+  const [saving, setSaving] = useState(false);
+  // Where to go once the "Save changes?" prompt is answered.
+  const [leaving, setLeaving] = useState<string | null>(null);
+  // Tags a card's field is making, shown until saved.
+  const [making, setMaking] = useState<Tag[]>([]);
+  const editing = draft !== null;
+  const stages = draft?.stages ?? savedStages;
+  const tags = draft?.tags ?? savedTags;
+  const dirty =
+    draft !== null && JSON.stringify(draftBody(draft)) !== JSON.stringify(draftBody({ stages: savedStages, tags: savedTags }));
   const [newStage, setNewStage] = useState("");
   const [newTag, setNewTag] = useState("");
   // The card whose tag field is open.
@@ -570,70 +631,102 @@ function Board({
   const tagsOf = useCallback(
     (id: string) => {
       const on = new Set(cards[id]?.tags ?? []);
-      return tags.filter((t) => on.has(t.id));
+      return [...tags, ...making].filter((t) => on.has(t.id));
     },
-    [cards, tags],
+    [cards, tags, making],
   );
 
+  /** Saves a card's tags once its field closes, making the tags named in `create`. */
   const setTags = useCallback(
-    async (id: string, next: string[]) => {
+    async (id: string, ids: string[], create: string[]) => {
       const prev = cards[id];
-      setCards((p) => ({ ...p, [id]: { ...p[id], card: p[id]?.card ?? null, tags: next } }));
-      const ok = await conversationApi("kanban", id, "card/tags", { method: "PUT", json: { tags: next } })
-        .then((r) => r.ok)
-        .catch(() => false);
+      const pending: Tag[] = [];
+      for (const name of create) {
+        const color = pickColor([...tags, ...pending].map((t) => t.color));
+        pending.push({ id: `${NEW}${name}`, name, color, position: 0 });
+      }
+      setMaking((m) => [...m, ...pending]);
+      setCards((p) => ({ ...p, [id]: { ...p[id], card: p[id]?.card ?? null, tags: [...ids, ...pending.map((t) => t.id)] } }));
+      const reply = await conversationApi("kanban", id, "card/tags", {
+        method: "PUT",
+        json: { tags: ids, board: folder.id, create },
+      })
+        .then((r) => (r.ok ? (r.json() as Promise<{ tags: string[]; created: Tag[] }>) : null))
+        .catch(() => null);
       if (!live.current) return;
-      if (!ok) {
+      setMaking((m) => m.filter((t) => !pending.includes(t)));
+      if (!reply) {
         setCards((p) => ({ ...p, [id]: prev ?? { card: null } }));
         setError("Could not change the card's tags. Try again.");
         return;
       }
+      if (reply.created.length) calls.addTags(folder.id, reply.created);
+      setCards((p) => ({ ...p, [id]: { ...p[id], card: p[id]?.card ?? null, tags: reply.tags } }));
       setError(null);
     },
-    [cards],
+    [cards, calls, folder.id, tags],
   );
 
-  const createTag = async (name: string) => {
+  const edit = (change: (d: Draft) => Draft) => setDraft((d) => d && change(d));
+  const shift = <T,>(list: T[], i: number, by: -1 | 1) => {
+    const out = [...list];
+    [out[i], out[i + by]] = [out[i + by], out[i]];
+    return out;
+  };
+  const shiftTag = (i: number, by: -1 | 1) => edit((d) => ({ ...d, tags: shift(d.tags, i, by) }));
+  const shiftStage = (i: number, by: -1 | 1) => edit((d) => ({ ...d, stages: shift(d.stages, i, by) }));
+  const changeTag = (id: string, patch: Partial<Tag>) =>
+    edit((d) => ({ ...d, tags: d.tags.map((t) => (t.id === id ? { ...t, ...patch } : t)) }));
+
+  /** Sends the draft in one request; whether the board now matches it. */
+  const saveDraft = async () => {
+    if (!draft) return true;
+    if (!dirty) {
+      setDraft(null);
+      return true;
+    }
+    setSaving(true);
     try {
-      const reply = await tagCalls.add(folder.id, name);
+      await calls.save(folder.id, draft);
+      if (!live.current) return true;
+      setDraft(null);
       setError(null);
-      const row = reply.boards.find((b) => b.folder === folder.id);
-      return row?.tags.find((t) => t.name === name)?.id ?? null;
+      return true;
     } catch (e) {
-      setError(`Could not add the tag: ${(e as Error).message}`);
-      return null;
+      if (!live.current) return false;
+      setError(`Could not save the board: ${(e as Error).message}`);
+      if (e instanceof CallError && e.status >= 500) {
+        // Part may have saved; restart from the stored board.
+        await calls.reload().catch(() => undefined);
+        if (live.current) setDraft(null);
+      }
+      return false;
+    } finally {
+      if (live.current) setSaving(false);
     }
   };
 
-  const shiftTag = (i: number, by: -1 | 1) => {
-    const [a, b] = by < 0 ? [tags[i - 2], tags[i - 1]] : [tags[i + 1], tags[i + 2]];
-    const position = between(a?.position, b?.position);
-    void changeBoard(tagCalls.update(folder.id, tags[i].id, { position }), "move the tag");
-  };
+  /** Goes to `path`, asking first when the board has unsaved edits. */
+  const leave = (path: string) => (dirty ? setLeaving(path) : navigate(path));
 
-  const changeBoard = (work: Promise<unknown>, what: string) =>
-    work.then(
-      () => setError(null),
-      (e: unknown) => setError(`Could not ${what}: ${(e as Error).message}`),
-    );
-  const shiftStage = (i: number, by: -1 | 1) => {
-    // Position between the neighbours on the target side.
-    const [a, b] = by < 0 ? [stages[i - 2], stages[i - 1]] : [stages[i + 1], stages[i + 2]];
-    const position = between(a?.position, b?.position);
-    void changeBoard(stageCalls.update(folder.id, stages[i].id, { position }), "move the stage");
-  };
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="kanban-board" data-folder-id={folder.id}>
       <div className="flex flex-wrap items-center gap-2 border-b px-4 py-2">
-        <Button size="sm" variant="ghost" data-testid="kanban-all-boards" onClick={() => navigate("")}>
+        <Button size="sm" variant="ghost" data-testid="kanban-all-boards" onClick={() => leave("")}>
           <ArrowLeft aria-hidden /> Boards
         </Button>
         <select
           aria-label="Board"
           data-testid="kanban-switch-board"
           value={folder.id}
-          onChange={(e) => navigate(e.currentTarget.value)}
+          onChange={(e) => leave(e.currentTarget.value)}
           className={cn(inputClass, "py-1 font-semibold")}
         >
           {boards.map((b) => (
@@ -648,20 +741,37 @@ function Board({
             variant="outline"
             data-testid="kanban-new"
             onClick={() => {
-              newConversation({ folderId: first || folder.id });
+              // A stage made in the draft has no folder yet.
+              newConversation({ folderId: first && !isNew(first) ? first : folder.id });
               setPanel(true);
             }}
           >
             New conversation
           </Button>
+          {dirty && (
+            <>
+              <span data-testid="kanban-unsaved" className="text-xs text-muted-foreground">
+                Unsaved changes
+              </span>
+              <Button size="sm" variant="ghost" data-testid="kanban-discard" disabled={saving} onClick={() => setDraft(null)}>
+                Discard
+              </Button>
+            </>
+          )}
           <Button
             size="sm"
-            variant={editing ? "secondary" : "ghost"}
+            variant={dirty ? "default" : editing ? "secondary" : "ghost"}
             data-testid="kanban-edit-stages"
             aria-pressed={editing}
-            onClick={() => setEditing((e) => !e)}
+            disabled={saving}
+            onClick={() => {
+              if (editing) return void saveDraft();
+              setTagging(null);
+              setDraft({ stages: savedStages, tags: savedTags });
+            }}
           >
-            {editing ? "Done editing" : "Edit board"}
+            {saving && <Spinner />}
+            {dirty ? "Save" : editing ? "Done editing" : "Edit board"}
           </Button>
           <Button
             size="sm"
@@ -704,9 +814,7 @@ function Board({
               <select
                 aria-label={`Color of ${t.name}`}
                 value={t.color}
-                onChange={(e) =>
-                  void changeBoard(tagCalls.update(folder.id, t.id, { color: e.currentTarget.value }), "recolor the tag")
-                }
+                onChange={(e) => changeTag(t.id, { color: e.currentTarget.value })}
                 className="bg-transparent text-[11px]"
               >
                 {TAG_COLORS.map((c) => (
@@ -733,7 +841,7 @@ function Board({
                 aria-label={`Rename ${t.name}`}
                 onClick={() => {
                   const name = window.prompt("Rename the tag", t.name)?.trim();
-                  if (name && name !== t.name) void changeBoard(tagCalls.update(folder.id, t.id, { name }), "rename the tag");
+                  if (name && name !== t.name) changeTag(t.id, { name });
                 }}
               >
                 <Pencil aria-hidden />
@@ -745,12 +853,7 @@ function Board({
                 onClick={() => {
                   const uses = conversations.filter((c) => cards[c.id]?.tags?.includes(t.id)).length;
                   const ask = uses ? `Remove "${t.name}" from ${uses} card${uses === 1 ? "" : "s"} and delete it?` : `Delete the "${t.name}" tag?`;
-                  if (!window.confirm(ask)) return;
-                  // Drop it locally too, so the cards don't wait for the next poll.
-                  setCards((p) =>
-                    Object.fromEntries(Object.entries(p).map(([id, v]) => [id, { ...v, tags: v.tags?.filter((x) => x !== t.id) }])),
-                  );
-                  void changeBoard(tagCalls.remove(folder.id, t.id), "delete the tag");
+                  if (window.confirm(ask)) edit((d) => ({ ...d, tags: d.tags.filter((x) => x.id !== t.id) }));
                 }}
               >
                 <Trash2 aria-hidden />
@@ -763,7 +866,14 @@ function Board({
               e.preventDefault();
               const name = newTag.trim();
               if (!name) return;
-              void changeBoard(tagCalls.add(folder.id, name).then(() => setNewTag("")), "add the tag");
+              if (tags.some((t) => t.name.toLowerCase() === name.toLowerCase())) {
+                setError(`This board already has a tag named "${name}".`);
+                return;
+              }
+              const color = pickColor(tags.map((t) => t.color));
+              edit((d) => ({ ...d, tags: [...d.tags, { id: newId(), name, color, position: 0 }] }));
+              setNewTag("");
+              setError(null);
             }}
           >
             <input
@@ -790,7 +900,8 @@ function Board({
               data-column={col.id}
               aria-label={col.label}
               onDragOver={(e) => {
-                if (!dragging) return;
+                // A draft stage has no folder to file into yet.
+                if (!dragging || isNew(col.id)) return;
                 e.preventDefault();
                 if (dropAt?.column !== col.id || dropAt.before) setDropAt({ column: col.id });
               }}
@@ -836,7 +947,7 @@ function Board({
                       onClick={() => {
                         const name = window.prompt("Rename the stage", col.label)?.trim();
                         if (name && name !== col.label) {
-                          void changeBoard(stageCalls.update(folder.id, col.id, { name }), "rename the stage");
+                          edit((d) => ({ ...d, stages: d.stages.map((s) => (s.id === col.id ? { ...s, label: name } : s)) }));
                         }
                       }}
                     >
@@ -851,7 +962,7 @@ function Board({
                       onClick={() => {
                         const to = (i === 0 ? stages[1] : stages[0])?.label;
                         if (window.confirm(`Delete the "${col.label}" stage? Its cards move to "${to}".`)) {
-                          void changeBoard(stageCalls.remove(folder.id, col.id), "delete the stage");
+                          edit((d) => ({ ...d, stages: d.stages.filter((s) => s.id !== col.id) }));
                         }
                       }}
                     >
@@ -938,22 +1049,24 @@ function Board({
                           <span className="line-clamp-2 font-medium">{conv.title}</span>
                           <PriorityMark priority={cards[conv.id]?.priority} />
                         </button>
-                        <Button
-                          size="icon-xs"
-                          variant="ghost"
-                          aria-label="Edit tags"
-                          aria-expanded={tagging === conv.id}
-                          data-testid="kanban-edit-card-tags"
-                          // Keep focus in the open field, so this click closes it.
-                          onMouseDown={(e) => e.preventDefault()}
-                          className={cn(
-                            "shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100",
-                            tagging === conv.id && "opacity-100",
-                          )}
-                          onClick={() => setTagging((t) => (t === conv.id ? null : conv.id))}
-                        >
-                          <TagIcon aria-hidden />
-                        </Button>
+                        {!editing && (
+                          <Button
+                            size="icon-xs"
+                            variant="ghost"
+                            aria-label="Edit tags"
+                            aria-expanded={tagging === conv.id}
+                            data-testid="kanban-edit-card-tags"
+                            // Keep focus in the open field, so this click closes it.
+                            onMouseDown={(e) => e.preventDefault()}
+                            className={cn(
+                              "shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100",
+                              tagging === conv.id && "opacity-100",
+                            )}
+                            onClick={() => setTagging((t) => (t === conv.id ? null : conv.id))}
+                          >
+                            <TagIcon aria-hidden />
+                          </Button>
+                        )}
                       </div>
                       {tagging !== conv.id && cardTags.length > 0 && (
                         <ul data-testid="kanban-card-tags" className="mt-1 flex flex-wrap gap-1" aria-label="Tags">
@@ -968,8 +1081,7 @@ function Board({
                         <TagInput
                           tags={tags}
                           chosen={cardTags}
-                          change={(ids) => void setTags(conv.id, ids)}
-                          create={createTag}
+                          commit={(ids, create) => void setTags(conv.id, ids, create)}
                           close={() => setTagging(null)}
                         />
                       )}
@@ -1004,10 +1116,8 @@ function Board({
                 e.preventDefault();
                 const name = newStage.trim();
                 if (!name) return;
-                void changeBoard(
-                  stageCalls.add(folder.id, name).then(() => setNewStage("")),
-                  "add the stage",
-                );
+                edit((d) => ({ ...d, stages: [...d.stages, { id: newId(), label: name, position: 0 }] }));
+                setNewStage("");
               }}
             >
               <input
@@ -1090,8 +1200,7 @@ function Board({
                       <TagInput
                         tags={tags}
                         chosen={tagsOf(openConv.id)}
-                        change={(ids) => void setTags(openConv.id, ids)}
-                        create={createTag}
+                        commit={(ids, create) => void setTags(openConv.id, ids, create)}
                         close={() => setTagging(null)}
                       />
                     ) : (
@@ -1099,9 +1208,11 @@ function Board({
                         {tagsOf(openConv.id).map((t) => (
                           <TagChip key={t.id} tag={t} />
                         ))}
-                        <Button size="sm" variant="ghost" data-testid="kanban-details-edit-tags" onClick={() => setTagging(DETAILS_TAGS)}>
-                          <TagIcon aria-hidden /> {tagsOf(openConv.id).length ? "Edit" : "Add tags"}
-                        </Button>
+                        {!editing && (
+                          <Button size="sm" variant="ghost" data-testid="kanban-details-edit-tags" onClick={() => setTagging(DETAILS_TAGS)}>
+                            <TagIcon aria-hidden /> {tagsOf(openConv.id).length ? "Edit" : "Add tags"}
+                          </Button>
+                        )}
                       </div>
                     )
                   }
@@ -1110,6 +1221,65 @@ function Board({
             )}
           </aside>
         )}
+      </div>
+      {leaving !== null && (
+        <SaveChanges
+          saving={saving}
+          save={async () => {
+            if (await saveDraft()) navigate(leaving);
+            setLeaving(null);
+          }}
+          discard={() => {
+            setDraft(null);
+            setLeaving(null);
+            navigate(leaving);
+          }}
+          cancel={() => setLeaving(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Asks what to do with unsaved board edits before leaving the board. */
+function SaveChanges({
+  saving,
+  save,
+  discard,
+  cancel,
+}: {
+  saving: boolean;
+  save(): void;
+  discard(): void;
+  cancel(): void;
+}) {
+  const title = useId();
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={cancel}>
+      <div
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby={title}
+        data-testid="kanban-save-changes"
+        className="w-80 rounded-lg border bg-background p-4 shadow-lg"
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.key === "Escape" && cancel()}
+      >
+        <h2 id={title} className="font-medium">
+          Save changes?
+        </h2>
+        <p className="mt-1 text-sm text-muted-foreground">This board has edits that aren't saved yet.</p>
+        <div className="mt-4 flex justify-end gap-2">
+          <Button size="sm" variant="ghost" onClick={cancel}>
+            Cancel
+          </Button>
+          <Button size="sm" variant="outline" disabled={saving} onClick={discard}>
+            Discard
+          </Button>
+          <Button size="sm" autoFocus disabled={saving} onClick={save}>
+            {saving && <Spinner />} Save
+          </Button>
+        </div>
       </div>
     </div>
   );

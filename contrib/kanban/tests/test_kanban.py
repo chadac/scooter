@@ -15,7 +15,7 @@ from scooter_broker_lib.mcp import ToolContext
 from scooter_broker_lib.testing import create_schema, sqlite_config
 from scooter_broker_lib.types import Identity, Provider
 from scooter_contrib_kanban import mcp_tools
-from scooter_contrib_kanban.boards import Boards
+from scooter_contrib_kanban.boards import Boards, positions
 from scooter_contrib_kanban.config import parse_stages
 from scooter_contrib_kanban.folders import Conversation, FolderError, RouterFolders
 from scooter_contrib_kanban.keys import CardKeys
@@ -60,7 +60,9 @@ class FakeFolders:
             raise FolderError(409, "you already have a folder with that name there")
         mine = self.by_owner.setdefault(owner, {})
         self.next += 1
-        mine[f"f-{self.next}"] = FakeFolder(name, parent, float(self.next))
+        # One past the last sibling, as the router places a new folder.
+        last = max((f.position for f in mine.values() if f.parent == parent), default=0.0)
+        mine[f"f-{self.next}"] = FakeFolder(name, parent, last + 1)
         return f"f-{self.next}"
 
     async def update(self, owner: str, folder: str, *, name: str | None = None, position: float | None = None) -> None:
@@ -312,6 +314,121 @@ async def test_deleting_a_stage_moves_its_cards_to_the_first(app, folders):
     assert folders.placements[("alice", "conv-1")] == b
     async with as_(app, conversation="key-1") as c:
         assert (await c.get("/kanban/card", params={"folder": b})).json()["column"] == "Design"
+
+
+def test_positions_keep_the_most_old_ones_in_order():
+    assert positions([1.0, 2.0, 3.0]) == [1.0, 2.0, 3.0]
+    # The last stage moved first: only it gets a new position.
+    assert positions([4.0, 1.0, 2.0, 3.0]) == [0.0, 1.0, 2.0, 3.0]
+    assert positions([1.0, None, 2.0, None]) == [1.0, 1.5, 2.0, 3.0]
+    assert positions([None, None]) == [1.0, 2.0]
+    assert positions([]) == []
+
+
+async def _save(c, board: dict, stages: list[dict], tags: list[dict] | None = None):
+    return await c.put(f"/kanban/user/boards/{board['folder']}", json={"stages": stages, "tags": tags or []})
+
+
+async def test_one_save_renames_reorders_adds_and_deletes_stages(app, folders):
+    board = await _board(app)
+    s = {x["label"]: x["id"] for x in board["stages"]}
+    async with as_(app, user="alice") as c:
+        r = await _save(c, board, [
+            {"id": s["Review"], "name": "QA"},
+            {"id": s["Design"], "name": "Design"},
+            {"name": "Backlog"},
+            {"id": s["Done"], "name": "Done"},
+        ])
+    assert r.status_code == 200, r.text
+    assert [x["label"] for x in r.json()["board"]["stages"]] == ["QA", "Design", "Backlog", "Done"]
+    assert folders.names("alice", board["folder"]) == ["QA", "Design", "Backlog", "Done"]
+    async with as_(app, user="alice") as c:
+        listed = (await c.get("/kanban/user/boards")).json()["boards"][0]
+    assert listed == r.json()["board"]
+
+
+async def test_a_save_only_calls_the_router_for_stages_that_changed(app, folders):
+    board = await _board(app)
+    calls: list[str] = []
+    update = folders.update
+
+    async def counted(owner, folder, **kw):
+        calls.append(folder)
+        await update(owner, folder, **kw)
+
+    folders.update = counted
+    stages = [{"id": x["id"], "name": x["label"]} for x in board["stages"]]
+    stages[1]["name"] = "Doing"
+    async with as_(app, user="alice") as c:
+        assert (await _save(c, board, stages)).status_code == 200
+    assert calls == [stages[1]["id"]]
+
+
+async def test_a_save_sets_the_board_s_tags_and_takes_deleted_ones_off_cards(app, store):
+    board = await _board(app)
+    ids = await _tags(app, board, "bug", "infra")
+    stages = [{"id": x["id"], "name": x["label"]} for x in board["stages"]]
+    async with as_(app, user="alice") as c:
+        await c.put("/kanban/conversation/key-1/card/tags", json={"tags": [ids["bug"], ids["infra"]]})
+        r = await _save(c, board, stages, [
+            {"name": "perf"},
+            {"id": ids["infra"], "name": "Infra", "color": "blue"},
+        ])
+    assert r.status_code == 200, r.text
+    tags = r.json()["board"]["tags"]
+    assert [(t["name"], t["color"]) for t in tags] == [("perf", "gray"), ("Infra", "blue")]
+    assert await store.card_tags("key-1") == [ids["infra"]]
+
+
+async def test_a_bad_save_changes_nothing(app, folders):
+    board = await _board(app)
+    ids = await _tags(app, board, "bug")
+    stages = [{"id": x["id"], "name": x["label"]} for x in board["stages"]]
+    other = await _board(app, name="Home")
+    # Each also renames a stage, which must not happen either.
+    renamed = [{**stages[0], "name": "Renamed"}, *stages[1:]]
+    bad = [
+        ([], []),
+        ([*renamed, {"name": " "}], []),
+        ([*renamed, {"id": other["stages"][0]["id"], "name": "X"}], []),
+        ([*renamed, stages[1]], []),
+        (renamed, [{"name": "a"}, {"name": "A"}]),
+        (renamed, [{"name": "x" * 25}]),
+        (renamed, [{"name": "a", "color": "pink"}]),
+        (renamed, [{"name": f"t{i}"} for i in range(21)]),
+        (renamed, [{"id": "nope", "name": "a"}]),
+    ]
+    async with as_(app, user="alice") as c:
+        for st, tg in bad:
+            r = await _save(c, board, st, tg)
+            assert r.status_code in (400, 409), (st, tg, r.text)
+        for body in [{}, {"stages": "x", "tags": []}, {"stages": [{"id": "a"}], "tags": []}]:
+            assert (await c.put(f"/kanban/user/boards/{board['folder']}", json=body)).status_code == 400
+        listed = (await c.get("/kanban/user/boards")).json()["boards"][0]
+    assert [x["label"] for x in listed["stages"]] == STAGES
+    assert [t["id"] for t in listed["tags"]] == [ids["bug"]]
+    assert folders.names("alice", board["folder"]) == STAGES
+    async with as_(app, user="bob") as c:
+        assert (await _save(c, board, stages)).status_code == 404
+
+
+async def test_a_save_the_router_partly_refuses_keeps_what_it_did(app, folders):
+    board = await _board(app)
+    stages = [{"id": x["id"], "name": x["label"]} for x in board["stages"]]
+    create = folders.create
+
+    async def refuse(owner, name, parent=""):
+        if name == "Nope":
+            raise FolderError(503, "router down")
+        return await create(owner, name, parent)
+
+    folders.create = refuse
+    async with as_(app, user="alice") as c:
+        r = await _save(c, board, [{**stages[0], "name": "Plan"}, *stages[1:], {"name": "Nope"}, {"name": "Later"}])
+        assert r.status_code == 502
+        listed = (await c.get("/kanban/user/boards")).json()["boards"][0]
+    assert [x["label"] for x in listed["stages"]] == ["Plan", *STAGES[1:], "Later"]
+    assert folders.names("alice", board["folder"]) == ["Plan", *STAGES[1:], "Later"]
 
 
 async def test_the_last_stage_stays(app):
@@ -733,6 +850,36 @@ async def test_the_user_tags_a_card_from_one_of_their_boards(app):
         for tags in [[bobs["bug"]], [ids["bug"], other["garden"]], ["nope"], "bug", [1]]:
             assert (await c.put("/kanban/conversation/key-1/card/tags", json={"tags": tags})).status_code == 400, tags
         assert (await c.put("/kanban/conversation/key-1/card/tags", json={"tags": []})).json()["tags"] == []
+
+
+async def test_tagging_a_card_can_make_new_tags_at_once(app, store):
+    board = await _board(app)
+    ids = await _tags(app, board, "bug")
+    b = board["folder"]
+    async with as_(app, user="alice") as c:
+        r = await c.put(
+            "/kanban/conversation/key-1/card/tags",
+            json={"tags": [ids["bug"]], "board": b, "create": ["perf", "BUG", "perf"]},
+        )
+        assert r.status_code == 200, r.text
+        made = r.json()["created"]
+        assert [(t["name"], t["color"]) for t in made] == [("perf", "red")]
+        assert r.json()["tags"] == [ids["bug"], made[0]["id"]]
+        assert sorted(await store.card_tags("key-1")) == sorted(r.json()["tags"])
+        listed = (await c.get("/kanban/user/boards")).json()["boards"][0]["tags"]
+        assert [t["name"] for t in listed] == ["bug", "perf"]
+        other = await _board(app, name="Home")
+        for body in [
+            {"tags": [], "create": ["x"]},
+            {"tags": [ids["bug"]], "board": other["folder"]},
+            {"tags": [], "board": b, "create": ["x" * 25]},
+            {"tags": [], "board": b, "create": [f"t{i}" for i in range(6)]},
+            {"tags": [], "board": b, "create": "x"},
+        ]:
+            assert (await c.put("/kanban/conversation/key-1/card/tags", json=body)).status_code == 400, body
+    async with as_(app, user="bob") as c:
+        body = {"tags": [], "board": b, "create": ["x"]}
+        assert (await c.put("/kanban/conversation/key-2/card/tags", json=body)).status_code == 404
 
 
 async def test_tagging_does_not_touch_the_status(app, store):

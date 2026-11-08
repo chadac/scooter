@@ -250,6 +250,57 @@ class KanbanStore:
             board = await s.get(_Board, stage.board_id) if stage else None
             return Place(board=board.folder_id, owner=board.owner, stage=stage.folder_id) if board else None
 
+    async def layout(self, owner: str, board_id: str | None = None) -> list[tuple[str, list[Stage], list[Tag]]]:
+        """`owner`'s boards, oldest first, with their stages and tags; only `board_id` when given."""
+        async with self._session() as s:
+            q = select(_Board.folder_id).where(_Board.owner == owner)
+            if board_id is not None:
+                q = q.where(_Board.folder_id == board_id)
+            boards = list((await s.execute(q.order_by(_Board.created_at))).scalars())
+            stages: dict[str, list[Stage]] = {b: [] for b in boards}
+            tags: dict[str, list[Tag]] = {b: [] for b in boards}
+            rows = await s.execute(
+                select(_Stage).where(_Stage.board_id.in_(boards)).order_by(_Stage.position, _Stage.folder_id)
+            )
+            for r in rows.scalars():
+                stages[r.board_id].append(Stage(folder=r.folder_id, name=r.name, position=r.position))
+            rows = await s.execute(select(_Tag).where(_Tag.board_id.in_(boards)).order_by(_Tag.position, _Tag.id))
+            for r in rows.scalars():
+                tags[r.board_id].append(_tag(r))
+            return [(b, stages[b], tags[b]) for b in boards]
+
+    async def save_board(self, board_id: str, stages: list[Stage], tags: list[Tag]) -> list[Tag]:
+        """Make a board's stages and tags these, in one transaction; a tag without an id is new.
+
+        Stages and tags not listed are deleted, and deleted tags come off every card.
+        Returns the tags as stored, new ones with their ids.
+        """
+        async with self._session() as s, s.begin():
+            have = {r.folder_id: r for r in (await s.execute(select(_Stage).where(_Stage.board_id == board_id))).scalars()}
+            keep = {st.folder for st in stages}
+            await s.execute(delete(_Stage).where(_Stage.board_id == board_id, _Stage.folder_id.not_in(keep)))
+            for st in stages:
+                row = have.get(st.folder)
+                if row is None:
+                    s.add(_Stage(folder_id=st.folder, board_id=board_id, name=st.name, position=st.position))
+                else:
+                    # Only changed fields are written.
+                    row.name, row.position = st.name, st.position
+            rows = {r.id: r for r in (await s.execute(select(_Tag).where(_Tag.board_id == board_id))).scalars()}
+            want = {t.id for t in tags}
+            gone = [t for t in rows if t not in want]
+            await s.execute(delete(_CardTag).where(_CardTag.tag_id.in_(gone)))
+            await s.execute(delete(_Tag).where(_Tag.id.in_(gone)))
+            out: list[Tag] = []
+            for t in tags:
+                row = rows.get(t.id)
+                if row is None:
+                    row = _Tag(id=str(uuid.uuid4()), board_id=board_id)
+                    s.add(row)
+                row.name, row.color, row.position = t.name, t.color, t.position
+                out.append(_tag(row))
+            return out
+
     async def stages(self, board_id: str) -> list[Stage]:
         """A board's stages in board order."""
         async with self._session() as s:
@@ -357,11 +408,32 @@ class KanbanStore:
             rows = await s.execute(select(_CardTag.tag_id).where(_CardTag.conversation_id == conversation_id))
             return list(rows.scalars())
 
-    async def set_card_tags(self, conversation_id: str, tag_ids: list[str]) -> None:
-        """Replace a card's tags; tags from other boards are dropped too."""
+    async def tag_boards(self, owner: str, tag_ids: list[str]) -> dict[str, str]:
+        """Tag id -> board id, for those of `tag_ids` on `owner`'s boards."""
+        async with self._session() as s:
+            rows = await s.execute(
+                select(_Tag.id, _Tag.board_id)
+                .join(_Board, _Board.folder_id == _Tag.board_id)
+                .where(_Tag.id.in_(tag_ids), _Board.owner == owner)
+            )
+            return {t: b for t, b in rows.tuples()}
+
+    async def set_card_tags(
+        self, conversation_id: str, tag_ids: list[str], *, board_id: str = "", create: list[Tag] | None = None
+    ) -> list[Tag]:
+        """Replace a card's tags, first adding `create` to `board_id`; tags from other boards are dropped too.
+
+        The card gets `tag_ids` and then the new tags; returns the new tags with their ids.
+        """
         async with self._session() as s, s.begin():
+            made = [
+                _Tag(id=str(uuid.uuid4()), board_id=board_id, name=t.name, color=t.color, position=t.position)
+                for t in create or []
+            ]
+            s.add_all(made)
             await s.execute(delete(_CardTag).where(_CardTag.conversation_id == conversation_id))
-            s.add_all(_CardTag(conversation_id=conversation_id, tag_id=t) for t in tag_ids)
+            s.add_all(_CardTag(conversation_id=conversation_id, tag_id=t) for t in [*tag_ids, *(m.id for m in made)])
+            return [_tag(m) for m in made]
 
     async def details(self, conversation_id: str) -> Details:
         """A card's description and priority; empty when none were set."""

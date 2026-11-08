@@ -4,6 +4,7 @@
     GET    /user/boards                            the user's boards and their stages (the view, via /contrib-api)
     POST   /user/boards                            {name}: a new board, with the default stages
     PATCH  /user/boards/{board}                    {name}: rename a board
+    PUT    /user/boards/{board}                    {stages: [{id?, name}], tags: [{id?, name, color?}]}: save the board's stages and tags at once
     DELETE /user/boards/{board}                    delete a board and its stages; its conversations stay, unfiled
     POST   /user/boards/{board}/stages             {name}: add a stage at the end
     PATCH  /user/boards/{board}/stages/{stage}     {name?, position?}: rename or reorder a stage
@@ -13,7 +14,7 @@
     DELETE /user/boards/{board}/tags/{tag}         delete a tag and take it off every card
     GET    /conversation/{key}/card                one card, its blockers, tag ids and priority (the board, via the conversation relay)
     PUT    /conversation/{key}/card                {column, position?}: record the user's move to a stage
-    PUT    /conversation/{key}/card/tags           {tags: [id]}: the user replaces the card's tags
+    PUT    /conversation/{key}/card/tags           {tags: [id], board?, create?: [name]}: the user replaces the card's tags, making new ones
     PUT    /conversation/{key}/card/blockers       {blocked_by: [conversation id]}: the user replaces the card's blockers
     GET    /conversation/{key}/details             the card's description, priority, blockers and the cards it blocks
     PATCH  /conversation/{key}/details             {description?, priority?}: the user edits them
@@ -214,6 +215,26 @@ class Kanban(Transport):
             await _do(_boards().rename(owner, _folder(board), _name(body)))
             return await _list(owner)
 
+        def _items(body: dict, key: str) -> list[dict]:
+            items = body.get(key)
+            if not isinstance(items, list) or not all(isinstance(i, dict) for i in items):
+                raise HTTPException(status_code=400, detail=f"{key} must be a list of objects")
+            for i in items:
+                if not isinstance(i.get("name"), str) or not isinstance(i.get("id", ""), str):
+                    raise HTTPException(status_code=400, detail=f"each of {key} needs a name, and an id if it isn't new")
+                if i.get("id") and not _FOLDER.match(i["id"]):
+                    raise HTTPException(status_code=400, detail=f"{key} ids must be ids")
+            return items
+
+        @router.put("/user/boards/{board}")
+        async def save_board(board: str, body: dict = Body(...), owner: str = user) -> dict:
+            stages = [Stage(s.get("id", ""), s["name"], 0.0) for s in _items(body, "stages")]
+            tags = [Tag(t.get("id", ""), t["name"], _color(t) or "", 0.0) for t in _items(body, "tags")]
+            try:
+                return {"board": await _boards().save(owner, _folder(board), stages, tags)}
+            except BoardError as e:
+                raise _http(e) from None
+
         @router.delete("/user/boards/{board}")
         async def delete_board(board: str, owner: str = user) -> dict:
             await _do(_boards().delete(owner, _folder(board)))
@@ -285,13 +306,18 @@ class Kanban(Transport):
 
         @router.put("/conversation/{key}/card/tags")
         async def tag_card(key: str, body: dict = Body(...), owner: str = user) -> dict:
-            tags = body.get("tags")
+            tags, board, create = body.get("tags"), body.get("board", ""), body.get("create", [])
             if not isinstance(tags, list) or not all(isinstance(t, str) for t in tags):
                 raise HTTPException(status_code=400, detail="tags must be a list of tag ids")
+            if not isinstance(create, list) or not all(isinstance(n, str) for n in create):
+                raise HTTPException(status_code=400, detail="create must be a list of tag names")
+            if not isinstance(board, str):
+                raise HTTPException(status_code=400, detail="board must be a board id")
             try:
-                return {"tags": await _boards().tag_card(owner, key, tags)}
+                ids, made = await _boards().tag_card(owner, key, tags, board=board and _folder(board), create=create)
             except BoardError as e:
                 raise _http(e) from None
+            return {"tags": ids, "created": [t.payload() for t in made]}
 
         @router.put("/conversation/{key}/card/blockers")
         async def block_card(key: str, body: dict = Body(...), owner: str = user) -> dict:
