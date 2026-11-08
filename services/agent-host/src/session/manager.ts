@@ -107,6 +107,8 @@ export interface SandboxRestartResult {
   sizeApplied: boolean;
   /** The new pod became Ready in time. */
   ready: boolean;
+  /** Why the pod wasn't Ready, when it wasn't. */
+  notReadyReason?: string;
 }
 
 /** Who chose a conversation's model. */

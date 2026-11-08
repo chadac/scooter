@@ -207,7 +207,10 @@ export async function handleRestartSandbox(deps: SandboxResourceToolsWiring, con
     return { isError: true, content: [{ type: "text", text: `Could not restart the sandbox: ${(e as Error).message}` }] };
   }
   const lines = [
-    r.ready ? "Sandbox restarted and ready." : "Sandbox restart issued, but the new pod was not Ready before the wait gave up; your next command will wait for it.",
+    r.ready
+      ? "Sandbox restarted and ready."
+      : "Sandbox restart issued, but the new pod was not Ready before the wait gave up; your next command will wait for it." +
+        (r.notReadyReason ? ` Pod state: ${r.notReadyReason}.` : ""),
     `from_image: ${r.fromImage ?? "(unknown)"}`,
     `to_image: ${r.toImage ?? "(unknown)"}`,
     `size_applied: ${r.sizeApplied}`,

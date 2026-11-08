@@ -1557,6 +1557,12 @@ in
               resources = [ "serviceaccounts" "persistentvolumeclaims" "pods" "configmaps" ];
               verbs = [ "get" "list" "watch" "create" "update" "patch" "delete" ];
             }
+            {
+              # A pod stuck before Ready is explained by its events.
+              apiGroups = [ "" ];
+              resources = [ "events" ];
+              verbs = [ "list" ];
+            }
           ];
       };
 

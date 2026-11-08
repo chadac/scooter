@@ -15,6 +15,7 @@ import type { ExecRequest, ExecResult, SandboxRef } from "../types.js";
 import type { SandboxApiClient } from "./sandboxExec.js";
 import { describeSandboxDisruption } from "./podDisruption.js";
 import { setPodWaitStatus } from "./podReadiness.js";
+import { diagnosePodWait } from "./podDiagnosis.js";
 
 const log = logger("k8sExec");
 
@@ -139,7 +140,12 @@ export interface ResolveReadyPodDeps {
   ensureRunning?: () => Promise<void>;
   sleep?: (ms: number) => Promise<void>;
   deadlineMs?: number;
+  /** Why the candidates aren't Ready; absent means the wait carries no reason. */
+  diagnose?: (pods: Pod[]) => Promise<string>;
 }
+
+/** How often a wait re-reads the pod's events for its reason. */
+const DIAGNOSE_EVERY_MS = 15_000;
 
 /** Poll until a Running and Ready pod backs the sandbox, firing `ensureRunning` once if the first lookup finds no pod at all. */
 export async function pollForReadyPod(ref: SandboxRef, deps: ResolveReadyPodDeps): Promise<Pod> {
@@ -149,6 +155,8 @@ export async function pollForReadyPod(ref: SandboxRef, deps: ResolveReadyPodDeps
   let lastRunning: Pod | undefined;
   let healed = false; // ensureRunning is fired at most once
   let waitLogged = false; // one "waiting" line per call, not one per poll
+  let reason: string | undefined;
+  let diagnosedAt = -Infinity;
   for (;;) {
     const candidates = await deps.listCandidates();
     // No pod at all: resume once so the controller recreates it, then keep polling.
@@ -197,8 +205,13 @@ export async function pollForReadyPod(ref: SandboxRef, deps: ResolveReadyPodDeps
       }
       return ready;
     }
+    const expired = Date.now() > deadline;
+    if (deps.diagnose && (expired || Date.now() - diagnosedAt >= DIAGNOSE_EVERY_MS)) {
+      diagnosedAt = Date.now();
+      reason = await deps.diagnose(candidates).catch(() => reason);
+    }
     // Lets a command that times out here say it never started, and conversation_status say why.
-    setPodWaitStatus(ref, { since: started, checkedAt: Date.now() });
+    setPodWaitStatus(ref, { since: started, checkedAt: Date.now(), reason });
     if (!waitLogged) {
       waitLogged = true;
       log.info("waiting for a ready pod", {
@@ -212,16 +225,17 @@ export async function pollForReadyPod(ref: SandboxRef, deps: ResolveReadyPodDeps
       });
     }
     lastRunning = candidates.find((p) => p.status?.phase === "Running") ?? lastRunning;
-    if (Date.now() > deadline) {
+    if (expired) {
       // Fall back to any Running pod (or fail) rather than hang forever, warning once per sandbox.
       log.warnOnce(`ready-pod:${ref.namespace}/${ref.name}`, "ready-pod deadline expired", {
         namespace: ref.namespace,
         sandbox: ref.name,
         waited_ms: Date.now() - started,
         falling_back_to: lastRunning?.metadata?.name ?? null,
+        reason,
       });
       if (lastRunning) return lastRunning;
-      throw new Error(`no ready pod for sandbox ${ref.namespace}/${ref.name}`);
+      throw new Error(`no ready pod for sandbox ${ref.namespace}/${ref.name}${reason ? `: ${reason}` : ""}`);
     }
     await sleep(1500);
   }
@@ -236,6 +250,7 @@ async function resolveReadyPod(
   const core = kc.makeApiClient(CoreV1Api);
   return pollForReadyPod(ref, {
     ensureRunning,
+    diagnose: (pods) => diagnosePodWait(core, ref.namespace, pods),
     // Try both the label selector and the direct pod-name lookup.
     listCandidates: async () => {
       const pods = await core.listNamespacedPod({

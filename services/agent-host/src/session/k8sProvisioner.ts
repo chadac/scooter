@@ -22,6 +22,7 @@ import {
 import type { SandboxRef } from "../types.js";
 import type { PendingRestart, ProvisionedRef, SandboxProvisioner, SandboxRestartResult } from "./manager.js";
 import { formatError, logger } from "../log.js";
+import { diagnosePodWait } from "../exec/podDiagnosis.js";
 import { applyOverlay, deepMerge, parseOverlay } from "./sandboxOverlay.js";
 import { sandboxOrigin, type SandboxOrigins } from "../proxy/sandboxOrigin.js";
 import { cpuToMillicores, memoryToBytes } from "./resourceFit.js";
@@ -208,6 +209,8 @@ export interface K8sProvisionerOptions {
   };
   /** Pod poll interval for restart (default 1.5s). */
   podPollMs?: number;
+  /** How long restart waits for the new pod to be Ready. */
+  podReadyTimeoutMs?: number;
   /** Run the systemd sandbox in its own user namespace (hostUsers: false) with an unmasked /proc, so
    *  its root and SYS_ADMIN map to an unprivileged host uid and Nix's build sandbox can run. */
   sandboxUserNamespace?: boolean;
@@ -260,6 +263,7 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
 
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const podPollMs = opts.podPollMs ?? POD_GONE_POLL_MS;
+  const podReadyTimeoutMs = opts.podReadyTimeoutMs ?? POD_READY_TIMEOUT_MS;
   const retryDelays = opts.reconcileRetryDelaysMs ?? RECONCILE_RETRY_DELAYS_MS;
 
   // operatingMode "Suspended" drops the pod and keeps the PVCs; a plain-object body negotiates
@@ -510,16 +514,16 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
     }
   };
 
-  /** Waits for a ready pod; false on timeout. */
-  const waitPodReady = async (ref: SandboxRef): Promise<boolean> => {
-    const deadline = Date.now() + POD_READY_TIMEOUT_MS;
+  /** Waits for a ready pod; on timeout, says why it isn't. */
+  const waitPodReady = async (ref: SandboxRef): Promise<{ ready: true } | { ready: false; reason: string }> => {
+    const deadline = Date.now() + podReadyTimeoutMs;
     for (;;) {
       const pods = await sandboxPods(ref).catch(() => [] as V1Pod[]);
       const ready = pods.some(
         (p) => !p.metadata?.deletionTimestamp && p.status?.phase === "Running" && (p.status?.containerStatuses ?? []).every((c) => c.ready),
       );
-      if (ready) return true;
-      if (Date.now() > deadline) return false;
+      if (ready) return { ready: true };
+      if (Date.now() > deadline) return { ready: false, reason: await diagnosePodWait(core, refNs(ref), pods) };
       await sleep(podPollMs);
     }
   };
@@ -746,11 +750,13 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
       // Never suspend: the controller would drop the placement.
       await runOnCurrentTemplate(ref, { forceCycle: true });
       hooks.onRunning?.();
-      const ready = await waitPodReady(ref);
+      const wait = await waitPodReady(ref);
       const toImage = (await readCr(ref).catch(() => before)).spec?.podTemplate?.spec?.containers?.[0]?.image;
       const imageCurrent = !opts.sandboxImage || toImage === opts.sandboxImage;
-      log.info("sandbox restarted", { sandbox: ref.name, from_image: beforeContainer?.image, to_image: toImage, image_current: imageCurrent, ready });
-      return { fromImage: beforeContainer?.image, toImage, imageCurrent, sizeApplied, ready };
+      log.info("sandbox restarted", { sandbox: ref.name, from_image: beforeContainer?.image, to_image: toImage, image_current: imageCurrent, ...wait });
+      const result: SandboxRestartResult = { fromImage: beforeContainer?.image, toImage, imageCurrent, sizeApplied, ready: wait.ready };
+      if (!wait.ready) result.notReadyReason = wait.reason;
+      return result;
     },
 
     async destroy(ref: SandboxRef): Promise<void> {

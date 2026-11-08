@@ -30,6 +30,20 @@ describe("pod readiness wait", () => {
     expect(formatPodWait(w!, w!.since + 12 * 60_000)).toBe("the sandbox pod has not been Ready for 12m");
   });
 
+  it("carries the pod's diagnosis into the wait and the error", async () => {
+    const err = await pollForReadyPod(REF, {
+      listCandidates: async () => [pending as never],
+      sleep: async () => {},
+      deadlineMs: -1,
+      diagnose: async () => "pod Pending (ContainerCreating); FailedAttachVolume x3: attach timed out",
+    }).catch((e: Error) => e);
+    expect(String(err)).toMatch(/conv-nt4eo0: pod Pending \(ContainerCreating\); FailedAttachVolume x3/);
+    const w = podWaitStatus(REF)!;
+    expect(formatPodWait(w, w.since + 40_000)).toBe(
+      "the sandbox pod has not been Ready for 40s (pod Pending (ContainerCreating); FailedAttachVolume x3: attach timed out)",
+    );
+  });
+
   it("clears the wait once the pod is Ready", async () => {
     setPodWaitStatus(REF, { since: Date.now(), checkedAt: Date.now() });
     await pollForReadyPod(REF, {

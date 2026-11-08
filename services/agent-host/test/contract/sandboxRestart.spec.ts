@@ -12,7 +12,7 @@ interface ClusterState {
   /** The CR's recorded resources. */
   resources?: Resources;
   /** The live pod and its resources, if any. */
-  pod?: { resources?: Resources; uid?: string };
+  pod?: { resources?: Resources; uid?: string; stuck?: boolean };
 }
 
 /** Fake apiserver mimicking the agent-sandbox controller's pod lifecycle. */
@@ -33,8 +33,11 @@ function fakeCluster(init: ClusterState, opts: { failImagePatches?: number; fail
   const pod = () => ({
     metadata: { name: "conv-abc", uid: state.pod?.uid ?? "pod-0", labels: podLabels },
     spec: { containers: [{ name: "sandbox", resources: state.pod?.resources }] },
-    status: { phase: "Running", containerStatuses: [{ ready: true }] },
+    status: state.pod?.stuck
+      ? { phase: "Pending", containerStatuses: [{ ready: false, state: { waiting: { reason: "ContainerCreating" } } }] }
+      : { phase: "Running", containerStatuses: [{ ready: true }] },
   });
+  let stuckPods = false;
   const api = {
     getNamespacedCustomObject: async () => ({
       spec: {
@@ -70,13 +73,16 @@ function fakeCluster(init: ClusterState, opts: { failImagePatches?: number; fail
     }),
     deleteNamespacedPod: async () => {
       deletes++;
-      state.pod = state.mode === "Running" ? { resources: structuredClone(state.resources), uid: `pod-${++uid}` } : undefined;
+      state.pod = state.mode === "Running" ? { resources: structuredClone(state.resources), uid: `pod-${++uid}`, stuck: stuckPods } : undefined;
       return {};
     },
     readNamespacedPod: async () => {
       if (!state.pod) throw Object.assign(new Error("nf"), { code: 404 });
       return pod();
     },
+    listNamespacedEvent: async () => ({
+      items: [{ type: "Warning", reason: "FailedAttachVolume", count: 4, message: "attach timed out" }],
+    }),
   };
   return {
     kc: { makeApiClient: () => api as never } as never,
@@ -84,6 +90,7 @@ function fakeCluster(init: ClusterState, opts: { failImagePatches?: number; fail
     modes,
     imagePatchAttempts: () => imagePatchAttempts,
     deletes: () => deletes,
+    stickNewPods: () => (stuckPods = true),
   };
 }
 
@@ -151,6 +158,16 @@ describe("k8sProvisioner.restart", () => {
     expect(cluster.modes).toEqual(["Running"]);
     expect(cluster.deletes()).toBe(1);
     expect(cluster.state.pod?.resources).toEqual(big);
+  });
+});
+
+describe("k8sProvisioner.restart — pod never Ready", () => {
+  it("reports the pod's state and events", async () => {
+    const cluster = fakeCluster({ image: "sandbox-os:new", mode: "Running", pod: {} });
+    cluster.stickNewPods();
+    const r = await createK8sProvisioner({ namespace: "agent-manager", sandboxImage: "sandbox-os:new", kubeConfig: cluster.kc, podPollMs: 1, podReadyTimeoutMs: 5 }).restart(ref);
+    expect(r.ready).toBe(false);
+    expect(r.notReadyReason).toBe("pod Pending (ContainerCreating); FailedAttachVolume x4: attach timed out");
   });
 });
 

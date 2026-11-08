@@ -2,7 +2,7 @@
  * Tracks, per sandbox, a readiness poll that is waiting on a pod that isn't Ready,
  * so a command that times out before reaching the pod says it never started (rather
  * than "narrow your command"), and conversation_status doesn't report a bare "running".
- * The cause itself (a stuck volume attach, an image pull) is left to Kubernetes.
+ * Both also say why, from the pod's status and events (see podDiagnosis.ts).
  */
 
 import type { SandboxRef } from "../types.js";
@@ -13,6 +13,8 @@ export interface PodWaitStatus {
   since: number;
   /** When the poll last saw the pod not Ready; a wait not seen for STALE_MS is dropped. */
   checkedAt: number;
+  /** Why the pod isn't Ready, e.g. "pod Pending (ContainerCreating); FailedAttachVolume: …". */
+  reason?: string;
 }
 
 /** A failed wait is kept this long for conversation_status, then forgotten. */
@@ -47,5 +49,6 @@ function age(ms: number): string {
 
 /** The wait as one line for an agent: "the sandbox pod has not been Ready for 40s". */
 export function formatPodWait(status: PodWaitStatus, now: number = Date.now()): string {
-  return `the sandbox pod has not been Ready for ${age(now - status.since)}`;
+  const why = status.reason ? ` (${status.reason})` : "";
+  return `the sandbox pod has not been Ready for ${age(now - status.since)}${why}`;
 }
