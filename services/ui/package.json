@@ -24,6 +24,7 @@
     "@opentelemetry/semantic-conventions": "^1.43.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "katex": "^0.19.1",
     "lucide-react": "^1.21.0",
     "radix-ui": "^1.6.0",
     "react": "^19.0.0",
@@ -31,6 +32,7 @@
     "react-icons": "5.6.0",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0",
     "rxjs": "^7.8.1",
     "tailwind-merge": "^3.6.0",
     "tw-shimmer": "^0.4.11",
@@ -47,5 +49,8 @@
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.71.2",
     "vite": "^6.0.7"
+  },
+  "overrides": {
+    "katex": "^0.19.1"
   }
 }

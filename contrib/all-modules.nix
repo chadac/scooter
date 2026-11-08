@@ -29,6 +29,7 @@
     ./kanban/contrib.nix
     ./kagi/contrib.nix
     ./marimo/contrib.nix
+    ./math/contrib.nix
     ./mcpservers/contrib.nix
     ./personalization/contrib.nix
     ./shares/contrib.nix

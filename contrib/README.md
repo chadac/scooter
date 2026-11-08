@@ -822,6 +822,8 @@ ui.markdownSyntax.entry = "ui/MathSyntax.tsx";
 - **Failure is contained.** A module that is missing, fails to load or has the wrong
   shape is skipped, and messages render as they would without it.
 
+`contrib/math` is the example.
+
 #### Views (`ui.views`)
 
 A contrib can offer a different way of working with conversations, beside the chat view,
