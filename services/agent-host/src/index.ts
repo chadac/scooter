@@ -1752,9 +1752,9 @@ export async function main(
         // Per-viewer read-only check of whether this viewer may act on this request, failing
         // closed on any hiccup and defaulting to true when BROKER_URL is unset.
         const cfg = approvalContribs[contrib];
-        if (!cfg) return false; // unknown contrib: nothing can authorize it
+        if (!cfg) return { canApprove: false }; // unknown contrib: nothing can authorize it
         const auth = await brokerAuth().catch(() => null);
-        if (!auth) return true;
+        if (!auth) return { canApprove: true };
         try {
           const prefix = cfg.brokerPrefix.replace(/\/$/, "");
           const relay = approverForBroker(approver);
@@ -1762,11 +1762,12 @@ export async function main(
             `${auth.url}${prefix}/${encodeURIComponent(requestId)}/can-approve`,
             { method: "POST", headers: { ...auth.headers, ...relay.headers }, body: relay.body },
           );
-          if (!res.ok) return false;
-          const j = (await res.json().catch(() => ({}))) as { can_approve?: boolean };
-          return j.can_approve === true;
+          if (!res.ok) return { canApprove: false };
+          const j = (await res.json().catch(() => ({}))) as { can_approve?: boolean; pending?: boolean };
+          // A contrib that omits `pending` is treated as still pending.
+          return { canApprove: j.can_approve === true, pending: j.pending !== false };
         } catch {
-          return false;
+          return { canApprove: false };
         }
       },
     }),

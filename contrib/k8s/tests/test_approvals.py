@@ -107,8 +107,8 @@ async def test_cluster_approvers_replace_the_owner(configured, prod, http):
               "spec": {"replicas": 1}})
     rid = pending(await k8s_scale("deploy", "api", 3, cluster="prod", ctx=ctx()))
     can = lambda body: http.post(f"/k8s/approvals/{rid}/can-approve", json=body)  # noqa: E731
-    assert (await can(who("alice"))).json() == {"can_approve": False}
-    assert (await can(who("u-7", "admin@example.com"))).json() == {"can_approve": True}
+    assert (await can(who("alice"))).json() == {"can_approve": False, "pending": True}
+    assert (await can(who("u-7", "admin@example.com"))).json() == {"can_approve": True, "pending": True}
     refused = await http.post(f"/k8s/approvals/{rid}/approve", json=who("alice"))
     assert refused.status_code == 403 and prod.objects[("Deployment", "default", "api")]["spec"]["replicas"] == 1
     await http.post(f"/k8s/approvals/{rid}/approve", json=who("u-7", "admin@example.com"))
@@ -117,7 +117,7 @@ async def test_cluster_approvers_replace_the_owner(configured, prod, http):
 
 async def test_only_the_owner_approves_by_default(configured, http):
     rid = pending(await k8s_delete("deploy", "web", cluster="home", ctx=ctx()))
-    assert (await http.post(f"/k8s/approvals/{rid}/can-approve", json=who("bob"))).json() == {"can_approve": False}
+    assert (await http.post(f"/k8s/approvals/{rid}/can-approve", json=who("bob"))).json() == {"can_approve": False, "pending": True}
     r = await k8s_delete("deploy", "web", cluster="home", ctx=ctx("ownerless"))
     assert r.is_error and "no known owner" in r.text
 

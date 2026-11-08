@@ -90,7 +90,7 @@ async def test_owner_approves_once_and_the_agent_is_told():
     a, _ = await _approvals()
     req = await a.request(CONV, Thing("x"), owner="alice")
     async with _client(a) as c:
-        assert (await c.post(f"/echo/approvals/{req.id}/can-approve", json=_as("alice"))).json() == {"can_approve": True}
+        assert (await c.post(f"/echo/approvals/{req.id}/can-approve", json=_as("alice"))).json() == {"can_approve": True, "pending": True}
         r = await c.post(f"/echo/approvals/{req.id}/approve", json=_as("alice"))
         assert r.json() == {"by": "alice", "status": "approve", "agent_message": "approved x"}
         # A second click races the first, which stands.
@@ -104,7 +104,7 @@ async def test_only_may_approve_can_press_the_gated_verb_but_anyone_can_deny():
     a, _ = await _approvals()
     req = await a.request(CONV, Thing("x"), owner="alice")
     async with _client(a) as c:
-        assert (await c.post(f"/echo/approvals/{req.id}/can-approve", json=_as("bob"))).json() == {"can_approve": False}
+        assert (await c.post(f"/echo/approvals/{req.id}/can-approve", json=_as("bob"))).json() == {"can_approve": False, "pending": True}
         assert (await c.post(f"/echo/approvals/{req.id}/approve", json=_as("bob"))).status_code == 403
         assert (await a.get(req.id)).status == "pending"
         assert (await c.post(f"/echo/approvals/{req.id}/deny", json=_as("bob"))).json()["agent_message"] == "denied"
@@ -130,10 +130,17 @@ async def test_an_expired_request_leaves_pending_and_tells_the_agent_when_answer
     req = await a.request(CONV, Thing("x"), owner="alice")
     assert await a.pending(conversation_id=CONV) == []
     async with _client(a) as c:
-        assert (await c.post(f"/echo/approvals/{req.id}/can-approve", json=_as("alice"))).json() == {"can_approve": False}
+        assert (await c.post(f"/echo/approvals/{req.id}/can-approve", json=_as("alice"))).json() == {"can_approve": False, "pending": False}
         r = await c.post(f"/echo/approvals/{req.id}/approve", json=_as("alice"))
     assert r.json()["status"] == "expired" and "expired" in r.json()["agent_message"]
     assert (await a.get(req.id)).status == "expired"
+
+
+async def test_an_unknown_request_is_not_pending_rather_than_refused():
+    a, _ = await _approvals()
+    async with _client(a) as c:
+        r = await c.post("/echo/approvals/nope/can-approve", json=_as("alice"))
+    assert r.json() == {"can_approve": False, "pending": False}
 
 
 async def test_max_pending_counts_open_requests_per_conversation():

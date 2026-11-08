@@ -100,7 +100,7 @@ function fakeStore(events: AguiEvent[]): ConversationStore {
   };
 }
 
-const stubServer = { subscribeSSE: vi.fn(async () => {}) } as unknown as AguiServer;
+const stubServer = { subscribeSSE: vi.fn(async () => {}), broadcast: vi.fn() } as unknown as AguiServer;
 
 /** Drive a route through the router with a mock req/res and return {status, json}. */
 async function call(
@@ -1123,7 +1123,11 @@ describe("management API", () => {
       outcome: { type: "interrupt", interrupts: [{ id: "p1", reason: "confirmation", message: "m" }] },
     } as AguiEvent;
 
-    const setup = (bridge?: { withdrawInterrupt: (id: string) => boolean }, events: AguiEvent[] = []) => {
+    const setup = (
+      bridge?: { withdrawInterrupt: (id: string) => boolean },
+      events: AguiEvent[] = [],
+      canApprove?: { canApprove: boolean; pending?: boolean },
+    ) => {
       const c = conv({ id: UUID, threadId: UUID, bridge: bridge as never });
       const sessions = {
         ...fakeSessions(),
@@ -1135,8 +1139,13 @@ describe("management API", () => {
       store.appendEvent = async (_id, e) => {
         appended.push(e);
       };
-      const api = createManagementApi({ sessions, store, server: stubServer, answerInterrupt: async () => ({ ok: true }) });
-      return { api, appended };
+      const broadcast = vi.fn();
+      const api = createManagementApi({
+        sessions, store, server: { broadcast } as unknown as AguiServer, answerInterrupt: async () => ({ ok: true }),
+        resolveUser: () => ({ id: "alice", anonymous: false }),
+        canApproveRequest: canApprove ? async () => canApprove : undefined,
+      });
+      return { api, appended, broadcast };
     };
 
     it("settles the card on a live bridge", async () => {
@@ -1162,6 +1171,22 @@ describe("management API", () => {
       const { json } = await call(api, "DELETE", `/conversations/${SHORT}/approvals/commits/p1`);
       expect(json).toEqual({ withdrawn: false });
       expect(appended).toEqual([]);
+    });
+
+    it("settles a card whose request the contrib no longer has when the UI asks about it", async () => {
+      const { api, appended, broadcast } = setup(undefined, [raised], { canApprove: false, pending: false });
+      const { json } = await call(api, "GET", `/conversations/${UUID}/approvals/handoff/p1/can-approve`);
+      expect(json).toEqual({ canApprove: false, pending: false });
+      const resolved = { type: "PERMISSION_RESOLVED", toolCallId: "p1", optionId: null };
+      expect(appended).toEqual([resolved]);
+      expect(broadcast).toHaveBeenCalledWith(UUID, resolved);
+    });
+
+    it("leaves a pending card alone when the viewer may not approve it", async () => {
+      const { api, appended, broadcast } = setup(undefined, [raised], { canApprove: false, pending: true });
+      await call(api, "GET", `/conversations/${UUID}/approvals/handoff/p1/can-approve`);
+      expect(appended).toEqual([]);
+      expect(broadcast).not.toHaveBeenCalled();
     });
 
     it("404s an unknown conversation", async () => {
