@@ -1394,3 +1394,77 @@ describe("end() removes the conversation from the registry", () => {
     await expect(sessions.end(conv.id as SessionId)).resolves.not.toThrow();
   });
 });
+
+describe("resumeInterrupted when Postgres refuses connections", () => {
+  // drizzle's "Failed query" wrapper around pg's too_many_connections.
+  const tooManyClients = () =>
+    new Error("Failed query: select ...", {
+      cause: Object.assign(new Error("remaining connection slots are reserved"), { code: "53300" }),
+    });
+
+  async function interruptedConversations(root: string, n: number): Promise<SessionId[]> {
+    const store = createFileConversationStore(root);
+    const m = createSessionManager({ provisioner: fakeProvisioner(), store });
+    const ids: SessionId[] = [];
+    for (let i = 0; i < n; i++) {
+      const c = await m.start(`t${i}`);
+      await store.appendEvent(c.id, { type: "RUN_STARTED", threadId: `t${i}`, runId: "r1" });
+      ids.push(c.id);
+    }
+    return ids;
+  }
+
+  function restartWithFailingReads(root: string, fails: (id: SessionId) => boolean) {
+    const store = createFileConversationStore(root);
+    const reads: SessionId[] = [];
+    const flaky = {
+      ...store,
+      readEvents(id: SessionId) {
+        reads.push(id);
+        if (fails(id)) throw tooManyClients();
+        return store.readEvents(id);
+      },
+    };
+    const bridgeFactory = () =>
+      ({
+        start: vi.fn(async () => {}),
+        prompt: vi.fn(async () => "run-x"),
+        stop: vi.fn(async () => {}),
+        onEvent: () => () => {},
+        onPersist: () => () => {},
+        onTitle: () => () => {},
+      }) as never;
+    const m = createSessionManager({ provisioner: fakeProvisioner(), store: flaky, bridgeFactory });
+    return { m, reads };
+  }
+
+  it("backs off and still resumes once the database recovers", async () => {
+    const root = mkdtempSync(join(tmpdir(), "convstore-"));
+    try {
+      const ids = await interruptedConversations(root, 2);
+      let failures = 3;
+      const { m } = restartWithFailingReads(root, () => failures-- > 0);
+      await m.hydrate();
+      const resumed = await m.resumeInterrupted({ retryBaseMs: 1 });
+      expect([...resumed].sort()).toEqual([...ids].sort());
+      await new Promise((r) => setTimeout(r, 20));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("abandons the scan on a lasting outage instead of failing every conversation", async () => {
+    const root = mkdtempSync(join(tmpdir(), "convstore-"));
+    try {
+      await interruptedConversations(root, 5);
+      const { m, reads } = restartWithFailingReads(root, () => true);
+      await m.hydrate();
+      expect(await m.resumeInterrupted({ retryBaseMs: 1 })).toEqual([]);
+      // Retries stayed on the first conversation; the rest were never queried.
+      expect(new Set(reads).size).toBe(1);
+      expect(reads.length).toBeGreaterThan(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

@@ -14,6 +14,7 @@ import { danglingRunInfo, orphanRuns } from "./danglingRun.js";
 import { allowAllGuard, type OwnershipGuard } from "./ownershipGuard.js";
 import { noopRegistry, type ConversationRecord, type ConversationRegistry } from "./conversationRegistry.js";
 import { formatError, logger } from "../log.js";
+import { isDbUnavailable } from "../db/pgPool.js";
 import { DERIVED_SOURCES, humanTriggerFromLog } from "../acp/remoteAgentRegistry.js";
 import type { AccessFacts, Visibility } from "./visibility.js";
 
@@ -376,7 +377,7 @@ export interface SessionManager {
    * Revive each conversation whose last run was interrupted by a restart and send it a
    * continue nudge, with bounded concurrency; returns the ids resumed.
    */
-  resumeInterrupted(opts?: { concurrency?: number }): Promise<SessionId[]>;
+  resumeInterrupted(opts?: { concurrency?: number; retryBaseMs?: number }): Promise<SessionId[]>;
   /**
    * Suspend conversations idle longer than idleMs; returns the ids suspended.
    */
@@ -1854,14 +1855,36 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
     async resumeInterrupted(opts) {
       const concurrency = Math.max(1, opts?.concurrency ?? 3);
+      // One budget per scan: an outage waits at most 300 × base.
+      const base = opts?.retryBaseMs ?? 1000;
+      let waited = 0;
+      const readLog = async (id: SessionId): Promise<AguiEvent[]> => {
+        for (let attempt = 0; ; attempt++) {
+          try {
+            return await collectEvents(store.readEvents(id));
+          } catch (err) {
+            const delay = Math.min(base * 2 ** attempt, 30 * base);
+            if (!isDbUnavailable(err) || waited + delay > 300 * base) throw err;
+            log.warn("resumeInterrupted: database unavailable; retrying the read", {
+              conversation_id: id,
+              attempt: attempt + 1,
+              retry_in_ms: delay,
+              error: formatError(err),
+            });
+            waited += delay;
+            await new Promise((r) => setTimeout(r, delay));
+          }
+        }
+      };
       // Find conversations whose last run is dangling.
       const candidates: SessionId[] = [];
-      for (const entry of entries.values()) {
+      const scan = [...entries.values()];
+      for (const [i, entry] of scan.entries()) {
         if (entry.status === "ended") continue;
         // Another pod's conversation: resuming it here would run it twice.
         if (ownershipGuard.observedGeneration?.(entry.id) !== undefined && !ownershipGuard.owns?.(entry.id)) continue;
         try {
-          const events = await collectEvents(store.readEvents(entry.id));
+          const events = await readLog(entry.id);
           // No `self`: at boot every RUN_STARTED in the log predates this process, even one stamped
           // with our own pod name.
           const info = danglingRunInfo(events);
@@ -1882,7 +1905,15 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
             candidates.push(entry.id);
           }
         } catch (err) {
-          // eslint-disable-next-line no-console
+          if (isDbUnavailable(err)) {
+            // The remaining reads would fail too, so log once.
+            log.errorWith("resumeInterrupted: database still unavailable; abandoning the scan", err, {
+              conversation_id: entry.id,
+              unscanned: scan.length - i,
+              waited_ms: waited,
+            });
+            break;
+          }
           log.errorWith("resumeInterrupted: reading the log failed, skipping", err, {
             conversation_id: entry.id,
           });
