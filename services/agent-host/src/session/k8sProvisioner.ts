@@ -73,6 +73,8 @@ type EnvVar = { name: string; value?: string };
 const CONVERSATION_ENV = ["CONVERSATION_URL", "CONVERSATION_ID", "SCOOTER_SERVICES_ORIGIN"];
 /** Exists only once NixOS activation has linked /run/current-system. */
 export const ACTIVATED_PROBE = "/run/current-system/sw/bin/true";
+/** Fits the image's 90s shutdown GC plus normal shutdown. */
+const OVERLAY_GRACE_SECONDS = 150;
 /** Annotation: hash of the platform template the podTemplate came from. */
 export const TEMPLATE_HASH_ANNOTATION = "scooter.io/template-hash";
 
@@ -941,6 +943,8 @@ export function sandboxManifest(
         spec: {
           serviceAccountName: sa,
           automountServiceAccountToken: false,
+          // Lets the shutdown GC trim the upper before it's returned.
+          ...(overlayStore ? { terminationGracePeriodSeconds: OVERLAY_GRACE_SECONDS } : {}),
           // A cgroup-delegating runtime gives systemd PID 1 a writable cgroup subtree in the pod's
           // own cgroup namespace, so the pod does not need `privileged`.
           ...(systemdImage && deploy.sandboxRuntimeClass

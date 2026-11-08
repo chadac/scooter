@@ -13,6 +13,11 @@
 
 let
   cfg = config.programs.overlayStore;
+
+  # Deleting a both-layers path leaves overlayfs's cache stale.
+  remountHook = pkgs.writeShellScript "scooter-store-remount" ''
+    exec ${pkgs.util-linux}/bin/mount -o remount /nix/store
+  '';
 in
 {
   options.programs.overlayStore = {
@@ -86,7 +91,7 @@ in
         stamp="$upper_root/.scooter-owner"
         if [ "$(cat "$stamp" 2>/dev/null || true)" != "$owner" ]; then
           state="$upper_root/state"
-          rm -rf "$state/profiles" "$state/gcroots/auto" "$state/gcroots/per-user"
+          rm -rf "$state/profiles" "$state/gcroots/auto" "$state/gcroots/per-user" "$state/gcroots/scooter-live"
           if [ -d "$state" ]; then mkdir -p "$state/profiles/per-user" "$state/gcroots/auto" "$state/gcroots/per-user"; fi
           printf '%s\n' "$owner" > "$stamp"
           echo "overlay-store: upper now owned by $owner; dropped prior roots and profiles"
@@ -133,7 +138,8 @@ in
         + "&lower-store=${enc}"
         + "&upper-layer=${cfg.upperPath}/upper"
         + "&state=${cfg.upperPath}/state"
-        + "&check-mount=false";
+        + "&check-mount=false"
+        + "&remount-hook=${remountHook}";
 
       experimental-features = lib.mkAfter [ "local-overlay-store" "read-only-local-store" ];
 

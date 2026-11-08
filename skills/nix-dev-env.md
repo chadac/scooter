@@ -17,12 +17,16 @@ triggers:
 - port
 - lazy tool
 - stub
+- disk space
+- nix store
+- garbage collect
+- nix develop
 ---
 
 # Dev environment (this sandbox)
 
 This sandbox is a **NixOS** dev box with **systemd**. You can build/install tools
-on demand, and run real background services. Three things specific to here:
+on demand, and run real background services. Four things specific to here:
 
 ## 1. Common tools are LAZY — just run them
 
@@ -70,6 +74,26 @@ journalctl -u <service> -f            # follow its logs
 A service that's defined-but-off is enabled on demand with `systemctl start`.
 Once it's listening on a port, that port is reachable inside the sandbox (port-
 forwarding to expose it externally is a separate step — ask if you need it).
+
+## 4. The Nix store is garbage-collected
+
+Once the store's writable layer passes about 12 GiB, and again when the
+sandbox suspends, the least recently used unrooted paths are deleted until it
+is back under 8 GiB. Anything rooted survives:
+
+- the running system and installed tools (`nix profile install`)
+- `result` links from `nix build`, while the link exists
+- dev shells entered with a profile:
+  `nix develop --profile /workspace/.scooter/dev-profiles/<repo>`
+
+```bash
+scooter-store size     # bytes the store's writable layer holds
+scooter-store roots    # what pins them, biggest first
+```
+
+Every eval of a changed flake copies its whole tree into the store. Inside a
+git repo, use `.#thing` (only tracked files are copied), never `path:.`, and
+keep big untracked trees such as `node_modules` out of flake directories.
 
 ## Which tools are already lazy
 

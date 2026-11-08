@@ -112,5 +112,25 @@ pkgs.testers.runNixOSTest {
     # Nix is configured with the local-overlay store.
     store = machine.succeed("nix config show store")
     assert "local-overlay" in store, f"nix store is not local-overlay:\n{store}"
+
+    # GC keeps the system and golden root, drops unrooted builds.
+    assert "remount-hook=" in store, f"no remount-hook on the store:\n{store}"
+    machine.succeed("rm /root/result")
+    golden = machine.succeed("echo golden > /tmp/golden && nix store add-file /tmp/golden").strip()
+    machine.succeed(f"test -e {up}/upper/{golden.split('/')[-1]}")
+    machine.succeed(f"mkdir -p {up}/state/gcroots/scooter-golden && ln -s {golden} {up}/state/gcroots/scooter-golden/result")
+    assert int(machine.succeed("scooter-store size")) > 0
+    # Under the cap, a pass does nothing.
+    machine.succeed("scooter-store gc")
+    machine.succeed(f"test -e {up}/upper/{base}")
+    machine.succeed("SCOOTER_STORE_LOW_WATER=0 scooter-store gc --force")
+    machine.fail(f"test -e {up}/upper/{base}")
+    machine.succeed(f"test -e {golden}")
+    machine.succeed("ls /run/current-system/sw/bin >/dev/null")
+
+    # The clean marker records the upper's size.
+    machine.succeed("systemctl stop scooter-store-gc-on-stop.service scooter-store-clean-marker.service")
+    marker = machine.succeed(f"cat {up}/.clean-shutdown")
+    assert '"upperBytes":' in marker, f"marker has no size:\n{marker}"
   '';
 }

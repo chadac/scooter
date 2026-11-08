@@ -12,6 +12,14 @@ let
   upper = config.programs.overlayStore.upperPath;
   marker = "${upper}/.clean-shutdown";
   request = "${upper}/.warm-request";               # golden expr, written by the warm Job
+  golden = "${upper}/state/gcroots/scooter-golden";   # kept across owners, unlike gcroots/auto
+  gc = config.programs.overlayStore.gc;
+  # The controller wipes volumes whose recorded size exceeds the PVC.
+  writeMarker = field: pkgs.writeShellScript "scooter-store-marker" ''
+    tag="''${SCOOTER_IMAGE_TAG:-unknown}"
+    bytes=${if gc.enable then "$(${gc.package}/bin/scooter-store size 2>/dev/null || echo 0)" else "0"}
+    printf '{"tag":"%s","${field}":"%s","upperBytes":%s}\n' "$tag" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "''${bytes:-0}" > ${marker}
+  '';
 in
 {
   options.programs.warmStoreSeed = {
@@ -34,10 +42,8 @@ in
         ExecStart = "${pkgs.coreutils}/bin/rm -f ${marker}";
         # A SIGKILL skips ExecStop, so no marker means an unclean stop.
         ExecStop = pkgs.writeShellScript "scooter-store-clean-marker-stop" ''
-          set -eu
           # Best-effort: never block shutdown.
-          tag="''${SCOOTER_IMAGE_TAG:-unknown}"
-          printf '{"tag":"%s","stoppedAt":"%s"}\n' "$tag" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > ${marker} || true
+          ${writeMarker "stoppedAt"} || true
         '';
       };
     };
@@ -65,15 +71,17 @@ in
           if [ -z "$expr" ]; then echo "warm-store: empty golden expr, minimal warm"; exit 0; fi
           echo "warm-store: seeding golden expr: $expr"
           # `eval` lets the request be either a list of flake installables or a quoted `--expr '<nix>'` form.
-          eval "nix build --no-link --print-build-logs $expr"
+          # These links root the seed for every later owner.
+          rm -rf ${golden}
+          mkdir -p ${golden}
+          eval "nix build --out-link ${golden}/result --print-build-logs $expr"
           echo "warm-store: seed complete"
         '';
         # Stamp the marker here regardless of unit stop ordering, then `systemctl exit 0` so PID 1 exits 0 and k8s counts the pod as succeeded.
         ExecStartPost = [
           (pkgs.writeShellScript "scooter-warm-seed-finish" ''
             set -eu
-            tag="''${SCOOTER_IMAGE_TAG:-unknown}"
-            printf '{"tag":"%s","warmedAt":"%s"}\n' "$tag" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > ${marker} || true
+            ${writeMarker "warmedAt"} || true
             rm -f ${request} || true
           '')
           "${pkgs.systemd}/bin/systemctl exit 0"

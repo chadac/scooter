@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from kubernetes import client, config
+from kubernetes.utils import parse_quantity
 
 from .allocate import (
     ANN_LAST_SANDBOX,
@@ -291,6 +292,12 @@ class ControllerK8s:
         _, _, batch, _ = _apis()
         batch.create_namespaced_job(self.namespace, self.marker_job_manifest(pvc))
 
+    def marker_check_script(self) -> str:
+        """Clean means the marker exists and reports an upper no bigger than a PVC."""
+        cap = int(parse_quantity(self.overlay_storage))
+        upper_bytes = f"sed -n 's/.*\"upperBytes\":\\([0-9]*\\).*/\\1/p' {CLEAN_MARKER_PATH}"
+        return f'test -f {CLEAN_MARKER_PATH} && n=$({upper_bytes}) && [ "${{n:-0}}" -le {cap} ]'
+
     def marker_job_manifest(self, pvc: str) -> client.V1Job:
         return client.V1Job(
             metadata=client.V1ObjectMeta(generate_name="warm-marker-check-", labels={LBL_MARKER_PVC: pvc}),
@@ -304,7 +311,7 @@ class ControllerK8s:
                         containers=[client.V1Container(
                             name="check",
                             image="busybox:1.36",
-                            command=["sh", "-c", f"test -f {CLEAN_MARKER_PATH}"],
+                            command=["sh", "-c", self.marker_check_script()],
                             volume_mounts=[client.V1VolumeMount(name="up", mount_path=UPPER, read_only=True)],
                         )],
                         volumes=[client.V1Volume(

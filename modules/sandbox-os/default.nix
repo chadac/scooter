@@ -25,6 +25,7 @@
     ./overlay-store.nix
     ./journal-persist.nix
     ./warm-store-seed.nix
+    ./store-gc.nix
     ./dbus-container.nix
   ];
 

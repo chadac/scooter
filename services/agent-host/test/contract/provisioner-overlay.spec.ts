@@ -12,6 +12,7 @@ type Manifest = {
   spec: {
     podTemplate: {
       spec: {
+        terminationGracePeriodSeconds?: number;
         containers: Array<{ volumeMounts?: Array<{ name: string; mountPath: string; readOnly?: boolean }> }>;
         volumes?: Array<{ name: string; configMap?: { name: string }; persistentVolumeClaim?: { claimName: string } }>;
       };
@@ -32,6 +33,11 @@ describe("sandboxManifest overlay-store wiring", () => {
     const pvc = m.spec.volumeClaimTemplates.find((t) => t.metadata.name === "scooter-rw");
     expect(pvc).toBeDefined();
     expect(pvc!.spec.resources.requests.storage).toBe("25Gi");
+  });
+
+  it("gives the shutdown GC pass a longer grace period only when overlayStore is on", () => {
+    expect(render({ overlayStore: true }).spec.podTemplate.spec.terminationGracePeriodSeconds).toBe(150);
+    expect(render({ overlayStore: false }).spec.podTemplate.spec.terminationGracePeriodSeconds).toBeUndefined();
   });
 
   it("defaults the upper PVC size to 20Gi", () => {
