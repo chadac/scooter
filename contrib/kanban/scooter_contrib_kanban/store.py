@@ -323,18 +323,6 @@ class KanbanStore:
         async with self._session() as s, s.begin():
             s.add(_Stage(folder_id=folder_id, board_id=board_id, name=name, position=position))
 
-    async def update_stage(self, folder_id: str, *, name: str | None = None, position: float | None = None) -> None:
-        async with self._session() as s, s.begin():
-            row = await s.get(_Stage, folder_id)
-            if row is None:
-                return
-            row.name = row.name if name is None else name
-            row.position = row.position if position is None else position
-
-    async def remove_stage(self, folder_id: str) -> None:
-        async with self._session() as s, s.begin():
-            await s.execute(delete(_Stage).where(_Stage.folder_id == folder_id))
-
     async def remove_board(self, owner: str, folder_id: str) -> bool:
         async with self._session() as s, s.begin():
             res = await s.execute(delete(_Board).where(_Board.folder_id == folder_id, _Board.owner == owner))
@@ -388,29 +376,6 @@ class KanbanStore:
                 select(_Tag).where(_Tag.board_id == board_id).order_by(_Tag.position, _Tag.id)
             )
             return [_tag(r) for r in rows.scalars()]
-
-    async def add_tag(self, board_id: str, name: str, color: str, position: float) -> Tag:
-        row = _Tag(id=str(uuid.uuid4()), board_id=board_id, name=name, color=color, position=position)
-        async with self._session() as s, s.begin():
-            s.add(row)
-        return _tag(row)
-
-    async def update_tag(
-        self, tag_id: str, *, name: str | None = None, color: str | None = None, position: float | None = None
-    ) -> None:
-        async with self._session() as s, s.begin():
-            row = await s.get(_Tag, tag_id)
-            if row is None:
-                return
-            row.name = row.name if name is None else name
-            row.color = row.color if color is None else color
-            row.position = row.position if position is None else position
-
-    async def remove_tag(self, tag_id: str) -> None:
-        """Delete a tag and take it off every card."""
-        async with self._session() as s, s.begin():
-            await s.execute(delete(_CardTag).where(_CardTag.tag_id == tag_id))
-            await s.execute(delete(_Tag).where(_Tag.id == tag_id))
 
     async def card_tags(self, conversation_id: str) -> list[str]:
         """The ids of a card's tags, from any board."""

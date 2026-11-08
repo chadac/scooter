@@ -4,14 +4,8 @@
     GET    /user/boards                            the user's boards and their stages (the view, via /contrib-api)
     POST   /user/boards                            {name}: a new board, with the default stages
     PATCH  /user/boards/{board}                    {name}: rename a board
-    PUT    /user/boards/{board}                    {stages: [{id?, name}], tags: [{id?, name, color?}]}: save the board's stages and tags at once
+    PUT    /user/boards/{board}                    {stages: [{id?, name}], tags: [{id?, name, color?}]}: save the board's stages and tags at once; a dropped stage's cards move to the first
     DELETE /user/boards/{board}                    delete a board and its stages; its conversations stay, unfiled
-    POST   /user/boards/{board}/stages             {name}: add a stage at the end
-    PATCH  /user/boards/{board}/stages/{stage}     {name?, position?}: rename or reorder a stage
-    DELETE /user/boards/{board}/stages/{stage}     delete a stage; its cards move to the first stage
-    POST   /user/boards/{board}/tags               {name, color?}: add a tag
-    PATCH  /user/boards/{board}/tags/{tag}         {name?, color?, position?}: rename, recolor or reorder a tag
-    DELETE /user/boards/{board}/tags/{tag}         delete a tag and take it off every card
     POST   /user/boards/{board}/cards              {conversations}: those cards on the board, as GET /conversation/{key}/card shows one
     GET    /conversation/{key}/card                one card, its blockers, tag ids and priority (the board, via the conversation relay)
     PUT    /conversation/{key}/card                {column, position?}: record the user's move to a stage
@@ -132,11 +126,6 @@ class Kanban(Transport):
                 raise HTTPException(status_code=400, detail="folder must be a folder id")
             return folder
 
-        def _tag(tag: str) -> str:
-            if not _FOLDER.match(tag):
-                raise HTTPException(status_code=400, detail="tag must be a tag id")
-            return tag
-
         def _name(body: dict) -> str:
             name = body.get("name")
             if not isinstance(name, str) or not name.strip():
@@ -253,25 +242,6 @@ class Kanban(Transport):
             except BoardError as e:
                 raise _http(e) from None
 
-        @router.post("/user/boards/{board}/stages")
-        async def add_stage(board: str, body: dict = Body(...), owner: str = user) -> dict:
-            await _do(_boards().add_stage(owner, _folder(board), _name(body)))
-            return await _list(owner)
-
-        @router.patch("/user/boards/{board}/stages/{stage}")
-        async def update_stage(board: str, stage: str, body: dict = Body(...), owner: str = user) -> dict:
-            name = _name(body) if "name" in body else None
-            position = _position(body)
-            if name is None and position is None:
-                raise HTTPException(status_code=400, detail="name or position is required")
-            await _do(_boards().update_stage(owner, _folder(board), _folder(stage), name=name, position=position))
-            return await _list(owner)
-
-        @router.delete("/user/boards/{board}/stages/{stage}")
-        async def delete_stage(board: str, stage: str, owner: str = user) -> dict:
-            await _do(_boards().delete_stage(owner, _folder(board), _folder(stage)))
-            return await _list(owner)
-
         @router.get("/conversation/{key}/card")
         async def get_card(key: str, owner: str = user) -> dict:
             card = await _store().card(key)
@@ -297,25 +267,6 @@ class Kanban(Transport):
             except BoardError as e:
                 raise _http(e) from None
             return {"card": card.payload()}
-
-        @router.post("/user/boards/{board}/tags")
-        async def add_tag(board: str, body: dict = Body(...), owner: str = user) -> dict:
-            await _do(_boards().add_tag(owner, _folder(board), _name(body), _color(body)))
-            return await _list(owner)
-
-        @router.patch("/user/boards/{board}/tags/{tag}")
-        async def update_tag(board: str, tag: str, body: dict = Body(...), owner: str = user) -> dict:
-            name = _name(body) if "name" in body else None
-            color, position = _color(body), _position(body)
-            if name is None and color is None and position is None:
-                raise HTTPException(status_code=400, detail="name, color or position is required")
-            await _do(_boards().update_tag(owner, _folder(board), _tag(tag), name=name, color=color, position=position))
-            return await _list(owner)
-
-        @router.delete("/user/boards/{board}/tags/{tag}")
-        async def delete_tag(board: str, tag: str, owner: str = user) -> dict:
-            await _do(_boards().delete_tag(owner, _folder(board), _tag(tag)))
-            return await _list(owner)
 
         @router.put("/conversation/{key}/card/tags")
         async def tag_card(key: str, body: dict = Body(...), owner: str = user) -> dict:

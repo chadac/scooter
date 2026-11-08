@@ -276,12 +276,6 @@ class Boards:
             out_tags.append(replace(t, name=name, color=self._color(color)))
         return out_stages, out_tags
 
-    async def own_stage(self, owner: str, board: str, stage: str) -> Stage:
-        found = next((s for s in await self.stages(await self.own(owner, board), owner) if s.folder == stage), None)
-        if found is None:
-            raise BoardError(404, "no such stage")
-        return found
-
     async def create(self, owner: str, name: str) -> str:
         try:
             board = await self.folders.create(owner, name)
@@ -307,40 +301,6 @@ class Boards:
             if e.status != 404:
                 raise _refused(e) from None
         await self.store.remove_board(owner, board)
-        await self.changed(owner)
-
-    async def add_stage(self, owner: str, board: str, name: str) -> None:
-        stages = await self.stages(await self.own(owner, board), owner)
-        try:
-            folder = await self.folders.create(owner, name, board)
-        except FolderError as e:
-            raise _refused(e) from None
-        await self.store.add_stage(board, folder, name, (stages[-1].position if stages else 0.0) + 1)
-        await self.changed(owner)
-
-    async def update_stage(
-        self, owner: str, board: str, stage: str, *, name: str | None = None, position: float | None = None
-    ) -> None:
-        await self.own_stage(owner, board, stage)
-        try:
-            # The sidebar shows stages in the board's order.
-            await self.folders.update(owner, stage, name=name, position=position)
-        except FolderError as e:
-            raise _refused(e) from None
-        await self.store.update_stage(stage, name=name, position=position)
-        await self.changed(owner)
-
-    async def delete_stage(self, owner: str, board: str, stage: str) -> None:
-        await self.own_stage(owner, board, stage)
-        if len(await self.store.stages(board)) <= 1:
-            raise BoardError(409, "a board needs at least one stage")
-        try:
-            # Its conversations move up to the board's first stage.
-            await self.folders.delete(owner, stage)
-        except FolderError as e:
-            if e.status != 404:
-                raise _refused(e) from None
-        await self.store.remove_stage(stage)
         await self.changed(owner)
 
     async def at(self, folder: str) -> tuple[Place, list[Stage], Stage] | None:
@@ -676,58 +636,11 @@ class Boards:
             await self.changed_card(key)
         return details
 
-    async def _tag_name(self, board: str, name: str, *, skip: str = "") -> str:
-        name = name.strip()
-        if len(name) > MAX_TAG_CHARS:
-            raise BoardError(400, f"a tag name is at most {MAX_TAG_CHARS} characters")
-        if any(t.name.casefold() == name.casefold() and t.id != skip for t in await self.store.tags(board)):
-            raise BoardError(409, f"this board already has a tag named `{name}`")
-        return name
-
     @staticmethod
     def _color(color: str) -> str:
         if color not in TAG_COLORS:
             raise BoardError(400, f"color must be one of {', '.join(TAG_COLORS)}")
         return color
-
-    async def own_tag(self, owner: str, board: str, tag: str) -> Tag:
-        found = next((t for t in await self.store.tags(await self.own(owner, board)) if t.id == tag), None)
-        if found is None:
-            raise BoardError(404, "no such tag")
-        return found
-
-    async def add_tag(self, owner: str, board: str, name: str, color: str | None = None) -> Tag:
-        tags = await self.store.tags(await self.own(owner, board))
-        if len(tags) >= MAX_BOARD_TAGS:
-            raise BoardError(409, f"a board has at most {MAX_BOARD_TAGS} tags")
-        name = await self._tag_name(board, name)
-        if color is None:
-            color = _pick_color([t.color for t in tags])
-        position = (tags[-1].position if tags else 0.0) + 1
-        tag = await self.store.add_tag(board, name, self._color(color), position)
-        await self.changed(owner)
-        return tag
-
-    async def update_tag(
-        self,
-        owner: str,
-        board: str,
-        tag: str,
-        *,
-        name: str | None = None,
-        color: str | None = None,
-        position: float | None = None,
-    ) -> None:
-        await self.own_tag(owner, board, tag)
-        name = None if name is None else await self._tag_name(board, name, skip=tag)
-        color = None if color is None else self._color(color)
-        await self.store.update_tag(tag, name=name, color=color, position=position)
-        await self.changed(owner)
-
-    async def delete_tag(self, owner: str, board: str, tag: str) -> None:
-        await self.own_tag(owner, board, tag)
-        await self.store.remove_tag(tag)
-        await self.changed(owner)
 
     async def tag_card(
         self, owner: str, key: str, tags: list[str], *, board: str = "", create: list[str] | None = None

@@ -248,9 +248,6 @@ async def test_a_user_changes_only_their_own_boards(app, folders):
         assert (await c.get("/kanban/user/boards")).json()["boards"] == []
         assert (await c.patch(f"/kanban/user/boards/{b}", json={"name": "Mine"})).status_code == 404
         assert (await c.delete(f"/kanban/user/boards/{b}")).status_code == 404
-        assert (await c.post(f"/kanban/user/boards/{b}/stages", json={"name": "Mine"})).status_code == 404
-        stage = _stage(board, "Design")
-        assert (await c.delete(f"/kanban/user/boards/{b}/stages/{stage}")).status_code == 404
     assert folders.names("alice") == ["Infra"] and folders.names("alice", b) == STAGES
 
 
@@ -260,7 +257,7 @@ async def test_the_router_refusing_a_name_reaches_the_user(app):
         r = await c.post("/kanban/user/boards", json={"name": "Infra"})
         assert r.status_code == 409 and "already" in r.json()["detail"]
         assert (await c.post("/kanban/user/boards", json={"name": " "})).status_code == 400
-        r = await c.post(f"/kanban/user/boards/{board['folder']}/stages", json={"name": "Review"})
+        r = await _save(c, board, [*_kept(board), {"name": "Review"}])
         assert r.status_code == 409
         assert [b["folder"] for b in (await c.get("/kanban/user/boards")).json()["boards"]] == [board["folder"]]
 
@@ -293,32 +290,12 @@ async def test_a_bad_folder_id_is_refused(app):
 
 # --- customizing stages --------------------------------------------------------------
 
-async def test_the_user_adds_renames_reorders_and_deletes_stages(app, folders):
-    board = await _board(app)
-    b = board["folder"]
-    async with as_(app, user="alice") as c:
-        r = await c.post(f"/kanban/user/boards/{b}/stages", json={"name": "Backlog"})
-        stages = r.json()["boards"][0]["stages"]
-        assert [s["label"] for s in stages] == [*STAGES, "Backlog"]
-        backlog = stages[-1]["id"]
-        # Before Design, which sits at position 1.
-        r = await c.patch(f"/kanban/user/boards/{b}/stages/{backlog}", json={"position": 0.5})
-        assert [s["label"] for s in r.json()["boards"][0]["stages"]] == ["Backlog", *STAGES]
-        r = await c.patch(f"/kanban/user/boards/{b}/stages/{_stage(board, 'Review')}", json={"name": "QA"})
-        assert [s["label"] for s in r.json()["boards"][0]["stages"]] == ["Backlog", "Design", "In progress", "QA", "Done"]
-        r = await c.delete(f"/kanban/user/boards/{b}/stages/{_stage(board, 'Done')}")
-        assert [s["label"] for s in r.json()["boards"][0]["stages"]] == ["Backlog", "Design", "In progress", "QA"]
-        assert (await c.patch(f"/kanban/user/boards/{b}/stages/{backlog}", json={})).status_code == 400
-    # The sidebar lists stages in board order.
-    assert folders.names("alice", b) == ["Backlog", "Design", "In progress", "QA"]
-
-
 async def test_deleting_a_stage_moves_its_cards_to_the_first(app, folders):
     board = await _board(app)
     b, review = board["folder"], _stage(board, "Review")
     folders.placements[("alice", "conv-1")] = review
     async with as_(app, user="alice") as c:
-        await c.delete(f"/kanban/user/boards/{b}/stages/{review}")
+        await _save(c, board, [s for s in _kept(board) if s["id"] != review])
     assert folders.placements[("alice", "conv-1")] == b
     async with as_(app, conversation="key-1") as c:
         assert (await c.get("/kanban/card", params={"folder": b})).json()["column"] == "Design"
@@ -331,6 +308,11 @@ def test_positions_keep_the_most_old_ones_in_order():
     assert positions([1.0, None, 2.0, None]) == [1.0, 1.5, 2.0, 3.0]
     assert positions([None, None]) == [1.0, 2.0]
     assert positions([]) == []
+
+
+def _kept(board: dict) -> list[dict]:
+    """A board's stages, as a save that keeps them sends them."""
+    return [{"id": x["id"], "name": x["label"]} for x in board["stages"]]
 
 
 async def _save(c, board: dict, stages: list[dict], tags: list[dict] | None = None):
@@ -365,7 +347,7 @@ async def test_a_save_only_calls_the_router_for_stages_that_changed(app, folders
         await update(owner, folder, **kw)
 
     folders.update = counted
-    stages = [{"id": x["id"], "name": x["label"]} for x in board["stages"]]
+    stages = _kept(board)
     stages[1]["name"] = "Doing"
     async with as_(app, user="alice") as c:
         assert (await _save(c, board, stages)).status_code == 200
@@ -375,7 +357,7 @@ async def test_a_save_only_calls_the_router_for_stages_that_changed(app, folders
 async def test_a_save_sets_the_board_s_tags_and_takes_deleted_ones_off_cards(app, store):
     board = await _board(app)
     ids = await _tags(app, board, "bug", "infra")
-    stages = [{"id": x["id"], "name": x["label"]} for x in board["stages"]]
+    stages = _kept(board)
     async with as_(app, user="alice") as c:
         await c.put("/kanban/conversation/key-1/card/tags", json={"tags": [ids["bug"], ids["infra"]]})
         r = await _save(c, board, stages, [
@@ -391,7 +373,7 @@ async def test_a_save_sets_the_board_s_tags_and_takes_deleted_ones_off_cards(app
 async def test_a_bad_save_changes_nothing(app, folders):
     board = await _board(app)
     ids = await _tags(app, board, "bug")
-    stages = [{"id": x["id"], "name": x["label"]} for x in board["stages"]]
+    stages = _kept(board)
     other = await _board(app, name="Home")
     # Each also renames a stage, which must not happen either.
     renamed = [{**stages[0], "name": "Renamed"}, *stages[1:]]
@@ -422,7 +404,7 @@ async def test_a_bad_save_changes_nothing(app, folders):
 
 async def test_a_save_the_router_partly_refuses_keeps_what_it_did(app, folders):
     board = await _board(app)
-    stages = [{"id": x["id"], "name": x["label"]} for x in board["stages"]]
+    stages = _kept(board)
     create = folders.create
 
     async def refuse(owner, name, parent=""):
@@ -437,16 +419,6 @@ async def test_a_save_the_router_partly_refuses_keeps_what_it_did(app, folders):
         listed = (await c.get("/kanban/user/boards")).json()["boards"][0]
     assert [x["label"] for x in listed["stages"]] == ["Plan", *STAGES[1:], "Later"]
     assert folders.names("alice", board["folder"]) == ["Plan", *STAGES[1:], "Later"]
-
-
-async def test_the_last_stage_stays(app):
-    board = await _board(app)
-    b = board["folder"]
-    async with as_(app, user="alice") as c:
-        for s in board["stages"][:-1]:
-            assert (await c.delete(f"/kanban/user/boards/{b}/stages/{s['id']}")).status_code == 200
-        r = await c.delete(f"/kanban/user/boards/{b}/stages/{board['stages'][-1]['id']}")
-    assert r.status_code == 409 and "at least one" in r.json()["detail"]
 
 
 # --- the hooks' card ---------------------------------------------------------------
@@ -538,7 +510,7 @@ async def test_the_agent_follows_a_stage_the_user_renamed(app, boards, folders):
     folders.conversations["key-1"] = Conversation(id="conv-1", owner="alice")
     folders.placements[("alice", "conv-1")] = board["folder"]
     async with as_(app, user="alice") as c:
-        await c.patch(f"/kanban/user/boards/{board['folder']}/stages/{_stage(board, 'Review')}", json={"name": "QA"})
+        await _save(c, board, [{**s, "name": "QA"} if s["name"] == "Review" else s for s in _kept(board)])
     mcp_tools.configure(boards, timedelta(minutes=30), _keys())
     assert (await mcp_tools.kanban_set_status(column="Review", ctx=_ctx())).is_error
     assert not (await mcp_tools.kanban_set_status(column="QA", ctx=_ctx())).is_error
@@ -804,48 +776,9 @@ async def test_the_unblock_message_reaches_the_agent_host():
 async def _tags(app, board: dict, *names: str, owner: str = "alice") -> dict[str, str]:
     """Add tags to a board; their ids by name."""
     async with as_(app, user=owner) as c:
-        for n in names:
-            r = await c.post(f"/kanban/user/boards/{board['folder']}/tags", json={"name": n})
-            assert r.status_code == 200, r.text
-    row = next(b for b in r.json()["boards"] if b["folder"] == board["folder"])
-    return {t["name"]: t["id"] for t in row["tags"]}
-
-
-async def test_the_user_adds_renames_recolors_and_deletes_tags(app):
-    board = await _board(app)
-    b = board["folder"]
-    ids = await _tags(app, board, "bug", "infra")
-    async with as_(app, user="alice") as c:
-        tags = (await c.get("/kanban/user/boards")).json()["boards"][0]["tags"]
-        assert [(t["name"], t["color"]) for t in tags] == [("bug", "gray"), ("infra", "red")]
-        r = await c.patch(f"/kanban/user/boards/{b}/tags/{ids['bug']}", json={"name": "Bug", "color": "blue", "position": 9})
+        r = await _save(c, board, _kept(board), [{"name": n} for n in names])
         assert r.status_code == 200, r.text
-        tags = r.json()["boards"][0]["tags"]
-        assert [(t["name"], t["color"]) for t in tags] == [("infra", "red"), ("Bug", "blue")]
-        tags = (await c.delete(f"/kanban/user/boards/{b}/tags/{ids['infra']}")).json()["boards"][0]["tags"]
-        assert [t["name"] for t in tags] == ["Bug"]
-
-
-async def test_a_bad_tag_is_refused(app):
-    board = await _board(app)
-    b = board["folder"]
-    ids = await _tags(app, board, "bug", "infra")
-    async with as_(app, user="alice") as c:
-        assert (await c.post(f"/kanban/user/boards/{b}/tags", json={"name": "BUG"})).status_code == 409
-        assert (await c.post(f"/kanban/user/boards/{b}/tags", json={"name": "x" * 25})).status_code == 400
-        assert (await c.post(f"/kanban/user/boards/{b}/tags", json={"name": "a", "color": "pink"})).status_code == 400
-        assert (await c.patch(f"/kanban/user/boards/{b}/tags/{ids['bug']}", json={"name": "Infra"})).status_code == 409
-        assert (await c.patch(f"/kanban/user/boards/{b}/tags/{ids['bug']}", json={})).status_code == 400
-        assert (await c.patch(f"/kanban/user/boards/{b}/tags/nope", json={"color": "red"})).status_code == 404
-    async with as_(app, user="bob") as c:
-        assert (await c.delete(f"/kanban/user/boards/{b}/tags/{ids['bug']}")).status_code == 404
-
-
-async def test_a_board_holds_at_most_twenty_tags(app):
-    board = await _board(app)
-    await _tags(app, board, *(f"t{i}" for i in range(20)))
-    async with as_(app, user="alice") as c:
-        assert (await c.post(f"/kanban/user/boards/{board['folder']}/tags", json={"name": "one more"})).status_code == 409
+    return {t["name"]: t["id"] for t in r.json()["board"]["tags"]}
 
 
 async def test_the_user_tags_a_card_from_one_of_their_boards(app):
@@ -903,13 +836,11 @@ async def test_tagging_does_not_touch_the_status(app, store):
     assert (card.updated_by, card.updated_at) == ("agent", "2026-01-01T00:00:00+00:00")
 
 
-async def test_deleting_a_tag_or_board_takes_it_off_cards(app, store):
+async def test_deleting_a_board_takes_its_tags_off_cards(app, store):
     board = await _board(app)
     ids = await _tags(app, board, "bug", "infra")
     async with as_(app, user="alice") as c:
         await c.put("/kanban/conversation/key-1/card/tags", json={"tags": [ids["bug"], ids["infra"]]})
-        await c.delete(f"/kanban/user/boards/{board['folder']}/tags/{ids['bug']}")
-        assert await store.card_tags("key-1") == [ids["infra"]]
         await c.delete(f"/kanban/user/boards/{board['folder']}")
     assert await store.card_tags("key-1") == []
     assert await store.tags(board["folder"]) == []
@@ -1048,8 +979,8 @@ async def test_the_board_loads_the_cards_it_asks_for_in_one_read(app, boards, fo
     await mcp_tools.kanban_set_status(column="Review", note="in review", ctx=_ctx("thread-schema"))
     await mcp_tools.kanban_set_details(priority="high", ctx=_ctx("thread-api"))
     async with as_(app, user="alice") as c:
-        tag = (await c.post(f"/kanban/user/boards/{board['folder']}/tags", json={"name": "bug"})).json()
-        tag_id = tag["boards"][0]["tags"][0]["id"]
+        saved = (await _save(c, board, _kept(board), [{"name": "bug"}])).json()
+        tag_id = saved["board"]["tags"][0]["id"]
         assert (await c.put("/kanban/conversation/key-ui/card/tags", json={"tags": [tag_id]})).status_code == 200
         asked = ["conv-api", "conv-schema", "conv-ui", "conv-gone", "conv-nobody"]
         r = await c.post(f"/kanban/user/boards/{board['folder']}/cards", json={"conversations": asked})
@@ -1092,7 +1023,7 @@ async def test_card_changes_push_to_the_owners_boards(app, boards, folders):
     async with as_(app, user="alice") as c:
         await c.put("/kanban/conversation/key-api/card", json={"column": _stage(board, "Review")})
         await c.patch("/kanban/conversation/key-api/details", json={"priority": "low"})
-        await c.post(f"/kanban/user/boards/{board['folder']}/tags", json={"name": "bug"})
+        await _save(c, board, _kept(board), [{"name": "bug"}])
     assert folders.pushed == [("alice", ["conv-api"]), ("alice", ["conv-api"]), ("alice", [])]
 
 
