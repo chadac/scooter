@@ -88,6 +88,8 @@ export interface SandboxProvisioner {
   /** List the live per-conversation Sandboxes with whether each pod is currently running, so
    *  hydrate() tracks still-running pods; optional. */
   reconcile?(): Promise<Array<{ ref: SandboxRef; running: boolean }>>;
+  /** One Sandbox by name, undefined when absent; optional. */
+  readSandbox?(name: string): Promise<{ ref: SandboxRef; running: boolean } | undefined>;
   /** Changes a restart would pick up; undefined when none. */
   pendingRestart?(ref: SandboxRef): Promise<PendingRestart | undefined>;
   /** Cycles the pod onto the current template and size. */
@@ -229,6 +231,12 @@ export interface ConversationStore {
   readLastActivity?(id: SessionId): Promise<number | undefined>;
   /** Reconstruct all persisted conversations; optional. */
   listConversations?(): Promise<ConversationMeta[]>;
+  /** One persisted conversation by id; throws on failed read. */
+  readMeta?(id: SessionId): Promise<ConversationMeta | undefined>;
+  /** Top-level conversations recorded in Sandbox `name`. */
+  listBySandboxRef?(name: string): Promise<ConversationMeta[]>;
+  /** Top-level conversations with no recorded Sandbox. */
+  listUnrecorded?(): Promise<ConversationMeta[]>;
   /** Permanently remove a conversation's persisted state so it does not reappear on the next
    *  hydrate(); optional. */
   removeConversation?(id: SessionId): Promise<void>;
@@ -463,6 +471,9 @@ async function collectEvents(it: AsyncIterable<AguiEvent>): Promise<AguiEvent[]>
   return out;
 }
 
+/** Matches every shortId output: an int32 in base 36. */
+const LEGACY_KEY = /^[0-9a-z]{1,6}$/;
+
 /** Older sandboxes' 32-bit name hash; it collides, so retired. */
 export function shortId(threadId: string): string {
   let h = 0;
@@ -587,12 +598,49 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     return entry;
   };
 
+  type OnCluster = { ref: SandboxRef; running: boolean };
+
+  // One-row meta reads, else one full list as fallback.
+  const metaReader = async (): Promise<(id: SessionId) => Promise<ConversationMeta | undefined>> => {
+    if (store.readMeta) return (id) => store.readMeta!(id);
+    const byId = new Map(((await store.listConversations?.()) ?? []).map((x) => [x.id, x]));
+    return async (id) => byId.get(id);
+  };
+
+  // One-CR reads, else one full list; undefined if unreadable.
+  const sandboxReader = async (): Promise<((name: string) => Promise<OnCluster | undefined>) | undefined> => {
+    if (provisioner.readSandbox) return (name) => provisioner.readSandbox!(name);
+    try {
+      const all = (await provisioner.reconcile?.()) ?? [];
+      return async (name) => all.find((x) => x.ref.name === name);
+    } catch {
+      return undefined;
+    }
+  };
+
+  // Rows that may run in Sandbox `name`; caller filters further.
+  const sandboxCandidates = async (name: string, key: string): Promise<ConversationMeta[]> => {
+    if (!store.readMeta || !store.listBySandboxRef || !store.listUnrecorded) {
+      return (await store.listConversations?.()) ?? [];
+    }
+    const [recorded, byId, legacy] = await Promise.all([
+      store.listBySandboxRef(name),
+      store.readMeta(key as SessionId),
+      // Only shortId-shaped keys can name a legacy Sandbox.
+      LEGACY_KEY.test(key) ? store.listUnrecorded() : [],
+    ]);
+    const byIdKey = new Map([...recorded, ...(byId ? [byId] : []), ...legacy].map((x) => [x.id, x]));
+    return [...byIdKey.values()];
+  };
+
   // On-demand hydration of one thread from the store or the registry; returns undefined when
   // neither has it or the store read fails.
   const hydrateByThread = async (threadId: ThreadId): Promise<Entry | undefined> => {
-    let metas: ConversationMeta[];
+    let read: (id: SessionId) => Promise<ConversationMeta | undefined>;
+    let m: ConversationMeta | undefined;
     try {
-      metas = (await store.listConversations?.()) ?? [];
+      read = await metaReader();
+      m = await read(threadId as SessionId);
     } catch (err) {
       // eslint-disable-next-line no-console
       log.errorWith("hydrateByThread store lookup failed; may create a duplicate", err, {
@@ -600,12 +648,12 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       });
       return undefined;
     }
-    let m = metas.find((x) => x.threadId === threadId);
+    if (m && m.threadId !== threadId) m = undefined;
     const fromStore = m !== undefined;
     let unrecorded: ConversationRecord | undefined;
     if (!m) {
-      // The registry is authoritative for existence, so adopt from it when the store list missed it
-      // (a row inserted after the list was read).
+      // The registry is authoritative for existence, so adopt from it when the store missed it
+      // (a row inserted after the store was read).
       const c = await conversationRegistry.get(threadId).catch(() => undefined);
       if (!c) return undefined;
       m = {
@@ -625,18 +673,42 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     if (entries.has(m.id)) return entries.get(m.id);
     // Never re-adopt a conversation end() destroyed.
     if (endedIds.has(m.id)) return undefined;
-    // Reconcile this conversation's Sandbox so a still-running pod is tracked; on failure revive()
-    // recreates from the placeholder.
-    let sandboxes: Array<{ ref: SandboxRef; running: boolean }> | undefined;
+    // Walk the parent chain per row, bounded like sandboxNameOf.
+    const chain = new Map<SessionId, Lineage>();
+    let root: Lineage = m;
     try {
-      sandboxes = (await provisioner.reconcile?.()) ?? [];
+      for (let depth = 0; root.parentId && depth < 32; depth++) {
+        const up: Lineage | undefined = entries.get(root.parentId) ?? (await read(root.parentId));
+        if (!up) break;
+        chain.set(root.parentId, up);
+        root = up;
+      }
+    } catch (err) {
+      log.errorWith("hydrateByThread parent lookup failed", err, { conversation_id: threadId });
+      return undefined;
+    }
+    // Read only this conversation's Sandbox so a still-running pod is tracked; on failure revive()
+    // recreates from the placeholder.
+    const readSb = await sandboxReader();
+    // rootSandboxName only probes an unrecorded root's full name.
+    const full = !root.sandbox && !root.sandboxRef && SANDBOX_ID.test(root.threadId) ? `conv-${root.threadId}` : undefined;
+    let fullFound: OnCluster | undefined;
+    let has: ((n: string) => boolean) | undefined;
+    try {
+      if (readSb) {
+        fullFound = full ? await readSb(full) : undefined;
+        has = (n) => n === full && fullFound !== undefined;
+      }
+    } catch {
+      /* keep the legacy name */
+    }
+    const name = sandboxNameOf(m, (pid) => chain.get(pid), has);
+    let onCluster: OnCluster | undefined;
+    try {
+      onCluster = name === full && fullFound ? fullFound : await readSb?.(name);
     } catch {
       /* treat as suspended */
     }
-    const metaById = new Map(metas.map((x) => [x.id, x]));
-    const has = sandboxes && ((n: string) => sandboxes.some((x) => x.ref.name === n));
-    const name = sandboxNameOf(m, (pid) => metaById.get(pid), has);
-    const onCluster = sandboxes?.find((x) => x.ref.name === name);
     // Publish sandboxRef early so the router can route by it.
     if (unrecorded) {
       void conversationRegistry.register(unrecorded.id, {
@@ -1456,12 +1528,16 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     async refreshSandbox(id) {
       const entry = entries.get(id);
       // revive()/start() keep a bridged entry's ref current; only a hydrated snapshot goes stale.
-      if (!entry || entry.bridge || entry.status === "ended" || !provisioner.reconcile) return;
+      if (!entry || entry.bridge || entry.status === "ended") return;
+      if (!provisioner.readSandbox && !provisioner.reconcile) return;
       const now = nowMs();
       if (now - (lastSandboxRefresh.get(id) ?? 0) < REFRESH_SANDBOX_MS) return;
       lastSandboxRefresh.set(id, now);
       try {
-        const found = (await provisioner.reconcile()).find((s) => s.ref.name === entry.sandbox.name);
+        const name = entry.sandbox.name;
+        const found = provisioner.readSandbox
+          ? await provisioner.readSandbox(name)
+          : (await provisioner.reconcile!()).find((s) => s.ref.name === name);
         if (!found) return; // still absent: keep the placeholder so revive() creates it
         entry.sandbox = found.ref;
         entry.status = found.running ? "running" : "suspended";
@@ -1679,10 +1755,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       const live = [...entries.values()].filter((e) => !e.parentId && e.sandbox.name === name);
       if (live.length > 1) return ambiguous(key, live.length);
       if (live.length === 1) return toConversation(live[0]);
-      // Not in memory: scan the persisted conversations and hydrate the match on demand.
+      // Not in memory: read the persisted candidates and hydrate the match on demand.
       let metas: ConversationMeta[];
       try {
-        metas = (await store.listConversations?.()) ?? [];
+        metas = await sandboxCandidates(name, key);
       } catch (err) {
         // eslint-disable-next-line no-console
         log.errorWith("getBySandboxKey store lookup failed", err, { sandbox_key: key });

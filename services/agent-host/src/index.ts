@@ -699,6 +699,9 @@ export async function main(
           setVisibility: (id: SessionId, v: Visibility) => metaStore.setVisibility(id, v),
           readAccess: (id: SessionId) => metaStore.readAccess(id),
           listConversations: () => metaStore.listConversations(),
+          readMeta: (id: SessionId) => metaStore.readMeta(id),
+          listBySandboxRef: (name: string) => metaStore.listBySandboxRef(name),
+          listUnrecorded: () => metaStore.listUnrecorded(),
           removeConversation: async (id: SessionId) => {
             await metaStore.removeConversation(id);
             await fileStore.removeConversation?.(id);

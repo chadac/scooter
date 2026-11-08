@@ -315,6 +315,21 @@ describe("conversation metadata in Postgres", () => {
     expect((await store.listConversations()).map((m) => m.id)).toEqual(["newer", "older"]);
   });
 
+  it("readMeta reads one row by id, undefined when it is absent", async () => {
+    const { db, created } = fakeDb();
+    const store = createPgMetaStore({ db });
+    created("conv-1");
+    await store.saveMeta(meta({ parentId: "root" as SessionId }));
+
+    expect(await store.readMeta("conv-1" as SessionId)).toMatchObject({
+      id: "conv-1",
+      title: "A conversation",
+      lastActivityAt: 2_000,
+      parentId: "root",
+    });
+    expect(await store.readMeta("missing" as SessionId)).toBeUndefined();
+  });
+
   it("removeConversation keeps it from coming back", async () => {
     const { db, created } = fakeDb();
     const store = createPgMetaStore({ db });

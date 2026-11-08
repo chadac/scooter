@@ -40,6 +40,12 @@ export interface MetaStore {
   /** The row's owner and visibility, undefined when there is no row; throws on a failed read. */
   readAccess(id: SessionId): Promise<AccessFacts | undefined>;
   listConversations(): Promise<ConversationMeta[]>;
+  /** One row by id; throws on a failed read. */
+  readMeta(id: SessionId): Promise<ConversationMeta | undefined>;
+  /** Top-level rows whose sandbox_ref is `name`. */
+  listBySandboxRef(name: string): Promise<ConversationMeta[]>;
+  /** Top-level rows with no sandbox_ref. */
+  listUnrecorded(): Promise<ConversationMeta[]>;
   removeConversation(id: SessionId): Promise<void>;
   close(): Promise<void>;
 }
@@ -279,6 +285,27 @@ export function createPgMetaStore(config: PgMetaStoreConfig): MetaStore {
         }),
       );
       return legacy;
+    },
+
+    async readMeta(id) {
+      const rows = await db.select().from(conversations).where(eq(conversations.id, id)).limit(1);
+      return rows.length ? rowToMeta(rows[0] as MetaRow) : undefined;
+    },
+
+    async listBySandboxRef(name) {
+      const rows = await db
+        .select()
+        .from(conversations)
+        .where(and(eq(conversations.sandboxRef, name), isNull(conversations.parentId)));
+      return (rows as MetaRow[]).map(rowToMeta);
+    },
+
+    async listUnrecorded() {
+      const rows = await db
+        .select()
+        .from(conversations)
+        .where(and(isNull(conversations.sandboxRef), isNull(conversations.parentId)));
+      return (rows as MetaRow[]).map(rowToMeta);
     },
 
     async removeConversation(id) {

@@ -374,3 +374,65 @@ describe("boot after an OOM storm (2026-10-19)", () => {
     expect((await eventsOf(store, "asleep")).length).toBe(before);
   });
 });
+
+describe("on-demand hydration reads only its own rows", () => {
+  /** A store and provisioner whose full-list reads are spies, with single-row reads beside them. */
+  const singleRowWorld = (metas: Array<Record<string, unknown>>, sandboxes: Record<string, boolean>) => {
+    const store = {
+      ...inMemoryStore(),
+      listConversations: vi.fn(async () => metas),
+      readMeta: vi.fn(async (id: string) => metas.find((m) => m.id === id)),
+      listBySandboxRef: vi.fn(async (name: string) => metas.filter((m) => !m.parentId && m.sandboxRef === name)),
+      listUnrecorded: vi.fn(async () => metas.filter((m) => !m.parentId && !m.sandboxRef)),
+    } as unknown as ConversationStore;
+    const prov = fakeProvisioner();
+    prov.reconcile = vi.fn(async () => []);
+    prov.readSandbox = vi.fn(async (name: string) =>
+      name in sandboxes ? { ref: { name, namespace: "ns" }, running: sandboxes[name] } : undefined,
+    );
+    const sessions = createSessionManager({
+      provisioner: prov,
+      store,
+      conversationRegistry: registryWith([]) as never,
+      selfPod: SELF,
+    } as never);
+    return { store, prov, sessions };
+  };
+  const meta = (id: string, over: Record<string, unknown> = {}) => ({
+    id, threadId: id, title: "", createdAt: 0, lastActivityAt: 0, ...over,
+  });
+
+  it("a subagent hydrates from its chain's rows and its root's Sandbox, with no full list", async () => {
+    const { store, prov, sessions } = singleRowWorld(
+      [meta("root", { sandboxRef: "conv-root" }), meta("mid", { parentId: "root" }), meta("leaf", { parentId: "mid" })],
+      { "conv-root": true },
+    );
+    expect(await sessions.ensureReadable("leaf" as SessionId)).toBe(true);
+    const leaf = sessions.get("leaf" as SessionId)!;
+    expect(leaf.sandbox).toEqual({ name: "conv-root", namespace: "ns" });
+    expect(leaf.status).toBe("running");
+    expect(store.listConversations).not.toHaveBeenCalled();
+    expect(prov.reconcile).not.toHaveBeenCalled();
+    expect(prov.readSandbox).toHaveBeenCalledWith("conv-root");
+  });
+
+  it("an unrecorded conversation keeps its full name only when that Sandbox exists", async () => {
+    const { prov, sessions } = singleRowWorld([meta("alpha"), meta("beta")], { "conv-alpha": false });
+    await sessions.ensureReadable("alpha" as SessionId);
+    await sessions.ensureReadable("beta" as SessionId);
+    expect(sessions.get("alpha" as SessionId)!.sandbox).toEqual({ name: "conv-alpha", namespace: "ns" });
+    expect(sessions.get("beta" as SessionId)!.sandbox).toEqual({ name: `conv-${shortId("beta")}`, namespace: "" });
+    expect(prov.reconcile).not.toHaveBeenCalled();
+  });
+
+  it("getBySandboxKey finds a recorded or legacy-named conversation with no full list", async () => {
+    const legacyId = "0f1e2d3c-aaaa-bbbb-cccc-000000000001";
+    const { store, sessions } = singleRowWorld(
+      [meta("gamma", { sandboxRef: "conv-gamma" }), meta(legacyId)],
+      { "conv-gamma": true, [`conv-${shortId(legacyId)}`]: false },
+    );
+    expect((await sessions.getBySandboxKey("gamma"))?.id).toBe("gamma");
+    expect((await sessions.getBySandboxKey(shortId(legacyId)))?.id).toBe(legacyId);
+    expect(store.listConversations).not.toHaveBeenCalled();
+  });
+});

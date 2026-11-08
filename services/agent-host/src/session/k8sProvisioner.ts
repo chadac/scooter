@@ -783,6 +783,16 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
       return out;
     },
 
+    async readSandbox(name: string): Promise<{ ref: SandboxRef; running: boolean } | undefined> {
+      const ref = { name, namespace: ns };
+      try {
+        return { ref, running: isRunning(await readCr(ref)) };
+      } catch (e) {
+        if ((e as { code?: number })?.code === 404) return undefined;
+        throw e;
+      }
+    },
+
     async pendingRestart(ref: SandboxRef): Promise<PendingRestart | undefined> {
       let sb: SandboxCr;
       try {
