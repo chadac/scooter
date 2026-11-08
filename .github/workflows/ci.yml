@@ -42,6 +42,8 @@ jobs:
       skip: ${{ steps.tier.outputs.skip }}
       # Runner per matrix entry, weighted by each fleet's capacity.
       runners: ${{ steps.runners.outputs.runners }}
+      # onprem when allowed, else ubuntu-latest: pins critical-path jobs.
+      home: ${{ steps.runners.outputs.home }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -64,11 +66,13 @@ jobs:
           ONPREM: ${{ vars.ONPREM_RUNNERS || 'on' }}
           SHARE: ${{ vars.ONPREM_SHARE || '30' }}
         run: |
-          if [ "$FORK" = true ] || [ "$ONPREM" = off ]; then SHARE=0; fi
+          home=onprem
+          if [ "$FORK" = true ] || [ "$ONPREM" = off ]; then SHARE=0; home=ubuntu-latest; fi
           list=$(for _ in $(seq 64); do
             if [ $((RANDOM % 100)) -lt "$SHARE" ]; then echo '"onprem"'; else echo '"ubuntu-latest"'; fi
           done | paste -sd, -)
           echo "runners=[$list]" >> "$GITHUB_OUTPUT"
+          echo "home=$home" >> "$GITHUB_OUTPUT"
 
   # One job per `just ci-<shard>`, so the fast checks run in parallel.
   fast:
@@ -78,7 +82,8 @@ jobs:
     permissions:
       actions: write   # fail fast: cancel the run
       contents: read
-    runs-on: ${{ fromJSON(needs.tier.outputs.runners)[strategy.job-index] }}
+    # repo, the slowest shard, always gets the faster fleet.
+    runs-on: ${{ matrix.shard == 'repo' && needs.tier.outputs.home || fromJSON(needs.tier.outputs.runners)[strategy.job-index] }}
     strategy:
       fail-fast: false # report every failing shard, not just the first
       matrix:
