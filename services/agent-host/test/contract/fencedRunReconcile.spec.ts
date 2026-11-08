@@ -312,4 +312,14 @@ describe("closing older orphans at the tail does not hide the live run", () => {
     const log = [...truncatedRun("live"), ev({ type: "RUN_ERROR", message: "remote agent disconnected" })];
     expect(danglingRunInfo(log, SELF)).toBeNull();
   });
+
+  it("the orphan sweep agrees: a runId-less RUN_ERROR is not an orphan to close @proves", () => {
+    const log = [...truncatedRun("errored"), ev({ type: "RUN_ERROR", message: "remote agent disconnected" })];
+    expect(orphanRuns(log, SELF)).toEqual([]);
+  });
+
+  it("a runId-less RUN_ERROR ends only the latest run, not an older orphan", () => {
+    const log = [...truncatedRun("fenced"), ...truncatedRun("errored"), ev({ type: "RUN_ERROR", message: "boom" })];
+    expect(orphanRuns(log, SELF)).toEqual([{ runId: "fenced", threadId: "c" }]);
+  });
 });

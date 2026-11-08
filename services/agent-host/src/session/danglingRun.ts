@@ -96,16 +96,19 @@ export interface OrphanRun {
 export function orphanRuns(events: AguiEvent[], self?: RunOrigin): OrphanRun[] {
   const started = new Map<string, { threadId: string; own: boolean }>();
   const ended = new Set<string>();
+  let latest: string | undefined;
   for (const e of events) {
     const runId = (e as { runId?: string }).runId;
-    if (!runId) continue;
-    if (e.type === "RUN_STARTED") {
+    if (e.type === "RUN_STARTED" && runId) {
+      latest = runId;
       started.set(runId, {
         threadId: String((e as { threadId?: string }).threadId ?? ""),
         own: isOwnRun(e as { host?: string; gen?: number }, self),
       });
     } else if (e.type === "RUN_FINISHED" || e.type === "RUN_ERROR") {
-      ended.add(runId);
+      // The bridge's RUN_ERROR carries no runId; it ends the latest run.
+      const id = runId ?? latest;
+      if (id) ended.add(id);
     }
   }
   return [...started]
