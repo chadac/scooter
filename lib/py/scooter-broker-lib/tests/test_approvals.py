@@ -153,7 +153,7 @@ async def test_a_failing_handler_marks_the_request_failed_and_says_so():
 
     req = await a.request(CONV, Thing("x"), owner="alice")
     out = await a.answer(req.id, "approve", Approver("alice"))
-    assert out["status"] == "failed" and "router down" in out["agent_message"]
+    assert out["status"] == "failed" and out["agent_message"].endswith("failed: router down")
     assert (await a.get(req.id)).status == "failed"
 
 

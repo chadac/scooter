@@ -20,7 +20,9 @@ identity is set and nothing is awaiting approval:
 3. The proposal shows up as a card in the user's Approvals tab, and it applies
    only once they approve it. Don't wait for that: carry on with the task, and
    tell the user in one line that the card is waiting for them. Until they
-   approve, commits use their forge account, or the bot if none is linked.
+   approve, commits use their forge account, or the bot if none is linked. A
+   message tells you when they answer, and a card nobody answers lapses after
+   24 hours.
 
 If another conversation's proposal is already pending, don't propose another.
 When the user approves one, the others are withdrawn.

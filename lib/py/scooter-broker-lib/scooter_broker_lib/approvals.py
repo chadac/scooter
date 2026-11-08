@@ -326,7 +326,7 @@ class Approvals(Transport, Generic[P]):
             logger.exception("approval handler failed", extra={"contrib": self.contrib, "request_id": req.id, "verb": verb})
             await self._set_status(req.id, "failed")
             return {"status": "failed", "agent_message": (
-                f"The user chose {verb} on your {self.kind} request, but carrying it out failed: {format_error(e)}"
+                f"The user chose {verb} on your {self.kind} request, but carrying it out failed: {str(e) or type(e).__name__}"
             )}
         return {**decision.body, "status": verb, "agent_message": decision.agent_message}
 

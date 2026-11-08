@@ -42,6 +42,7 @@
         enable = true;
         tables.handoff_conversations = { };
         tables.handoff_messages = { };
+        # Unwritten; kept for decided rows, dropped next release.
         tables.handoff_spawn_requests = { };
       };
 
@@ -52,7 +53,7 @@
         env.HANDOFF_REQUIRE_APPROVAL = lib.boolToString config.requireApproval;
       };
 
-      # Spawns are approved in-conversation; routing lives in ./deployment.nix.
+      # Spawns are approved in-conversation, at /handoff/approvals.
       approvals = { };
 
       skills."scooter-handoff.md" = ./skills/scooter-handoff.md;

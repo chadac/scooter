@@ -961,8 +961,8 @@ let
     ++ (if approvalsJson == null || (approvalsJson.aws.pendingPath or null) != null then [ ]
         else [ ("aws.pendingPath is null — an approval window lost to a pod rollout would"
                 + " never be re-raised, leaving a blocked agent and a user with nothing to click") ])
-    ++ (if approvalsJson == null || (approvalsJson.commits.pendingPath or null) == "/commits/proposals/pending" then [ ]
-        else [ "APPROVAL_CONTRIBS_JSON has no commits row with its pendingPath (contrib/commits/deployment.nix)" ])
+    ++ (if approvalsJson == null || (approvalsJson.commits.pendingPath or null) == "/commits/approvals/pending" then [ ]
+        else [ "APPROVAL_CONTRIBS_JSON has no commits row at /commits/approvals/pending" ])
     # Every enabled contrib declaring approvals gets a row, by default at /<name>/approvals.
     ++ map (n: "contribs.${n} declares approvals but APPROVAL_CONTRIBS_JSON has no row with a pendingPath for it")
         (builtins.filter (n: (approvalsJson.${n}.pendingPath or null) == null)
@@ -1353,8 +1353,8 @@ let
     # handoff spawns through the router, so enabling it must make the broker a spawner.
     ++ (if builtins.any (e: e.name == "CONVERSATION_SPAWNER_SERVICE_ACCOUNTS" && nixpkgsLib.hasSuffix ":agent-broker" e.value) handoffRouterEnv then [ ]
         else [ "enabling handoff did not add the broker to conversationController.spawners" ])
-    ++ (if (handoffEval.config.scooter.approvals.handoff.brokerPrefix or null) == "/handoff/spawns" then [ ]
-        else [ "enabling handoff did not route its approval cards to /handoff/spawns" ])
+    ++ (if (handoffEval.config.scooter.approvals.handoff.brokerPrefix or null) == "/handoff/approvals" then [ ]
+        else [ "enabling handoff did not route its approval cards to /handoff/approvals" ])
     ++ (if builtins.any (e: e.name == "HANDOFF_REQUIRE_APPROVAL" && e.value == "true") handoffBrokerEnv then [ ]
         else [ "handoff spawns did not default to needing approval (HANDOFF_REQUIRE_APPROVAL)" ])
     ++ (if builtins.any (e: e.name == "CONVERSATION_READER_SERVICE_ACCOUNTS" && nixpkgsLib.hasSuffix ":agent-broker" e.value) handoffRouterEnv then [ ]

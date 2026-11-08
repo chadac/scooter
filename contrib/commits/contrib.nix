@@ -11,6 +11,7 @@
     db = {
       enable = true;
       tables.commit_identities = { };
+      # Unwritten; kept for decided rows, dropped next release.
       tables.commit_identity_proposals = { };
     };
 
@@ -20,7 +21,7 @@
       env.COMMITS_ENABLED = "true";
     };
 
-    # Proposals are approved in-conversation; routing lives in ./deployment.nix.
+    # Proposals are approved in-conversation, at /commits/approvals.
     approvals = { };
     ui.interruptRenderers."commits.identity".entry = "ui/ProposalCard.tsx";
 

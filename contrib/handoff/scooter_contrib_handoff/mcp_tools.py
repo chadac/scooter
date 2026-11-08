@@ -12,14 +12,15 @@ import logging
 import httpx
 from fastmcp import FastMCP
 
+from scooter_broker_lib.approvals import Approvals, TooManyPending
 from scooter_broker_lib.mcp import ToolContext, ToolContextDep, ToolResult
 from scooter_broker_lib.owner import OwnerResolver
 
 from .agent_host import AgentHost
-from .host import Cards, NoCards
+from .approvals import Spawn
 from .index import refresh_owned
 from .spawn import SpawnFailed, Spawner
-from .store import HandoffStore, Refused
+from .store import HandoffStore
 
 logger = logging.getLogger(__name__)
 
@@ -33,18 +34,19 @@ _store: HandoffStore | None = None
 _agent_host: AgentHost | None = None
 _spawner: Spawner | None = None
 _owners: OwnerResolver | None = None
-_cards: Cards = NoCards()
+_spawns: Approvals[Spawn] | None = None
 _require_approval = True
 
 
 def configure(
     store: HandoffStore | None, agent_host: AgentHost | None, base_url: str, *,
-    owners: OwnerResolver | None = None, cards: Cards | None = None, require_approval: bool = True,
+    owners: OwnerResolver | None = None, spawns: Approvals[Spawn] | None = None,
+    require_approval: bool = True,
 ) -> None:
-    global _store, _agent_host, _spawner, _owners, _cards, _require_approval
+    global _store, _agent_host, _spawner, _owners, _spawns, _require_approval
     _store, _agent_host, _owners = store, agent_host, owners
     _spawner = Spawner(agent_host, base_url, owners) if agent_host else None
-    _cards = cards or NoCards()
+    _spawns = spawns
     _require_approval = require_approval
 
 
@@ -99,20 +101,17 @@ async def handoff_spawn(
             return ToolResult.error(str(e))
 
     access = await _owners.access(source_id) if _owners else None
+    if _spawns is None:
+        return ToolResult.error("handoff approvals are not configured here")
     if access is None or not access.owner:
         return ToolResult.error("handoff needs the owner's approval, and this conversation has no known owner")
     try:
-        req = await _store.request_spawn(
-            source_id, access.owner, brief=brief, title=title, model=model,
-            folder=folder or None,
+        req = await _spawns.request(
+            source_id, Spawn(brief=brief, title=title, model=model, folder=folder or None), owner=access.owner,
         )
-    except Refused as e:
+    except TooManyPending as e:
         return ToolResult.error(f"handoff refused: {e}")
-    await _cards.raise_(req)
-    return ToolResult.ok(json.dumps({
-        "status": "pending_approval", "request_id": req.id,
-        "note": "The user must approve this handoff. A message will tell you the outcome; do not retry.",
-    }))
+    return ToolResult.ok(json.dumps(Approvals.pending_result(req)))
 
 
 async def _check_folder(source_id: str, folder: str) -> str | None:

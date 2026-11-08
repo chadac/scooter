@@ -1,4 +1,4 @@
-"""The search index and pending spawn requests, in this contrib's own `contrib_handoff` database.
+"""The search index, in this contrib's own `contrib_handoff` database.
 
 The DDL lives in contrib/handoff/sql/schema.sql (Atlas owns it); this module never creates
 tables. Search uses Postgres full-text search, with a LIKE fallback for the SQLite tests.
@@ -7,11 +7,9 @@ tables. Search uses Postgres full-text search, with a LIKE fallback for the SQLi
 from __future__ import annotations
 
 import re
-import time
-import uuid
 from dataclasses import dataclass
 
-from sqlalchemy import BigInteger, Integer, String, Text, delete, func, select, text, update
+from sqlalchemy import BigInteger, Integer, String, Text, delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -44,59 +42,6 @@ class _Message(_Base):
     seq: Mapped[int] = mapped_column(Integer, primary_key=True)
     role: Mapped[str] = mapped_column(String)
     text: Mapped[str] = mapped_column(Text)
-
-
-class _SpawnRequest(_Base):
-    __tablename__ = "handoff_spawn_requests"
-
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    conversation_id: Mapped[str] = mapped_column(String)
-    owner: Mapped[str] = mapped_column(String)
-    brief: Mapped[str] = mapped_column(Text)
-    title: Mapped[str] = mapped_column(Text)
-    model: Mapped[str] = mapped_column(String)
-    status: Mapped[str] = mapped_column(String)
-    spawned_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    folder: Mapped[str | None] = mapped_column(String, nullable=True)
-    created_at: Mapped[int] = mapped_column(BigInteger)
-    decided_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-
-
-# Pending requests one conversation may hold at once.
-MAX_PENDING = 3
-
-
-class Refused(Exception):
-    """A spawn request that cannot be made or answered, with the reason."""
-
-
-class NotYours(Refused):
-    pass
-
-
-@dataclass(frozen=True)
-class SpawnRequest:
-    id: str
-    conversation_id: str
-    owner: str
-    brief: str
-    title: str
-    model: str
-    status: str
-    spawned_id: str | None = None
-    # The owner's folder to file the new conversation in.
-    folder: str | None = None
-
-
-def _request(row: _SpawnRequest) -> SpawnRequest:
-    return SpawnRequest(
-        row.id, row.conversation_id, row.owner, row.brief, row.title, row.model, row.status, row.spawned_id,
-        row.folder,
-    )
-
-
-def _now_ms() -> int:
-    return int(time.time() * 1000)
 
 
 @dataclass(frozen=True)
@@ -147,62 +92,6 @@ class HandoffStore:
         async with self._session() as s, s.begin():
             await s.execute(delete(_Message).where(_Message.conversation_id.in_(ids)))
             await s.execute(delete(_Conversation).where(_Conversation.conversation_id.in_(ids)))
-
-    async def request_spawn(
-        self, conversation_id: str, owner: str, *, brief: str, title: str, model: str,
-        folder: str | None = None,
-    ) -> SpawnRequest:
-        """A spawn waiting for the owner's approval; Refused past MAX_PENDING."""
-        async with self._session() as s, s.begin():
-            waiting = await s.scalar(select(func.count()).select_from(_SpawnRequest).where(
-                _SpawnRequest.conversation_id == conversation_id, _SpawnRequest.status == "pending",
-            ))
-            if waiting >= MAX_PENDING:
-                raise Refused(f"this conversation already has {waiting} handoffs waiting for approval")
-            row = _SpawnRequest(
-                id=str(uuid.uuid4()), conversation_id=conversation_id, owner=owner, brief=brief,
-                title=title, model=model, status="pending", folder=folder, created_at=_now_ms(),
-            )
-            s.add(row)
-        return _request(row)
-
-    async def spawn_request(self, request_id: str) -> SpawnRequest | None:
-        async with self._session() as s:
-            row = await s.get(_SpawnRequest, request_id)
-        return _request(row) if row else None
-
-    async def pending_spawns(self, conversation_id: str) -> list[SpawnRequest]:
-        q = (
-            select(_SpawnRequest)
-            .where(_SpawnRequest.conversation_id == conversation_id, _SpawnRequest.status == "pending")
-            .order_by(_SpawnRequest.created_at)
-        )
-        async with self._session() as s:
-            return [_request(r) for r in (await s.scalars(q)).all()]
-
-    async def decide_spawn(self, request_id: str, approver: str, status: str) -> SpawnRequest:
-        """Move the owner's pending request to `status`, exactly once."""
-        async with self._session() as s, s.begin():
-            row = await s.get(_SpawnRequest, request_id)
-            if row is None or row.owner != approver:
-                raise NotYours("no such handoff request for this user")
-            claimed = await s.execute(
-                update(_SpawnRequest)
-                .where(_SpawnRequest.id == request_id, _SpawnRequest.status == "pending")
-                .values(status=status, decided_at=_now_ms())
-                .execution_options(synchronize_session=False)
-            )
-            if claimed.rowcount != 1:
-                raise Refused(f"this handoff request is already {row.status}")
-            await s.refresh(row)
-        return _request(row)
-
-    async def record_spawn(self, request_id: str, *, spawned_id: str | None, status: str) -> None:
-        """An approved request's outcome: the new conversation, or failed."""
-        async with self._session() as s, s.begin():
-            await s.execute(
-                update(_SpawnRequest).where(_SpawnRequest.id == request_id).values(status=status, spawned_id=spawned_id)
-            )
 
     async def search(
         self, query: str, limit: int, *, owner: str | None = None, exclude: set[str] = frozenset(),

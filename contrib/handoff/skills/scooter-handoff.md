@@ -30,7 +30,8 @@ sandbox and its own place in the sidebar, and nothing reports back to you.
 - **The user approves it first** (unless the deployment turned that off). The call
   returns `pending_approval` at once and the user sees an approval card with the
   title, model and brief. A message tells you the new conversation's id and url, or
-  that it was denied. Don't call it again while you wait.
+  that it was denied. Don't call it again while you wait. A request nobody answers
+  lapses after 24 hours.
 - **Write the brief to stand alone.** The new agent sees none of this conversation.
   Give the goal, what is done, what is left, the repos and branches, and the decisions
   already made. Ask yourself whether a stranger could start from it.

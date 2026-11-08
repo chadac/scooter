@@ -15,9 +15,7 @@ CREATE TABLE "commit_identities" (
   PRIMARY KEY ("user_id")
 );
 
--- An agent's proposed identity, until the user approves or denies it. Approving
--- one supersedes the user's other pending proposals; `status` is 'pending',
--- 'approved', 'denied' or 'superseded'. `conversation_id` is where its card is.
+-- Unwritten; kept for decided rows, dropped next release.
 CREATE TABLE "commit_identity_proposals" (
   "id"              character varying NOT NULL,
   "user_id"         character varying NOT NULL,
