@@ -14,6 +14,7 @@ import {
   SourceBadge,
   Spinner,
   textareaClass,
+  useContribChanges,
   type ViewConversation,
 } from "@/src/contrib/sdk";
 
@@ -27,8 +28,6 @@ const PRIORITY_LABEL: Record<Priority, string> = {
   urgent: "Urgent",
 };
 const MAX_BLOCKER_MATCHES = 8;
-// The agent edits these too, and nothing pushes that here.
-const POLL_MS = 15_000;
 
 /** A card that waits on another, or is waited on; done means in the last stage. */
 interface Related {
@@ -259,9 +258,9 @@ export function CardDetails({
     setRow(null);
     setError(null);
     void load();
-    const timer = setInterval(() => document.visibilityState === "visible" && void load(), POLL_MS);
-    return () => clearInterval(timer);
   }, [load]);
+  // Any card's change may be a blocker of this one.
+  useContribChanges("kanban", () => void load());
 
   const call = async (path: string, method: string, json: unknown, what: string) => {
     const res = await conversationApi("kanban", id, path, { method, json }).catch(() => null);

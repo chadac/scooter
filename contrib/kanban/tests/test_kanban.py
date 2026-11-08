@@ -42,6 +42,9 @@ class FakeFolders:
         self.conversations: dict[str, Conversation] = {}
         self.placements: dict[tuple[str, str], str] = {}
         self.next = 0
+        # Change pushes, as (owner, conversation ids).
+        self.pushed: list[tuple[str, list[str]]] = []
+        self.push_error = False
 
     def names(self, owner: str, parent: str = "") -> list[str]:
         mine = self.by_owner.get(owner, {})
@@ -98,6 +101,11 @@ class FakeFolders:
     async def file(self, owner: str, conversation: str, folder: str) -> None:
         self._get(owner, folder)
         self.placements[(owner, conversation)] = folder
+
+    async def changed(self, owner: str, conversations: list[str]) -> None:
+        if self.push_error:
+            raise FolderError(502, "router unreachable")
+        self.pushed.append((owner, conversations))
 
 
 @pytest.fixture
@@ -608,6 +616,9 @@ async def test_the_router_is_called_as_the_broker_for_the_user(tmp_path):
     assert await folders.placement("alice", "conv-1") == "f-9"
     await folders.file("alice", "conv-1", "f-9")
     assert (str(seen[-1].url), json.loads(seen[-1].content)) == ("http://router/conversations/conv-1/folder", {"folderId": "f-9"})
+    await folders.changed("alice", ["conv-1"])
+    assert str(seen[-1].url) == "http://router/conversations/events"
+    assert json.loads(seen[-1].content) == {"contrib": "kanban", "conversations": ["conv-1"]}
     with pytest.raises(FolderError) as e:
         await folders.update("alice", "f-9", name="Design")
     assert e.value.status == 409 and "already" in e.value.detail
@@ -1022,3 +1033,72 @@ async def test_clearing_the_last_open_blocker_tells_the_agent(app, boards, folde
         await c.put("/kanban/conversation/key-ui/card/blockers", json={"blocked_by": []})
         await c.put("/kanban/conversation/key-ui/card/blockers", json={"blocked_by": []})
     assert [c for c, _ in sent.messages] == ["conv-ui"] and "removed" in sent.messages[0][1]
+
+
+# --- loading and pushing a board ----------------------------------------------------
+
+async def test_the_board_loads_the_cards_it_asks_for_in_one_read(app, boards, folders):
+    board = await _cards(app, boards, folders, "api", "schema", "ui")
+    folders.conversations["key-gone"] = Conversation(id="conv-gone", owner="alice", title="Gone")
+    folders.placements[("alice", "conv-gone")] = _stage(board, "Design")
+    folders.placements[("alice", "conv-ui")] = board["folder"]
+    assert not (await mcp_tools.kanban_set_blockers(blocked_by=["conv-schema", "conv-gone"], ctx=_ctx("thread-api"))).is_error
+    # A blocker off the board no longer counts.
+    folders.placements[("alice", "conv-gone")] = "elsewhere"
+    await mcp_tools.kanban_set_status(column="Review", note="in review", ctx=_ctx("thread-schema"))
+    await mcp_tools.kanban_set_details(priority="high", ctx=_ctx("thread-api"))
+    async with as_(app, user="alice") as c:
+        tag = (await c.post(f"/kanban/user/boards/{board['folder']}/tags", json={"name": "bug"})).json()
+        tag_id = tag["boards"][0]["tags"][0]["id"]
+        assert (await c.put("/kanban/conversation/key-ui/card/tags", json={"tags": [tag_id]})).status_code == 200
+        asked = ["conv-api", "conv-schema", "conv-ui", "conv-gone", "conv-nobody"]
+        r = await c.post(f"/kanban/user/boards/{board['folder']}/cards", json={"conversations": asked})
+        assert r.status_code == 200, r.text
+        cards = r.json()["cards"]
+        assert set(cards) == {"conv-api", "conv-schema", "conv-ui"}
+        # A blocker the board didn't ask for still resolves.
+        only = (await c.post(f"/kanban/user/boards/{board['folder']}/cards", json={"conversations": ["conv-api"]})).json()
+        assert only["cards"] == {"conv-api": cards["conv-api"]}
+        # Each entry is what the one-card route answers.
+        for conv in cards:
+            one = (await c.get(f"/kanban/conversation/key-{conv.removeprefix('conv-')}/card")).json()
+            assert cards[conv] == one, conv
+    assert cards["conv-api"]["blockers"] == [{"id": "conv-schema", "title": "Schema", "stage": "Review", "done": False}]
+    assert cards["conv-api"]["priority"] == "high" and cards["conv-ui"]["tags"] == [tag_id]
+    assert cards["conv-schema"]["card"]["note"] == "in review" and cards["conv-ui"]["card"] is None
+
+
+async def test_only_the_owner_loads_a_board(app, boards, folders):
+    board = await _cards(app, boards, folders, "api")
+    ask = {"conversations": ["conv-api"]}
+    async with as_(app, user="bob") as c:
+        r = await c.post(f"/kanban/user/boards/{board['folder']}/cards", json=ask)
+        assert r.status_code == 404
+    async with as_(app, user="alice") as c:
+        assert (await c.post("/kanban/user/boards/..x/cards", json=ask)).status_code == 400
+        url = f"/kanban/user/boards/{board['folder']}/cards"
+        for body in [{}, {"conversations": "conv-api"}, {"conversations": [""]}, {"conversations": ["c"] * 201}]:
+            assert (await c.post(url, json=body)).status_code == 400, body
+
+
+async def test_card_changes_push_to_the_owners_boards(app, boards, folders):
+    board = await _cards(app, boards, folders, "api", "schema")
+    folders.pushed.clear()
+    await mcp_tools.kanban_set_status(column="In progress", ctx=_ctx("thread-api"))
+    await mcp_tools.kanban_set_blockers(blocked_by=["conv-schema"], ctx=_ctx("thread-api"))
+    await mcp_tools.kanban_set_details(description="the plan", ctx=_ctx("thread-api"))
+    assert folders.pushed == [("alice", ["conv-api"])] * 3
+    folders.pushed.clear()
+    async with as_(app, user="alice") as c:
+        await c.put("/kanban/conversation/key-api/card", json={"column": _stage(board, "Review")})
+        await c.patch("/kanban/conversation/key-api/details", json={"priority": "low"})
+        await c.post(f"/kanban/user/boards/{board['folder']}/tags", json={"name": "bug"})
+    assert folders.pushed == [("alice", ["conv-api"]), ("alice", ["conv-api"]), ("alice", [])]
+
+
+async def test_a_failed_push_leaves_the_change_made(app, boards, folders, store):
+    await _cards(app, boards, folders, "api")
+    folders.push_error = True
+    out = await mcp_tools.kanban_set_status(column="Review", note="up", ctx=_ctx("thread-api"))
+    assert not out.is_error
+    assert (await store.card("key-api")).note == "up"

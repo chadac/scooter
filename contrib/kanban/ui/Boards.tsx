@@ -3,8 +3,9 @@
 // A board is a locked folder only kanban changes, and each of its stages a locked folder inside
 // it, so a card's stage is the folder its conversation is filed in. /boards lists the boards;
 // /boards/<folderId> shows one, with the chat of the open card beside it. Boards and stages come
-// from /kanban/user/boards, each card's note and order from its conversation's relay. Moving a
-// card files the conversation in the stage, then tells it as the user.
+// from /kanban/user/boards. Each lane shows its most recent cards, more as it scrolls, read
+// with POST /kanban/user/boards/<id>/cards and again when kanban pushes a change to them. Moving a card files the
+// conversation in the stage, then tells it as the user.
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { ArrowLeft, ChevronLeft, ChevronRight, Lock, Pencil, Plus, Tag as TagIcon, Trash2, X } from "lucide-react";
 import {
@@ -23,6 +24,7 @@ import {
   send,
   Spinner,
   StatusDot,
+  useContribChanges,
   useConversations,
   useFolders,
   useOpenConversation,
@@ -75,12 +77,15 @@ interface CardView {
   priority?: string;
 }
 
-// Agents move their own cards, and nothing pushes that here.
-const POLL_MS = 15_000;
 const CARD_MIME = "application/x-scooter-kanban-card";
 const MAX_CARD_TAGS = 5;
 // `tagging` while the Details tab's tag field is open.
 const DETAILS_TAGS = "details";
+// Cards a lane shows at first, and adds per scroll.
+const LANE_PAGE = 50;
+const MAX_READ_CARDS = 200;
+// Scrolling this close to a lane's end shows its next page.
+const SCROLL_SLACK_PX = 200;
 
 // Literal class strings, so Tailwind sees each palette key's classes.
 const TAG_CLASS: Record<string, string> = {
@@ -259,6 +264,19 @@ function ago(iso: string): string {
   return h < 48 ? `${h}h ago` : `${Math.round(h / 24)}d ago`;
 }
 
+/** A lane's `limit` most recent cards, in board order. */
+export function pageLane<C extends { id: string; lastActivityAt: number }>(
+  lane: C[],
+  limit: number,
+  recent: (c: C) => number,
+  position: (id: string) => number,
+): C[] {
+  return [...lane]
+    .sort((a, b) => recent(b) - recent(a))
+    .slice(0, limit)
+    .sort((a, b) => position(a.id) - position(b.id) || b.lastActivityAt - a.lastActivityAt);
+}
+
 /** A position strictly between two neighbours; either may be missing. */
 function between(before?: number, after?: number): number {
   if (before === undefined && after === undefined) return 0;
@@ -352,6 +370,10 @@ export default function BoardsView() {
   const folders = useFolders();
   const conversations = useConversations();
   const { boards, error, create, rename, remove, save, addTags, reload } = useBoards();
+  // No ids: the boards themselves changed.
+  useContribChanges("kanban", (ids) => {
+    if (ids.length === 0) void reload().catch(() => undefined);
+  });
 
   if (error && !boards) return <ErrorState variant="boxed" title="Boards failed to load." error={error} />;
   if (!boards) {
@@ -526,20 +548,39 @@ function Board({
     };
   }, []);
 
-  const idsKey = conversations.map((c) => c.id).join(",");
-  const loadCard = useCallback(async (id: string) => {
-    const res = await conversationApi("kanban", id, "card");
-    if (!res.ok) return;
-    const v = (await res.json()) as CardView;
-    if (live.current) setCards((prev) => ({ ...prev, [id]: v }));
-  }, []);
-  useEffect(() => {
-    const ids = idsKey ? idsKey.split(",") : [];
-    const load = () => void Promise.all(ids.map((id) => loadCard(id).catch(() => undefined)));
-    load();
-    const timer = setInterval(() => document.visibilityState === "visible" && load(), POLL_MS);
-    return () => clearInterval(timer);
-  }, [idsKey, loadCard]);
+  // Recency when first seen, so later activity doesn't reshuffle what shows.
+  const rank = useRef(new Map<string, number>());
+  for (const c of conversations) if (!rank.current.has(c.id)) rank.current.set(c.id, c.lastActivityAt);
+  const [limits, setLimits] = useState<Record<string, number>>({});
+  const more = (lane: string) => setLimits((l) => ({ ...l, [lane]: (l[lane] ?? LANE_PAGE) + LANE_PAGE }));
+
+  // One reader drains the queue, at most MAX_READ_CARDS per request.
+  const queue = useRef({ ids: new Set<string>(), running: false });
+  const load = useCallback(
+    (ids: Iterable<string>) => {
+      const q = queue.current;
+      for (const id of ids) q.ids.add(id);
+      if (q.running) return;
+      q.running = true;
+      void (async () => {
+        try {
+          while (q.ids.size && live.current) {
+            const batch = [...q.ids].slice(0, MAX_READ_CARDS);
+            for (const id of batch) q.ids.delete(id);
+            const res = await contribFetch("kanban", `boards/${encodeURIComponent(folder.id)}/cards`, {
+              method: "POST",
+              json: { conversations: batch },
+            }).catch(() => null);
+            const body = res?.ok ? ((await res.json().catch(() => null)) as { cards?: Record<string, CardView> } | null) : null;
+            if (body?.cards && live.current) setCards((p) => ({ ...p, ...body.cards }));
+          }
+        } finally {
+          q.running = false;
+        }
+      })();
+    },
+    [folder.id],
+  );
 
   useEffect(() => {
     setPending((p) => {
@@ -551,6 +592,7 @@ function Board({
   }, [conversations]);
 
   const first = stages[0]?.id ?? "";
+  const last = stages.at(-1)?.id ?? "";
   const stageOf = useCallback(
     (conv: ViewConversation) => {
       const at = pending[conv.id] ?? conv.folderId ?? "";
@@ -558,13 +600,38 @@ function Board({
     },
     [pending, stages, first],
   );
-  const lanes = useMemo(() => {
-    const out: Record<string, ViewConversation[]> = Object.fromEntries(stages.map((s) => [s.id, []]));
-    for (const conv of conversations) out[stageOf(conv)]?.push(conv);
+  // Each lane's cards, the most recent LANE_PAGE (or more once scrolled) shown.
+  const { lanes, counts } = useMemo(() => {
+    const all: Record<string, ViewConversation[]> = Object.fromEntries(stages.map((s) => [s.id, []]));
+    for (const conv of conversations) all[stageOf(conv)]?.push(conv);
+    const recent = (c: ViewConversation) => rank.current.get(c.id) ?? c.lastActivityAt;
     const pos = (id: string) => cards[id]?.card?.position ?? 0;
-    for (const lane of Object.values(out)) lane.sort((a, b) => pos(a.id) - pos(b.id) || b.lastActivityAt - a.lastActivityAt);
-    return out;
-  }, [stages, conversations, cards, stageOf]);
+    const lanes: Record<string, ViewConversation[]> = {};
+    const counts: Record<string, number> = {};
+    for (const [id, lane] of Object.entries(all)) {
+      counts[id] = lane.length;
+      lanes[id] = pageLane(lane, limits[id] ?? LANE_PAGE, recent, pos);
+    }
+    return { lanes, counts };
+  }, [stages, conversations, cards, stageOf, limits]);
+
+  // Read each shown card once; pushes re-read the cards they name.
+  const shown = useMemo(() => Object.values(lanes).flat().map((c) => c.id), [lanes]);
+  const read = useRef(new Set<string>());
+  const shownKey = shown.join(",");
+  useEffect(() => {
+    const fresh = shownKey ? shownKey.split(",").filter((id) => !read.current.has(id)) : [];
+    for (const id of fresh) read.current.add(id);
+    if (fresh.length) load(fresh);
+  }, [shownKey, load]);
+  useContribChanges("kanban", (ids) => load(ids.length ? ids.filter((id) => read.current.has(id)) : shown));
+
+  // A blocker is done once in the last stage, wherever it is now.
+  const waitingOn = (id: string) =>
+    (cards[id]?.blockers ?? []).filter((b) => {
+      const conv = conversations.find((c) => c.id === b.id);
+      return conv ? stageOf(conv) !== last : !b.done;
+    });
 
   // Board order, for stepping through cards with the chat open.
   const order = useMemo(() => stages.flatMap((s) => lanes[s.id] ?? []), [stages, lanes]);
@@ -604,7 +671,11 @@ function Board({
         ...Object.fromEntries(shifts.map(([cid, at]) => [cid, placed(cid, at, false)])),
         [id]: placed(id, position, from !== column),
       }));
-      if (from !== column) setPending((p) => ({ ...p, [id]: column }));
+      if (from !== column) {
+        // Shown in its new lane, however old it is.
+        rank.current.set(id, Date.now());
+        setPending((p) => ({ ...p, [id]: column }));
+      }
       const put = (cid: string, at: number) =>
         conversationApi("kanban", cid, "card", { method: "PUT", json: { column, position: at } })
           .then((r) => r.ok)
@@ -970,10 +1041,17 @@ function Board({
                     </Button>
                   </span>
                 ) : (
-                  <span className="text-xs tabular-nums text-muted-foreground">{lanes[col.id]?.length ?? 0}</span>
+                  <span className="text-xs tabular-nums text-muted-foreground">{counts[col.id] ?? 0}</span>
                 )}
               </header>
-              <ol className="flex min-h-16 flex-1 flex-col gap-2 overflow-y-auto px-2 pt-1 pb-2">
+              <ol
+                className="flex min-h-16 flex-1 flex-col gap-2 overflow-y-auto px-2 pt-1 pb-2"
+                onScroll={(e) => {
+                  const el = e.currentTarget;
+                  const hidden = (counts[col.id] ?? 0) > (lanes[col.id]?.length ?? 0);
+                  if (hidden && el.scrollTop + el.clientHeight >= el.scrollHeight - SCROLL_SLACK_PX) more(col.id);
+                }}
+              >
                 {i === 0 && !editing && (
                   <li
                     onDragOver={(e) => {
@@ -1001,7 +1079,7 @@ function Board({
                 )}
                 {(lanes[col.id] ?? []).map((conv) => {
                   const card = cards[conv.id]?.card;
-                  const waiting = (cards[conv.id]?.blockers ?? []).filter((b) => !b.done);
+                  const waiting = waitingOn(conv.id);
                   const cardTags = tagsOf(conv.id);
                   const open = showing && conv.id === openId;
                   return (
@@ -1105,6 +1183,19 @@ function Board({
                     </li>
                   );
                 })}
+                {(counts[col.id] ?? 0) > (lanes[col.id]?.length ?? 0) && (
+                  <li>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      data-testid="kanban-lane-more"
+                      className="w-full text-xs text-muted-foreground"
+                      onClick={() => more(col.id)}
+                    >
+                      Show {Math.min(LANE_PAGE, (counts[col.id] ?? 0) - (lanes[col.id]?.length ?? 0))} more
+                    </Button>
+                  </li>
+                )}
               </ol>
             </section>
           ))}
@@ -1194,7 +1285,7 @@ function Board({
                   board={order}
                   move={(column) => void move(openConv.id, column)}
                   open={openConversation}
-                  changed={() => void loadCard(openConv.id).catch(() => undefined)}
+                  changed={() => load([openConv.id])}
                   tagField={
                     tagging === DETAILS_TAGS ? (
                       <TagInput

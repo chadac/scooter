@@ -22,6 +22,12 @@ MAX_BOARD_TAGS = 20
 MAX_CARD_TAGS = 5
 # Palette keys; the board maps each to its own classes.
 TAG_COLORS = ("gray", "red", "orange", "yellow", "green", "teal", "blue", "purple")
+# Router lookups a board load runs at once.
+MAX_LOOKUPS = 8
+# The most cards one board read may ask for.
+MAX_READ_CARDS = 200
+# More card ids than this push as none, meaning any.
+MAX_PUSH_IDS = 100
 
 logger = logging.getLogger(__name__)
 
@@ -149,6 +155,24 @@ class Boards:
             await self.store.add_stage(board, folder, name, float(i + 1))
         return await self.store.stages(board)
 
+    async def changed(self, owner: str, *conversations: str) -> None:
+        """Tell `owner`'s open boards; never raises, and no ids means anything."""
+        ids = list(dict.fromkeys(c for c in conversations if c))
+        try:
+            await self.folders.changed(owner, ids if len(ids) <= MAX_PUSH_IDS else [])
+        except FolderError as e:
+            logger.warning("kanban change push failed", extra={"status": e.status, "error": e.detail})
+
+    async def changed_card(self, key: str, owner: str = "") -> None:
+        """`changed` for a card known only by its key."""
+        try:
+            conv = await self.folders.conversation(key)
+        except FolderError as e:
+            logger.warning("kanban change push failed", extra={"status": e.status, "error": e.detail})
+            return
+        if conv is not None:
+            await self.changed(owner or conv.owner, conv.id)
+
     async def list(self, owner: str, board: str | None = None) -> list[dict]:
         """`owner`'s boards with their stages and tags; only `board` when given."""
         return [
@@ -211,6 +235,7 @@ class Boards:
         outcome = sorted((st for st, _ in done if st is not None), key=lambda st: st.position)
         tag_at = positions([old_tags[t.id].position if t.id else None for t in tags])
         await self.store.save_board(board, outcome, [replace(t, position=p) for t, p in zip(tags, tag_at)])
+        await self.changed(owner)
         failed = next((e for _, e in done if e is not None), None)
         if failed is not None:
             raise _refused(failed)
@@ -264,6 +289,7 @@ class Boards:
             raise _refused(e) from None
         await self.store.add_board(owner, board)
         await self.stages(board, owner)
+        await self.changed(owner)
         return board
 
     async def rename(self, owner: str, board: str, name: str) -> None:
@@ -271,6 +297,7 @@ class Boards:
             await self.folders.update(owner, await self.own(owner, board), name=name)
         except FolderError as e:
             raise _refused(e) from None
+        await self.changed(owner)
 
     async def delete(self, owner: str, board: str) -> None:
         try:
@@ -280,6 +307,7 @@ class Boards:
             if e.status != 404:
                 raise _refused(e) from None
         await self.store.remove_board(owner, board)
+        await self.changed(owner)
 
     async def add_stage(self, owner: str, board: str, name: str) -> None:
         stages = await self.stages(await self.own(owner, board), owner)
@@ -288,6 +316,7 @@ class Boards:
         except FolderError as e:
             raise _refused(e) from None
         await self.store.add_stage(board, folder, name, (stages[-1].position if stages else 0.0) + 1)
+        await self.changed(owner)
 
     async def update_stage(
         self, owner: str, board: str, stage: str, *, name: str | None = None, position: float | None = None
@@ -299,6 +328,7 @@ class Boards:
         except FolderError as e:
             raise _refused(e) from None
         await self.store.update_stage(stage, name=name, position=position)
+        await self.changed(owner)
 
     async def delete_stage(self, owner: str, board: str, stage: str) -> None:
         await self.own_stage(owner, board, stage)
@@ -311,6 +341,7 @@ class Boards:
             if e.status != 404:
                 raise _refused(e) from None
         await self.store.remove_stage(stage)
+        await self.changed(owner)
 
     async def at(self, folder: str) -> tuple[Place, list[Stage], Stage] | None:
         """The board, its stages and the stage a folder shows as; None off every board."""
@@ -364,6 +395,7 @@ class Boards:
         card = await self.store.put(key, column=to.folder, by="agent", note=note)
         if to == last and where.stage != last:
             await self.release(key, owner, board)
+        await self.changed(owner, where.conversation.id)
         return Located(where.conversation, where.place, where.stages, to, to.folder), card
 
     async def user_move(self, key: str, owner: str, column: str, position: float | None) -> Card:
@@ -376,6 +408,7 @@ class Boards:
         stages = await self.stages(place.board, owner)
         if column == stages[-1].folder and (before is None or before.column != column):
             await self.release(key, owner, place.board)
+        await self.changed_card(key, owner)
         return card
 
     async def _conversation(self, ref: str) -> Conversation | None:
@@ -455,6 +488,7 @@ class Boards:
                 raise BoardError(409, f'"{conv.title or conv.id}" already waits on this card, so it can\'t block it')
             chosen.append(conv)
         await self.store.set_blockers(card.key, [c.key for c in chosen], by=by)
+        await self.changed(owner, card.id)
         return await self.blockers(card.key, owner, board, placements=placements)
 
     async def add_card(self, key: str, ref: str, refs: list[str]) -> tuple[Conversation, Stage, list[Blocker]]:
@@ -498,6 +532,42 @@ class Boards:
                 "blocked_by": [b.payload() for b in blockers],
             }))
         return [c for _, c in sorted(out, key=lambda t: t[0])]
+
+    async def board_cards(self, owner: str, board: str, conversations: list[str]) -> dict[str, dict]:
+        """The cards of `conversations` on `board`, by conversation id, in one read."""
+        stages = await self.stages(await self.own(owner, board), owner)
+        # The board folder itself shows as its first stage.
+        stage_of = {s.folder: s for s in stages} | {board: stages[0]}
+        placements = await self._placements(owner)
+        gate = asyncio.Semaphore(MAX_LOOKUPS)
+
+        async def look(ref: str) -> Conversation | None:
+            async with gate:
+                conv = await self._conversation(ref)
+            on_board = conv is not None and conv.owner == owner and placements.get(conv.id) in stage_of
+            return conv if on_board else None
+
+        asked = list(dict.fromkeys(conversations))
+        on = {c.key: c for c in await asyncio.gather(*(look(c) for c in asked)) if c is not None}
+        view = await self.store.board_view(list(on))
+        # Blockers outside the asked cards still need their stage.
+        rest = {k for ks in view.blockers.values() for k in ks} - on.keys()
+        near = on | {c.key: c for c in await asyncio.gather(*(look(k) for k in rest)) if c is not None}
+
+        # As in `blockers`, only cards on this board block.
+        def blocker(k: str) -> dict:
+            stage = stage_of[placements[near[k].id]]
+            return Blocker(near[k].id, near[k].title, stage.name, stage == stages[-1]).payload()
+
+        return {
+            conv.id: {
+                "card": view.cards[key].payload() if key in view.cards else None,
+                "blockers": [blocker(k) for k in view.blockers.get(key, []) if k in near],
+                "tags": view.tags.get(key, []),
+                "priority": view.details.get(key, Details()).payload()["priority"],
+            }
+            for key, conv in on.items()
+        }
 
     async def release(self, key: str, owner: str, board: str) -> list[str]:
         """Message each card whose last open blocker `key` was; returns their conversation ids.
@@ -595,12 +665,16 @@ class Boards:
 
         With `owner`, the user's edit: only to a conversation of theirs, not one shared with them.
         """
-        if owner:
-            conv = await self._conversation(key)
-            if conv is None or conv.owner != owner:
-                raise BoardError(404, "you can only change the details of your own conversations")
+        conv = await self._conversation(key) if owner else None
+        if owner and (conv is None or conv.owner != owner):
+            raise BoardError(404, "you can only change the details of your own conversations")
         level = None if priority is None else parse_priority(priority)
-        return await self.store.set_details(key, by=by, description=description, priority=level)
+        details = await self.store.set_details(key, by=by, description=description, priority=level)
+        if conv is not None:
+            await self.changed(owner, conv.id)
+        else:
+            await self.changed_card(key)
+        return details
 
     async def _tag_name(self, board: str, name: str, *, skip: str = "") -> str:
         name = name.strip()
@@ -630,7 +704,9 @@ class Boards:
         if color is None:
             color = _pick_color([t.color for t in tags])
         position = (tags[-1].position if tags else 0.0) + 1
-        return await self.store.add_tag(board, name, self._color(color), position)
+        tag = await self.store.add_tag(board, name, self._color(color), position)
+        await self.changed(owner)
+        return tag
 
     async def update_tag(
         self,
@@ -646,10 +722,12 @@ class Boards:
         name = None if name is None else await self._tag_name(board, name, skip=tag)
         color = None if color is None else self._color(color)
         await self.store.update_tag(tag, name=name, color=color, position=position)
+        await self.changed(owner)
 
     async def delete_tag(self, owner: str, board: str, tag: str) -> None:
         await self.own_tag(owner, board, tag)
         await self.store.remove_tag(tag)
+        await self.changed(owner)
 
     async def tag_card(
         self, owner: str, key: str, tags: list[str], *, board: str = "", create: list[str] | None = None
@@ -689,6 +767,8 @@ class Boards:
         if len(tags) + len(made) > MAX_CARD_TAGS:
             raise BoardError(400, f"a card has at most {MAX_CARD_TAGS} tags")
         made = await self.store.set_card_tags(key, tags, board_id=board, create=made)
+        # New tags change the board, not just the card.
+        await (self.changed(owner) if made else self.changed_card(key, owner))
         return [*tags, *(t.id for t in made)], made
 
     async def set_tags(self, key: str, names: list[str]) -> Located:
@@ -704,6 +784,7 @@ class Boards:
         if len(picked) > MAX_CARD_TAGS:
             raise BoardError(400, f"a card has at most {MAX_CARD_TAGS} tags")
         await self.store.set_card_tags(key, picked)
+        await self.changed(where.conversation.owner, where.conversation.id)
         return where
 
     async def tag_view(self, key: str, board: str) -> dict[str, list[Tag]]:

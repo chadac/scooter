@@ -10,7 +10,7 @@ which folders are boards and stages.
 from __future__ import annotations
 
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 
 from sqlalchemy import Float, Integer, String, Text, delete, func, select
@@ -159,6 +159,16 @@ class Card:
 
     def payload(self) -> dict:
         return asdict(self)
+
+
+@dataclass
+class BoardView:
+    """Card state by card key; keys with nothing stored are absent."""
+
+    cards: dict[str, Card] = field(default_factory=dict)
+    tags: dict[str, list[str]] = field(default_factory=dict)
+    details: dict[str, Details] = field(default_factory=dict)
+    blockers: dict[str, list[str]] = field(default_factory=dict)
 
 
 def now_iso() -> str:
@@ -458,6 +468,28 @@ class KanbanStore:
             row.updated_at = now_iso()
             await s.flush()
             return _details(row)
+
+    async def board_view(self, keys: list[str]) -> BoardView:
+        """Card state for `keys`, one query per table."""
+        out = BoardView()
+        if not keys:
+            return out
+        async with self._session() as s:
+            for row in (await s.execute(select(_Card).where(_Card.conversation_id.in_(keys)))).scalars():
+                out.cards[row.conversation_id] = _card(row)
+            tags = await s.execute(select(_CardTag.conversation_id, _CardTag.tag_id).where(_CardTag.conversation_id.in_(keys)))
+            for key, tag in tags:
+                out.tags.setdefault(key, []).append(tag)
+            for row in (await s.execute(select(_Details).where(_Details.conversation_id.in_(keys)))).scalars():
+                out.details[row.conversation_id] = _details(row)
+            edges = await s.execute(
+                select(_Blocker.conversation_id, _Blocker.blocker_id)
+                .where(_Blocker.conversation_id.in_(keys))
+                .order_by(_Blocker.created_at, _Blocker.blocker_id)
+            )
+            for key, blocker in edges:
+                out.blockers.setdefault(key, []).append(blocker)
+        return out
 
 
 def _details(row: _Details) -> Details:

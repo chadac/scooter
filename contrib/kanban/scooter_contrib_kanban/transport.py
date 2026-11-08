@@ -12,6 +12,7 @@
     POST   /user/boards/{board}/tags               {name, color?}: add a tag
     PATCH  /user/boards/{board}/tags/{tag}         {name?, color?, position?}: rename, recolor or reorder a tag
     DELETE /user/boards/{board}/tags/{tag}         delete a tag and take it off every card
+    POST   /user/boards/{board}/cards              {conversations}: those cards on the board, as GET /conversation/{key}/card shows one
     GET    /conversation/{key}/card                one card, its blockers, tag ids and priority (the board, via the conversation relay)
     PUT    /conversation/{key}/card                {column, position?}: record the user's move to a stage
     PUT    /conversation/{key}/card/tags           {tags: [id], board?, create?: [name]}: the user replaces the card's tags, making new ones
@@ -38,7 +39,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from scooter_broker_lib.types import AuthDependency, Identity, Provider, Transport
 from scooter_broker_lib.user import user_identity
 
-from .boards import BoardError, Blocker, Boards
+from .boards import MAX_READ_CARDS, BoardError, Blocker, Boards
 from .store import Card, Details, KanbanStore, Stage, Tag
 
 # Folder and tag ids are URL-safe: UUIDs, or ids a folder service chose.
@@ -239,6 +240,18 @@ class Kanban(Transport):
         async def delete_board(board: str, owner: str = user) -> dict:
             await _do(_boards().delete(owner, _folder(board)))
             return await _list(owner)
+
+        @router.post("/user/boards/{board}/cards")
+        async def board_cards(board: str, body: dict = Body(...), owner: str = user) -> dict:
+            ids = body.get("conversations")
+            if not isinstance(ids, list) or not all(isinstance(i, str) and i for i in ids):
+                raise HTTPException(status_code=400, detail="conversations must be a list of conversation ids")
+            if len(ids) > MAX_READ_CARDS:
+                raise HTTPException(status_code=400, detail=f"ask for at most {MAX_READ_CARDS} cards at once")
+            try:
+                return {"cards": await _boards().board_cards(owner, _folder(board), ids)}
+            except BoardError as e:
+                raise _http(e) from None
 
         @router.post("/user/boards/{board}/stages")
         async def add_stage(board: str, body: dict = Body(...), owner: str = user) -> dict:

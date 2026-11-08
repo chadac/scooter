@@ -48,6 +48,7 @@ class Folders(Protocol):
     async def placement(self, owner: str, conversation: str) -> str | None: ...
     async def filed(self, owner: str) -> dict[str, str]: ...
     async def file(self, owner: str, conversation: str, folder: str) -> None: ...
+    async def changed(self, owner: str, conversations: list[str]) -> None: ...
 
 
 class RouterFolders:
@@ -126,3 +127,7 @@ class RouterFolders:
 
     async def file(self, owner: str, conversation: str, folder: str) -> None:
         await self._call(owner, "PUT", f"/conversations/{quote(conversation, safe='')}/folder", {"folderId": folder})
+
+    async def changed(self, owner: str, conversations: list[str]) -> None:
+        """Push kanban's change to `owner`'s open boards; no ids means any."""
+        await self._call(owner, "POST", "/conversations/events", {"contrib": "kanban", "conversations": conversations})

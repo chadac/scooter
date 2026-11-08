@@ -38,6 +38,17 @@ async function serveKanban(page: Page, request: APIRequestContext, base: string)
   const saves: unknown[] = [];
   const tagPuts: Array<{ tags: string[]; create?: string[] }> = [];
   const related = (ids: string[]) => ids.map((b) => ({ id: b, title: b, stage: "Design", done: false }));
+  // One card as the board reads it.
+  const cardView = (id: string) => ({
+    card: cards[id] ? { conversation_id: id, ...cards[id] } : null,
+    blockers: related(blockers[id] ?? []),
+    tags: cardTags[id] ?? [],
+    priority: details[id]?.priority ?? "none",
+  });
+  // The conversation ids of each board read.
+  const reads: string[][] = [];
+  // Conversations whose card was read on its own.
+  const cardReads: string[] = [];
   const folder = async (name: string, parentId?: string) =>
     ((await (await request.post(`${base}/folders`, { data: { name, parentId } })).json()) as { id: string }).id;
   const board = async (name: string) => {
@@ -107,18 +118,20 @@ async function serveKanban(page: Page, request: APIRequestContext, base: string)
       const body = route.request().postDataJSON() as { column: string; position: number };
       puts.push({ id, body });
       cards[id] = { note: cards[id]?.note ?? "", ...body, updated_by: "user", updated_at: new Date().toISOString() };
+    } else {
+      cardReads.push(id);
     }
-    const card = cards[id] ?? null;
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        card: card && { conversation_id: id, ...card },
-        blockers: related(blockers[id] ?? []),
-        tags: cardTags[id] ?? [],
-        priority: details[id]?.priority ?? "none",
-      }),
-    });
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(cardView(id)) });
+  });
+  await page.route(/\/contrib-api\/kanban\/boards\/([^/?]+)\/cards$/, async (route) => {
+    const row = boards.find((b) => b.folder === /\/boards\/([^/?]+)\/cards$/.exec(route.request().url())![1]);
+    const on = new Set([row?.folder, ...(row?.stages ?? []).map((s) => s.id)]);
+    const { placements } = (await (await request.get(`${base}/folders`)).json()) as { placements: Record<string, string> };
+    const asked = (route.request().postDataJSON() as { conversations: string[] }).conversations;
+    const ids = asked.filter((id) => on.has(placements[id]));
+    reads.push(ids);
+    const body = { cards: Object.fromEntries(ids.map((id) => [id, cardView(id)])) };
+    await route.fulfill({ status: row ? 200 : 404, contentType: "application/json", body: JSON.stringify(body) });
   });
   await page.route(/\/conversations\/([^/]+)\/contrib-api\/kanban\/card\/blockers$/, async (route) => {
     const id = /\/conversations\/([^/]+)\//.exec(route.request().url())![1];
@@ -136,7 +149,7 @@ async function serveKanban(page: Page, request: APIRequestContext, base: string)
       body: JSON.stringify({ ...row, updated_by: "user", updated_at: "", blocked_by: related(blockers[id] ?? []), blocking: related(blocking) }),
     });
   });
-  return { boards, cards, cardTags, puts, board, blockers, details, saves, tagPuts };
+  return { boards, cards, cardTags, puts, board, blockers, details, saves, tagPuts, reads, cardReads };
 }
 
 const threadId = (page: Page) => new URL(page.url()).searchParams.get("thread");
@@ -496,6 +509,9 @@ fastOnly("the kanban broker routes are stubbed in the browser")("kanban /boards 
     await expect(card(api)).toHaveAttribute("data-blocked", "true", { timeout: 20_000 });
     await expect(card(api).getByTestId("kanban-blocked-by")).toHaveText("Blocked by 1");
     await expect(card(schema).getByTestId("kanban-blocked-by")).toHaveCount(0);
+    // The board reads all its cards at once, never one by one.
+    expect(kanban.reads.flat()).toEqual(expect.arrayContaining([schema, api]));
+    expect(kanban.cardReads).toEqual([]);
   });
 
   test("the Details tab edits a card's priority, description and blockers, and keeps the chat", async ({ chat, page, request, baseURL }) => {
