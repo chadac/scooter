@@ -3,6 +3,7 @@
 import { describe, it, expect } from "vitest";
 
 import {
+  PENDING_ANNOTATION,
   TEMPLATE_HASH_ANNOTATION,
   createK8sProvisioner,
   templateDiff,
@@ -195,11 +196,12 @@ describe("k8sProvisioner: resume re-renders the pod template", () => {
     expect(cluster.log).toEqual(["mode:Running"]);
   });
 
-  it("replaces a running pod by deleting it, never suspending the CR", async () => {
-    const { cluster, upgraded } = await legacySandbox();
+  it("with the immediate policy, replaces a running pod by deleting it, never suspending the CR", async () => {
+    const { cluster } = await legacySandbox();
     cluster.state.cr!.spec.operatingMode = "Running";
     cluster.state.pod = "pod-old";
-    await upgraded.resume(ref);
+    const r = await base(cluster.kc, { sandboxUserNamespace: true, updatePolicy: "immediate" }).resume(ref);
+    expect(r.updatePending).toBeUndefined();
     expect(cluster.log).not.toContain("mode:Suspended");
     expect(cluster.log).toContain("delete:pod");
     expect(cluster.state.pod).not.toBe("pod-old");
@@ -246,6 +248,65 @@ describe("k8sProvisioner: pendingRestart reports template drift", () => {
     expect(r).toMatchObject({ toImage: "sandbox-os:current", imageCurrent: true, ready: true });
     expect(pod(cluster.state.cr!).hostUsers).toBe(false);
     expect(cluster.log).not.toContain("mode:Suspended");
+    expect(await upgraded.pendingRestart(ref)).toBeUndefined();
+  });
+});
+
+describe("k8sProvisioner: deferred updates keep the running pod", () => {
+  /** A legacy Sandbox that was running when the platform upgraded. */
+  async function runningLegacy() {
+    const { cluster, upgraded } = await legacySandbox();
+    cluster.state.cr!.spec.operatingMode = "Running";
+    cluster.state.pod = "pod-old";
+    return { cluster, upgraded };
+  }
+
+  it("patches the CR, keeps the pod, and reports the update as pending", async () => {
+    const { cluster, upgraded } = await runningLegacy();
+    const r = await upgraded.resume(ref);
+    expect(r).toEqual({ ...ref, updatePending: true });
+    expect(cluster.log).not.toContain("delete:pod");
+    expect(cluster.state.pod).toBe("pod-old");
+    expect(ctr(cluster.state.cr!).image).toBe("sandbox-os:current");
+    expect(JSON.parse(cluster.state.cr!.metadata.annotations[PENDING_ANNOTATION])).toMatchObject({ podUid: "pod-old", fromImage: "sandbox-os:old" });
+    const pending = await upgraded.pendingRestart(ref);
+    expect(pending?.image).toEqual({ from: "sandbox-os:old", to: "sandbox-os:current" });
+    expect(pending?.template).toEqual(expect.arrayContaining(["hostUsers", "container.image", "container.env"]));
+  });
+
+  it("does not report it again on the next resume", async () => {
+    const { upgraded } = await runningLegacy();
+    await upgraded.resume(ref);
+    expect(await upgraded.resume(ref)).toEqual(ref);
+    expect(await upgraded.pendingRestart(ref)).toBeDefined();
+  });
+
+  it("merges a second rollout into the same pending update", async () => {
+    const { cluster, upgraded } = await runningLegacy();
+    await upgraded.resume(ref);
+    await base(cluster.kc, { sandboxUserNamespace: true, sandboxImage: "sandbox-os:newer" }).resume(ref);
+    expect(cluster.state.pod).toBe("pod-old");
+    const note = JSON.parse(cluster.state.cr!.metadata.annotations[PENDING_ANNOTATION]);
+    expect(note.fromImage).toBe("sandbox-os:old");
+    expect(note.changed).toEqual(expect.arrayContaining(["hostUsers", "container.image"]));
+  });
+
+  it("restart applies it and reports the pod's real starting image", async () => {
+    const { cluster, upgraded } = await runningLegacy();
+    await upgraded.resume(ref);
+    const r = await upgraded.restart(ref);
+    expect(r).toMatchObject({ fromImage: "sandbox-os:old", toImage: "sandbox-os:current", imageCurrent: true });
+    expect(cluster.state.pod).not.toBe("pod-old");
+    expect(await upgraded.pendingRestart(ref)).toBeUndefined();
+  });
+
+  it("counts as applied once the pod is replaced any other way", async () => {
+    const { cluster, upgraded } = await runningLegacy();
+    await upgraded.resume(ref);
+    cluster.state.pod = "pod-evicted-replacement";
+    expect(await upgraded.pendingRestart(ref)).toBeUndefined();
+    await upgraded.suspend(ref);
+    await upgraded.resume(ref);
     expect(await upgraded.pendingRestart(ref)).toBeUndefined();
   });
 });

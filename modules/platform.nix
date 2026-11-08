@@ -1014,6 +1014,19 @@ in
       '';
     };
 
+    sandboxUpdatePolicy = mkOption {
+      type = types.enum [ "deferred" "immediate" ];
+      default = "deferred";
+      description = ''
+        When a running sandbox adopts a changed pod template (a new sandbox
+        image, env or platform fields). "deferred" updates the Sandbox but
+        keeps the running pod until it next stops: idle suspend,
+        restart_sandbox, the UI's Restart button or pod loss. The UI shows
+        "Update available" meanwhile. "immediate" replaces the pod on the
+        conversation's next resume, ending its running processes.
+      '';
+    };
+
     retentionMaxAgeMs = mkOption {
       type = types.int;
       default = 0;
@@ -1673,6 +1686,7 @@ in
                   { name = "SCRATCH_PATH"; value = "/var/lib/agent-scratch"; }
                   { name = "HOME"; value = "/var/lib/agent-scratch/home"; }
                   { name = "IDLE_SUSPEND_MS"; value = toString cfg.idleSuspendMs; }
+                  { name = "SANDBOX_UPDATE_POLICY"; value = cfg.sandboxUpdatePolicy; }
                 ]
                 ++ lib.optional cfg.conversationController.assets.enable
                   { name = "ASSETS_PATH"; value = "/var/lib/agent-assets"; }

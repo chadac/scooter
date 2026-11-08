@@ -560,6 +560,8 @@ export async function main(
         volumeClaims: parseVolumeClaims(process.env.SANDBOX_VOLUME_CLAIMS),
         // SANDBOX_USER_NAMESPACE=1 runs the sandbox in its own user namespace with an unmasked /proc.
         sandboxUserNamespace: process.env.SANDBOX_USER_NAMESPACE === "1",
+        // SANDBOX_UPDATE_POLICY=immediate replaces a running pod on a template change.
+        updatePolicy: process.env.SANDBOX_UPDATE_POLICY === "immediate" ? "immediate" : "deferred",
         // SANDBOX_RESOURCES is a JSON {requests,limits} override of the provisioner's
         // Guaranteed 2cpu/4Gi default.
         sandboxResources: process.env.SANDBOX_RESOURCES

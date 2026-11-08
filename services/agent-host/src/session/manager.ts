@@ -33,6 +33,12 @@ export const SANDBOX_RESET_NOTE =
   "has been recreated from scratch. /workspace is empty and anything installed or built " +
   "earlier is gone; re-clone or rebuild what you need before relying on it.";
 
+/** Shown to the user and the agent when a revive kept a pod behind its template. */
+export const SANDBOX_UPDATE_NOTE =
+  "A platform update for this sandbox is waiting and applies when the sandbox next stops " +
+  "(idle suspend or restart). restart_sandbox applies it now but ends running processes, " +
+  "dev servers and terminal sessions; restart only when nothing running would be lost.";
+
 /** The synthetic prompt sent after an agent-initiated model switch, whose turn was cancelled to
  *  apply it. */
 const MODEL_SWITCH_NUDGE =
@@ -63,8 +69,9 @@ export interface ChecksummedEvent {
   checksum: string;
 }
 
-/** A provisioned Sandbox; `fresh` means it was newly made, so /workspace is empty. */
-export type ProvisionedRef = SandboxRef & { fresh?: boolean };
+/** A provisioned Sandbox; `fresh` means it was newly made, so /workspace is empty;
+ *  `updatePending` means its running pod was kept behind a changed template. */
+export type ProvisionedRef = SandboxRef & { fresh?: boolean; updatePending?: boolean };
 
 /** Provisions, suspends, resumes and destroys the per-conversation Sandbox. */
 export interface SandboxProvisioner {
@@ -1196,7 +1203,14 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           noted = true;
           entry.bridge.addNote?.("sandbox", SANDBOX_RESET_NOTE);
         };
+        let updateNoted = false;
+        const noteUpdate = () => {
+          if (updateNoted || !entry.bridge) return;
+          updateNoted = true;
+          entry.bridge.addNote?.("sandbox", SANDBOX_UPDATE_NOTE);
+        };
         let fresh = false;
+        let updatePending = false;
         if (entry.parentId) {
           // A subagent never provisions; it rides its root's Sandbox.
           let root: Entry | undefined = entry;
@@ -1221,15 +1235,17 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
                 throw new Error(`sandbox moved from ${from.namespace}/${from.name} to ${ref.namespace}/${ref.name} while reviving`);
               }
               if (ref.fresh) noteReset();
+              if (ref.updatePending) noteUpdate();
             });
             entry.lastActivityAt = nowMs();
             await requeuePending(entry);
             markQueueable(early);
           }
           try {
-            const { fresh: isNew, ...ref } = await provisioning;
+            const { fresh: isNew, updatePending: lagging, ...ref } = await provisioning;
             entry.sandbox = ref;
             fresh = isNew === true && !entry.neverProvisioned;
+            updatePending = lagging === true;
             entry.neverProvisioned = undefined;
           } catch (err) {
             // Queued runs fail on the gate; next prompt revives afresh.
@@ -1259,6 +1275,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         const late = !early || entry.bridge !== early;
         if (late) buildBridge();
         if (fresh) noteReset();
+        if (updatePending) noteUpdate();
         entry.status = "running";
         // Republish sandbox_ref, and this pod as creator_pod since the run now lives here;
         // idempotent, fire-and-forget.

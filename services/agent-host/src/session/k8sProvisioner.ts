@@ -77,6 +77,17 @@ export const ACTIVATED_PROBE = "/run/current-system/sw/bin/true";
 const OVERLAY_GRACE_SECONDS = 150;
 /** Annotation: hash of the platform template the podTemplate came from. */
 export const TEMPLATE_HASH_ANNOTATION = "scooter.io/template-hash";
+/** Annotation: an update patched into the CR that the live pod lacks. */
+export const PENDING_ANNOTATION = "scooter.io/pending-template";
+
+/** A deferred update, valid only while pod `podUid` lives. */
+type PendingTemplate = { podUid: string; fromImage?: string; env?: boolean; changed: string[] };
+
+/** JSON-patch ops adding `values` to a CR's annotations. */
+function annotationOps(have: Record<string, string> | undefined, values: Record<string, string>) {
+  if (!have) return [{ op: "add", path: "/metadata/annotations", value: values }];
+  return Object.entries(values).map(([k, value]) => ({ op: "add", path: `/metadata/annotations/${k.replace(/~/g, "~0").replace(/\//g, "~1")}`, value }));
+}
 
 /** Sorted-key JSON, so equal values serialize identically. */
 function canonical(v: unknown): string {
@@ -216,6 +227,9 @@ export interface K8sProvisionerOptions {
   /** Run the systemd sandbox in its own user namespace (hostUsers: false) with an unmasked /proc, so
    *  its root and SYS_ADMIN map to an unprivileged host uid and Nix's build sandbox can run. */
   sandboxUserNamespace?: boolean;
+  /** When a running pod adopts a changed template (SANDBOX_UPDATE_POLICY): "deferred" (default)
+   *  patches the CR and leaves the pod until it next stops; "immediate" replaces it on resume. */
+  updatePolicy?: "deferred" | "immediate";
   kubeConfig?: KubeConfig;
 }
 
@@ -390,6 +404,35 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
     })) as SandboxCr;
   const isRunning = (sb: SandboxCr) => (sb.spec?.operatingMode ?? "Running") !== "Suspended";
 
+  const livePodUid = async (ref: SandboxRef): Promise<string | undefined> =>
+    (await sandboxPods(ref).catch(() => [] as V1Pod[])).find((p) => !p.metadata?.deletionTimestamp)?.metadata?.uid;
+
+  /** The CR's deferred update, if its pod is still the live one. */
+  const livePending = async (ref: SandboxRef, sb: SandboxCr): Promise<PendingTemplate | undefined> => {
+    const raw = sb.metadata?.annotations?.[PENDING_ANNOTATION];
+    if (!raw || !isRunning(sb)) return undefined;
+    let note: PendingTemplate;
+    try {
+      note = JSON.parse(raw) as PendingTemplate;
+    } catch {
+      return undefined;
+    }
+    return note.podUid && note.podUid === (await livePodUid(ref)) ? note : undefined;
+  };
+
+  /** Annotation value recording an update deferred on pod `podUid`. */
+  const pendingValue = async (ref: SandboxRef, sb: SandboxCr, podUid: string, add: Omit<PendingTemplate, "podUid">): Promise<string> => {
+    // Merge with an earlier deferral on the same pod, keeping its original image.
+    const prev = await livePending(ref, sb);
+    const note: PendingTemplate = {
+      podUid,
+      fromImage: prev?.fromImage ?? add.fromImage,
+      env: prev?.env || add.env || undefined,
+      changed: [...new Set([...(prev?.changed ?? []), ...add.changed])],
+    };
+    return JSON.stringify(note);
+  };
+
   /** A fresh render keeping size and conversation; undefined if claims differ. */
   const desiredTemplate = async (name: string, sb: SandboxCr, threadId?: string): Promise<PodTemplate | undefined> => {
     const c0 = sb.spec?.podTemplate?.spec?.containers?.[0];
@@ -404,11 +447,18 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
   };
 
   /** Fallback when re-render is impossible: patch image and env only. */
-  const reconcileImageEnv = async (ref: SandboxRef, sb: SandboxCr): Promise<boolean> => {
+  const reconcileImageEnv = async (
+    ref: SandboxRef,
+    sb: SandboxCr,
+    deferPod: () => Promise<string | undefined>,
+  ): Promise<{ changed: boolean; deferred: boolean }> => {
     const containers = sb.spec?.podTemplate?.spec?.containers ?? [];
     const stale = staleImage(containers);
     const env = staleEnv(containers[0]);
-    if (!stale && !env) return false;
+    if (!stale && !env) return { changed: false, deferred: false };
+    const changed = [...(stale ? ["container.image"] : []), ...(env ? ["container.env"] : [])];
+    const deferOn = await deferPod();
+    const pending = deferOn ? await pendingValue(ref, sb, deferOn, { fromImage: stale, env: !!env, changed }) : undefined;
     log.warn("sandbox template skew: adopting the deployment's current image and conversation env", {
       sandbox: ref.name,
       from_image: stale,
@@ -419,6 +469,7 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
       {
         group: GROUP, version: VERSION, namespace: refNs(ref), plural: PLURAL, name: ref.name,
         body: {
+          ...(pending ? { metadata: { annotations: { [PENDING_ANNOTATION]: pending } } } : {}),
           spec: {
             podTemplate: {
               spec: {
@@ -433,16 +484,19 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
       },
       setHeaderOptions("Content-Type", PatchStrategy.MergePatch),
     );
-    return true;
+    return { changed: true, deferred: !!deferOn };
   };
 
   /** Re-renders the pod template if the platform half changed. */
   const reconcileTemplate = async (
     ref: SandboxRef,
     threadId?: string,
-  ): Promise<{ running: boolean; changed: boolean; overlay: boolean }> => {
+    defer = false,
+  ): Promise<{ running: boolean; changed: boolean; overlay: boolean; deferred: boolean }> => {
     const sb = await readCr(ref);
     const running = isRunning(sb);
+    // Deferring needs a live pod; without one, nothing would be lost.
+    const deferPod = async () => (running && defer ? livePodUid(ref) : undefined);
     const overlay = (sb.spec?.volumeClaimTemplates ?? []).some((v) => v.metadata?.name === "scooter-rw");
     let want: PodTemplate | undefined;
     try {
@@ -451,21 +505,24 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
     } catch (e) {
       log.warn("could not render the sandbox template; adopting only image and env", { sandbox: ref.name, error: formatError(e) });
     }
-    if (!want) return { running, overlay, changed: await reconcileImageEnv(ref, sb) };
+    if (!want) return { running, overlay, ...(await reconcileImageEnv(ref, sb, deferPod)) };
 
     const hash = templateHash(want);
     const annotations = sb.metadata?.annotations;
-    if (annotations?.[TEMPLATE_HASH_ANNOTATION] === hash) return { running, overlay, changed: false };
+    if (annotations?.[TEMPLATE_HASH_ANNOTATION] === hash) return { running, overlay, changed: false, deferred: false };
     const current = sb.spec?.podTemplate;
     const changed = templateDiff(current, want);
     const ops: Array<{ op: string; path: string; value: unknown }> = [];
     // Fails on a concurrent resize; the caller retries.
     if (sb.metadata?.resourceVersion) ops.push({ op: "test", path: "/metadata/resourceVersion", value: sb.metadata.resourceVersion });
-    ops.push(
-      annotations
-        ? { op: "add", path: `/metadata/annotations/${TEMPLATE_HASH_ANNOTATION.replace(/~/g, "~0").replace(/\//g, "~1")}`, value: hash }
-        : { op: "add", path: "/metadata/annotations", value: { [TEMPLATE_HASH_ANNOTATION]: hash } },
-    );
+    const deferOn = changed.length ? await deferPod() : undefined;
+    const deferred = !!deferOn;
+    const stamp: Record<string, string> = { [TEMPLATE_HASH_ANNOTATION]: hash };
+    if (deferOn) {
+      const fromImage = changed.includes("container.image") ? current?.spec?.containers?.[0]?.image : undefined;
+      stamp[PENDING_ANNOTATION] = await pendingValue(ref, sb, deferOn, { fromImage, changed });
+    }
+    ops.push(...annotationOps(annotations, stamp));
     // Never touch volumeClaimTemplates: that would detach existing PVCs.
     if (changed.length) ops.push({ op: "add", path: "/spec/podTemplate", value: want });
     await custom.patchNamespacedCustomObject(
@@ -478,10 +535,10 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
         changed,
         from_image: current?.spec?.containers?.[0]?.image,
         to_image: (want.spec?.containers as Array<{ image?: string }> | undefined)?.[0]?.image,
-        cycling_pod: running,
+        cycling_pod: running && !deferred,
       });
     }
-    return { running, overlay, changed: changed.length > 0 };
+    return { running, overlay, changed: changed.length > 0, deferred };
   };
 
   /** The sandbox's pods; the controller strips our label, so also read by name. */
@@ -530,12 +587,13 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
     }
   };
 
-  /** Brings the Sandbox to Running on the current template. */
-  const runOnCurrentTemplate = async (ref: SandboxRef, o: { threadId?: string; forceCycle?: boolean } = {}): Promise<void> => {
-    let result: { running: boolean; changed: boolean; overlay: boolean } | undefined;
+  /** Brings the Sandbox to Running on the current template; true if the pod lags it. */
+  const runOnCurrentTemplate = async (ref: SandboxRef, o: { threadId?: string; forceCycle?: boolean } = {}): Promise<boolean> => {
+    const defer = !o.forceCycle && opts.updatePolicy !== "immediate";
+    let result: { running: boolean; changed: boolean; overlay: boolean; deferred: boolean } | undefined;
     for (let attempt = 0; ; attempt++) {
       try {
-        result = await reconcileTemplate(ref, o.threadId);
+        result = await reconcileTemplate(ref, o.threadId, defer);
         break;
       } catch (e) {
         // 404: the Sandbox is gone; resume() recreates it.
@@ -554,10 +612,11 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
       }
     }
     // A template patch never restarts a running pod.
-    if (o.forceCycle || (result?.running && result.changed)) await cyclePod(ref);
+    if (o.forceCycle || (result?.running && result.changed && !result.deferred)) await cyclePod(ref);
     // Reserve before the pod exists, so the PVC binds the pooled PV.
     if (!result?.running && (result?.overlay ?? opts.overlayStore)) await prepareOverlay(ref);
     await setOperatingMode(ref, "Running");
+    return result?.deferred ?? false;
   };
 
   /** The running pod's resources; null without a pod. */
@@ -647,6 +706,7 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
       // 2. the cold Sandbox (SA + workspace PVC + projected broker token)
       const name = sandboxName(id);
       let alreadyExisted = false;
+      let updatePending = false;
       // Reserve first: the Sandbox creates its overlay PVC immediately.
       if (opts.overlayStore) await prepareOverlay({ name, namespace: ns });
       await custom
@@ -665,15 +725,17 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
 
       // An adopted Sandbox may be suspended or stale.
       if (alreadyExisted) {
-        await runOnCurrentTemplate({ name, namespace: ns }, { threadId: urlThread }).catch((e) => {
+        updatePending = await runOnCurrentTemplate({ name, namespace: ns }, { threadId: urlThread }).catch((e) => {
           log.warn("adopted an existing Sandbox but resume failed (may already be running)", {
             sandbox: name,
             error: formatError(e),
           });
+          return false;
         });
       }
 
-      return alreadyExisted ? { name, namespace: ns } : { name, namespace: ns, fresh: true };
+      if (!alreadyExisted) return { name, namespace: ns, fresh: true };
+      return updatePending ? { name, namespace: ns, updatePending } : { name, namespace: ns };
     },
 
     async suspend(ref: SandboxRef): Promise<void> {
@@ -691,15 +753,16 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
     async resume(ref: SandboxRef, threadId?: string): Promise<ProvisionedRef> {
       // A Sandbox that is gone cannot be patched, so recreate it: the conversation's work lives on
       // the workspace PVC, which outlives the Sandbox.
+      let updatePending: boolean;
       try {
         // Resume adopts any platform template change.
-        await runOnCurrentTemplate(ref, { threadId });
+        updatePending = await runOnCurrentTemplate(ref, { threadId });
       } catch (e) {
         if ((e as { code?: number })?.code !== 404) throw e;
         log.warn("resume: the Sandbox is gone; recreating it", { sandbox: ref.name });
         return await this.create(convIdOf(ref.name), threadId);
       }
-      return ref;
+      return updatePending ? { ...ref, updatePending } : ref;
     },
 
     async reconcile(): Promise<Array<{ ref: SandboxRef; running: boolean }>> {
@@ -738,6 +801,15 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
         const changed = templateDiff(sb.spec?.podTemplate, want);
         if (changed.length) out.template = changed;
       }
+      // The CR may already hold an update the live pod lacks.
+      const deferred = await livePending(ref, sb);
+      if (deferred) {
+        const image = containers[0]?.image;
+        if (!out.image && deferred.fromImage && image && deferred.fromImage !== image) out.image = { from: deferred.fromImage, to: image };
+        if (deferred.env) out.env = true;
+        const template = [...new Set([...(out.template ?? []), ...deferred.changed])];
+        if (template.length) out.template = template;
+      }
       // Suspended: no pod to compare; revive applies the size.
       if (isRunning(sb) && (await sizePending(ref, containers[0]?.resources))) out.size = true;
       return Object.keys(out).length ? out : undefined;
@@ -747,16 +819,17 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
       const before = await readCr(ref);
       const beforeContainer = before.spec?.podTemplate?.spec?.containers?.[0];
       const wasRunning = isRunning(before);
+      const fromImage = (await livePending(ref, before))?.fromImage ?? beforeContainer?.image;
       const sizeApplied = wasRunning && (await sizePending(ref, beforeContainer?.resources).catch(() => false));
-      log.info("restarting sandbox", { sandbox: ref.name, from_image: beforeContainer?.image, size_pending: sizeApplied });
+      log.info("restarting sandbox", { sandbox: ref.name, from_image: fromImage, size_pending: sizeApplied });
       // Never suspend: the controller would drop the placement.
       await runOnCurrentTemplate(ref, { forceCycle: true });
       hooks.onRunning?.();
       const wait = await waitPodReady(ref);
       const toImage = (await readCr(ref).catch(() => before)).spec?.podTemplate?.spec?.containers?.[0]?.image;
       const imageCurrent = !opts.sandboxImage || toImage === opts.sandboxImage;
-      log.info("sandbox restarted", { sandbox: ref.name, from_image: beforeContainer?.image, to_image: toImage, image_current: imageCurrent, ...wait });
-      const result: SandboxRestartResult = { fromImage: beforeContainer?.image, toImage, imageCurrent, sizeApplied, ready: wait.ready };
+      log.info("sandbox restarted", { sandbox: ref.name, from_image: fromImage, to_image: toImage, image_current: imageCurrent, ...wait });
+      const result: SandboxRestartResult = { fromImage, toImage, imageCurrent, sizeApplied, ready: wait.ready };
       if (!wait.ready) result.notReadyReason = wait.reason;
       return result;
     },

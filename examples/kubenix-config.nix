@@ -142,6 +142,7 @@
     replicas = 2;
     statelessReplicas = 2;
     idleSuspendMs = 30 * 60 * 1000;
+    sandboxUpdatePolicy = "deferred";
     retentionMaxAgeMs = 0;
 
     # Cron-style tasks that prompt a conversation; the relay key authenticates

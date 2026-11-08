@@ -10,7 +10,7 @@ import { join } from "node:path";
 
 import { createSessionBridge, type AguiEvent } from "../../src/bridge.js";
 import type { AcpClient, PromptParams, SessionUpdate } from "../../src/acp/client.js";
-import { createSessionManager, SANDBOX_RESET_NOTE, type SandboxProvisioner } from "../../src/session/manager.js";
+import { createSessionManager, SANDBOX_RESET_NOTE, SANDBOX_UPDATE_NOTE, type SandboxProvisioner } from "../../src/session/manager.js";
 import { createFileConversationStore } from "../../src/session/fileStore.js";
 import { createSandboxExecBackend } from "../../src/exec/sandboxExec.js";
 import { createFakeSandboxApi } from "../fakes/fakeSandboxApi.js";
@@ -44,7 +44,7 @@ function recordingAgent() {
 }
 
 /** A manager over real bridges with a scripted sandbox resume. */
-function harness(root: string, resume: (ref: { name: string; namespace: string }) => Promise<{ name: string; namespace: string; fresh?: boolean }>) {
+function harness(root: string, resume: (ref: { name: string; namespace: string }) => Promise<{ name: string; namespace: string; fresh?: boolean; updatePending?: boolean }>) {
   const agent = recordingAgent();
   const provisioner: SandboxProvisioner = {
     create: vi.fn(async (id: string) => ({ name: `conv-${id}`, namespace: "ns", fresh: true })),
@@ -115,6 +115,30 @@ describe("reviving into a recreated sandbox", () => {
       await sessions.promptByThread("thread-plain" as never, "hello", undefined);
       expect(notes(await logged(conv.id))).toEqual([]);
       expect(agent.prompts.at(-1)).not.toContain("/workspace is empty");
+      await logged(conv.id);
+    } finally {
+      rmSync(root, { recursive: true, force: true, maxRetries: 5 });
+    }
+  });
+});
+
+describe("reviving into a pod kept behind its template", () => {
+  it("tells the agent once that an update is waiting, before the user's message", async () => {
+    const root = mkdtempSync(join(tmpdir(), "update-note-"));
+    try {
+      const { agent, sessions, logged } = harness(root, async (ref) => ({ ...ref, updatePending: true }));
+      const conv = await sessions.start("thread-update");
+      await sessions.suspend(conv.id);
+
+      await sessions.promptByThread("thread-update" as never, "keep going", undefined);
+
+      expect(notes(await logged(conv.id)).map((n) => n.text)).toEqual([SANDBOX_UPDATE_NOTE]);
+      const prompt = agent.prompts.at(-1) ?? "";
+      expect(prompt.indexOf("update for this sandbox is waiting")).toBeGreaterThan(-1);
+      expect(prompt.indexOf("update for this sandbox is waiting")).toBeLessThan(prompt.indexOf("keep going"));
+
+      await sessions.promptByThread("thread-update" as never, "again", undefined);
+      expect(agent.prompts.at(-1)).not.toContain("update for this sandbox is waiting");
       await logged(conv.id);
     } finally {
       rmSync(root, { recursive: true, force: true, maxRetries: 5 });

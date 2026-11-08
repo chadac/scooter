@@ -55,8 +55,8 @@ function fakeKc(opts: FakeOpts = {}) {
   return { kc: { makeApiClient: () => api as never } as never, calls, patches };
 }
 
-const provisioner = (kc: never) =>
-  createK8sProvisioner({ namespace: "agent-manager", sandboxImage: "sandbox-os:new", kubeConfig: kc });
+const provisioner = (kc: never, updatePolicy?: "deferred" | "immediate") =>
+  createK8sProvisioner({ namespace: "agent-manager", sandboxImage: "sandbox-os:new", kubeConfig: kc, updatePolicy });
 
 /** The container images carried by the recorded patch bodies. */
 const patchedImages = (patches: Array<Record<string, unknown>>) =>
@@ -82,9 +82,18 @@ describe("k8sProvisioner — sandbox image skew after a platform upgrade", () =>
     expect(patchedModes(patches)).toEqual(["Running"]);
   });
 
-  it("a RUNNING sandbox on a stale image has its pod replaced — a template patch alone never restarts one", async () => {
+  it("a RUNNING sandbox on a stale image keeps its pod by default, recording the pending update", async () => {
     const { kc, calls, patches } = fakeKc({ image: "sandbox-os:old", operatingMode: "Running", podsLive: 1 });
-    await provisioner(kc).resume(ref);
+    expect(await provisioner(kc).resume(ref)).toEqual({ ...ref, updatePending: true });
+    expect(patchedImages(patches)).toEqual(["sandbox-os:new"]);
+    expect(calls).not.toContain("delete:pod");
+    const annotations = (patches[0].metadata as { annotations: Record<string, string> }).annotations;
+    expect(JSON.parse(annotations["scooter.io/pending-template"])).toEqual({ podUid: "old", fromImage: "sandbox-os:old", changed: ["container.image"] });
+  });
+
+  it("with the immediate policy, a RUNNING sandbox on a stale image has its pod replaced", async () => {
+    const { kc, calls, patches } = fakeKc({ image: "sandbox-os:old", operatingMode: "Running", podsLive: 1 });
+    await provisioner(kc, "immediate").resume(ref);
     expect(patchedImages(patches)).toEqual(["sandbox-os:new"]);
     // Deleted, not suspended; the old pod is waited out.
     expect(patchedModes(patches)).toEqual(["Running"]);
