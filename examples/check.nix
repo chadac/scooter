@@ -1582,7 +1582,13 @@ let
     ++ (if convUiThrow { contribs.echo.enable = nixpkgsLib.mkForce true; contribs.echo.ui.views.settings = { label = "X"; entry = "ui/SettingsTab.tsx"; }; } then [ ]
         else [ "a view shadowing /settings rendered" ])
     ++ (if convUiThrow { contribs.echo.enable = nixpkgsLib.mkForce true; contribs.echo.ui.views.usersboard = { label = "X"; entry = "ui/SettingsTab.tsx"; }; } then [ ]
-        else [ "a view under the proxied /users prefix rendered" ]);
+        else [ "a view under the proxied /users prefix rendered" ])
+    ++ (let syntax = entry: uiManifestOf { contribs.echo.enable = nixpkgsLib.mkForce true; contribs.echo.ui.markdownSyntax = { inherit entry; }; }; in
+        (if ((syntax "ui/SettingsTab.tsx").markdownSyntax.echo.entry or null) == "echo/ui/SettingsTab.tsx" then [ ]
+         else [ "an echo markdownSyntax did not reach the UI manifest as echo/ui/SettingsTab.tsx" ])
+        ++ (if (on.markdownSyntax or { }) == { } then [ ] else [ "the default UI manifest has markdownSyntax rows" ])
+        ++ (if convUiThrow { contribs.echo.enable = nixpkgsLib.mkForce true; contribs.echo.ui.markdownSyntax.entry = "ui/Missing.tsx"; } then [ ]
+            else [ "a markdownSyntax whose entry does not exist rendered" ]));
 
   # scooter.uploads: the body-limit formula, and that every layer gets it. The example
   # sets 50MB x 4 on an nginx-class Ingress.

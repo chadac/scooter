@@ -65,7 +65,7 @@ export interface ContribSettingsTab {
 export interface ContribInterruptRenderer {
   /** The contrib that declared it. */
   contrib: string;
-  /** `<contrib>/ui/<file>.tsx`, the key into the lazy module table (contribTabs.tsx). */
+  /** `<contrib>/ui/<file>.tsx`, a key of contribTabs.tsx's module table. */
   entry: string;
 }
 
@@ -89,6 +89,12 @@ export interface ContribMarkdownFence {
   entry: string;
 }
 
+
+/** A contrib's `ui.markdownSyntax` row. */
+export interface ContribMarkdownSyntax {
+  /** `<contrib>/ui/<file>.tsx`, the key into the lazy module table (contribTabs.tsx). */
+  entry: string;
+}
 
 /** A contrib's alternate view at `/<id>`, keyed by that id. */
 export interface ContribView {
@@ -123,6 +129,8 @@ export interface ContribManifest {
   panels: Record<string, ContribPanel>;
   /** Contrib fenced-block renderers, keyed by fence language. */
   markdownFences: Record<string, ContribMarkdownFence>;
+  /** Markdown syntax rows, by contrib name. */
+  markdownSyntax: Record<string, ContribMarkdownSyntax>;
   /** Contrib alternate views, keyed by view id. */
   views: Record<string, ContribView>;
 }

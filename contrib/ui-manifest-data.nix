@@ -72,12 +72,12 @@ let
         (p: cs: "\"${p}\" is claimed by contribs ${lib.concatStringsSep " and " cs}") publicPathClashes)}")
     else lib.attrNames publicPathOwners;
 
-  # Panels by contrib, fences by language, views by id; validated in conversation-ui.nix.
-  inherit (resolveConversationUi contribs) panels markdownFences views;
+  # Keyed as conversation-ui.nix resolves them.
+  inherit (resolveConversationUi contribs) panels markdownFences markdownSyntax views;
 
   # The presentation half of each contrib's approval gate, not gated on `ui.enable` because a contrib may raise approvals while contributing no icon.
   approvals = lib.mapAttrs
     (_: c: { inherit (c.approvals) gatedOption blockedTitle blockedHint; })
     (lib.filterAttrs (_: c: c.approvals != null) contribs);
 in
-{ inherit sources toolCards toolTitles linkProviders approvals settingsTabs interruptRenderers panels markdownFences views brokerPublicPaths; }
+{ inherit sources toolCards toolTitles linkProviders approvals settingsTabs interruptRenderers panels markdownFences markdownSyntax views brokerPublicPaths; }

@@ -212,6 +212,19 @@ let
     };
   };
 
+  markdownSyntaxModule = {
+    options.entry = mkOption {
+      type = types.str;
+      example = "ui/MathSyntax.tsx";
+      description = ''
+        The syntax module, relative to this contrib's directory and inside its `ui/`. Its
+        default export is a `MarkdownSyntax` from @/src/contrib/sdk: remark plugins, and
+        components for the `<contrib>-*` elements they emit. Loaded before first paint,
+        so keep it small and lazy-load anything heavy from its components.
+      '';
+    };
+  };
+
   # The card that draws one kind of request in the Approvals tab.
   interruptRendererModule = {
     options.entry = mkOption {
@@ -320,6 +333,19 @@ let
         description = "This contrib's section in the right-hand panel's Session tab. Checked by contrib/conversation-ui.nix.";
       };
 
+      markdownSyntax = mkOption {
+        type = types.nullOr (types.submodule markdownSyntaxModule);
+        default = null;
+        example = literalExpression ''
+          { entry = "ui/MathSyntax.tsx"; }
+        '';
+        description = ''
+          Markdown syntax this contrib adds to messages, such as inline math: remark
+          plugins run after GFM, plus components for the elements they emit. Checked by
+          contrib/conversation-ui.nix.
+        '';
+      };
+
       views = mkOption {
         type = types.attrsOf (types.submodule viewModule);
         default = { };
@@ -351,7 +377,7 @@ let
 
     config.enable = lib.mkDefault
       (config.source != null || config.tools != { } || config.settingsTabs != [ ] || config.interruptRenderers != { }
-        || config.panel != null || config.markdownFences != { } || config.views != { });
+        || config.panel != null || config.markdownFences != { } || config.markdownSyntax != null || config.views != { });
   };
 
   # One recurring task this contrib ships, built by mkScooterTask (contrib/tasks.nix)

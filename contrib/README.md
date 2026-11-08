@@ -685,7 +685,7 @@ ui = {
 ```
 
 `enable` defaults to true as soon as `source`, `tools`, `settingsTabs`,
-`interruptRenderers`, `panel`, `markdownFences` or `views` is set, so a declared row cannot
+`interruptRenderers`, `panel`, `markdownFences`, `markdownSyntax` or `views` is set, so a declared row cannot
 silently render nothing.
 
 #### Settings tabs (`ui.settingsTabs`)
@@ -799,6 +799,28 @@ ui.markdownFences."scooter-embed".entry = "ui/Embed.tsx";
   that text, so validate it before you use it.
 - **Failure is contained.** A block that fails to load or throws shows an error card
   in place of that block only.
+
+#### Markdown syntax (`ui.markdownSyntax`)
+
+A contrib can add inline syntax to messages, such as math, with remark plugins:
+
+```nix
+ui.markdownSyntax.entry = "ui/MathSyntax.tsx";
+```
+
+- **The module.** Same file and import rules as a settings tab. Its default export is a
+  `MarkdownSyntax`: `remarkPlugins`, and `components` for the elements those plugins
+  emit (via `data.hName`). Each component takes `MarkdownSyntaxElementProps`.
+- **Only its own elements.** A component is kept only if its tag starts with
+  `<contrib>-`, so a contrib cannot redraw the app's links, images or code.
+- **Where it applies.** Assistant messages, the SDK's `<Markdown>`, and the user's own
+  messages. In the user's messages only the contrib's elements render; every other
+  character shows as typed.
+- **Loaded before first paint.** A remark plugin cannot join a render already parsed,
+  so the UI waits for these modules. Keep them small and load heavy code, like KaTeX,
+  from the component on first use.
+- **Failure is contained.** A module that is missing, fails to load or has the wrong
+  shape is skipped, and messages render as they would without it.
 
 #### Views (`ui.views`)
 

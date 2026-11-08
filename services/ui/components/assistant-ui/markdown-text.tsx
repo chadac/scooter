@@ -20,6 +20,7 @@ import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button
 import { cn } from "@/lib/utils";
 import { contribMarkdownFences } from "@/src/contribManifest";
 import { fenceComponents, preprocessFences } from "@/src/contribPanels";
+import { contribSyntax } from "@/src/contribSyntax";
 
 // Fenced blocks whose language an enabled contrib claims (`ui.markdownFences`) render
 // through that contrib. The manifest is loaded before first paint and fixed after.
@@ -33,14 +34,23 @@ const contribFences = () => {
   return fences;
 };
 
+// Contrib syntax (`ui.markdownSyntax`): remark plugins and element components.
+type SyntaxProps = Pick<Parameters<typeof MarkdownTextPrimitive>[0], "remarkPlugins" | "components">;
+let syntax: Required<SyntaxProps> | undefined;
+const contribMarkdown = () =>
+  (syntax ??= {
+    remarkPlugins: [...baseRemarkPlugins, ...contribSyntax().remarkPlugins],
+    components: memoizeMarkdownComponents({ ...baseComponents, ...contribSyntax().components }),
+  });
+
 const MarkdownTextImpl = () => {
   return (
     <MarkdownTextPrimitive
-      remarkPlugins={[remarkGfm, remarkDropHtmlComments]}
+      remarkPlugins={contribMarkdown().remarkPlugins}
       urlTransform={markdownUrlTransform}
       preprocess={contribFences().preprocess}
       className="aui-md text-[15px] desk:text-base"
-      components={defaultComponents}
+      components={contribMarkdown().components}
       componentsByLanguage={contribFences().components}
       defer
     />
@@ -143,7 +153,9 @@ const MarkdownImage: FC<{ src?: string | Blob; alt?: string }> = ({ src, alt }) 
   );
 };
 
-const defaultComponents = memoizeMarkdownComponents({
+const baseRemarkPlugins = [remarkGfm, remarkDropHtmlComments];
+
+const baseComponents: Parameters<typeof memoizeMarkdownComponents>[0] = {
   img: MarkdownImage,
   h1: ({ className, ...props }) => (
     <h1
@@ -324,4 +336,4 @@ const defaultComponents = memoizeMarkdownComponents({
     );
   },
   CodeHeader,
-});
+};

@@ -15,6 +15,7 @@ import { folderStore } from "./folders.js";
 import { contribEvents } from "./contribEvents.js";
 import { initTelemetryFromServer, installGlobalErrorHandlers } from "./telemetry.js";
 import { loadContribManifest } from "./contribManifest.js";
+import { loadContribSyntax } from "./contribSyntax.js";
 import { installTitleSync } from "./pageTitle.js";
 import { chatRouteId } from "./chatRoute.js";
 import { ChatPage, chatListStatus } from "./ChatPage.js";
@@ -93,8 +94,8 @@ sessionStore.subscribe(() => {
 
 // The contrib manifest decides what renders (labels, icons, filter chips), so the first
 // paint waits for it; the loader's 1.5s timeout degrades a missing manifest to the
-// built-in sources rather than a blank page.
-void loadContribManifest().then(() => {
+// built-in sources rather than a blank page. Syntax modules load next: they change parsing.
+void loadContribManifest().then(loadContribSyntax).then(() => {
   // A contrib view's path is only known once the manifest names it.
   viewStore.syncFromUrl();
   createRoot(document.getElementById("root")!).render(

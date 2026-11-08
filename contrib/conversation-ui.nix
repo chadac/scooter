@@ -1,7 +1,7 @@
-# Resolves enabled contribs' `ui.panel`, `ui.markdownFences` and `ui.views` into the
-# manifest's `panels` (by contrib), `markdownFences` (by language) and `views` (by id), and
-# throws on a declaration the UI could not load. Lib-only, so examples/check.nix can
-# drive it with fixtures.
+# Resolves enabled contribs' `ui.panel`, `ui.markdownFences`, `ui.markdownSyntax` and
+# `ui.views` into the manifest's `panels` and `markdownSyntax` (by contrib),
+# `markdownFences` (by language) and `views` (by id), and throws on a declaration the
+# UI could not load. Lib-only, so examples/check.nix can drive it with fixtures.
 { lib }:
 
 let
@@ -25,6 +25,11 @@ let
       inherit (p) label order;
       entry = checkEntry where name c p.entry;
     };
+
+  syntaxOf = name: c: {
+    contrib = name;
+    entry = checkEntry "contribs.${name}.ui.markdownSyntax" name c c.ui.markdownSyntax.entry;
+  };
 
   # Paths the UI's nginx proxies (services/ui/image/nginx.nix) or the SPA routes itself. A
   # bare nginx prefix also catches longer ids, so an id may not start with one either.
@@ -69,6 +74,7 @@ in
       throw ("contribs' ui.views: ${lib.concatStringsSep "; " (lib.mapAttrsToList
         (id: cs: "/${id} is claimed by contribs ${lib.concatStringsSep " and " cs}") viewClashes)}")
     else lib.listToAttrs (map (p: lib.nameValuePair p.id p.value) viewRows);
+  markdownSyntax = lib.mapAttrs syntaxOf (lib.filterAttrs (_: c: c.ui.markdownSyntax != null) withUi);
   panels = lib.mapAttrs panelOf (lib.filterAttrs (_: c: c.ui.panel != null) withUi);
   markdownFences =
     if clashes != { } then

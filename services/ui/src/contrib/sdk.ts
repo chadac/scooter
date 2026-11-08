@@ -7,6 +7,9 @@
  * the app's internals can change without breaking contribs.
  */
 
+import type { ComponentType, ReactNode } from "react";
+import type { Options as MarkdownOptions } from "react-markdown";
+
 import { currentConversation, useCurrentUser, useSessions } from "../sessions.js";
 import { useConversationTopic, type TopicOptions } from "../conversationState.js";
 
@@ -98,6 +101,17 @@ export interface PanelProps {
 export interface MarkdownFenceProps {
   /** The text inside the fence. */
   body: string;
+}
+
+/** Props of a `ui.markdownSyntax` element component. */
+export interface MarkdownSyntaxElementProps {
+  children?: ReactNode;
+}
+
+/** A `ui.markdownSyntax` module's default export; only `<contrib>-*` components. */
+export interface MarkdownSyntax {
+  remarkPlugins?: NonNullable<MarkdownOptions["remarkPlugins"]>;
+  components?: Record<string, ComponentType<MarkdownSyntaxElementProps>>;
 }
 
 export { useRequestDraft } from "../approvalFocus.js";

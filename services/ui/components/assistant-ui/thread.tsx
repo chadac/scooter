@@ -4,6 +4,7 @@ import {
   UserMessageAttachments,
 } from "@/components/assistant-ui/attachment";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
+import { UserText, hasContribSyntax } from "@/components/assistant-ui/user-text";
 import {
   Reasoning,
   ReasoningContent,
@@ -607,6 +608,9 @@ const AssistantActionBar: FC = () => {
   );
 };
 
+// Without contrib syntax, the default part keeps rendering unchanged.
+const USER_PARTS = { Text: UserText };
+
 const UserMessage: FC = () => {
   const timestamp = useTimestampToggle();
   return (
@@ -620,7 +624,7 @@ const UserMessage: FC = () => {
 
       <div className="aui-user-message-content-wrapper relative col-start-2 min-w-0">
         <div className="aui-user-message-content peer bg-muted text-foreground rounded-xl px-4 py-2 text-[15px] desk:text-base wrap-break-word empty:hidden">
-          <MessagePrimitive.Parts />
+          <MessagePrimitive.Parts components={hasContribSyntax() ? USER_PARTS : undefined} />
         </div>
         <div className="aui-user-action-bar-wrapper absolute start-0 top-1/2 -translate-x-full -translate-y-1/2 pe-2 peer-empty:hidden rtl:translate-x-full">
           <UserActionBar />
