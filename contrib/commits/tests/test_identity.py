@@ -212,8 +212,8 @@ async def test_only_the_proposals_user_may_answer(app, cards):
     await propose("alice-private")
     rid = cards.raised[0]["request_id"]
     async with as_approver(app) as c:
-        assert (await c.post(f"/commits/approvals/{rid}/can-approve", json=answer("alice"))).json() == {"can_approve": True}
-        assert (await c.post(f"/commits/approvals/{rid}/can-approve", json=answer("mallory"))).json() == {"can_approve": False}
+        assert (await c.post(f"/commits/approvals/{rid}/can-approve", json=answer("alice"))).json() == {"can_approve": True, "pending": True}
+        assert (await c.post(f"/commits/approvals/{rid}/can-approve", json=answer("mallory"))).json() == {"can_approve": False, "pending": True}
         assert (await c.post(f"/commits/approvals/{rid}/approve", json=answer("mallory"))).status_code == 403
 
 

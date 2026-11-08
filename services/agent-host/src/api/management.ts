@@ -107,13 +107,13 @@ export interface ManagementDeps {
     optionId: string,
     approver: ApproverIdentity,
   ) => Promise<void>;
-  /** Whether `approver` (the viewing user) may act on this request; fails closed broker-side and defaults to allowed when unwired. */
+  /** Whether `approver` (the viewing user) may act on this request, and whether it is still pending; fails closed broker-side and defaults to allowed when unwired. */
   canApproveRequest?: (
     sessionId: string,
     contrib: string,
     requestId: string,
     approver: ApproverIdentity,
-  ) => Promise<boolean>;
+  ) => Promise<{ canApprove: boolean; pending?: boolean }>;
   /** Model catalog for per-conversation selection; an empty `available` list means only the default is selectable. */
   models?: {
     default?: string;
@@ -1006,10 +1006,10 @@ export function createManagementApi(deps: ManagementDeps): Router {
     if (!deps.canApproveRequest) return { json: { canApprove: true } }; // unwired → don't block
     if (ctx.user.anonymous) return { json: { canApprove: false } };
     const approver = { id: ctx.user.id, email: ctx.user.email, name: ctx.user.name, assertion: userAssertionOf(ctx.req) };
-    const canApprove = await deps
+    const answer = await deps
       .canApproveRequest(ctx.params.id, ctx.params.contrib, ctx.params.requestId, approver)
-      .catch(() => false); // fail closed (greyed) on any error
-    return { json: { canApprove } };
+      .catch(() => ({ canApprove: false })); // fail closed (greyed) on any error
+    return { json: answer };
   });
 
   // External resource links (the GitHub PR / Slack thread a conversation came from): the

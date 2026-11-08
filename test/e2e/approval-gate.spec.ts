@@ -37,14 +37,14 @@ async function serveManifest(page: import("@playwright/test").Page, approvals: u
 }
 
 /** Answer the panel's per-viewer can-approve check and record the URLs it asked for. */
-function interceptCanApprove(page: import("@playwright/test").Page, canApprove: boolean) {
+function interceptCanApprove(page: import("@playwright/test").Page, canApprove: boolean, pending = true) {
   const asked: string[] = [];
   void page.route("**/can-approve", (route) => {
     asked.push(route.request().url());
     return route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ canApprove }),
+      body: JSON.stringify({ canApprove, pending }),
     });
   });
   return asked;
@@ -135,6 +135,24 @@ fastOnly("needs a controlled can-approve answer (no real authorizer to seed)")(
       expect(asked.some((u) => u.includes("/approvals/echo/"))).toBe(true);
     });
 
+    test("says a request that is gone is no longer pending, not that an admin must approve", async ({ chat, page, baseURL, request }) => {
+      const base = (baseURL ?? "").replace(/\/$/, "");
+      await serveManifest(page, { echo: ECHO_GATING });
+      interceptCanApprove(page, false, false);
+
+      const before = await conversationIds(request, base);
+      await chat.open();
+      await chat.send("do something that needs approval");
+      await chat.waitForReply(/dummy agent/i);
+      const id = await newConversationId(page, request, base, before);
+      await raiseApproval(request, base, id, "echo", `echo-${Date.now()}`, "Echo would like permission.");
+
+      await expect(page.locator(panel.root)).toBeVisible({ timeout: 30_000 });
+      const approve = page.locator(panel.option).filter({ hasText: /approve/i });
+      await expect(approve).toBeDisabled();
+      await expect(page.locator(panel.hint)).toContainText("expired or was already answered");
+      await expect(approve).toHaveAttribute("title", "This request is no longer pending.");
+    });
     test("leaves the option live when the viewer MAY approve", async ({ chat, page, baseURL, request }) => {
       const base = (baseURL ?? "").replace(/\/$/, "");
       await serveManifest(page, { echo: ECHO_GATING });

@@ -56,6 +56,16 @@ export function ownerOf(intr: PendingInterrupt): string | undefined {
   return approvalOf(intr)?.contrib ?? requestOf(intr)?.kind.split(".")[0];
 }
 
+/** The host's can-approve answer; `pending` is false once the request is gone. */
+interface CanApprove {
+  canApprove: boolean;
+  pending: boolean;
+}
+
+// Shown in place of the contrib's admin wording when the request no longer exists.
+const STALE_TITLE = "This request is no longer pending.";
+const STALE_HINT = "It expired or was already answered. Dismiss it and ask the agent again if it is still needed.";
+
 /**
  * Whether this viewer may approve an approval interrupt, asked live from the host;
  * undefined while loading or for a non-approval interrupt, which the caller treats
@@ -65,8 +75,8 @@ function useCanApprove(
   approval: { contrib: string; requestId: string } | undefined,
   conversationId: MaybeConversationId,
   baseUrl: string,
-): boolean | undefined {
-  const [can, setCan] = useState<boolean | undefined>(undefined);
+): CanApprove | undefined {
+  const [can, setCan] = useState<CanApprove | undefined>(undefined);
   // Depend on the fields, not the object, which `approvalOf` rebuilds every render.
   const contrib = approval?.contrib;
   const requestId = approval?.requestId;
@@ -78,11 +88,11 @@ function useCanApprove(
       { credentials: "include" },
     )
       .then((r) => (r.ok ? r.json() : { canApprove: false }))
-      .then((j: { canApprove?: boolean }) => {
-        if (!cancelled) setCan(j.canApprove !== false);
+      .then((j: { canApprove?: boolean; pending?: boolean }) => {
+        if (!cancelled) setCan({ canApprove: j.canApprove !== false, pending: j.pending !== false });
       })
       .catch(() => {
-        if (!cancelled) setCan(false); // fail closed → greyed
+        if (!cancelled) setCan({ canApprove: false, pending: true }); // fail closed → greyed
       });
     return () => {
       cancelled = true;
@@ -246,9 +256,11 @@ function InterruptView({
   const gating = approval ? contribApprovals()[approval.contrib] : undefined;
   // Gate only on an explicit no; loading/unknown leaves it enabled.
   const blocked: BlockedOption | undefined =
-    approval && gating && canApprove === false
-      ? { optionId: gating.gatedOption, title: gating.blockedTitle, hint: gating.blockedHint }
-      : undefined;
+    !approval || !gating || !canApprove || canApprove.canApprove
+      ? undefined
+      : canApprove.pending
+        ? { optionId: gating.gatedOption, title: gating.blockedTitle, hint: gating.blockedHint }
+        : { optionId: gating.gatedOption, title: STALE_TITLE, hint: STALE_HINT };
 
   const choose = (optionId: string, result?: Record<string, unknown>) => {
     if (blocked?.optionId === optionId) return;

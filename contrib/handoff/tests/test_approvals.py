@@ -122,7 +122,7 @@ async def test_approve_spawns_and_tells_the_agent(app, router, spawns, links):
     router.add("src")
     rid = await request()
     async with as_approver(app) as c:
-        assert (await c.post(f"/handoff/approvals/{rid}/can-approve", json=answer("alice"))).json() == {"can_approve": True}
+        assert (await c.post(f"/handoff/approvals/{rid}/can-approve", json=answer("alice"))).json() == {"can_approve": True, "pending": True}
         r = (await c.post(f"/handoff/approvals/{rid}/approve", json=answer("alice"))).json()
     assert r["conversation_id"] == "new-1" and "approved" in r["agent_message"] and "new-1" in r["agent_message"]
     assert router.spawns[0][1]["prompt"].startswith("Finish the migration.")
@@ -146,7 +146,7 @@ async def test_only_the_owner_answers(app, router):
     router.add("src")
     rid = await request()
     async with as_approver(app) as c:
-        assert (await c.post(f"/handoff/approvals/{rid}/can-approve", json=answer("bob"))).json() == {"can_approve": False}
+        assert (await c.post(f"/handoff/approvals/{rid}/can-approve", json=answer("bob"))).json() == {"can_approve": False, "pending": True}
         assert (await c.post(f"/handoff/approvals/{rid}/approve", json=answer("bob"))).status_code == 403
         assert (await c.post(f"/handoff/approvals/{rid}/approve", json={})).status_code == 400
     async with as_approver(app, is_approver=False) as c:
