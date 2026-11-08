@@ -92,3 +92,12 @@ def test_contrib_store_config_targets_the_contribs_own_database(monkeypatch):
 def test_contrib_store_config_honours_the_rendered_name(monkeypatch):
     monkeypatch.setenv("CONTRIB_FILES_DB_NAME", "files_db")
     assert _ctx().contrib_store_config("files").db_name == "files_db"
+
+
+def test_agent_host_store_config_reads_core_as_the_broker():
+    ctx = BrokerContext(
+        authorizer=NoopAuthorizer(),
+        store_config=StoreConfig(db_password="pw", db_user="broker", db_name="broker"),
+    )
+    cfg = ctx.agent_host_store_config()
+    assert (cfg.db_name, cfg.db_user) == ("agent_host", "broker")

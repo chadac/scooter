@@ -42,12 +42,13 @@ conversation_jobs          = { writers = ["agent-host"], readers = [] }
 # title/starred for IDLE conversations, claims host_pod on first route, and SELECTs
 # the table for GET /conversations; conversation-controller writes `phase` and
 # (re)assigns host_pod. A writer implies read, so none are also readers.
-conversations              = { writers = ["agent-host", "conversation-router", "conversation-controller"], readers = [] }
+# The broker reads it to resolve the conversations its users filed.
+conversations              = { writers = ["agent-host", "conversation-router", "conversation-controller"], readers = ["broker"] }
 # One account in one system (scooter, github, gitlab, slack, jira), keyed by the
 # system's stable id. Every inbound message's sender is one of these.
 identities                 = { writers = ["agent-host"], readers = [] }
-# Per-user conversation metadata; for now, the folder each user filed it in.
-user_conversation_metadata = { writers = ["conversation-router"], readers = [] }
+# Per-user conversation metadata; for now, the folder each user filed it in. The broker reads where its users filed conversations.
+user_conversation_metadata = { writers = ["conversation-router"], readers = ["broker"] }
 # Per-user opt-outs from deployment hooks marked `userCanDisable`, set in the settings
 # page and read when a conversation's bridge is built.
 user_hook_settings         = { writers = ["agent-host"], readers = [] }

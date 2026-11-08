@@ -287,6 +287,16 @@ let
     if clash != [ ] then throw "skills: ${lib.concatStringsSep ", " clash} is both a contrib skill file and a skill directory."
     else lib.optionalAttrs cfg.agent.builtinSkills (fileSkills // dirSkills) // deploymentDirSkills;
   allSkills = builtins' // cfg.agent.skills;
+
+  # Spec-derived grants: readers get SELECT, writers read-write.
+  tablesWhere = consumer: field: db: lib.attrNames (lib.filterAttrs
+    (_t: rule: builtins.elem consumer rule.${field})
+    (cfg.db.${db}.tables or { }));
+  grantFor = consumer: db: {
+    inherit db;
+    tables = tablesWhere consumer "readers" db;
+    writeTables = tablesWhere consumer "writers" db;
+  };
 in
 {
   # ./testing.nix is absent on purpose (test-only overrides are opted into by a test
@@ -1448,7 +1458,9 @@ in
             agent-host owns the row; conversation-router INSERTs it at create time, writes
             title/starred for IDLE conversations, claims host_pod on first route, and SELECTs
             the table for GET /conversations; conversation-controller writes `phase` and
-            (re)assigns host_pod. A writer implies read, so none are also readers.'';
+            (re)assigns host_pod. A writer implies read, so none are also readers.
+            The broker reads it to resolve the conversations its users filed.'';
+          readers = [ "broker" ];
         };
         conversation_folders = {
           writers = [ "conversation-router" ];
@@ -1459,7 +1471,8 @@ in
         };
         user_conversation_metadata = {
           writers = [ "conversation-router" ];
-          note = "Per-user conversation metadata; for now, the folder each user filed it in.";
+          readers = [ "broker" ];
+          note = "Per-user conversation metadata; for now, the folder each user filed it in. The broker reads where its users filed conversations.";
         };
         conversation_events = {
           writers = [ "agent-host" ];
@@ -1501,31 +1514,22 @@ in
       };
     };
 
-    # Per-consumer grants derived from the `scooter.db` spec: a table listing the
-    # consumer under `readers` becomes SELECT, under `writers` becomes read-write.
-    scooter.postgres.readers =
-      let
-        tablesWhere = consumer: field: db: lib.attrNames (lib.filterAttrs
-          (_t: rule: builtins.elem consumer rule.${field})
-          (cfg.db.${db}.tables or { }));
-        grantFor = consumer: db: {
-          inherit db;
-          tables = tablesWhere consumer "readers" db;       # SELECT-only
-          writeTables = tablesWhere consumer "writers" db;  # read-write
-        };
-      in
-      {
-        conversation-router = {
-          user = "conversation_router";
-          grants = [ (grantFor "conversation-router" "agent_host") ]
-            ++ lib.optional cfg.webhooks.enable (grantFor "conversation-router" "webhooks");
-        };
-        # The controller mirrors conversation phase onto the row, so it gets agent_host only.
-        conversation-controller = {
-          user = "conversation_controller";
-          grants = [ (grantFor "conversation-controller" "agent_host") ];
-        };
+    # Router and controller roles, granted from the spec.
+    scooter.postgres.readers = {
+      conversation-router = {
+        user = "conversation_router";
+        grants = [ (grantFor "conversation-router" "agent_host") ]
+          ++ lib.optional cfg.webhooks.enable (grantFor "conversation-router" "webhooks");
       };
+      # The controller mirrors conversation phase onto the row, so it gets agent_host only.
+      conversation-controller = {
+        user = "conversation_controller";
+        grants = [ (grantFor "conversation-controller" "agent_host") ];
+      };
+    };
+
+    # The broker reads its users' conversation placements.
+    scooter.postgres.grants.broker = [ (grantFor "broker" "agent_host") ];
 
     # mkMerge, not //: the optional UI and ingress blocks also define `deployments` /
     # `services`, and a shallow update would drop agent-host.

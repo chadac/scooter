@@ -4,7 +4,8 @@ The `authorizer` is the enforcement point and the `store_config` is the shared
 `broker` database's DSN. `owners` says whose personal credentials a request may
 use and `user_secrets` encrypts them at rest. The app builds all of them once and
 passes them to any factory that declares a parameter. A contrib that owns tables reaches its OWN database
-through `contrib_store_config`, with the same credentials.
+through `contrib_store_config`, with the same credentials, and the conversation tables
+granted to the broker through `agent_host_store_config`.
 """
 
 from __future__ import annotations
@@ -41,3 +42,10 @@ class BrokerContext:
         as the broker, to a database whose schema and Atlas history are its own.
         """
         return self.store_config.with_database(contrib_db_name(contrib))
+
+    def agent_host_store_config(self) -> StoreConfig:
+        """`store_config` pointed at the agent_host database.
+
+        The broker's role may only SELECT the tables granted to it there.
+        """
+        return self.store_config.with_database("agent_host")
