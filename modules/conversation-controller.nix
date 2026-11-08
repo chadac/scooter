@@ -499,22 +499,23 @@ in
                   { name = "SANDBOX_DOMAIN"; value = cfg.ingress.sandboxDomain; }
                   { name = "SANDBOX_LISTEN_ADDR"; value = ":${toString sandboxPort}"; }
                   # Read-only handle on the agent_host database via the router's own role.
-                  { name = "AGENT_HOST_DB_HOST"; value = cfg.postgres.host; }
-                  { name = "AGENT_HOST_DB_PORT"; value = toString cfg.postgres.port; }
+                  # Bypasses PgBouncer: the router's push loops LISTEN.
+                  { name = "AGENT_HOST_DB_HOST"; value = cfg.postgres.directHost; }
+                  { name = "AGENT_HOST_DB_PORT"; value = toString cfg.postgres.directPort; }
                   { name = "AGENT_HOST_DB_NAME"; value = "agent_host"; }
                   { name = "AGENT_HOST_DB_USER"; value = "conversation_router"; }
                   { name = "AGENT_HOST_DB_PASSWORD"; valueFrom.secretKeyRef = { name = "agent-pg-conversation-router"; key = "password"; }; }
                 ]
-                ++ lib.optional (cfg.postgres.sslmode != null) { name = "AGENT_HOST_DB_SSLMODE"; value = cfg.postgres.sslmode; }
+                ++ lib.optional (cfg.postgres.directSslmode != null) { name = "AGENT_HOST_DB_SSLMODE"; value = cfg.postgres.directSslmode; }
                 # Read-only handle on the webhooks database for link enrichment.
                 ++ lib.optionals cfg.webhooks.enable [
-                  { name = "WEBHOOKS_DB_HOST"; value = cfg.postgres.host; }
-                  { name = "WEBHOOKS_DB_PORT"; value = toString cfg.postgres.port; }
+                  { name = "WEBHOOKS_DB_HOST"; value = cfg.postgres.directHost; }
+                  { name = "WEBHOOKS_DB_PORT"; value = toString cfg.postgres.directPort; }
                   { name = "WEBHOOKS_DB_NAME"; value = "webhooks"; }
                   { name = "WEBHOOKS_DB_USER"; value = "conversation_router"; }
                   { name = "WEBHOOKS_DB_PASSWORD"; valueFrom.secretKeyRef = { name = "agent-pg-conversation-router"; key = "password"; }; }
                 ]
-                ++ lib.optional (cfg.webhooks.enable && cfg.postgres.sslmode != null) { name = "WEBHOOKS_DB_SSLMODE"; value = cfg.postgres.sslmode; }
+                ++ lib.optional (cfg.webhooks.enable && cfg.postgres.directSslmode != null) { name = "WEBHOOKS_DB_SSLMODE"; value = cfg.postgres.directSslmode; }
                 ++ cfg.contribDbEnv.conversation-router
                 # The router must read identity exactly as the agent-host does.
                 ++ lib.optional (cfg.auth.mode != "header")

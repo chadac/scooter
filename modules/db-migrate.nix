@@ -54,14 +54,14 @@ let
   # migrator itself uses.
   waitScript = ''
     set -eu
-  '' + lib.optionalString (pcfg.sslmode != null) ''
-    export PGSSLMODE="${pcfg.sslmode}"
+  '' + lib.optionalString (pcfg.directSslmode != null) ''
+    export PGSSLMODE="${pcfg.directSslmode}"
   '' + lib.concatMapStrings
     (t:
       let inherit (t) db user; in ''
         echo "[${db}] waiting for database + role ..."
         n=0
-        until PGPASSWORD="${pwRefOf user}" psql -h "${pcfg.host}" -p "${toString pcfg.port}" \
+        until PGPASSWORD="${pwRefOf user}" psql -h "${pcfg.directHost}" -p "${toString pcfg.directPort}" \
           -U "${user}" -d "${db}" -tAc 'SELECT 1' >/dev/null 2>&1; do
           n=$((n + 1))
           if [ "$n" -ge 150 ]; then
@@ -103,11 +103,11 @@ let
           image = mcfg.image;
           imagePullPolicy = cfg.pullPolicy;
           env = [
-            { name = "DB_HOST"; value = pcfg.host; }
-            { name = "DB_PORT"; value = toString pcfg.port; }
+            { name = "DB_HOST"; value = pcfg.directHost; }
+            { name = "DB_PORT"; value = toString pcfg.directPort; }
             { name = "DB_ENVS"; value = lib.concatStringsSep " " (map (t: "${t.db}:${t.user}") targets); }
           ]
-          ++ lib.optional (pcfg.sslmode != null) { name = "DB_SSLMODE"; value = pcfg.sslmode; }
+          ++ lib.optional (pcfg.directSslmode != null) { name = "DB_SSLMODE"; value = pcfg.directSslmode; }
           ++ lib.optional (copies != [ ]) { name = "DB_COPIES"; value = lib.concatMapStringsSep " " (c: "${c.db}:${c.table}:${c.from}") copies; }
           ++ lib.optional (copies != [ ] && mcfg.retireCopiedTables) { name = "DB_RETIRE_COPIED"; value = "1"; }
           # The var name derives from the db name and the Secret from the consumer key.

@@ -5,7 +5,8 @@ The browser cannot run kubectl, so specs POST here to disturb the cluster mid-co
 POST /restart rollout-restarts the agent-host Deployment and waits, and POST /move/<thread>
 deletes the pod hosting <thread>'s conversation so the controller reassigns it. The warm-store
 stories read and disturb the overlay pool: GET /overlay/<thread>, GET /pool, POST and GET
-/canary/<thread>, POST /warm-store/scale/<n>. POST /locked-folder and DELETE /locked-folder/<id>
+/canary/<thread>, POST /warm-store/scale/<n>. POST /pooler/restart rolls the PgBouncer pooler and GET /db/connections lists
+the server's client sessions. POST /locked-folder and DELETE /locked-folder/<id>
 manage a user's locked folder as the broker, the only way to make one. Stdlib only, shells out
 to kubectl on PATH.
 """
@@ -108,6 +109,13 @@ class Hook(BaseHTTPRequestHandler):
             w = sh("kubectl", "-n", NS, "rollout", "status", "deployment/agent-host", "--timeout=180s")
             return self._reply(200 if w.returncode == 0 else 500, w.stdout + w.stderr)
 
+        if self.path == "/pooler/restart":
+            r = sh("kubectl", "-n", NS, "rollout", "restart", "deployment/agent-shared-db-pooler")
+            if r.returncode != 0:
+                return self._reply(500, r.stderr)
+            w = sh("kubectl", "-n", NS, "rollout", "status", "deployment/agent-shared-db-pooler", "--timeout=180s")
+            return self._reply(200 if w.returncode == 0 else 500, w.stdout + w.stderr)
+
         if self.path.startswith("/move/"):
             thread = self.path.removeprefix("/move/")
             # The owner is the conversations row's host_pod, read in the shared Postgres pod.
@@ -154,6 +162,24 @@ class Hook(BaseHTTPRequestHandler):
         return self._reply(404, "unknown hook")
 
     def do_GET(self) -> None:  # noqa: N802 — BaseHTTPRequestHandler contract
+        if self.path == "/db/connections":
+            # Server-side client sessions, marked by whether they arrive from the pooler.
+            pods = kget("pods", "-l", "app=agent-shared-db-pooler")
+            if pods is None:
+                return self._reply(404, "no pooler pods")
+            pooler = {p["status"].get("podIP") for p in pods["items"]} - {None}
+            r = sh("kubectl", "-n", NS, "exec", "deploy/agent-shared-db", "-c", "postgres", "--",
+                   "psql", "-U", "postgres", "-tA", "-F", "\t", "-c",
+                   "SELECT usename, coalesce(host(client_addr), ''), left(query, 60) FROM pg_stat_activity"
+                   " WHERE backend_type = 'client backend' AND usename <> 'postgres'")
+            if r.returncode != 0:
+                return self._reply(500, r.stderr)
+            rows = [line.split("\t", 2) for line in r.stdout.splitlines() if line.count("\t") >= 2]
+            return self._json(200, {
+                "poolerIps": sorted(pooler),
+                "connections": [{"user": u, "addr": a, "query": q, "viaPooler": a in pooler} for u, a, q in rows],
+            })
+
         if self.path == "/pool":
             pvs = (kget("pv") or {"items": []})["items"]
             idle = [pv_view(pv) for pv in pvs

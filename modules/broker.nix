@@ -377,8 +377,9 @@ in
                 { name = "OPENFGA_DATASTORE_ENGINE"; value = "postgres"; }
                 {
                   # OpenFGA's own db and auto-provisioned role in the shared Postgres.
+                  # Skips PgBouncer: one replica gains nothing from pooling.
                   name = "OPENFGA_DATASTORE_URI";
-                  value = "postgres://openfga@${cfg.postgres.host}:${toString cfg.postgres.port}/openfga?sslmode=${if cfg.postgres.sslmode != null then cfg.postgres.sslmode else "disable"}";
+                  value = "postgres://openfga@${cfg.postgres.directHost}:${toString cfg.postgres.directPort}/openfga?sslmode=${if cfg.postgres.directSslmode != null then cfg.postgres.directSslmode else "disable"}";
                 }
                 {
                   name = "OPENFGA_DATASTORE_PASSWORD";

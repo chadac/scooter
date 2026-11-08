@@ -40,7 +40,7 @@ import type { SandboxProvisioner } from "./session/manager.js";
 import { createFileConversationStore } from "./session/fileStore.js";
 import { createPgEventStore, withPgEvents } from "./session/eventStore.js";
 import { drizzle } from "drizzle-orm/node-postgres";
-import { agentHostDsnFromEnv, awaitingInputDsnFromEnv } from "./db/agentHostDsn.js";
+import { agentHostDsnFromEnv, agentHostListenDsnFromEnv, awaitingInputDsnFromEnv } from "./db/agentHostDsn.js";
 import { asSchemaMismatch, checkSchemaVersion, isSchemaMismatch } from "./db/schemaGate.js";
 import { createPgAssignmentSource, createPgOwnershipGuard } from "./session/pgOwnershipGuard.js";
 import { createPgPool } from "./db/pgPool.js";
@@ -880,7 +880,7 @@ export async function main(
     podName && agentHostDsn
       ? createPgOwnershipGuard(
           podName,
-          createPgAssignmentSource(agentHostDsn, agentHostPool!),
+          createPgAssignmentSource(agentHostListenDsnFromEnv(), agentHostPool!),
         )
       : undefined;
   // Hand the tracker's cached epoch to the append fence; undefined narrows the fence to pod

@@ -32,3 +32,17 @@ export function awaitingInputDsnFromEnv(env: NodeJS.ProcessEnv = process.env): s
   url.pathname = `/${name}`;
   return url.toString();
 }
+
+/** The agent_host DSN with AGENT_HOST_DB_LISTEN_* replacing the pooled server. */
+export function agentHostListenDsnFromEnv(env: NodeJS.ProcessEnv = process.env): string {
+  const base = agentHostDsnFromEnv(env);
+  const host = env.AGENT_HOST_DB_LISTEN_HOST;
+  if (!base || !host) return base;
+  const url = new URL(base);
+  url.hostname = host;
+  url.port = env.AGENT_HOST_DB_LISTEN_PORT ?? "5432";
+  const sslmode = env.AGENT_HOST_DB_LISTEN_SSLMODE;
+  if (sslmode) url.searchParams.set("sslmode", sslmode);
+  else url.searchParams.delete("sslmode");
+  return url.toString();
+}

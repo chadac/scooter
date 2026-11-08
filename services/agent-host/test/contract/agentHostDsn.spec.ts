@@ -6,7 +6,7 @@
 
 import { describe, it, expect } from "vitest";
 
-import { agentHostDsnFromEnv, awaitingInputDsnFromEnv } from "../../src/db/agentHostDsn.js";
+import { agentHostDsnFromEnv, agentHostListenDsnFromEnv, awaitingInputDsnFromEnv } from "../../src/db/agentHostDsn.js";
 
 describe("agentHostDsnFromEnv", () => {
   it("prefers an explicit AGENT_HOST_DB_DSN over the discrete vars", () => {
@@ -61,5 +61,32 @@ describe("awaitingInputDsnFromEnv", () => {
   it("is empty when no contrib provides the database, or agent_host is unset", () => {
     expect(awaitingInputDsnFromEnv(base as NodeJS.ProcessEnv)).toBe("");
     expect(awaitingInputDsnFromEnv({ AWAITING_INPUT_DB_NAME: "x" } as NodeJS.ProcessEnv)).toBe("");
+  });
+});
+
+describe("agentHostListenDsnFromEnv", () => {
+  const env = {
+    AGENT_HOST_DB_HOST: "agent-shared-db-pooler",
+    AGENT_HOST_DB_PORT: "6432",
+    AGENT_HOST_DB_PASSWORD: "pw",
+    AGENT_HOST_DB_SSLMODE: "require",
+  };
+
+  it("swaps the pooled host and port for the server's", () => {
+    const dsn = agentHostListenDsnFromEnv({ ...env, AGENT_HOST_DB_LISTEN_HOST: "agent-shared-db", AGENT_HOST_DB_LISTEN_PORT: "5433", AGENT_HOST_DB_LISTEN_SSLMODE: "verify-full" } as NodeJS.ProcessEnv);
+    expect(dsn).toBe("postgresql://agent_host:pw@agent-shared-db:5433/agent_host?sslmode=verify-full");
+  });
+
+  it("defaults the server port to 5432 and drops the pooled sslmode", () => {
+    const dsn = agentHostListenDsnFromEnv({ ...env, AGENT_HOST_DB_LISTEN_HOST: "agent-shared-db" } as NodeJS.ProcessEnv);
+    expect(dsn).toBe("postgresql://agent_host:pw@agent-shared-db:5432/agent_host");
+  });
+
+  it("is the regular DSN without a listen host", () => {
+    expect(agentHostListenDsnFromEnv(env as NodeJS.ProcessEnv)).toBe(agentHostDsnFromEnv(env as NodeJS.ProcessEnv));
+  });
+
+  it("is empty when agent_host is not configured", () => {
+    expect(agentHostListenDsnFromEnv({ AGENT_HOST_DB_LISTEN_HOST: "agent-shared-db" } as NodeJS.ProcessEnv)).toBe("");
   });
 });

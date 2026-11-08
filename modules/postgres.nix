@@ -15,9 +15,15 @@ let
   ns = cfg.namespace;
 
   inCluster = pcfg.external == null;
-  # The host consumers connect to.
+  # The Postgres server itself, for whole-session clients.
   host = if inCluster then "agent-shared-db.${ns}.svc.cluster.local" else pcfg.external.host;
   port = if inCluster then 5432 else pcfg.external.port;
+  sslmode = if inCluster then null else pcfg.external.sslmode;
+
+  # PgBouncer in front of the server, when enabled.
+  pooler = pcfg.pooler;
+  poolerHost = "agent-shared-db-pooler.${ns}.svc.cluster.local";
+  poolerPort = 6432;
 
   # The admin credentials the init Job uses for CREATE ROLE/DATABASE.
   adminUser = if inCluster then "postgres" else pcfg.external.user;
@@ -206,6 +212,40 @@ let
   # A Job's spec.template is immutable, so the name hashes the spec and a new
   # consumer or reader gets a new Job.
   initJobName = kubenix.lib.k8s.mkNameHash { name = "agent-postgres-init"; data = initJobSpec; };
+
+  # Login roles the provisioning Job creates, keyed by Secret suffix.
+  poolerRoles = lib.mapAttrs (_: c: c.user) consumers // lib.mapAttrs (_: r: r.user) readers;
+  pwEnv = name: "PW_" + lib.toUpper (builtins.replaceStrings [ "-" ] [ "_" ] name);
+
+  poolerIni = lib.generators.toINI { } {
+    # Every database routes to the server as the client's role.
+    databases."*" = "host=${host} port=${toString port}";
+    pgbouncer = {
+      listen_addr = "0.0.0.0";
+      listen_port = poolerPort;
+      unix_socket_dir = "";
+      pool_mode = "transaction";
+      auth_type = "scram-sha-256";
+      auth_file = "/etc/pgbouncer/userlist.txt";
+      max_client_conn = pooler.maxClientConn;
+      default_pool_size = pooler.poolSize;
+      reserve_pool_size = pooler.reservePoolSize;
+      # Keeps protocol-level prepared statements valid across server reassignment.
+      max_prepared_statements = 200;
+      server_tls_sslmode = if sslmode != null then sslmode else "prefer";
+      # One line per pod connect would drown the logs.
+      log_connections = 0;
+      log_disconnections = 0;
+    };
+  };
+
+  # Alphanumeric passwords need no escaping in the userlist.
+  userlistScript = ''
+    set -eu
+    : > /etc/pgbouncer/userlist.txt
+  '' + lib.concatStrings (lib.mapAttrsToList (name: user: ''
+    printf '"%s" "%s"\n' '${user}' "''$${pwEnv name}" >> /etc/pgbouncer/userlist.txt
+  '') poolerRoles);
 in
 {
   options.scooter.postgres = with lib; {
@@ -352,13 +392,55 @@ in
         };
       });
     };
-    # Read-only outputs for other modules.
-    host = mkOption { internal = true; readOnly = true; type = types.str; default = host; };
-    port = mkOption { internal = true; readOnly = true; type = types.int; default = port; };
+    pooler = {
+      enable = mkOption {
+        type = types.bool;
+        default = inCluster;
+        defaultText = literalExpression "config.scooter.postgres.external == null";
+        description = ''
+          Run PgBouncer in transaction pooling mode in front of Postgres and point the
+          consumers at it, so their pools share a few server connections instead of each
+          holding its own. LISTEN connections, migrations and provisioning still go to the
+          server directly. With `external` set, PgBouncer reaches the server using
+          `external.sslmode`, and consumers reach PgBouncer over plain TCP.
+        '';
+      };
+      image = mkOption {
+        type = types.str;
+        default = "ghcr.io/cloudnative-pg/pgbouncer:1.26.1";
+        description = "PgBouncer image (needs a shell for the userlist initContainer).";
+      };
+      poolSize = mkOption {
+        type = types.ints.positive;
+        default = 5;
+        description = ''
+          Server connections per (database, role) pair. About 15 pairs are in use, so the
+          pooler holds at most about 15 × (poolSize + reservePoolSize) connections, which
+          must fit Postgres's `max_connections` alongside the direct clients.
+        '';
+      };
+      reservePoolSize = mkOption {
+        type = types.ints.unsigned;
+        default = 2;
+        description = "Extra server connections a pair may open once a client has waited 5s.";
+      };
+      maxClientConn = mkOption {
+        type = types.ints.positive;
+        default = 2000;
+        description = "Client connections PgBouncer accepts, across all consumers.";
+      };
+    };
+    # Where consumers connect: the pooler when enabled.
+    host = mkOption { internal = true; readOnly = true; type = types.str; default = if pooler.enable then poolerHost else host; };
+    port = mkOption { internal = true; readOnly = true; type = types.int; default = if pooler.enable then poolerPort else port; };
     sslmode = mkOption {
       internal = true; readOnly = true; type = types.nullOr types.str;
-      default = if inCluster then null else pcfg.external.sslmode;
+      default = if pooler.enable then null else sslmode;
     };
+    # The server itself, for LISTEN, advisory locks and migrations.
+    directHost = mkOption { internal = true; readOnly = true; type = types.str; default = host; };
+    directPort = mkOption { internal = true; readOnly = true; type = types.int; default = port; };
+    directSslmode = mkOption { internal = true; readOnly = true; type = types.nullOr types.str; default = sslmode; };
   };
 
   config = {
@@ -492,6 +574,77 @@ in
           spec = {
             selector.app = "agent-shared-db";
             ports = [{ port = 5432; targetPort = "pg"; name = "pg"; }];
+          };
+        };
+      })
+
+      # -- PgBouncer in front of the server ----------------------------------------
+      (lib.mkIf (pooler.enable && poolerRoles != { }) {
+        configMaps.agent-shared-db-pooler = {
+          metadata = { name = "agent-shared-db-pooler"; namespace = ns; };
+          data."pgbouncer.ini" = poolerIni;
+        };
+
+        deployments.agent-shared-db-pooler = {
+          metadata = { name = "agent-shared-db-pooler"; namespace = ns; };
+          spec = {
+            replicas = 1;
+            selector.matchLabels.app = "agent-shared-db-pooler";
+            template = {
+              metadata = {
+                labels.app = "agent-shared-db-pooler";
+                # Rolls the pod when config or roles change.
+                annotations."scooter.chadac.me/config-hash" = builtins.hashString "sha256" (poolerIni + userlistScript);
+              };
+              spec = {
+                securityContext = { runAsNonRoot = true; runAsUser = 998; runAsGroup = 996; fsGroup = 996; };
+                # Waits for each provisioned agent-pg-<name> Secret.
+                initContainers = [{
+                  name = "userlist";
+                  image = pooler.image;
+                  command = [ "/bin/sh" "-c" userlistScript ];
+                  env = lib.mapAttrsToList (name: _: {
+                    name = pwEnv name;
+                    valueFrom.secretKeyRef = { name = "agent-pg-${name}"; key = "password"; };
+                  }) poolerRoles;
+                  volumeMounts = [{ name = "auth"; mountPath = "/etc/pgbouncer"; }];
+                }];
+                containers.pgbouncer = {
+                  name = "pgbouncer";
+                  image = pooler.image;
+                  command = [ "pgbouncer" "/etc/pgbouncer-config/pgbouncer.ini" ];
+                  ports = [{ containerPort = poolerPort; name = "pg"; }];
+                  resources = lib.mkDefault {
+                    requests = { cpu = "50m"; memory = "64Mi"; };
+                    limits = { memory = "256Mi"; };
+                  };
+                  readinessProbe = {
+                    tcpSocket.port = "pg";
+                    periodSeconds = 5; timeoutSeconds = 3;
+                  };
+                  livenessProbe = {
+                    tcpSocket.port = "pg";
+                    initialDelaySeconds = 5; periodSeconds = 10; timeoutSeconds = 3; failureThreshold = 6;
+                  };
+                  volumeMounts = [
+                    { name = "auth"; mountPath = "/etc/pgbouncer"; readOnly = true; }
+                    { name = "config"; mountPath = "/etc/pgbouncer-config"; readOnly = true; }
+                  ];
+                };
+                volumes = [
+                  { name = "auth"; emptyDir.medium = "Memory"; }
+                  { name = "config"; configMap.name = "agent-shared-db-pooler"; }
+                ];
+              };
+            };
+          };
+        };
+
+        services.agent-shared-db-pooler = {
+          metadata = { name = "agent-shared-db-pooler"; namespace = ns; };
+          spec = {
+            selector.app = "agent-shared-db-pooler";
+            ports = [{ port = poolerPort; targetPort = "pg"; name = "pg"; }];
           };
         };
       })

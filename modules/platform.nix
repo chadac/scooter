@@ -1945,7 +1945,13 @@ in
                   { name = "AGENT_HOST_DB_NAME"; value = "agent_host"; }
                   { name = "AGENT_HOST_DB_USER"; value = "agent_host"; }
                   { name = "AGENT_HOST_DB_PASSWORD"; valueFrom.secretKeyRef = { name = "agent-pg-agent-host"; key = "password"; }; }
-                ] ++ lib.optional (cfg.postgres.sslmode != null) { name = "AGENT_HOST_DB_SSLMODE"; value = cfg.postgres.sslmode; })
+                ] ++ lib.optional (cfg.postgres.sslmode != null) { name = "AGENT_HOST_DB_SSLMODE"; value = cfg.postgres.sslmode; }
+                # The ownership LISTEN bypasses PgBouncer.
+                ++ lib.optionals cfg.postgres.pooler.enable ([
+                  { name = "AGENT_HOST_DB_LISTEN_HOST"; value = cfg.postgres.directHost; }
+                  { name = "AGENT_HOST_DB_LISTEN_PORT"; value = toString cfg.postgres.directPort; }
+                ] ++ lib.optional (cfg.postgres.directSslmode != null)
+                  { name = "AGENT_HOST_DB_LISTEN_SSLMODE"; value = cfg.postgres.directSslmode; }))
                 ++ cfg.contribDbEnv."agent-host";
                 volumeMounts = [
                   # Per-pod hot history cache.

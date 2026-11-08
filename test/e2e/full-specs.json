@@ -18,6 +18,7 @@
   "multi-turn-integrity.spec.ts",
   "multi-user.spec.ts",
   "ownership.spec.ts",
+  "pgbouncer-pooler.spec.ts",
   "provider-routing.spec.ts",
   "queue-durability.spec.ts",
   "refresh-history.spec.ts",

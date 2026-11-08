@@ -10,6 +10,7 @@
   "image-upload.spec.ts": 15,
   "scroll-lock.spec.ts": 20,
   "ownership.spec.ts": 20,
+  "pgbouncer-pooler.spec.ts": 150,
   "multi-user.spec.ts": 35,
   "live-monitoring.spec.ts": 30,
   "linked-resources.spec.ts": 20,
