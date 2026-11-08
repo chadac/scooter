@@ -14,6 +14,7 @@
  *   E2E_PG_PORT (55432)
  *   ROUTER_BIN (else `conversation-router` on PATH)
  *   LOCAL_STATE_PATH, MIRROR_STATE_PATH, GOOSE_MODEL, AGENT_AVAILABLE_MODELS
+ *   E2E_AGENT_BIN (else the bundled fake agent)
  */
 
 import { spawn, spawnSync } from "node:child_process";
@@ -138,7 +139,8 @@ let shuttingDown = false;
 const spawnAgentHost = (name, port, statePath, mirrorPath) =>
   spawnService(name, "node", [join(REPO_ROOT, "services/agent-host/dist/index.js")], {
     PORT: port,
-    GOOSE_BIN: "fake",
+    // E2E_AGENT_BIN swaps in another ACP agent, e.g. scooter-demos' replay agent.
+    GOOSE_BIN: process.env.E2E_AGENT_BIN || "fake",
     // Force the fake sandbox (noop provisioner, no k8s) rather than letting agent-host infer it
     // from the environment.
     FAKE_SANDBOX: "1",
