@@ -39,6 +39,7 @@ import { parseContribUserApi } from "./api/contribApi.js";
 import type { SandboxProvisioner } from "./session/manager.js";
 import { createFileConversationStore } from "./session/fileStore.js";
 import { createPgEventStore, withPgEvents } from "./session/eventStore.js";
+import { drizzle } from "drizzle-orm/node-postgres";
 import { agentHostDsnFromEnv, awaitingInputDsnFromEnv } from "./db/agentHostDsn.js";
 import { asSchemaMismatch, checkSchemaVersion, isSchemaMismatch } from "./db/schemaGate.js";
 import { createPgAssignmentSource, createPgOwnershipGuard } from "./session/pgOwnershipGuard.js";
@@ -639,6 +640,11 @@ export async function main(
   // the read-through source so links still only on disk keep showing.
   const sharedDsn = webhooksResourceDsn();
   const agentHostDsn = agentHostResourceDsn();
+  // agent_host stores share one pool to bound this pod's connections.
+  const agentHostPool = agentHostDsn
+    ? createPgPool("agentHost", { connectionString: agentHostDsn, max: 8 })
+    : undefined;
+  const agentHostDb = agentHostPool ? drizzle(agentHostPool) : undefined;
   const linkStore = sharedDsn
     ? createPgLinkStore({
         dsn: sharedDsn,
@@ -654,7 +660,7 @@ export async function main(
   // agent_host database, seeded from the file store when the table is empty.
   const metaStore = agentHostDsn
     ? createPgMetaStore({
-        dsn: agentHostDsn,
+        db: agentHostDb,
         legacy: fileStore.listConversations
           ? { listConversations: () => fileStore.listConversations!() }
           : undefined,
@@ -751,7 +757,7 @@ export async function main(
   // withStaging lets the bridge reference an agent-produced image before its write lands.
   const assets = withStaging(
     agentHostResourceDsn()
-      ? createHybridAssetStore({ dsn: agentHostResourceDsn(), bytesRoot: assetsPath, maxBytes: assetMaxBytes })
+      ? createHybridAssetStore({ dsn: agentHostResourceDsn(), db: agentHostDb, bytesRoot: assetsPath, maxBytes: assetMaxBytes })
       : createPvcAssetStore({ root: assetsPath, maxBytes: assetMaxBytes }),
     { maxBytes: assetMaxBytes },
   );
@@ -864,7 +870,7 @@ export async function main(
     podName && agentHostDsn
       ? createPgOwnershipGuard(
           podName,
-          createPgAssignmentSource(agentHostDsn, createPgPool("ownershipGuard", { connectionString: agentHostDsn, max: 2 })),
+          createPgAssignmentSource(agentHostDsn, agentHostPool!),
         )
       : undefined;
   // Hand the tracker's cached epoch to the append fence; undefined narrows the fence to pod
@@ -873,7 +879,7 @@ export async function main(
   // The assignment table: the agent_host.conversations row, the same store the guard and the
   // append fence read. Multi-replica without a DSN has no assignment table (see the guard above).
   const conversationRegistry =
-    podName && agentHostDsn ? createPgConversationRegistry({ dsn: agentHostDsn }) : undefined;
+    podName && agentHostDsn ? createPgConversationRegistry({ db: agentHostDb }) : undefined;
 
   const sessions = createSessionManager({
     provisioner,
@@ -1069,7 +1075,7 @@ export async function main(
   const jobsDsn = agentHostDsn;
   // No database means no registry, since falling back to the emptyDir-backed file registry
   // would lose jobs on the next rollout.
-  const jobRegistry = jobsDsn ? createPgJobStore({ dsn: jobsDsn, legacy: fileJobRegistry }) : undefined;
+  const jobRegistry = jobsDsn ? createPgJobStore({ db: agentHostDb, legacy: fileJobRegistry }) : undefined;
   hostLog.info("background-job registry", {
     backend: jobRegistry ? "postgres" : "none",
     ...(jobRegistry ? {} : { reason: "no agent_host DSN — background jobs are disabled" }),
@@ -1078,19 +1084,19 @@ export async function main(
   // Personal skills: the per-user half of the agent's skills, authored in the settings page.
   // No database means the settings tab reports itself unconfigured and only the deployment's
   // ConfigMap skills are injected.
-  const userSkillStore = agentHostDsn ? createPgUserSkillStore({ dsn: agentHostDsn }) : undefined;
+  const userSkillStore = agentHostDsn ? createPgUserSkillStore({ db: agentHostDb }) : undefined;
   hostLog.info("personal skills", {
     backend: userSkillStore ? "postgres" : "none",
     ...(userSkillStore ? {} : { reason: "no agent_host DSN — personal skills are disabled" }),
   });
   // Without a database, identities live only in this process.
-  const identityRegistry = agentHostDsn ? createPgIdentityRegistry({ dsn: agentHostDsn }) : createMemoryIdentityRegistry();
+  const identityRegistry = agentHostDsn ? createPgIdentityRegistry({ db: agentHostDb }) : createMemoryIdentityRegistry();
   const authorStore = agentHostDsn
-    ? createPgAuthorStore({ dsn: agentHostDsn })
+    ? createPgAuthorStore({ db: agentHostDb })
     : createMemoryAuthorStore({ family: (id) => conversationTree(sessions, id) });
   // Without a database every hook stays on.
-  const userHookSettings = agentHostDsn ? createPgUserHookSettingsStore({ dsn: agentHostDsn }) : undefined;
-  const hookFolders = agentHostDsn && (config.hooks ?? []).length > 0 ? createPgFolderReader({ dsn: agentHostDsn }) : undefined;
+  const userHookSettings = agentHostDsn ? createPgUserHookSettingsStore({ db: agentHostDb }) : undefined;
+  const hookFolders = agentHostDsn && (config.hooks ?? []).length > 0 ? createPgFolderReader({ db: agentHostDb }) : undefined;
   const hooksLog = logger("hooks");
   hostLog.info("conversation hooks", {
     hooks: (config.hooks ?? []).map((h) => `${h.id}@${h.event}`),

@@ -217,6 +217,15 @@ in
       default = "alpine/k8s:1.30.0";
       description = "Image for the provisioning Job's secret-creating initContainer (needs kubectl + a shell + coreutils).";
     };
+    maxConnections = mkOption {
+      type = types.ints.positive;
+      default = 300;
+      description = ''
+        Postgres `max_connections` for the in-cluster server (ignored when `external` is set).
+        Every service replica holds its own connection pools, so a rolling deploy briefly
+        doubles the count; the stock default of 100 runs out and turns are lost.
+      '';
+    };
     storage = mkOption {
       type = types.str;
       default = "2Gi";
@@ -437,6 +446,7 @@ in
                 containers.postgres = {
                   name = "postgres";
                   image = pcfg.image;
+                  args = [ "-c" "max_connections=${toString pcfg.maxConnections}" ];
                   resources = lib.mkDefault {
                     requests = { cpu = "100m"; memory = "512Mi"; };
                     limits = { memory = "1Gi"; };
