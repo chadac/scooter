@@ -12,6 +12,7 @@ import {
   deadOnArrivalMessage,
   providerDiagnostic,
   PRIORITY_INTERRUPT,
+  RESUME_AFTER_DISCONNECT,
   type AguiEvent,
 } from "../../src/bridge.js";
 import type { AcpClient } from "../../src/acp/client.js";
@@ -1940,5 +1941,121 @@ describe("RUN_STARTED origin stamp", () => {
     // Same pod name both times, so only the epoch separates the two verdicts.
     expect(isOwnRun(started, { host: "agent-host-0", gen: 7 })).toBe(false);
     expect(isOwnRun(started, { host: "agent-host-0", gen: 5 })).toBe(true);
+  });
+});
+
+describe("bridge auto-resume after a lost agent container", () => {
+  const mkBridge = (agent: ReturnType<typeof createFakeAcpAgent>) => {
+    const exec = createSandboxExecBackend(createFakeSandboxApi());
+    return createSessionBridge({
+      config: { cwd: "/workspace", skillsDir: "/skills", agent: { command: "fake", args: [], env: {} }, sandbox: { name: "s", namespace: "ns" } },
+      exec,
+      acpClient: acpClientFromTransport(agent.transport, exec),
+      firstActivityTimeoutMs: 0,
+      deathRetryMax: 2,
+      deathRetryBaseMs: 5,
+      deathRetryCapMs: 20,
+    });
+  };
+  const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms));
+  const chunk = { emit: { sessionUpdate: "agent_message_chunk" as const, content: { type: "text" as const, text: "working" } } };
+
+  /** A working turn that loses its container with `error`. */
+  const cutOff = async (agent: ReturnType<typeof createFakeAcpAgent>, bridge: ReturnType<typeof createSessionBridge>, error: string) => {
+    agent.setScript([chunk]);
+    agent.gate();
+    await bridge.start();
+    void bridge.prompt({ threadId: "t1", text: "do the task" });
+    await tick(10);
+    agent.failNext(error);
+  };
+
+  it("sends one resume prompt after a working turn is cut off", async () => {
+    const agent = createFakeAcpAgent();
+    const bridge = mkBridge(agent);
+    const events = collect(bridge);
+    const persisted = collectPersist(bridge);
+    await cutOff(agent, bridge, "container disconnected mid-run");
+    agent.setScript([{ finish: { stopReason: "end_turn" } }]);
+    agent.releaseGate();
+    await tick(40);
+
+    const err = events.find((e) => e.type === "RUN_ERROR") as { message: string };
+    expect(err.message).toContain("continue once it reconnects");
+    const resume = persisted.find((e) => e.type === "SYSTEM_MESSAGE" && e.source === "agent-host") as { text: string } | undefined;
+    expect(resume?.text).toBe(RESUME_AFTER_DISCONNECT);
+    expect(events.filter((e) => e.type === "RUN_STARTED").length).toBe(2);
+    expect(events.at(-1)?.type).toBe("RUN_FINISHED");
+    await bridge.stop();
+  });
+
+  it("waits out a container that is still gone, via the retry backoff", async () => {
+    const agent = createFakeAcpAgent();
+    const bridge = mkBridge(agent);
+    const events = collect(bridge);
+    await cutOff(agent, bridge, "container disconnected mid-run");
+    // Hold the resume so its first attempt fails before working.
+    agent.setScript([]);
+    agent.releaseGate();
+    agent.gate();
+    await tick(10);
+    agent.failNext("container not connected (session s1)");
+    agent.setScript([{ finish: { stopReason: "end_turn" } }]);
+    agent.releaseGate();
+    await tick(60);
+
+    expect(events.some((e) => e.type === "RUN_RETRYING")).toBe(true);
+    expect(events.at(-1)?.type).toBe("RUN_FINISHED");
+    await bridge.stop();
+  });
+
+  it("resumes at most once, even when the resume is cut off too", async () => {
+    const agent = createFakeAcpAgent();
+    const bridge = mkBridge(agent);
+    const events = collect(bridge);
+    await cutOff(agent, bridge, "unknown session abc (container restarted)");
+    agent.releaseGate();
+    agent.gate();
+    await tick(10);
+    agent.failNext("container disconnected mid-run");
+    agent.releaseGate();
+    await tick(40);
+
+    const errors = events.filter((e) => e.type === "RUN_ERROR") as { message: string }[];
+    expect(errors.length).toBe(2);
+    expect(errors[1].message).toContain("send a message to continue");
+    expect(events.filter((e) => e.type === "RUN_STARTED").length).toBe(2);
+    await bridge.stop();
+  });
+
+  it("does not resume a turn that failed for another reason", async () => {
+    const agent = createFakeAcpAgent();
+    const bridge = mkBridge(agent);
+    const events = collect(bridge);
+    await cutOff(agent, bridge, "model overloaded");
+    agent.releaseGate();
+    await tick(40);
+
+    expect(events.filter((e) => e.type === "RUN_STARTED").length).toBe(1);
+    expect((events.find((e) => e.type === "RUN_ERROR") as { message: string }).message).toContain("send a message to continue");
+    await bridge.stop();
+  });
+
+  it("leaves the work to a message the user already queued", async () => {
+    const agent = createFakeAcpAgent();
+    const bridge = mkBridge(agent);
+    const events = collect(bridge);
+    const persisted = collectPersist(bridge);
+    await cutOff(agent, bridge, "container disconnected mid-run");
+    void bridge.prompt({ threadId: "t1", text: "are you there?" });
+    await tick(5);
+    agent.setScript([{ finish: { stopReason: "end_turn" } }]);
+    agent.releaseGate();
+    await tick(40);
+
+    expect(persisted.some((e) => e.type === "SYSTEM_MESSAGE" && e.source === "agent-host")).toBe(false);
+    expect(events.filter((e) => e.type === "RUN_STARTED").length).toBe(2);
+    expect(events.at(-1)?.type).toBe("RUN_FINISHED");
+    await bridge.stop();
   });
 });

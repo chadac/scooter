@@ -166,6 +166,21 @@ export function decorateSystemMessage(source: string, text: string): string {
   );
 }
 
+/** Sent after a lost agent container cuts a working turn short. */
+export const RESUME_AFTER_DISCONNECT =
+  "Your previous turn was cut off by a lost connection to your agent container. Tool calls " +
+  "that were in flight may or may not have finished. Check their effects before repeating " +
+  "anything, then continue the task.";
+
+/** How one run ended, as the pump needs it. */
+interface RunResult {
+  runId: RunId;
+  /** Failed before doing any work; safe to re-drive. */
+  retryable: boolean;
+  /** Lost its agent container after starting work; owed one resume. */
+  disconnected: boolean;
+}
+
 /** A provider's ACP session and what it has seen. */
 interface ReadySession {
   client: AcpClient;
@@ -597,6 +612,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
   const RETRY_MAX = deps.deathRetryMax ?? 5;
   const RETRY_BASE_MS = deps.deathRetryBaseMs ?? 500;
   const RETRY_CAP_MS = deps.deathRetryCapMs ?? 30_000;
+  // Resume prompts the bridge injected, so one never triggers another.
+  const resumeInputs = new WeakSet<PromptInput>();
   // Set by stop(): abandon an in-progress backoff so a torn-down bridge doesn't keep retrying.
   let closed = false;
   // The provider registry: the explicit list, or a single always-eligible provider wrapping
@@ -784,6 +801,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     // death, no activity, an ACP throw), never for a clean finish, a cancel or a
     // model-reported error.
     retryable?: boolean;
+    // Lost its agent container after it had started working.
+    disconnected?: boolean;
     // The latest reply, for Stop's last_assistant_message.
     lastText: string;
     // Hook feedback delivered when the agent tries to stop.
@@ -1097,7 +1116,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     batch: PromptInput[] = [input],
     // A retry re-drives the same batch, and its messages are already in the log.
     alreadyPersisted = false,
-  ): Promise<{ runId: RunId; retryable: boolean }> => {
+  ): Promise<RunResult> => {
     const runId = nextId("run");
     const st: RunState = {
       runId,
@@ -1277,7 +1296,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     // Ended during setup: skip the rest, nothing was sent.
     const endedBeforeSend = () => {
       log.warn("run ended before its prompt was sent; not sending it", { run_id: st.runId });
-      return { runId, retryable: st.retryable === true };
+      return { runId, retryable: st.retryable === true, disconnected: st.disconnected === true };
     };
 
     // A Stop during setup has no agent turn to cancel, so end the run here.
@@ -1383,7 +1402,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           st.ended = true;
           st.terminated = true;
           emit({ type: "RUN_FINISHED", threadId: input.threadId, runId });
-          return { runId, retryable: false };
+          return { runId, retryable: false, disconnected: false };
         }
         hookContext.push(...submit.context);
       }
@@ -1433,7 +1452,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           void client.cancel(sessionId).catch(() => {});
           // A watchdog already emitted this run's terminal event and set `retryable`, so return
           // and let the pump re-drive the batch.
-          return { runId, retryable: st.retryable === true };
+          return { runId, retryable: st.retryable === true, disconnected: st.disconnected === true };
         }
         stopReason = raced.stopReason;
         debug("[bridge] prompt: stopReason=%s", stopReason);
@@ -1486,6 +1505,9 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           // may have finished (a commit, a PR edit), so only a turn that never started is retried.
           const noSandbox = err instanceof SandboxUnavailableError;
           const replaySafe = !st.sawActivity && !noSandbox;
+          const lostContainer = /unknown session|not connected|disconnected/i.test(raw);
+          // One resume per turn; a waiting message continues instead.
+          const willResume = lostContainer && !replaySafe && !noSandbox && !resumeInputs.has(input) && queue.length === 0;
           log.warn("acp prompt rejected", { run_id: runId, error: raw, saw_activity: st.sawActivity === true, retry: replaySafe });
           emit({
             type: "RUN_ERROR",
@@ -1493,13 +1515,16 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
               ? `${raw} Nothing was sent to the agent; send the message again to retry.`
               : replaySafe
                 ? clarifyRunError(raw)
-                : `${clarifyRunError(raw)} The turn was interrupted after it had started working, so it was not retried automatically; send a message to continue.`,
+                : willResume
+                  ? `${clarifyRunError(raw)} The turn was interrupted after it had started working; the agent will be asked to check its work and continue once it reconnects.`
+                  : `${clarifyRunError(raw)} The turn was interrupted after it had started working, so it was not retried automatically; send a message to continue.`,
             ...(noSandbox ? { code: "sandbox_unavailable" } : {}),
           });
+          st.disconnected = willResume;
           st.retryable = replaySafe; // the ACP call threw (init/session/stream) before any work — transient; pump retries
           // A dead remote session fails identically on every retry, so drop the cached session
           // and let the next attempt re-initialize (and re-seed history).
-          if (/unknown session|not connected|disconnected/i.test(raw) && currentProviderId) {
+          if (lostContainer && currentProviderId) {
             debug("[bridge] remote session invalid (%s) — dropping cached session for %s", raw, currentProviderId);
             readySessions.delete(currentProviderId);
           }
@@ -1527,7 +1552,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         /* ignore */
       }
     }
-    return { runId, retryable: st.retryable === true };
+    return { runId, retryable: st.retryable === true, disconnected: st.disconnected === true };
   };
 
   // Force-interrupt: cancel the running turn once the highest-priority queued item has
@@ -1581,6 +1606,38 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     );
   };
 
+  // Re-drive a batch with exponential backoff on a transient failure.
+  const runWithRetry = async (first: PromptInput, inputs: PromptInput[]): Promise<RunResult> => {
+    let res = await runPrompt(first, inputs);
+    // Count runs performed, and distinguish a closed bridge from a spent budget.
+    let attempts = 1;
+    let abandoned = false;
+    for (let attempt = 1; res.retryable && attempt <= RETRY_MAX; attempt++) {
+      const delayMs = Math.min(RETRY_BASE_MS * 2 ** (attempt - 1), RETRY_CAP_MS);
+      // Logged so a run that fails and then succeeds on retry leaves a trace.
+      log.warn("retrying a wedged run", { attempt, max: RETRY_MAX, delay_ms: delayMs });
+      emit({ type: "RUN_RETRYING", threadId: first.threadId, attempt, max: RETRY_MAX, delayMs });
+      await new Promise((r) => setTimeout(r, delayMs));
+      if (closed) {
+        abandoned = true; // bridge stopped while backing off — abandon the retry
+        break;
+      }
+      res = await runPrompt(first, inputs, true);
+      attempts++;
+    }
+    if (res.retryable) {
+      if (abandoned) {
+        log.warn("abandoned a wedged run: the bridge closed during the retry backoff", {
+          attempts,
+          max: RETRY_MAX,
+        });
+      } else {
+        log.error("run FAILED after exhausting retries", { attempts, max: RETRY_MAX });
+      }
+    }
+    return res;
+  };
+
   // Drain the queue one run at a time, highest priority first, awaiting each run fully.
   const pump = async () => {
     if (pumping) return;
@@ -1602,32 +1659,13 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           // Re-drive this batch with exponential backoff on a transient failure, leaving the
           // rest of the queue untouched.
           const inputs = batch.map((b) => b.input);
-          let res = await runPrompt(batch[0].input, inputs);
-          // Count runs performed, and distinguish a closed bridge from a spent budget.
-          let attempts = 1;
-          let abandoned = false;
-          for (let attempt = 1; res.retryable && attempt <= RETRY_MAX; attempt++) {
-            const delayMs = Math.min(RETRY_BASE_MS * 2 ** (attempt - 1), RETRY_CAP_MS);
-            // Logged so a run that fails and then succeeds on retry leaves a trace.
-            log.warn("retrying a wedged run", { attempt, max: RETRY_MAX, delay_ms: delayMs });
-            emit({ type: "RUN_RETRYING", threadId: batch[0].input.threadId, attempt, max: RETRY_MAX, delayMs });
-            await new Promise((r) => setTimeout(r, delayMs));
-            if (closed) {
-              abandoned = true; // bridge stopped while backing off — abandon the retry
-              break;
-            }
-            res = await runPrompt(batch[0].input, inputs, true);
-            attempts++;
-          }
-          if (res.retryable) {
-            if (abandoned) {
-              log.warn("abandoned a wedged run: the bridge closed during the retry backoff", {
-                attempts,
-                max: RETRY_MAX,
-              });
-            } else {
-              log.error("run FAILED after exhausting retries", { attempts, max: RETRY_MAX });
-            }
+          let res = await runWithRetry(batch[0].input, inputs);
+          // Only an idle queue resumes; a waiting message continues instead.
+          if (res.disconnected && !closed && queue.length === 0) {
+            const resume: PromptInput = { threadId: batch[0].input.threadId, text: RESUME_AFTER_DISCONNECT, source: "agent-host" };
+            resumeInputs.add(resume);
+            log.warn("auto-resuming a turn cut off by a lost agent container", { run_id: res.runId });
+            res = await runWithRetry(resume, [resume]);
           }
           for (const b of batch) b.resolve(res.runId); // all coalesced items share the (last) run
         } catch (err) {
