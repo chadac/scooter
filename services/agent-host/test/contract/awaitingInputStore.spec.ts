@@ -1,6 +1,6 @@
 /**
  * The sidebar's "!" state in the awaiting-input database: set upserts, null deletes, and
- * a failing database is logged, never thrown into the event append that triggered it.
+ * a failing database is logged and rethrown for the caller to retry into the event append that triggered it.
  */
 
 import { describe, it, expect } from "vitest";
@@ -35,8 +35,8 @@ describe("createPgAwaitingInputStore", () => {
     expect(rows.has(id)).toBe(false);
   });
 
-  it("swallows a database error", async () => {
+  it("logs and rethrows a database error", async () => {
     const store = createPgAwaitingInputStore({ pool: fakePool(true).pool });
-    await expect(store.set(id, 5)).resolves.toBeUndefined();
+    await expect(store.set(id, 5)).rejects.toThrow("connection refused");
   });
 });

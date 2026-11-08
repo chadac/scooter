@@ -50,6 +50,7 @@ import { createPgLinkStore } from "./session/linkStore.js";
 import { parseLinkTypeAliases } from "./session/linkTypeAliases.js";
 import { createPgMetaStore } from "./session/metaStore.js";
 import { createPgAwaitingInputStore } from "./session/awaitingInputStore.js";
+import { changesAwaiting, createAwaitingInputSync } from "./session/awaitingInputSync.js";
 import { createAwaitingInputNotifier, parseAwaitingInputNotify } from "./session/awaitingInputNotify.js";
 import { createPvcAssetStore, withStaging } from "./session/assetStore.js";
 import { createHybridAssetStore } from "./session/hybridAssetStore.js";
@@ -703,8 +704,8 @@ export async function main(
             await fileStore.removeConversation?.(id);
             // Its links and hidden vars live in the webhooks database, beyond any foreign key.
             await linkStore?.deleteByConversation(id);
-            // No foreign key reaches the awaiting-input database, so its row goes here.
-            await awaitingInput?.set(id, null);
+            // Outside any foreign key; best-effort, and set already logs.
+            await awaitingInput?.set(id, null).catch(() => undefined);
           },
         }
       : {}),
@@ -731,11 +732,17 @@ export async function main(
     });
   }
   if (awaitingInput) {
+    // A pending interrupt (a question or an approval) shows as "!" until every one is settled.
+    const syncAwaiting = createAwaitingInputSync({
+      store: awaitingInput,
+      readEvents: async (id) => {
+        const events: AguiEvent[] = [];
+        for await (const e of store.readEvents(id)) events.push(e);
+        return events;
+      },
+    });
     store.onAppend?.((id, { event }) => {
-      const at = typeof event.ts === "number" ? event.ts : Date.now();
-      // A pending interrupt (a question or an approval) shows as "!" until it is answered or dismissed.
-      if (event.type === "RUN_FINISHED" && event.outcome?.type === "interrupt") void awaitingInput.set(id, at);
-      else if (event.type === "PERMISSION_RESOLVED") void awaitingInput.set(id, null);
+      if (changesAwaiting(event)) void syncAwaiting(id);
     });
   }
   // Fallback target discovery from the webhooks conversation_map when a conversation's link
