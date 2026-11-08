@@ -65,7 +65,9 @@ let
       nixpkgs = lib.mkForce nixpkgsSourceStr;
     };
     # Ship the same source object the script references, so the in-pod build is offline.
-    system.extraDependencies = [ nixpkgsSource ];
+    system.extraDependencies = [ nixpkgsSource ]
+      # Uncached, so each sandbox would otherwise build it from stdenv.
+      ++ lib.optional (pkgs.uv ? real) pkgs.uv.real;
   });
 
   toplevel = nixos.config.system.build.toplevel;
