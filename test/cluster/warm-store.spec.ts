@@ -212,7 +212,13 @@ maybe("warm /nix/store PVC pool (round-trip + reserve CAS)", () => {
         hostPath: { path: `/tmp/${pv}` },
       },
     });
-    const before = await cluster.get<{ metadata: { resourceVersion: string } }>("PersistentVolume", pv);
+    // Wait out the PV controller's Available write; it bumps resourceVersion.
+    const before = await cluster.waitFor<{ metadata: { resourceVersion: string }; status?: { phase?: string } }>(
+      "PersistentVolume",
+      pv,
+      (p) => p.status?.phase === "Available",
+      60_000,
+    );
 
     // Both send ControllerK8s.reserve's patch from one stale view.
     const reserve = (sandbox: string) =>
