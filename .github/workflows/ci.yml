@@ -76,6 +76,7 @@ jobs:
     needs: tier
     if: needs.tier.outputs.skip != 'true'
     permissions:
+      actions: write   # fail fast: cancel the run
       contents: read
     runs-on: ${{ fromJSON(needs.tier.outputs.runners)[strategy.job-index] }}
     strategy:
@@ -115,6 +116,11 @@ jobs:
       - name: agent-host + byoc-controller + generated Drizzle schema + sandbox VS Code pieces (nix)
         if: matrix.shard == 'repo'
         run: nix build .#scooter-schema-js .#scooter-svcauth-js .#agentHost .#byoc-controller .#scooter-vscode-ahp .#code-server-bin --print-build-logs
+
+      # Merge queue: a red required job cancels the run; see the action.
+      - name: fail fast (merge queue)
+        if: failure() && github.event_name == 'merge_group'
+        uses: ./.github/actions/cancel-run
 
   # All shards report as one `fast` gate; always() resolves it when red.
   fast-report:
@@ -166,6 +172,9 @@ jobs:
     name: build image ${{ matrix.image.attr }}
     needs: tier
     if: needs.tier.outputs.full == 'true'
+    permissions:
+      contents: read
+      actions: write   # fail fast: cancel the run
     runs-on: ${{ fromJSON(needs.tier.outputs.runners)[strategy.job-index] }}
     strategy:
       fail-fast: false # report every broken image, not just the first
@@ -205,6 +214,11 @@ jobs:
           impure=()
           if [ "$UNFREE" = "true" ]; then export NIXPKGS_ALLOW_UNFREE=1; impure=(--impure); fi
           nix build "${impure[@]}" ".#$ATTR" --no-link --print-build-logs
+
+      # Merge queue: a red required job cancels the run; see the action.
+      - name: fail fast (merge queue)
+        if: failure() && github.event_name == 'merge_group'
+        uses: ./.github/actions/cancel-run
 
   # Reports the image-build matrix as the `images` gate; always() so a red build
   # still resolves the gate for `ci-summary`.
@@ -253,6 +267,9 @@ jobs:
     name: db migrations (${{ matrix.variant }})
     needs: tier
     if: needs.tier.outputs.full == 'true'
+    permissions:
+      contents: read
+      actions: write   # fail fast: cancel the run
     runs-on: ${{ fromJSON(needs.tier.outputs.runners)[strategy.job-index] }}
     strategy:
       fail-fast: false
@@ -272,6 +289,11 @@ jobs:
         env:
           VARIANT: ${{ matrix.variant }}
         run: nix build ".#checks.x86_64-linux.db-migrate-$VARIANT" --no-link --print-build-logs
+
+      # Merge queue: a red required job cancels the run; see the action.
+      - name: fail fast (merge queue)
+        if: failure() && github.event_name == 'merge_group'
+        uses: ./.github/actions/cancel-run
 
   # Reports both legs as the `migrations` gate; always() so a red leg still
   # resolves the gate for `ci-summary`.
@@ -523,6 +545,9 @@ jobs:
   nixos-test:
     name: nixosTest ${{ matrix.test }}
     needs: [nixos-tests-matrix, tier]
+    permissions:
+      contents: read
+      actions: write   # fail fast: cancel the run
     runs-on: ${{ fromJSON(needs.tier.outputs.runners)[strategy.job-index] }}
     strategy:
       fail-fast: false
@@ -579,6 +604,11 @@ jobs:
           ulimit -n 1048576
           ulimit -n
           nix build ".#checks.x86_64-linux.${{ matrix.test }}" --print-build-logs
+
+      # Merge queue: a red required job cancels the run; see the action.
+      - name: fail fast (merge queue)
+        if: failure() && github.event_name == 'merge_group'
+        uses: ./.github/actions/cancel-run
 
   # Decides from the changed paths which cluster jobs need to run; a release runs all.
   cluster-changes:
@@ -717,6 +747,9 @@ jobs:
     name: cluster image boot (k3d)
     needs: cluster-changes
     if: needs.cluster-changes.outputs.run == 'true'
+    permissions:
+      contents: read
+      actions: write   # fail fast: cancel the run
     runs-on: ubuntu-latest
     # Required: this is the only tier that boots the real OCI image in a pod.
     steps:
@@ -764,6 +797,11 @@ jobs:
           nix shell nixpkgs#k3d -c k3d cluster delete scooter-ci || true
           nix shell nixpkgs#k3d -c k3d registry delete scooter-reg.localhost || true
 
+      # Merge queue: a red required job cancels the run; see the action.
+      - name: fail fast (merge queue)
+        if: failure() && github.event_name == 'merge_group'
+        uses: ./.github/actions/cancel-run
+
   # The image in a user-namespaced pod (`sandboxUserNamespace`): systemd boots with namespaced
   # SYS_ADMIN, the overlay store mounts through idmapped volumes, and Nix builds run in Nix's own
   # build sandbox. Pinned to the production k3s line, since user namespaces need Kubernetes >= 1.33.
@@ -771,6 +809,9 @@ jobs:
     name: cluster user-namespace sandbox (k3d)
     needs: cluster-changes
     if: needs.cluster-changes.outputs.run == 'true'
+    permissions:
+      contents: read
+      actions: write   # fail fast: cancel the run
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -834,6 +875,11 @@ jobs:
         if: always()
         run: nix shell nixpkgs#k3d -c k3d cluster delete scooter-userns || true
 
+      # Merge queue: a red required job cancels the run; see the action.
+      - name: fail fast (merge queue)
+        if: failure() && github.event_name == 'merge_group'
+        uses: ./.github/actions/cancel-run
+
   # Validates the example's rendered YAML against a real k3d apiserver with a
   # server-side dry-run, which runs the real schema and admission validation that
   # `just check-manifests` cannot. No images are built or pulled; runtime is covered
@@ -842,6 +888,9 @@ jobs:
     name: example manifests (k3d dry-run)
     needs: cluster-changes
     if: needs.cluster-changes.outputs.example == 'true'
+    permissions:
+      contents: read
+      actions: write   # fail fast: cancel the run
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -898,6 +947,11 @@ jobs:
       - name: delete cluster
         if: always()
         run: nix shell nixpkgs#k3d -c k3d cluster delete scooter-example || true
+
+      # Merge queue: a red required job cancels the run; see the action.
+      - name: fail fast (merge queue)
+        if: failure() && github.event_name == 'merge_group'
+        uses: ./.github/actions/cancel-run
 
   # Reports the path-gated k3d jobs as the `cluster` gate; skipped jobs were not
   # asked to run, so all-skipped reports skip.
@@ -1076,6 +1130,9 @@ jobs:
     # platform deploy, ~60 on a sweep. Safe only because the gate above is
     # dispatch/label, or a queued release that changes no code, none of
     # which a fork can trigger; `runs-on` is not a security boundary on its own.
+    permissions:
+      contents: read
+      actions: write   # fail fast: cancel the run
     runs-on: [self-hosted, linux, x64, nix]
     # Bounds a wedged cluster holding a fleet runner all day; the default 360 does not.
     timeout-minutes: 150
@@ -1216,6 +1273,11 @@ jobs:
         run: |
           echo "::error::cluster smoke failed on shard ${{ matrix.shard }} — see the verdict comment for which tests"
           exit 1
+
+      # Merge queue: a red required job cancels the run; see the action.
+      - name: fail fast (merge queue)
+        if: failure() && github.event_name == 'merge_group'
+        uses: ./.github/actions/cancel-run
 
   # The gate for e2e full: succeeds only when every shard passed, merges the
   # per-shard reports into `e2e-full-report` for the next run's weights, and skips
@@ -1459,6 +1521,9 @@ jobs:
   e2e-shard:
     name: e2e fast shard ${{ matrix.shard }}
     needs: e2e-distribute
+    permissions:
+      contents: read
+      actions: write   # fail fast: cancel the run
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false # one shard failing must not cancel the others (collect reports all)
@@ -1502,6 +1567,11 @@ jobs:
           path: test-results/
           retention-days: 7
           if-no-files-found: ignore
+
+      # Merge queue: a red required job cancels the run; see the action.
+      - name: fail fast (merge queue)
+        if: failure() && github.event_name == 'merge_group'
+        uses: ./.github/actions/cancel-run
 
   # The gate: succeeds only when every shard passed, reports failing shards on the
   # PR, and merges the per-shard reports into `e2e-report` (from a fully-green run

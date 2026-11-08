@@ -1,0 +1,20 @@
+name: cancel this run
+description: >-
+  Cancels the whole workflow run. The caller gates it with
+  `if: failure() && github.event_name == 'merge_group'`, so a red required job
+  ends the queue entry at once instead of waiting for every other job. Jobs and
+  steps marked always() still run, so the reports and `ci-summary` still give a
+  verdict. The job needs `actions: write`.
+runs:
+  using: composite
+  steps:
+    # curl, not gh: the onprem runners may not have gh.
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        curl -fsS -X POST \
+          -H "Authorization: Bearer $GH_TOKEN" \
+          -H "Accept: application/vnd.github+json" \
+          "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/cancel" \
+          || echo "::warning::could not cancel run $GITHUB_RUN_ID"
