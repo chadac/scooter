@@ -17,6 +17,7 @@ from scooter_broker_lib.types import Identity, Provider
 from scooter_contrib_kanban import mcp_tools
 from scooter_contrib_kanban.boards import Boards, positions
 from scooter_contrib_kanban.config import parse_stages
+from scooter_contrib_kanban.filed import Filed
 from scooter_contrib_kanban.folders import Conversation, FolderError, RouterFolders
 from scooter_contrib_kanban.keys import CardKeys
 from scooter_contrib_kanban.messages import AgentHostMessages
@@ -45,6 +46,9 @@ class FakeFolders:
         # Change pushes, as (owner, conversation ids).
         self.pushed: list[tuple[str, list[str]]] = []
         self.push_error = False
+        # Ids looked up one at a time, and keys agent_host hasn't recorded a sandbox for.
+        self.lookups: list[str] = []
+        self.unkeyed: set[str] = set()
 
     def names(self, owner: str, parent: str = "") -> list[str]:
         mine = self.by_owner.get(owner, {})
@@ -87,10 +91,19 @@ class FakeFolders:
 
     async def conversation(self, key: str) -> Conversation | None:
         """By card key or conversation id, as the router answers for either."""
+        self.lookups.append(key)
         for k, c in self.conversations.items():
             if key in (k, c.id):
                 return replace(c, key=k)
         return None
+
+    async def filed_in(self, owner: str, folders: list[str]) -> list[Filed]:
+        """agent_host's join of placements onto conversations."""
+        return [
+            Filed(replace(c, key="" if k in self.unkeyed else k), self.placements[(owner, c.id)])
+            for k, c in self.conversations.items()
+            if c.owner == owner and self.placements.get((owner, c.id)) in folders
+        ]
 
     async def placement(self, owner: str, conversation: str) -> str | None:
         return self.placements.get((owner, conversation))
@@ -997,6 +1010,23 @@ async def test_the_board_loads_the_cards_it_asks_for_in_one_read(app, boards, fo
     assert cards["conv-api"]["blockers"] == [{"id": "conv-schema", "title": "Schema", "stage": "Review", "done": False}]
     assert cards["conv-api"]["priority"] == "high" and cards["conv-ui"]["tags"] == [tag_id]
     assert cards["conv-schema"]["card"]["note"] == "in review" and cards["conv-ui"]["card"] is None
+
+
+async def test_a_board_load_reads_its_cards_in_one_join(app, boards, folders):
+    board = await _cards(app, boards, folders, "api", "schema", "ui")
+    folders.conversations["key-off"] = Conversation(id="conv-off", owner="alice", title="Off")
+    folders.placements[("alice", "conv-off")] = "elsewhere"
+    assert not (await mcp_tools.kanban_set_blockers(blocked_by=["conv-schema"], ctx=_ctx("thread-api"))).is_error
+    boards.filings = folders
+    # Only a row with no sandbox recorded needs its key looked up.
+    folders.unkeyed.add("key-ui")
+    folders.lookups.clear()
+    async with as_(app, user="alice") as c:
+        asked = {"conversations": ["conv-api", "key-ui", "conv-off"]}
+        r = await c.post(f"/kanban/user/boards/{board['folder']}/cards", json=asked)
+    assert set(r.json()["cards"]) == {"conv-api", "conv-ui"}
+    assert r.json()["cards"]["conv-api"]["blockers"][0]["id"] == "conv-schema"
+    assert folders.lookups == ["conv-ui"]
 
 
 async def test_only_the_owner_loads_a_board(app, boards, folders):

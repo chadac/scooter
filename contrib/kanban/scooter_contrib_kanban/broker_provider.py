@@ -16,6 +16,7 @@ from scooter_broker_lib.types import Provider
 from . import mcp_tools
 from .boards import Boards
 from .config import parse_stages, settings
+from .filed import AgentHostFilings
 from .folders import RouterFolders
 from .keys import CardKeys
 from .messages import AgentHostMessages
@@ -32,11 +33,14 @@ def kanban(ctx: BrokerContext) -> Provider:
     if not settings.kanban_enabled:
         return Provider(name="kanban", transports=[transport, tools], enabled=False)
 
+    agent_host = ctx.agent_host_store_config()
     boards = Boards(
         store=KanbanStore(ctx.contrib_store_config("kanban")),
         folders=RouterFolders(),
         default_stages=parse_stages(settings.kanban_stages),
         send=AgentHostMessages(settings.agent_host_url) if settings.agent_host_url else None,
+        # A dev SQLite broker has no agent_host tables to read.
+        filings=AgentHostFilings(agent_host) if agent_host.resolved_dsn().startswith("postgresql") else None,
     )
     transport.boards = boards
     keys = CardKeys(settings.agent_host_url) if settings.agent_host_url else None

@@ -13,6 +13,7 @@ from dataclasses import dataclass, replace
 
 import httpx
 
+from .filed import Filings
 from .folders import Conversation, FolderError, Folders
 from .messages import Send
 from .store import PRIORITIES, Card, Details, KanbanStore, Place, Stage, Tag
@@ -141,6 +142,8 @@ class Boards:
     default_stages: list[str]
     # Tells a conversation its blockers are done; None sends nothing.
     send: Send | None = None
+    # Reads placements straight from agent_host; None asks the router per card.
+    filings: Filings | None = None
 
     async def stages(self, board: str, owner: str) -> list[Stage]:
         """A board's stages, giving one made before stages were folders its defaults."""
@@ -383,6 +386,23 @@ class Boards:
         except FolderError as e:
             raise _refused(e) from None
 
+    async def _filed_on(
+        self, filings: Filings, owner: str, folders: list[str]
+    ) -> tuple[dict[str, str], dict[str, Conversation]]:
+        """Placements in `folders`, and their conversations by id and key, from one read."""
+        placements: dict[str, str] = {}
+        known: dict[str, Conversation] = {}
+        for f in await filings.filed_in(owner, folders):
+            conv = f.conversation
+            # No sandbox recorded yet, so only the agent-host knows its key.
+            if not conv.key:
+                conv = await self._conversation(conv.id) or conv
+            placements[conv.id] = f.folder
+            known[conv.id] = conv
+            if conv.key and not f.subagent:
+                known[conv.key] = conv
+        return placements, known
+
     async def _stage_of(self, conv: Conversation, owner: str, board: str, placements: dict[str, str]) -> Stage | None:
         """The stage `conv` shows in on `board`; None when it isn't on it."""
         if conv.owner != owner:
@@ -498,12 +518,17 @@ class Boards:
         stages = await self.stages(await self.own(owner, board), owner)
         # The board folder itself shows as its first stage.
         stage_of = {s.folder: s for s in stages} | {board: stages[0]}
-        placements = await self._placements(owner)
+        if self.filings is not None:
+            placements, known = await self._filed_on(self.filings, owner, list(stage_of))
+        else:
+            placements, known = await self._placements(owner), {}
         gate = asyncio.Semaphore(MAX_LOOKUPS)
 
         async def look(ref: str) -> Conversation | None:
-            async with gate:
-                conv = await self._conversation(ref)
+            conv = known.get(ref)
+            if conv is None and self.filings is None:
+                async with gate:
+                    conv = await self._conversation(ref)
             on_board = conv is not None and conv.owner == owner and placements.get(conv.id) in stage_of
             return conv if on_board else None
 
