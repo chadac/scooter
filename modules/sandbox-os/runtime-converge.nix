@@ -52,7 +52,7 @@ let
     # systemd provides `systemd-run` for the detached converge, findutils the `find`
     # the local-module probe needs: the detached child inherits systemd's PATH, not
     # the agent shell's, so a tool missing here fails only on the boot path.
-    runtimeInputs = [ pkgs.nix pkgs.coreutils pkgs.findutils pkgs.systemd pkgs.gnugrep pkgs.gawk ];
+    runtimeInputs = [ config.nix.package pkgs.coreutils pkgs.findutils pkgs.systemd pkgs.gnugrep pkgs.gawk ];
     checkPhase = "";
     text = ''
       # scooter-apply-module [--module <path>] [--detach]: re-converge this sandbox

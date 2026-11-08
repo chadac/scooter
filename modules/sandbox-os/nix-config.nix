@@ -34,6 +34,9 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    # 2.35 evaluates flakes without copying their source into the store.
+    nix.package = lib.mkDefault pkgs.nixVersions.nix_2_35;
+
     nix.settings.experimental-features = [ "nix-command" "flakes" ];
 
     # Off unless nix-sandbox-probe finds the pod can host it and writes the include below.

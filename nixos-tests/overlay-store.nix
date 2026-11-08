@@ -1,6 +1,6 @@
 # nixosTest: the read-only-lower plus writable-upper Nix overlay store boots under
-# systemd, the base store stays read-only, and a path built at runtime lands in the
-# upper. The VM framework already overlays /nix/store; the module bind-pins that as
+# systemd, the base store stays read-only, a path built at runtime lands in the
+# upper, and a flake eval leaves no source copy there. The VM framework already overlays /nix/store; the module bind-pins that as
 # its lower and stacks its own upper, the same compose-on-top path it takes over a
 # baked OCI store, so the test exercises the real mechanism.
 
@@ -95,6 +95,19 @@ pkgs.testers.runNixOSTest {
     machine.succeed(f"nix-store --realise {out} --add-root /root/result")
     machine.succeed("systemctl restart overlay-store-setup.service")
     machine.succeed(f"test -n \"$(ls -A {up}/state/gcroots/auto)\"")
+
+    # A dirty-worktree flake eval copies no source into the store.
+    machine.succeed(
+        "mkdir /tmp/wt && cd /tmp/wt && git init -q"
+        " && echo '{ outputs = _: { x = 1; }; }' > flake.nix"
+        " && head -c 1048576 /dev/urandom > blob"
+        " && git add . && git -c user.name=t -c user.email=t@t commit -qm init"
+        " && echo changed >> blob"
+    )
+    before = machine.succeed(f"ls {up}/upper | grep -c -- '-source$' || true").strip()
+    assert machine.succeed("nix eval /tmp/wt#x").strip() == "1"
+    after = machine.succeed(f"ls {up}/upper | grep -c -- '-source$' || true").strip()
+    assert before == after, f"flake eval copied source into the store ({before} -> {after})"
 
     # Nix is configured with the local-overlay store.
     store = machine.succeed("nix config show store")
