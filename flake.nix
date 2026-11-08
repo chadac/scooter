@@ -396,6 +396,7 @@
             contrib-kanban = contribs.packages.kanban.broker;
             contrib-jira = contribs.packages.jira.broker;
             contrib-jira-webhooks = contribs.packages.jira.webhooks;
+            contrib-k8s = contribs.packages.k8s.broker;
             contrib-kagi = contribs.packages.kagi.broker;
             contrib-slack = contribs.packages.slack.broker;
             contrib-slack-webhooks = contribs.packages.slack.webhooks;
@@ -558,6 +559,7 @@
             contrib-kanban = contribs.packages.kanban.broker;
             contrib-jira = contribs.packages.jira.broker;
             contrib-jira-webhooks = contribs.packages.jira.webhooks;
+            contrib-k8s = contribs.packages.k8s.broker;
             contrib-kagi = contribs.packages.kagi.broker;
             contrib-slack = contribs.packages.slack.broker;
             contrib-slack-webhooks = contribs.packages.slack.webhooks;

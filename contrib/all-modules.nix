@@ -25,6 +25,7 @@
     ./handoff/contrib.nix
     ./imagegen/contrib.nix
     ./jira/contrib.nix
+    ./k8s/contrib.nix
     ./kanban/contrib.nix
     ./kagi/contrib.nix
     ./marimo/contrib.nix

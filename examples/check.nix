@@ -1314,6 +1314,41 @@ let
   handoffBrokerEnv =
     let ctrs = builtins.attrValues (handoffEval.config.kubernetes.resources.deployments.agent-broker.spec.template.spec.containers or { });
     in builtins.concatMap (c: c.env or [ ]) ctrs;
+  # k8s: cluster env, kubeconfig secretKeyRefs and broker role bindings render.
+  k8sEval = sysEval {
+    contribs.k8s.enable = nixpkgsLib.mkForce true;
+    contribs.k8s.clusters = {
+      home.auth.inCluster.clusterRoles = [ "view" "edit" ];
+      prod-eu = {
+        auth.kubeconfig.secret.name = "k8s-prod";
+        approvers = [ "admin@example.com" ];
+        grants.enable = true;
+      };
+    };
+  };
+  k8sBrokerEnv =
+    let ctrs = builtins.attrValues (k8sEval.config.kubernetes.resources.deployments.agent-broker.spec.template.spec.containers or { });
+    in builtins.concatMap (c: c.env or [ ]) ctrs;
+  k8sEnv = name: builtins.filter (e: e.name == name) k8sBrokerEnv;
+  k8sClusters = builtins.fromJSON ((builtins.head (k8sEnv "K8S_CLUSTERS_JSON" ++ [ { value = "{}"; } ])).value);
+  k8sProblems =
+    (if (builtins.head (k8sEnv "K8S_ENABLED" ++ [ { value = ""; } ])).value == "true" then [ ]
+     else [ "contribs.k8s with clusters did not set K8S_ENABLED=true on the broker" ])
+    ++ (if (k8sClusters.prod-eu.auth or { }) == { type = "kubeconfig"; env = "K8S_KUBECONFIG_PROD_EU"; context = ""; }
+          && (k8sClusters.prod-eu.approvers or [ ]) == [ "admin@example.com" ]
+          && (k8sClusters.home.auth.type or "") == "inCluster" then [ ]
+        else [ "K8S_CLUSTERS_JSON does not carry each cluster's auth and approvers" ])
+    ++ (if map (e: e.valueFrom.secretKeyRef or null) (k8sEnv "K8S_KUBECONFIG_PROD_EU") == [ { name = "k8s-prod"; key = "config"; } ] then [ ]
+        else [ "the prod-eu kubeconfig is not a secretKeyRef on k8s-prod/config" ])
+    ++ (if (k8sEval.config.kubernetes.resources.clusterRoleBindings ? agent-broker-k8s-edit)
+          && (k8sEval.config.kubernetes.resources.clusterRoleBindings ? agent-broker-k8s-view) then [ ]
+        else [ "an in-cluster k8s cluster's clusterRoles are not bound to agent-broker" ])
+    ++ (if !((sysEval { contribs.k8s = { enable = nixpkgsLib.mkForce true; clusters = nixpkgsLib.mkForce { }; }; })
+          .config.kubernetes.resources.clusterRoleBindings ? agent-broker-k8s-view) then [ ]
+        else [ "k8s with no clusters bound roles to agent-broker" ])
+    ++ (if !(builtins.tryEval (builtins.deepSeq (sysEval { contribs.k8s = { enable = nixpkgsLib.mkForce true; clusters."Bad_Name".auth.inCluster = { }; }; })
+          .config.kubernetes.resources.deployments.agent-broker.spec true)).success then [ ]
+        else [ "a k8s cluster name that is not lowercase and dashes rendered" ]);
   sysEchoTuned = sysById (sysEval {
     contribs.echo.enable = nixpkgsLib.mkForce true;
     scooter.systemTasks.echo-greet.every = "4h";
@@ -1603,7 +1638,7 @@ let
     ++ (if imageDrv forkedLib "conversation-router" == imageDrv platform "conversation-router" then [ ]
         else [ "scooter.packages.scooter-lib override changed conversation-router, which does not use it" ]);
 
-  allProblems = packageProblems ++ uploadsProblems ++ sysTaskProblems ++ askUserProblems ++ hookProblems ++ providerProblems ++ disabledContribProblems ++ settingsTabProblems ++ uiManifestProblems ++ conversationUiProblems ++ contribApiProblems ++ dirSkillProblems ++ legacyRootProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ imagegenProblems ++ atProblems ++ googleProblems ++ ghOwnersProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ poolerProblems ++ puProblems ++ mdProblems ++ ngProblems' ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ contribCoverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ volumeProblems ++ approvalProblems ++ awaitingNotifyProblems ++ stage2Problems ++ contribDbProblems ++ contribGrantProblems ++ retireProblems ++ initGrantProblems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems ++ conversationServiceProblems ++ selfAccessProblems ++ npProblems ++ sandboxOriginProblems ++ enforceProblems ++ uaProblems ++ folderServiceProblems;
+  allProblems = packageProblems ++ uploadsProblems ++ sysTaskProblems ++ askUserProblems ++ hookProblems ++ providerProblems ++ disabledContribProblems ++ settingsTabProblems ++ uiManifestProblems ++ conversationUiProblems ++ contribApiProblems ++ dirSkillProblems ++ legacyRootProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ imagegenProblems ++ atProblems ++ googleProblems ++ ghOwnersProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ poolerProblems ++ puProblems ++ mdProblems ++ ngProblems' ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ contribCoverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ volumeProblems ++ approvalProblems ++ awaitingNotifyProblems ++ stage2Problems ++ contribDbProblems ++ contribGrantProblems ++ retireProblems ++ initGrantProblems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems ++ conversationServiceProblems ++ selfAccessProblems ++ npProblems ++ sandboxOriginProblems ++ enforceProblems ++ uaProblems ++ folderServiceProblems ++ k8sProblems;
 in
 if allProblems == [ ]
 then "ok: deployments = ${haveDeps}; datadog + airtable + brave + kagi + duckduckgo (three search providers, each with its own tool) + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every scooter.* namespace and every shipped contrib's own options; skills gated on the contrib being built; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; the renamed root (agentSandbox.*) fails the render; contribs reach the platform eval and configuring an unshipped one fails the render; deploy-time Jobs are spec-hash named; a scooter.packages override reaches exactly the images that use it\n"

@@ -29,6 +29,7 @@
       backends.bedrock.enable = true;
     };
     jira.enable = true;
+    k8s.enable = true;
     kagi.enable = true;
     kanban.enable = true;
     marimo.enable = true;

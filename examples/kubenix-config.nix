@@ -233,6 +233,18 @@
     mcpservers.enable = true;
     # Kanban boards: a folder shown as a board, its conversations as cards.
     kanban.enable = true;
+    # Kubernetes: people approve each write, exec and Secret read.
+    k8s = {
+      enable = true;
+      clusters.home = {
+        auth.inCluster.clusterRoles = [ "view" "edit" ];
+        grants.enable = true;
+      };
+      clusters.prod = {
+        auth.kubeconfig.secret.name = "k8s-prod-kubeconfig";
+        approvers = [ "admin@example.com" ];
+      };
+    };
 
     # Datadog provider: proxies /datadog/* -> https://api.<site> with the two keys
     # injected from a Secret in the broker namespace.
