@@ -43,6 +43,13 @@ gates:
     # A release must pass it outright.
     release: true
 
+  - id: e2e-target
+    name: e2e target (k3d, the PR's new e2e-full tests ×1)
+    require: when_labelled
+    label: e2e-target
+    # Required in the PR and the queue.
+    block_while_pending: true
+
   - id: flake-fast
     name: flake focus (targeted ×20)
     require: when_labelled

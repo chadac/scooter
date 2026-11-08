@@ -293,6 +293,39 @@ Two more rules that catch most mistakes:
   A spec red in 1/5 baseline runs is a flake to take to
   `e2e-full-flake-check`, not a regression.
 
+### Adding e2e-full tests: target them with `e2e-target`
+
+A PR that **adds new `e2e-full` tests** (browser stories under `--project=full`)
+must prove they pass on the real k3d stack before merge. Neither tier runs
+e2e-full on an ordinary PR or queue entry, so without this a new full test first
+runs on the nightly. Add the **`e2e-target`** label and name the new tests in the
+PR description, as a Playwright `--grep` pattern on a plain line of its own
+(**not** in a code block: fenced lines are ignored, so examples never match):
+
+```
+e2e-target: renames a conversation|archives a conversation
+```
+
+CI then runs e2e-full narrowed to that `--grep`, **once per test on one shard**
+(like `e2e-full-flake-check` with `flake-full-repeat: 1`), in the PR **and again
+in the merge queue**. It reports the required **`e2e-target`** gate: it passes
+only if every matched test passes, and there is no baseline comparison because
+the tests are new.
+
+- The pattern is a Playwright `--grep` regex over full test titles. Match only
+  the PR's new tests (and any you changed), not the whole spec, or the run gets
+  long. A pattern that matches nothing fails the run.
+- Write the bare pattern: anything after the colon, a trailing comment included,
+  becomes part of the `--grep`. The first unfenced line wins.
+- The label is the opt-in because the job runs on the self-hosted fleet, and
+  only a maintainer can label. A labelled PR with no `e2e-target:` line fails
+  the `tier` job.
+- Editing the description doesn't re-run CI. Push, or remove and re-add the label.
+- `e2e-target` replaces the `e2e-full` label's whole-suite run on that PR. A
+  release, or a manual dispatch, still runs the whole suite.
+- New cluster (vitest) tests aren't covered: the target narrows only the
+  browser stories.
+
 ### Reading the `e2e-full` verdict
 
 **The label is enough — `e2e-full` is NOT path-gated.** It once was, and a

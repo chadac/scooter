@@ -17,7 +17,8 @@ name: CI
 on:
   pull_request:
     # `labeled` so adding an opt-in label (`full-ci`, `flake-check`,
-    # `e2e-full-flake-check`, `e2e-full`, `full-nixos-tests`, `bench`) re-runs CI.
+    # `e2e-full-flake-check`, `e2e-full`, `e2e-target`, `full-nixos-tests`, `bench`)
+    # re-runs CI.
     types: [opened, synchronize, reopened, labeled]
   # No `push` on main: the queue already tested that exact commit.
   # The merge queue tests each entry on a temporary `gh-readonly-queue/*` ref and
@@ -40,6 +41,8 @@ jobs:
       full: ${{ steps.tier.outputs.full }}
       release: ${{ steps.tier.outputs.release }}
       skip: ${{ steps.tier.outputs.skip }}
+      # The `e2e-target:` grep; empty unless the PR opted in.
+      e2e_target: ${{ steps.e2e-target.outputs.pattern }}
       # Runner per matrix entry, weighted by each fleet's capacity.
       runners: ${{ steps.runners.outputs.runners }}
       # onprem when allowed, else ubuntu-latest: pins critical-path jobs.
@@ -50,6 +53,7 @@ jobs:
           sparse-checkout: |
             scripts/ci-report.mjs
             .github/ci-gates.yml
+            .github/scripts/e2e-target-pattern.sh
           sparse-checkout-cone-mode: false
       - id: tier
         env:
@@ -58,6 +62,15 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: node scripts/ci-report.mjs tier --labels "$LABELS"
+      # A release runs the whole suite, never a target.
+      - id: e2e-target
+        if: steps.tier.outputs.release != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+        run: .github/scripts/e2e-target-pattern.sh
       # Fork PRs never reach the home runners; ONPREM_RUNNERS=off disables them.
       # ONPREM_SHARE% go onprem: 4 slots, each ~2x a hosted one.
       - id: runners
@@ -1010,10 +1023,12 @@ jobs:
     name: e2e full distribute (shard)
     # Trigger-gated only (nightly, manual, a release, or the `e2e-full` label); the
     # platform path filter would skip product-code changes the suite must cover.
+    # An `e2e-target` PR runs too, queued or not.
     needs: tier
     if: >-
       github.event_name == 'workflow_dispatch' ||
       needs.tier.outputs.release == 'true' ||
+      needs.tier.outputs.e2e_target != '' ||
       contains(github.event.pull_request.labels.*.name, 'e2e-full')
     runs-on: ubuntu-latest
     outputs:
@@ -1021,6 +1036,8 @@ jobs:
       # Only the repeat count: the planner caps the shard count at the inventory size,
       # so `matrix.include | length` is the trustworthy figure downstream.
       repeat: ${{ steps.budget.outputs.repeat }}
+      # The gate collect reports: e2e-target or e2e-full.
+      section: ${{ steps.budget.outputs.section }}
     steps:
       - uses: actions/checkout@v5
 
@@ -1034,15 +1051,20 @@ jobs:
           # fleet ~90 min. A sweep of a branch is a `workflow_dispatch` away.
           SWEEP: ${{ github.event_name == 'workflow_dispatch' }}
           ONE_SHARD: ${{ contains(github.event.pull_request.labels.*.name, 'e2e-one-shard') }}
+          E2E_TARGET: ${{ needs.tier.outputs.e2e_target }}
         run: |
           set -euo pipefail
+          section=e2e-full
           # Twice the shards keeps a sweep's wall clock near a single pass's.
           if [ "$SWEEP" = "true" ]; then repeat=5; shards=8; else repeat=1; shards=4; fi
           # `e2e-one-shard` is infrastructure work on the bring-up, where the suite is
           # beside the point.
           if [ "$ONE_SHARD" = "true" ]; then repeat=1; shards=1; fi
-          echo "repeat=$repeat" >> "$GITHUB_OUTPUT"
-          echo "shards=$shards" >> "$GITHUB_OUTPUT"
+          # A target is a PR's few new tests: one pass on one cluster.
+          if [ -n "$E2E_TARGET" ] && [ "$SWEEP" != "true" ]; then
+            repeat=1; shards=1; section=e2e-target
+          fi
+          printf 'repeat=%s\nshards=%s\nsection=%s\n' "$repeat" "$shards" "$section" >> "$GITHUB_OUTPUT"
           echo "each test ×$repeat across $shards shard(s)"
 
       # nix + npm install are needed because the planner's inventory comes from
@@ -1091,6 +1113,8 @@ jobs:
           # The planner weights the e2e tests by the repetitions they will get, so a
           # shard carrying cluster tests (which run once either way) is not overpacked.
           E2E_FULL_REPEAT: ${{ steps.budget.outputs.repeat }}
+          SECTION: ${{ steps.budget.outputs.section }}
+          E2E_TARGET: ${{ needs.tier.outputs.e2e_target }}
         run: |
           set -euo pipefail
           # Per-test sharding: shard-tests.mjs exits non-zero unless the union of every
@@ -1109,7 +1133,18 @@ jobs:
           # `e2e-one-shard` is for infrastructure work where the thing under test is
           # the cluster bring-up, so narrow to one cheap test; the selector is a
           # --grep, so the title must exist or the shard silently runs nothing.
-          if [ "$E2E_FULL_SHARDS" = "1" ]; then
+          if [ "$SECTION" = "e2e-target" ]; then
+            # Playwright fails a --grep matching nothing, so typos are loud.
+            matrix=$(node -e '
+              const m = JSON.parse(process.argv[1]);
+              m.include = [{ ...m.include[0],
+                e2e_grep: process.argv[2],
+                cluster_grep: "",
+                e2e_count: 1, cluster_count: 0 }];
+              process.stdout.write(JSON.stringify(m));
+            ' "$matrix" "$E2E_TARGET")
+            echo "e2e-target: narrowed to --grep '$E2E_TARGET'"
+          elif [ "$E2E_FULL_SHARDS" = "1" ]; then
             matrix=$(node -e '
               const m = JSON.parse(process.argv[1]);
               m.include = [{ ...m.include[0],
@@ -1135,6 +1170,7 @@ jobs:
     # platform deploy, ~60 on a sweep. Safe only because the gate above is
     # dispatch/label, or a queued release that changes no code, none of
     # which a fork can trigger; `runs-on` is not a security boundary on its own.
+    # `e2e-target` is safe too: only a maintainer can label.
     permissions:
       contents: read
       actions: write   # fail fast: cancel the run
@@ -1303,6 +1339,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: gate on shard results
+        id: shards
         env:
           SHARDS_RESULT: ${{ needs.e2e-full-shard.result }}
           DISTRIBUTE_RESULT: ${{ needs.e2e-full-distribute.result }}
@@ -1448,30 +1485,41 @@ jobs:
           if-no-files-found: ignore
 
       # Sticky on a PR, so a re-run replaces the verdict; in the queue, the section only.
+      # A target must report, or its required gate stays pending.
       - name: post the verdict on the PR
-        if: always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') && hashFiles('comment.md') != ''
+        if: always() && (github.event_name == 'pull_request' || github.event_name == 'merge_group') && (hashFiles('comment.md') != '' || needs.e2e-full-distribute.outputs.section == 'e2e-target')
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event.pull_request.number }}
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          SECTION: ${{ needs.e2e-full-distribute.outputs.section }}
+          SHARDS_OUTCOME: ${{ steps.shards.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           # No --summary: the compare script renders its own <details> summary line,
           # so ci-report places the body verbatim.
-          # Advisory per .github/ci-gates.yml except on a release, which needs `pass`.
-          status=warn
-          grep -q '^<details><summary>✅' comment.md && status=pass
-          grep -q '^<details><summary>❌' comment.md && status=fail
-          node scripts/ci-report.mjs post --section e2e-full --status "$status" \
+          if [ "$SECTION" = "e2e-target" ]; then
+            # New tests have no baseline, so they pass or fail.
+            status=fail
+            [ "$SHARDS_OUTCOME" = "success" ] && status=pass
+            [ -s comment.md ] || echo "e2e-target run: $status ([logs]($RUN_URL))" > comment.md
+          else
+            # Advisory per .github/ci-gates.yml except on a release, which needs `pass`.
+            status=warn
+            grep -q '^<details><summary>✅' comment.md && status=pass
+            grep -q '^<details><summary>❌' comment.md && status=fail
+          fi
+          node scripts/ci-report.mjs post --section "$SECTION" --status "$status" \
             --body comment.md --labels "$LABELS"
 
-      - name: upload the e2e-full section
+      - name: upload the ${{ needs.e2e-full-distribute.outputs.section }} section
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ci-section-e2e-full
-          path: ${{ runner.temp }}/ci-sections/e2e-full.json
+          name: ci-section-${{ needs.e2e-full-distribute.outputs.section }}
+          path: ${{ runner.temp }}/ci-sections/${{ needs.e2e-full-distribute.outputs.section }}.json
           overwrite: true
           if-no-files-found: ignore
 
@@ -2286,7 +2334,8 @@ jobs:
       - name: evaluate the gates
         env:
           GH_TOKEN: ${{ github.token }}
-          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          # A queue entry has no labels, so tier looked them up.
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}${{ needs.tier.outputs.e2e_target != '' && ',e2e-target' || '' }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: node scripts/ci-report.mjs evaluate --labels "$LABELS"
