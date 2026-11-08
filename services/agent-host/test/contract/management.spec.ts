@@ -983,6 +983,24 @@ describe("management API", () => {
     expect(json).toEqual({ ready: false, status: "running" });
   });
 
+  it("GET /ready uses the sandboxReady probe when there are no web services (fake sandbox)", async () => {
+    const api = createManagementApi({
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer,
+      answerInterrupt: async () => ({ ok: true }), sandboxReady: async () => true,
+    });
+    const { json } = await call(api, "GET", "/conversations/c1/ready");
+    expect(json).toEqual({ ready: true, status: "running" });
+  });
+
+  it("GET /ready reports ready:false with neither web services nor a sandboxReady probe", async () => {
+    const api = createManagementApi({
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer,
+      answerInterrupt: async () => ({ ok: true }),
+    });
+    const { json } = await call(api, "GET", "/conversations/c1/ready");
+    expect(json).toEqual({ ready: false, status: "running" });
+  });
+
   it("POST .../web-services/:name/start starts it (202) and it reads back running", async () => {
     const web = fakeWebServices();
     const api = createManagementApi({

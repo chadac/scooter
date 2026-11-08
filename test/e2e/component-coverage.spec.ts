@@ -192,15 +192,14 @@ test.describe("right panel: tabs + sandbox surface", () => {
     expect(after.userMessages, "switching tabs must not disturb the thread").toBe(before.userMessages);
   });
 
-  test("the sandbox panel reports a state for a live conversation", async ({ chat, page }) => {
+  test("the sandbox panel reports a live conversation's sandbox as running", async ({ chat, page }) => {
     await chat.open();
     await chat.sendTurn("!echo sandbox state");
     await page.locator(panel.sandboxTab).click();
     await expect(page.locator(panel.sandboxPanel)).toBeVisible({ timeout: 20_000 });
-    const state = page.locator(panel.sandboxState);
-    if (await state.count()) {
-      expect((await state.first().innerText()).trim().length, "sandbox state must not be blank").toBeGreaterThan(0);
-    }
+    // A turn ran, so the sandbox is up: never stuck on "starting".
+    await expect(page.locator(panel.sandboxState)).toHaveAttribute("data-state", "running", { timeout: 60_000 });
+    await expect(page.locator('[data-testid="header-sandbox-status"]')).toHaveText("sandbox running");
     assertConsistent(await snapshot(page), "sandbox panel shown");
   });
 });

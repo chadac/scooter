@@ -1685,6 +1685,8 @@ export async function main(
       ownerVerifier,
       serviceCaller: conversationServiceVerifier,
       webServices,
+      // The noop provisioner has no pod, so a running sandbox is ready.
+      sandboxReady: config.fakeSandbox ? async () => true : undefined,
       sandboxOrigins,
       identityStore,
       authorStore,

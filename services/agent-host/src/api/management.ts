@@ -152,6 +152,8 @@ export interface ManagementDeps {
   authEnforced?: boolean;
   /** In-pod web-service registry powering the UI Services panel; absent in fake/local mode. */
   webServices?: WebServiceRegistry;
+  /** Whether a running conversation's sandbox is ready; defaults to webServices, else never. */
+  sandboxReady?: (id: string) => Promise<boolean>;
   /** Per-conversation service origins (SANDBOX_DOMAIN); absent keeps services under /c/<id>/. */
   sandboxOrigins?: SandboxOrigins;
   /** Who wrote each conversation's text, served to the broker; absent omits `authors`, which it reads as tainted. */
@@ -356,6 +358,9 @@ export function createManagementApi(deps: ManagementDeps): Router {
     return true;
   };
 
+  const sandboxReady =
+    deps.sandboxReady ?? (deps.webServices ? (id: string) => deps.webServices!.ready(id) : async () => false);
+
   // Probes start only once a tab subscribes.
   const stateHub =
     deps.stateHub ??
@@ -365,7 +370,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
         ready: async (id) => {
           // Refreshing may find the pod gone; the next tick reports it.
           await sessions.refreshSandbox?.(id as SessionId);
-          return deps.webServices ? deps.webServices.ready(id) : false;
+          return sandboxReady(id);
         },
         services: (id) => listWebServices(id),
       }),
@@ -1148,10 +1153,10 @@ export function createManagementApi(deps: ManagementDeps): Router {
     const id = await resolveLiveConvId(ctx.params.id);
     const conv = id ? sessions.get(id) : undefined;
     // Only a running-status conversation can be ready.
-    if (!id || !conv || conv.status !== "running" || !deps.webServices) {
+    if (!id || !conv || conv.status !== "running") {
       return { json: { ready: false, status: conv?.status ?? "unknown" } };
     }
-    const ready = await deps.webServices.ready(id).catch(() => false);
+    const ready = await sandboxReady(id).catch(() => false);
     return { json: { ready, status: conv.status } };
   });
 
