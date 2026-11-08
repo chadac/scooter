@@ -57,12 +57,12 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: node scripts/ci-report.mjs tier --labels "$LABELS"
       # Fork PRs never reach the home runners; ONPREM_RUNNERS=off disables them.
-      # Each entry goes onprem with ONPREM_SHARE% odds: 4 slots vs 20 hosted.
+      # ONPREM_SHARE% go onprem: 4 slots, each ~2x a hosted one.
       - id: runners
         env:
           FORK: ${{ github.event.pull_request.head.repo.fork || false }}
           ONPREM: ${{ vars.ONPREM_RUNNERS || 'on' }}
-          SHARE: ${{ vars.ONPREM_SHARE || '17' }}
+          SHARE: ${{ vars.ONPREM_SHARE || '30' }}
         run: |
           if [ "$FORK" = true ] || [ "$ONPREM" = off ]; then SHARE=0; fi
           list=$(for _ in $(seq 64); do
@@ -552,7 +552,7 @@ jobs:
     strategy:
       fail-fast: false
       # Cap concurrent VM jobs so the runner pool is not exhausted.
-      max-parallel: 4
+      max-parallel: 8
       matrix:
         test: ${{ fromJSON(needs.nixos-tests-matrix.outputs.tests) }}
     steps:
