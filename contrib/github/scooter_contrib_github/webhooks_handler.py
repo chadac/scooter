@@ -440,7 +440,7 @@ async def _fork_pr_number(owner: str, repo: str, run: dict) -> int | None:
 
 
 async def _handle_workflow_run(payload: dict):
-    """workflow_run: CI finished, forwarded on failure and on a success that follows a red run."""
+    """workflow_run: CI finished, forwarded on failure, on any re-run, and on a success after a red run."""
     if payload.get("action") != "completed":
         return
 
@@ -462,12 +462,15 @@ async def _handle_workflow_run(payload: dict):
     url = run.get("html_url", "")
     branch = run.get("head_branch", "")
 
+    rerun = (run.get("run_attempt") or 1) > 1
     if conclusion == "success":
-        if not await _previous_run_failed(owner, repo, run.get("workflow_id"), branch, run.get("id")):
+        # A re-run keeps its run id, so the previous-run lookup can't judge it.
+        if not rerun and not await _previous_run_failed(owner, repo, run.get("workflow_id"), branch, run.get("id")):
             return
+        why = "The re-run passed" if rerun else "The previous run failed"
         message = (
-            f"CI is GREEN again: **{name}** now passes on `{branch}` (PR #{number}).\n\n"
-            f"{url}\n\n---\n\nThe previous run failed, so this unblocks the PR. "
+            f"CI is GREEN: **{name}** passes on `{branch}` (PR #{number}).\n\n"
+            f"{url}\n\n---\n\n{why}, so this unblocks the PR. "
             f"No action needed unless you were waiting to do something after CI."
         )
     else:

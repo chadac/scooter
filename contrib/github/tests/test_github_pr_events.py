@@ -141,7 +141,20 @@ class TestWorkflowRun:
     async def test_RED_to_GREEN_tells_the_agent_it_is_unblocked(self, forwarded):
         with patch.object(gh, "_previous_run_failed", new=AsyncMock(return_value=True)):
             await gh._handle_workflow_run(self._run("success"))
-        assert "GREEN again" in forwarded.call_args[0][1]
+        assert "GREEN" in forwarded.call_args[0][1]
+
+    @pytest.mark.asyncio
+    async def test_a_green_RERUN_is_always_reported(self, forwarded):
+        lookup = AsyncMock(return_value=False)
+        with patch.object(gh, "_previous_run_failed", new=lookup):
+            await gh._handle_workflow_run(self._run("success", run_attempt=2))
+        assert "GREEN" in forwarded.call_args[0][1] and not lookup.called
+
+    @pytest.mark.asyncio
+    async def test_a_failed_RERUN_is_reported(self, forwarded):
+        with patch.object(gh, "_failed_jobs", new=AsyncMock(return_value=["lint"])):
+            await gh._handle_workflow_run(self._run("failure", run_attempt=2))
+        assert "CI FAILED" in forwarded.call_args[0][1]
 
     @pytest.mark.asyncio
     async def test_a_run_with_no_PR_is_ignored(self, forwarded):
