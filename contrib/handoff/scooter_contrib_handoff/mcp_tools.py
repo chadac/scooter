@@ -76,7 +76,7 @@ async def handoff_spawn(
     `folder` files the new conversation in one of the user's folders, by id: for
     a kanban card, a stage id from kanban_list_cards. Empty leaves it unfiled.
 
-    Usually the conversation's owner must approve it first: the call returns at once,
+    Where the deployment requires the owner's approval, the call returns at once,
     and a message tells you the new conversation, or that it was denied.
     """
     if _store is None or _spawner is None:

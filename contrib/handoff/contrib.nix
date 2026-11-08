@@ -1,5 +1,5 @@
-# handoff's declaration: agents spawn new conversations, with the owner's approval,
-# and recall shared ones.
+# handoff's declaration: agents spawn new conversations, optionally with the
+# owner's approval, and recall shared ones.
 # Its deployment half (./deployment.nix) lets the broker
 # spawn through the router.
 { lib, ... }:
@@ -19,12 +19,12 @@
       };
       requireApproval = lib.mkOption {
         type = lib.types.bool;
-        default = true;
+        default = false;
         description = ''
           Whether the conversation's owner approves each handoff_spawn in the
           conversation before the new conversation is created
           (HANDOFF_REQUIRE_APPROVAL). The agent is told the outcome either way.
-          false spawns at once, within the router's per-hour cap.
+          false (the default) spawns at once, within the router's per-hour cap.
         '';
       };
       indexEvery = lib.mkOption {

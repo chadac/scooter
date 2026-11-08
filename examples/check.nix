@@ -1355,8 +1355,8 @@ let
         else [ "enabling handoff did not add the broker to conversationController.spawners" ])
     ++ (if (handoffEval.config.scooter.approvals.handoff.brokerPrefix or null) == "/handoff/approvals" then [ ]
         else [ "enabling handoff did not route its approval cards to /handoff/approvals" ])
-    ++ (if builtins.any (e: e.name == "HANDOFF_REQUIRE_APPROVAL" && e.value == "true") handoffBrokerEnv then [ ]
-        else [ "handoff spawns did not default to needing approval (HANDOFF_REQUIRE_APPROVAL)" ])
+    ++ (if builtins.any (e: e.name == "HANDOFF_REQUIRE_APPROVAL" && e.value == "false") handoffBrokerEnv then [ ]
+        else [ "handoff spawns did not default to starting without approval (HANDOFF_REQUIRE_APPROVAL)" ])
     ++ (if builtins.any (e: e.name == "CONVERSATION_READER_SERVICE_ACCOUNTS" && nixpkgsLib.hasSuffix ":agent-broker" e.value) handoffRouterEnv then [ ]
         else [ "enabling handoff did not add the broker to conversationController.readers" ])
     ++ (if schedImageOf (sysEval { contribs.handoff.enable = nixpkgsLib.mkForce true; scooter.systemTasks.broker-health.enable = false; }) == publishedSchedImage then [ ]

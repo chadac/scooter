@@ -9,7 +9,7 @@ class HandoffSettings(ScooterBaseSettings):
     handoff_enabled: bool = False
     handoff_public_base_url: str = ""
     # The conversation's owner approves each spawn before it happens.
-    handoff_require_approval: bool = True
+    handoff_require_approval: bool = False
 
 
 settings = HandoffSettings()

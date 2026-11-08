@@ -27,8 +27,8 @@ sandbox and its own place in the sidebar, and nothing reports back to you.
   user should drive it separately.
 - **`folder` files the new conversation** in one of the user's folders, by id. For a
   kanban card, that is a stage id from `kanban_list_cards`.
-- **The user approves it first** (unless the deployment turned that off). The call
-  returns `pending_approval` at once and the user sees an approval card with the
+- **It starts at once** unless the deployment requires the user's approval. Then the
+  call returns `pending_approval` at once and the user sees an approval card with the
   title, model and brief. A message tells you the new conversation's id and url, or
   that it was denied. Don't call it again while you wait. A request nobody answers
   lapses after 24 hours.
