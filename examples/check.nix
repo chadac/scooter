@@ -1672,8 +1672,47 @@ let
     ++ (if imageDrv forkedLib "conversation-router" == imageDrv platform "conversation-router" then [ ]
         else [ "scooter.packages.scooter-lib override changed conversation-router, which does not use it" ]);
 
-  allProblems = packageProblems ++ uploadsProblems ++ sysTaskProblems ++ askUserProblems ++ hookProblems ++ providerProblems ++ disabledContribProblems ++ settingsTabProblems ++ uiManifestProblems ++ conversationUiProblems ++ mathProblems ++ contribApiProblems ++ dirSkillProblems ++ legacyRootProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ imagegenProblems ++ atProblems ++ googleProblems ++ ghOwnersProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ poolerProblems ++ puProblems ++ mdProblems ++ ngProblems' ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ contribCoverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ volumeProblems ++ approvalProblems ++ awaitingNotifyProblems ++ stage2Problems ++ contribDbProblems ++ contribGrantProblems ++ retireProblems ++ initGrantProblems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems ++ conversationServiceProblems ++ selfAccessProblems ++ npProblems ++ sandboxOriginProblems ++ enforceProblems ++ uaProblems ++ folderServiceProblems ++ k8sProblems;
+  # GOOSE_BIN names the image's wrapper only when agent.command is set.
+  commandEval = extra: evalPlatform {
+    module = { config, lib, ... }: {
+      imports = [ ./kubenix-config.nix ];
+      scooter.fakeAgent = lib.mkForce false;
+      scooter.agent.command = lib.mkIf extra {
+        program = config.scooter.config.buildPkgs.hello;
+        args = [ "--greeting" "it's ACP" ];
+      };
+    };
+  };
+  withCommand = commandEval true;
+  noCommand = commandEval false;
+  commandBin = envOf withCommand.config.kubernetes.resources "agent-host" "GOOSE_BIN";
+  commandPkgs = withCommand.config.scooter.images.agent-host.extraPackages;
+  commandScript = (builtins.head (commandPkgs ++ [ { text = ""; } ])).text or "";
+  bothAgents = evalPlatform {
+    module = { config, ... }: {
+      imports = [ ./kubenix-config.nix ];
+      scooter.agent.command.program = config.scooter.config.buildPkgs.hello;
+    };
+  };
+  commandProblems =
+    (if commandBin != null && nixpkgsLib.hasSuffix "/bin/scooter-agent-command" commandBin then [ ]
+     else [ "agent.command: GOOSE_BIN should be the wrapper's bin, got '${toString commandBin}'" ])
+    ++ (if map nixpkgsLib.getExe commandPkgs == [ commandBin ] then [ ]
+        else [ "agent.command: the agent-host image does not ship the GOOSE_BIN wrapper" ])
+    ++ (if nixpkgsLib.hasInfix "/bin/hello --greeting 'it'\\''s ACP'" commandScript
+          && !(nixpkgsLib.hasInfix "$@" commandScript) then [ ]
+        else [ "agent.command: the wrapper should exec program + args only, got: ${commandScript}" ])
+    ++ (if envOf noCommand.config.kubernetes.resources "agent-host" "GOOSE_BIN" == null
+          && noCommand.config.scooter.images.agent-host.extraPackages == [ ] then [ ]
+        else [ "agent.command unset: GOOSE_BIN should be absent and the image unchanged" ])
+    ++ (if envOf res "agent-host" "GOOSE_BIN" == "fake" then [ ]
+        else [ "fakeAgent: GOOSE_BIN should be 'fake'" ])
+    ++ (if !(builtins.tryEval (builtins.deepSeq
+              (envOf bothAgents.config.kubernetes.resources "agent-host" "GOOSE_BIN") true)).success then [ ]
+        else [ "agent.command with fakeAgent should fail the render" ]);
+
+  allProblems = commandProblems ++ packageProblems ++ uploadsProblems ++ sysTaskProblems ++ askUserProblems ++ hookProblems ++ providerProblems ++ disabledContribProblems ++ settingsTabProblems ++ uiManifestProblems ++ conversationUiProblems ++ mathProblems ++ contribApiProblems ++ dirSkillProblems ++ legacyRootProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ imagegenProblems ++ atProblems ++ googleProblems ++ ghOwnersProblems ++ sharesProblems ++ cfProblems ++ csProblems ++ dbProblems ++ poolerProblems ++ puProblems ++ mdProblems ++ ngProblems' ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ contribCoverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ volumeProblems ++ approvalProblems ++ awaitingNotifyProblems ++ stage2Problems ++ contribDbProblems ++ contribGrantProblems ++ retireProblems ++ initGrantProblems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems ++ conversationServiceProblems ++ selfAccessProblems ++ npProblems ++ sandboxOriginProblems ++ enforceProblems ++ uaProblems ++ folderServiceProblems ++ k8sProblems;
 in
 if allProblems == [ ]
-then "ok: deployments = ${haveDeps}; datadog + airtable + brave + kagi + duckduckgo (three search providers, each with its own tool) + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every scooter.* namespace and every shipped contrib's own options; skills gated on the contrib being built; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; the renamed root (agentSandbox.*) fails the render; contribs reach the platform eval and configuring an unshipped one fails the render; deploy-time Jobs are spec-hash named; a scooter.packages override reaches exactly the images that use it\n"
+then "ok: deployments = ${haveDeps}; datadog + airtable + brave + kagi + duckduckgo (three search providers, each with its own tool) + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every scooter.* namespace and every shipped contrib's own options; skills gated on the contrib being built; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; the renamed root (agentSandbox.*) fails the render; contribs reach the platform eval and configuring an unshipped one fails the render; deploy-time Jobs are spec-hash named; a scooter.packages override reaches exactly the images that use it; agent.command sets GOOSE_BIN to a wrapper the agent-host image ships\n"
 else builtins.throw "example manifests missing: ${builtins.concatStringsSep ", " allProblems}"

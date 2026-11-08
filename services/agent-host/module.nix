@@ -12,6 +12,11 @@ in
 
   scooter.images.agent-host = { config, ... }: {
     options.claude.enable = lib.mkEnableOption "bake the unfree claude CLI into this image";
+    options.extraPackages = lib.mkOption {
+      type = lib.types.listOf lib.types.package;
+      default = [ ];
+      description = "Extra packages baked into the image, their bin/ on PATH.";
+    };
 
     config = {
       package = lib.mkDefault (import ./image.nix {
@@ -21,6 +26,7 @@ in
         agentHost = buildPkgs.scooter-agent-host;
         agent = buildPkgs.scooter-agent;
         withClaudeCode = config.claude.enable;
+        inherit (config) extraPackages;
       });
       attr = "agent-host-image";
       refKey = "agentHost";

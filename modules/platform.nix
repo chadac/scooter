@@ -3,7 +3,7 @@
 # agent-sandbox controller and CRDs are installed separately, and per-conversation
 # Sandboxes are created at runtime by the agent-host (see modules/conversation.nix).
 
-{ kubenix, config, options, lib, ... }:
+{ kubenix, config, options, lib, buildPkgs, ... }:
 
 let
   cfg = config.scooter;
@@ -175,6 +175,12 @@ let
       ++ lib.mapAttrsToList (name: value: { inherit name value; }) cfg.agent.env
       ++ lib.optional (agentPassthrough != [ ])
         { name = "AGENT_ENV_PASSTHROUGH"; value = lib.concatStringsSep "," agentPassthrough; };
+
+  # Execs the custom agent, dropping the goose args agent-host appends.
+  agentCommand = let c = cfg.agent.command; in
+    buildPkgs.writeShellScriptBin "scooter-agent-command" ''
+      exec ${lib.escapeShellArg (if lib.isDerivation c.program then lib.getExe c.program else c.program)} ${lib.escapeShellArgs c.args}
+    '';
 
   # Contrib skills read off `config.contribs` and gated on each contrib's `enable`, so
   # an unshipped contrib's skill never documents a route no image serves; deployment
@@ -884,6 +890,41 @@ in
           the agent-host is an error.
         '';
       };
+      command = mkOption {
+        type = types.nullOr (types.submodule {
+          options = {
+            program = mkOption {
+              type = types.either types.package types.str;
+              example = literalExpression ''"''${pkgs.nodejs}/bin/node"'';
+              description = ''
+                The agent's executable: a package (its `meta.mainProgram` runs) or a
+                path, typically a store path string such as `"''${pkg}/bin/agent"`.
+              '';
+            };
+            args = mkOption {
+              type = types.listOf types.str;
+              default = [ ];
+              example = [ "--stdio" ];
+              description = "Arguments the agent is started with.";
+            };
+          };
+        });
+        default = null;
+        example = literalExpression ''
+          { program = "''${pkgs.nodejs}/bin/node"; args = [ "''${./replay-agent}/agent.mjs" ]; }
+        '';
+        description = ''
+          A custom ACP agent to run in place of goose: any program that speaks ACP
+          over stdio, such as a scripted replay agent. agent-host runs it through a
+          wrapper script, baked into the agent-host image along with the program's
+          closure, and GOOSE_BIN points at the wrapper. The wrapper runs only
+          `program` and `args`, dropping goose's `acp --with-builtin developer`.
+          Give the agent its environment through `agent.env`, which agent-host
+          forwards to it. Build the agent-host image and the manifests from the same
+          evaluation, since both carry the wrapper's store path. Cannot be combined
+          with `fakeAgent`; null runs goose.
+        '';
+      };
       envPassthrough = mkOption {
         type = types.listOf types.str;
         default = [ ];
@@ -1438,6 +1479,8 @@ in
     # No package: the unfree claude CLI would force allowUnfree.
     scooter.images.remote-agent = { };
 
+    scooter.images.agent-host.extraPackages = lib.optional (cfg.agent.command != null) agentCommand;
+
     # The agent_host database, which the provisioning Job creates with an owning
     # `agent_host` role whose password lands in `agent-pg-agent-host`.
     scooter.postgres.consumers.agent-host = { db = "agent_host"; user = "agent_host"; };
@@ -1801,6 +1844,10 @@ in
                 ++ lib.optional cfg.fakeAgent
                   # Run the bundled dummy ACP agent (no model, no cluster) for the cluster e2e.
                   { name = "GOOSE_BIN"; value = "fake"; }
+                ++ lib.optional (cfg.agent.command != null)
+                  (assert lib.assertMsg (!cfg.fakeAgent)
+                    "scooter.agent.command and scooter.fakeAgent both pick the agent; set only one.";
+                    { name = "GOOSE_BIN"; value = lib.getExe agentCommand; })
                 ++ lib.optional (cfg.sandboxResources != null || cfg.defaultSandboxSizeName != null)
                   # The default size a new sandbox comes up at as a rendered k8s resources
                   # block; the internal sandboxResources override wins because the test

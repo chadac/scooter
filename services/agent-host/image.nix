@@ -1,6 +1,7 @@
 { pkgs, lib, n2c, imageLayers, agentHost, agent
   # Bakes the unfree claude CLI; off keeps the image lean.
 , withClaudeCode ? false
+, extraPackages ? [ ]
 }:
 
 # OCI image for the agent-host: the node app (with goose on PATH) plus cacert.
@@ -35,7 +36,7 @@ n2c.buildImage {
     (pkgs.buildEnv {
       name = "agent-host-root";
       paths = [ agentHost pkgs.cacert pkgs.coreutils pkgs.bashInteractive ]
-        ++ lib.optional withClaudeCode claudeCode;
+        ++ lib.optional withClaudeCode claudeCode ++ extraPackages;
       pathsToLink = [ "/bin" "/etc/ssl" ];
     })
     tmpdirs
