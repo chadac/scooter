@@ -200,6 +200,7 @@ let
         # PID 1's PATH is inherited by every kubelet exec, so the per-user nix profile
         # and the setuid wrappers come first.
         "PATH=/workspace/.nix-profile/bin:/run/wrappers/bin:/run/current-system/sw/bin:/usr/bin:/bin"
+        "UV_NIX_NIXPKGS=${nixos.config.environment.variables.UV_NIX_NIXPKGS}"
       ];
       # systemd's clean-shutdown signal differs from k8s's default SIGTERM.
       StopSignal = "SIGRTMIN+3";

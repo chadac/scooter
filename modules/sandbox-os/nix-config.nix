@@ -77,6 +77,10 @@ in
       then { type = "path"; path = lib.removePrefix "path:" cfg.nixpkgs; }
       else { type = "github"; owner = "NixOS"; repo = "nixpkgs"; };
 
+    # uv-nix uses the pinned registry nixpkgs, not a fresh nixpkgs-unstable.
+    environment.variables.UV_NIX_NIXPKGS = "nixpkgs";
+    systemd.globalEnvironment.UV_NIX_NIXPKGS = "nixpkgs";
+
     # Only reaches login shells; the non-login exec path inherits the container
     # image's Env.PATH (pkgs/sandbox-os), which prepends the profile bin itself.
     environment.sessionVariables.PATH = lib.mkAfter [ "$HOME/.nix-profile/bin" ];
