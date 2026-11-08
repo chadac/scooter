@@ -37,6 +37,9 @@ import {
   handleSetSandboxResources,
   handleRestartSandbox,
   handleStopSandbox,
+  handleWaitForSandbox,
+  WAIT_FOR_SANDBOX_DEFAULT_SECONDS,
+  WAIT_FOR_SANDBOX_MAX_SECONDS,
   type SandboxResourceToolsWiring,
 } from "./resourceTools.js";
 import { handleViewImage, IMAGE_MAX_BYTES, type ImageToolsWiring } from "./imageTools.js";
@@ -452,6 +455,30 @@ export async function buildServer(
           inputSchema: {},
         },
         async () => handleStopSandbox(resources, conversationId) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
+      );
+    }
+    if (resources.waitForSandbox) {
+      server.registerTool(
+        "wait_for_sandbox",
+        {
+          title: "Wait for your sandbox to start",
+          description:
+            "Wait until YOUR sandbox pod is Ready, or the timeout passes, and say why if it isn't. Your turn can start " +
+            "before the pod is up (e.g. while it waits for node CPU): think and use tools that don't run in the " +
+            "sandbox meanwhile, then call this before sandbox work instead of retrying commands that time out. " +
+            "Returns at once when the pod is already Ready.",
+          inputSchema: {
+            timeout_seconds: z
+              .number()
+              .int()
+              .positive()
+              .max(WAIT_FOR_SANDBOX_MAX_SECONDS)
+              .optional()
+              .describe(`How long to wait (default ${WAIT_FOR_SANDBOX_DEFAULT_SECONDS}, max ${WAIT_FOR_SANDBOX_MAX_SECONDS}).`),
+          },
+        },
+        async (args) =>
+          handleWaitForSandbox(resources, conversationId, args) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
       );
     }
   }

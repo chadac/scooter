@@ -6,7 +6,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-import { pollForReadyPod } from "../../src/exec/k8sExec.js";
+import { isReadyPod, pollForReadyPod } from "../../src/exec/k8sExec.js";
 import type { SandboxRef } from "../../src/types.js";
 
 const REF: SandboxRef = { name: "conv-qis9hm", namespace: "agent-manager" };
@@ -109,5 +109,14 @@ describe("pollForReadyPod — a pod terminating after stop_sandbox", () => {
     const pod = await pollForReadyPod(REF, { listCandidates, ensureRunning, sleep: noSleep });
     expect(ensureRunning).toHaveBeenCalledOnce();
     expect(pod.metadata).not.toHaveProperty("deletionTimestamp");
+  });
+});
+
+describe("isReadyPod", () => {
+  it("needs Running, every container ready, and no deletion", () => {
+    expect(isReadyPod(readyPod())).toBe(true);
+    expect(isReadyPod({ ...readyPod(), status: { phase: "Pending", containerStatuses: [] } })).toBe(false);
+    expect(isReadyPod({ ...readyPod(), status: { phase: "Running", containerStatuses: [{ ready: false }] } })).toBe(false);
+    expect(isReadyPod({ ...readyPod(), metadata: { name: "x", deletionTimestamp: new Date() } })).toBe(false);
   });
 });

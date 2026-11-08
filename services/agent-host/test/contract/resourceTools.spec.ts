@@ -11,6 +11,7 @@ import {
   handleSetSandboxResources,
   handleRestartSandbox,
   handleStopSandbox,
+  handleWaitForSandbox,
   type SandboxResourceToolsWiring,
 } from "../../src/agent/resourceTools.js";
 import type { SandboxResources } from "../../src/session/resources.js";
@@ -174,5 +175,22 @@ describe("restart_sandbox / stop_sandbox handlers", () => {
     expect(text(await handleSetSandboxResources(withRestart.deps, "c1", { requestCpu: "2", limitCpu: "2" }))).toContain("restart_sandbox");
     const without = wiring();
     expect(text(await handleSetSandboxResources(without.deps, "c1", { requestCpu: "2", limitCpu: "2" }))).not.toContain("restart_sandbox");
+  });
+});
+
+describe("wait_for_sandbox", () => {
+  const text = (r: { content: Array<{ text: string }> }) => r.content[0].text;
+
+  it("reports Ready, or why the pod still isn't", async () => {
+    const waitForSandbox = vi.fn(async (_id: string, ms: number) => (ms > 1000 ? "pod Pending: Insufficient cpu" : undefined));
+    const { deps } = wiring({ waitForSandbox });
+    expect(text(await handleWaitForSandbox(deps, "c1", { timeout_seconds: 1 }))).toMatch(/^Sandbox ready/);
+    const slow = text(await handleWaitForSandbox(deps, "c1", {}));
+    expect(slow).toContain("still starting after 120s: pod Pending: Insufficient cpu");
+    expect(waitForSandbox).toHaveBeenLastCalledWith("c1", 120_000);
+  });
+
+  it("is an error when not wired", async () => {
+    expect((await handleWaitForSandbox(wiring().deps, "c1", {})).isError).toBe(true);
   });
 });

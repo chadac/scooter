@@ -14,7 +14,7 @@ import { KubeConfig, Exec, CoreV1Api, type V1Pod, type V1Status } from "@kuberne
 import type { ExecRequest, ExecResult, SandboxRef } from "../types.js";
 import type { SandboxApiClient } from "./sandboxExec.js";
 import { describeSandboxDisruption } from "./podDisruption.js";
-import { setPodWaitStatus } from "./podReadiness.js";
+import { podWaitStatus, setPodWaitStatus } from "./podReadiness.js";
 import { diagnosePodWait } from "./podDiagnosis.js";
 
 const log = logger("k8sExec");
@@ -147,6 +147,15 @@ export interface ResolveReadyPodDeps {
 /** How often a wait re-reads the pod's events for its reason. */
 const DIAGNOSE_EVERY_MS = 15_000;
 
+/** Running, every container ready, and not terminating (those still report ready). */
+export function isReadyPod(p: Pod): boolean {
+  return (
+    !p.metadata?.deletionTimestamp &&
+    p.status?.phase === "Running" &&
+    (p.status?.containerStatuses ?? []).every((c) => c.ready)
+  );
+}
+
 /** Poll until a Running and Ready pod backs the sandbox, firing `ensureRunning` once if the first lookup finds no pod at all. */
 export async function pollForReadyPod(ref: SandboxRef, deps: ResolveReadyPodDeps): Promise<Pod> {
   const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
@@ -183,13 +192,7 @@ export async function pollForReadyPod(ref: SandboxRef, deps: ResolveReadyPodDeps
       await sleep(1500);
       continue; // re-poll: the pod is now being recreated
     }
-    // Terminating pods still report ready; skip them.
-    const live = candidates.filter((p) => !p.metadata?.deletionTimestamp);
-    const ready = live.find(
-      (p) =>
-        p.status?.phase === "Running" &&
-        (p.status?.containerStatuses ?? []).every((c) => c.ready),
-    );
+    const ready = candidates.find(isReadyPod);
     if (ready?.metadata?.name) {
       // Cleared only on success: after a failed wait it stays (for a while) for conversation_status.
       setPodWaitStatus(ref, undefined);
@@ -241,31 +244,56 @@ export async function pollForReadyPod(ref: SandboxRef, deps: ResolveReadyPodDeps
   }
 }
 
+/** The sandbox's pods, by label selector or else direct pod name. */
+async function listSandboxPods(core: CoreV1Api, ref: SandboxRef): Promise<Pod[]> {
+  const pods = await core.listNamespacedPod({
+    namespace: ref.namespace,
+    labelSelector: `${SANDBOX_LABEL}=${ref.name}`,
+  });
+  if (pods.items.length > 0) return pods.items;
+  try {
+    const pod = await core.readNamespacedPod({ namespace: ref.namespace, name: ref.name });
+    return pod ? [pod] : [];
+  } catch {
+    return []; // pod not yet created
+  }
+}
+
 /** Poll until a Running and Ready pod backs the sandbox, since exec against a ContainerCreating pod fails. */
 async function resolveReadyPod(
   kc: KubeConfig,
   ref: SandboxRef,
   ensureRunning?: () => Promise<void>,
+  deadlineMs?: number,
 ): Promise<Pod> {
   const core = kc.makeApiClient(CoreV1Api);
   return pollForReadyPod(ref, {
     ensureRunning,
+    deadlineMs,
     diagnose: (pods) => diagnosePodWait(core, ref.namespace, pods),
-    // Try both the label selector and the direct pod-name lookup.
-    listCandidates: async () => {
-      const pods = await core.listNamespacedPod({
-        namespace: ref.namespace,
-        labelSelector: `${SANDBOX_LABEL}=${ref.name}`,
-      });
-      if (pods.items.length > 0) return pods.items;
-      try {
-        const pod = await core.readNamespacedPod({ namespace: ref.namespace, name: ref.name });
-        return pod ? [pod] : [];
-      } catch {
-        return []; // pod not yet created
-      }
-    },
+    listCandidates: () => listSandboxPods(core, ref),
   });
+}
+
+/** Whether a Ready pod backs the sandbox now: one lookup, no waiting. */
+export async function sandboxPodReady(ref: SandboxRef, opts: { kubeConfig?: KubeConfig } = {}): Promise<boolean> {
+  const core = (opts.kubeConfig ?? defaultKubeConfig()).makeApiClient(CoreV1Api);
+  return (await listSandboxPods(core, ref)).some(isReadyPod);
+}
+
+/** Wait up to `timeoutMs` for a Ready pod; undefined when Ready, else why not. */
+export async function waitForSandboxPod(
+  ref: SandboxRef,
+  opts: { timeoutMs: number; ensureRunning?: () => Promise<void>; kubeConfig?: KubeConfig },
+): Promise<string | undefined> {
+  try {
+    const pod = await resolveReadyPod(opts.kubeConfig ?? defaultKubeConfig(), ref, opts.ensureRunning, opts.timeoutMs);
+    // A timed-out poll returns a Running, unready pod.
+    if (isReadyPod(pod)) return undefined;
+    return podWaitStatus(ref)?.reason ?? "pod Running but not Ready";
+  } catch (e) {
+    return (e as Error).message;
+  }
 }
 
 async function resolvePodName(

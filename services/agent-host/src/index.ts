@@ -69,7 +69,7 @@ import { createSandboxExecBackend, connectSandbox } from "./exec/sandboxExec.js"
 import { bumpSandboxEpoch, createEpochConnector, sandboxEpoch } from "./exec/deferredConnect.js";
 import { formatPodWait, podWaitStatus } from "./exec/podReadiness.js";
 import { createLocalSandboxApiClient } from "./exec/localExec.js";
-import { resolvePodTarget } from "./exec/k8sExec.js";
+import { resolvePodTarget, sandboxPodReady, waitForSandboxPod } from "./exec/k8sExec.js";
 import { createWake, createWebServiceProxy } from "./proxy/webServiceProxy.js";
 import { sandboxOriginsFromEnv } from "./proxy/sandboxOrigin.js";
 import { createWebServiceRegistry } from "./proxy/webServiceRegistry.js";
@@ -1116,12 +1116,18 @@ export async function main(
     opt_outs: userHookSettings ? "postgres" : "none",
   });
 
-  const hookRunnerFor = (conversationId: string, exec: ExecBackend, owner?: string): HookRunner | undefined => {
+  const hookRunnerFor = (
+    conversationId: string,
+    exec: ExecBackend,
+    sandbox: SandboxRef,
+    owner?: string,
+  ): HookRunner | undefined => {
     const hooks = config.hooks ?? [];
     if (hooks.length === 0) return undefined;
     return createHookRunner({
       hooks,
       exec,
+      ...(config.fakeSandbox ? {} : { sandboxReady: () => sandboxPodReady(sandbox) }),
       disabled: async () => {
         if (!userHookSettings || !owner) return new Set<string>();
         const choices = await userHookSettings.list(owner);
@@ -1289,6 +1295,11 @@ export async function main(
         availableSizes: async () => k8sProvisioner.getSizes(),
         restartSandbox: (id: string) => sessions.restartSandbox!(id as SessionId),
         stopSandbox: (id: string) => sessions.stopSandbox!(id as SessionId),
+        waitForSandbox: async (id: string, timeoutMs: number) => {
+          const sb = sessions.get(id as SessionId)?.sandbox;
+          if (!sb) return "this conversation has no sandbox";
+          return waitForSandboxPod(sb, { timeoutMs, ensureRunning: healingResume(id as SessionId, sb) });
+        },
       }
     : undefined;
 
@@ -1994,7 +2005,7 @@ export async function main(
         : deferredSandboxApi(sandbox, healingResume(conversationId as SessionId, sandbox)),
       { commandTimeoutMs: config.commandTimeoutMs },
     );
-    const hookRunner = hookRunnerFor(conversationId, exec, owner);
+    const hookRunner = hookRunnerFor(conversationId, exec, sandbox, owner);
     const hasPreToolHooks = (config.hooks ?? []).some((h) => h.event === "PreToolUse");
     const floorTag = floorTagOf(config);
     const usingClaude = floorTag === "claude-code";

@@ -34,7 +34,7 @@ export interface HookDef {
 export interface HookRunRecord {
   id: string;
   event: HookEvent;
-  decision: "allow" | "block" | "error" | "stop";
+  decision: "allow" | "block" | "error" | "stop" | "skipped";
   ms: number;
   error?: string;
 }
@@ -50,6 +50,8 @@ export interface HookOutcome {
   systemMessages: string[];
   /** A hook ended the turn outright (`continue: false`). */
   stop?: string;
+  /** Hooks not run because the sandbox pod wasn't Ready. */
+  skipped?: string[];
   runs: HookRunRecord[];
 }
 
@@ -57,5 +59,12 @@ export interface HookOutcome {
 export interface HookRunner {
   /** Whether any enabled hook subscribes to `event`. */
   has(event: HookEvent): Promise<boolean>;
-  run(event: HookEvent, input: Record<string, unknown>, target?: string, signal?: AbortSignal): Promise<HookOutcome>;
+  /** `only` limits the run to those hook ids. */
+  run(
+    event: HookEvent,
+    input: Record<string, unknown>,
+    target?: string,
+    signal?: AbortSignal,
+    only?: ReadonlySet<string>,
+  ): Promise<HookOutcome>;
 }

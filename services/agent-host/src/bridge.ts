@@ -65,6 +65,14 @@ export function buildFileNote(paths: string[]): string {
   return "The following file attachment(s) have been saved into your sandbox:\n" + paths.map((p) => `- ${p}`).join("\n");
 }
 
+/** Tells the agent which hooks a cold sandbox pod skipped. */
+export function coldHookNote(ids: string[]): string {
+  return (
+    `Hooks skipped because your sandbox is still starting: ${ids.join(", ")}. ` +
+    "Tools that don't run in the sandbox work now; call wait_for_sandbox before sandbox work."
+  );
+}
+
 /** An AG-UI interrupt: a point where the run pauses for a user response, with the
  *  choices the UI renders in `metadata.options`. */
 export interface AguiInterrupt {
@@ -192,6 +200,8 @@ interface ReadySession {
   historySeeded: boolean;
   /** SessionStart hooks have run for this session. */
   sessionStartFired?: boolean;
+  /** SessionStart hooks a cold pod skipped, to run next turn. */
+  sessionStartRetry?: ReadonlySet<string>;
   /** Last run served; later events were missed. */
   lastRunId?: RunId;
 }
@@ -1054,6 +1064,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     input: Record<string, unknown>,
     target?: string,
     scooterExtra: Record<string, unknown> = {},
+    only?: ReadonlySet<string>,
   ): Promise<HookOutcome> => {
     const folder = await runFolder(st);
     const out = await deps.hooks!.run(
@@ -1075,6 +1086,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         },
       },
       target,
+      undefined,
+      only,
     );
     for (const m of out.systemMessages) emitHookNote(m);
     const refusers = out.runs.filter((r) => r.decision === "block" || r.decision === "stop").map((r) => r.id);
@@ -1391,12 +1404,19 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       const hookContext: string[] = [];
       if (st.terminated) return endedBeforeSend();
       if (deps.hooks) {
+        const skipped: string[] = [];
         if (ready && !ready.sessionStartFired) {
           ready.sessionStartFired = true;
-          const started = await fireHooks(st, "SessionStart", { source: "startup" }, "startup");
+          const started = await fireHooks(st, "SessionStart", { source: "startup" }, "startup", {}, ready.sessionStartRetry);
           hookContext.push(...started.context);
+          skipped.push(...(started.skipped ?? []));
+          // Hooks a cold pod skipped run next turn.
+          ready.sessionStartFired = !started.skipped;
+          ready.sessionStartRetry = started.skipped && new Set(started.skipped);
         }
         const submit = await fireHooks(st, "UserPromptSubmit", { prompt: combined });
+        skipped.push(...(submit.skipped ?? []));
+        if (skipped.length) hookContext.push(coldHookNote(skipped));
         if (submit.block || submit.stop) {
           // A refused prompt never reaches the agent.
           st.ended = true;

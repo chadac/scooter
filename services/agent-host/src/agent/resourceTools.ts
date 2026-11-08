@@ -25,6 +25,8 @@ export interface SandboxResourceToolsWiring {
   restartSandbox?(conversationId: string): Promise<SandboxRestartResult>;
   /** Stops the pod, keeping the turn alive; enables stop_sandbox. */
   stopSandbox?(conversationId: string): Promise<{ deferred: boolean; pending?: PendingRestart }>;
+  /** Waits for a Ready pod; undefined when Ready, else why not. Enables wait_for_sandbox. */
+  waitForSandbox?(conversationId: string, timeoutMs: number): Promise<string | undefined>;
 }
 
 /** The set_sandbox_resources tool input, either a preset name (size) or flat raw resources where an omitted dimension keeps its current value. */
@@ -236,4 +238,32 @@ export async function handleStopSandbox(deps: SandboxResourceToolsWiring, conver
   ];
   lines.push(pending ? `pending_restart: ${pending} — applies when the sandbox next starts.` : "pending_restart: none");
   return { content: [{ type: "text", text: lines.join("\n") }] };
+}
+
+export const WAIT_FOR_SANDBOX_DEFAULT_SECONDS = 120;
+export const WAIT_FOR_SANDBOX_MAX_SECONDS = 600;
+
+/** wait_for_sandbox: block until the pod is Ready or the timeout passes. */
+export async function handleWaitForSandbox(
+  deps: SandboxResourceToolsWiring,
+  conversationId: string,
+  args: { timeout_seconds?: number },
+): Promise<ToolResult> {
+  if (!deps.waitForSandbox) return { isError: true, content: [{ type: "text", text: "Waiting for the sandbox is not available here." }] };
+  const seconds = args.timeout_seconds ?? WAIT_FOR_SANDBOX_DEFAULT_SECONDS;
+  const started = Date.now();
+  const notReady = await deps.waitForSandbox(conversationId, seconds * 1000);
+  if (notReady === undefined) {
+    return { content: [{ type: "text", text: `Sandbox ready (waited ${Math.round((Date.now() - started) / 1000)}s).` }] };
+  }
+  return {
+    content: [
+      {
+        type: "text",
+        text:
+          `Sandbox still starting after ${seconds}s: ${notReady}\n` +
+          "Keep working with tools that don't need it, or call wait_for_sandbox again.",
+      },
+    ],
+  };
 }

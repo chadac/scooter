@@ -206,3 +206,53 @@ describe("hook preconditions (when)", () => {
     expect(out.map((h) => [h.id, h.when])).toEqual([["a", "untitled"], ["c", "filed"]]);
   });
 });
+
+describe("hooks on a cold sandbox pod", () => {
+  const ctx = (text: string) => ok(JSON.stringify({ hookSpecificOutput: { additionalContext: text } }));
+
+  it("skips optional pre-prompt hooks without an exec, keeping required ones", async () => {
+    const { exec, calls } = fakeExec((req) => ctx(String(req.env?.SCOOTER_HOOK_ID)));
+    const runs: string[] = [];
+    const runner = createHookRunner({
+      exec,
+      hooks: [hook({ id: "card", event: "SessionStart" }), hook({ id: "policy", event: "SessionStart", failClosed: true })],
+      sandboxReady: async () => false,
+      onRun: (r) => runs.push(`${r.id}:${r.decision}`),
+    });
+    const out = await runner.run("SessionStart", {});
+    expect(out.skipped).toEqual(["card"]);
+    expect(out.context).toEqual(["policy"]);
+    expect(calls.map((c) => c.env?.SCOOTER_HOOK_ID)).toEqual(["policy"]);
+    expect(runs).toContain("card:skipped");
+  });
+
+  it("runs every hook when the pod is Ready or the check fails", async () => {
+    const { exec, calls } = fakeExec(() => ok());
+    const hooks = [hook({ event: "UserPromptSubmit" })];
+    expect((await createHookRunner({ exec, hooks, sandboxReady: async () => true }).run("UserPromptSubmit", {})).skipped).toBeUndefined();
+    const failing = createHookRunner({ exec, hooks, sandboxReady: async () => Promise.reject(new Error("api down")) });
+    expect((await failing.run("UserPromptSubmit", {})).skipped).toBeUndefined();
+    expect(calls).toHaveLength(2);
+  });
+
+  it("never skips tool or Stop hooks, and doesn't check readiness for them", async () => {
+    const { exec, calls } = fakeExec(() => ok());
+    let checks = 0;
+    const runner = createHookRunner({
+      exec,
+      hooks: [hook({ event: "PreToolUse" }), hook({ event: "Stop" })],
+      sandboxReady: async () => (checks++, false),
+    });
+    await runner.run("PreToolUse", {});
+    await runner.run("Stop", {});
+    expect(calls).toHaveLength(2);
+    expect(checks).toBe(0);
+  });
+
+  it("limits a run to the `only` ids", async () => {
+    const { exec, calls } = fakeExec((req) => ok(String(req.env?.SCOOTER_HOOK_ID)));
+    const runner = createHookRunner({ exec, hooks: [hook({ id: "a", event: "SessionStart" }), hook({ id: "b", event: "SessionStart" })] });
+    await runner.run("SessionStart", {}, undefined, undefined, new Set(["b"]));
+    expect(calls.map((c) => c.env?.SCOOTER_HOOK_ID)).toEqual(["b"]);
+  });
+});

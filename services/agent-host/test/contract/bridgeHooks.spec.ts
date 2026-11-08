@@ -40,12 +40,12 @@ function scriptedAgent(turns: Turn[]) {
 
 /** A HookRunner answering from `answer`, recording each call. */
 function scriptedHooks(answer: (event: HookEvent, input: Record<string, unknown>) => Partial<HookOutcome> | undefined) {
-  const calls: Array<{ event: HookEvent; input: Record<string, unknown> }> = [];
+  const calls: Array<{ event: HookEvent; input: Record<string, unknown>; only?: ReadonlySet<string> }> = [];
   const events = new Set<HookEvent>(["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"]);
   const runner: HookRunner = {
     has: async (e) => events.has(e),
-    run: async (event, input) => {
-      calls.push({ event, input });
+    run: async (event, input, _target, _signal, only) => {
+      calls.push({ event, input, only });
       const a = answer(event, input) ?? {};
       return {
         context: [],
@@ -139,6 +139,26 @@ describe("bridge conversation hooks", () => {
     expect(agent.prompts[0]).toContain("it is Friday");
     expect(agent.prompts[1]).not.toContain("repo uses pnpm");
     expect(hooks.calls.filter((c) => c.event === "SessionStart")).toHaveLength(1);
+  });
+
+  it("notes hooks a cold pod skipped and reruns a skipped SessionStart next turn", async () => {
+    const agent = scriptedAgent([]);
+    let cold = true;
+    const hooks = scriptedHooks((event) =>
+      event === "SessionStart" ? (cold ? { skipped: ["card"] } : { context: ["card is in Design"] }) : undefined,
+    );
+    const { bridge } = makeBridge(agent.client, hooks.runner);
+    await bridge.prompt({ threadId: "t", text: "one" });
+    expect(agent.prompts[0]).toContain("Hooks skipped because your sandbox is still starting: card.");
+    expect(agent.prompts[0]).toContain("wait_for_sandbox");
+    cold = false;
+    await bridge.prompt({ threadId: "t", text: "two" });
+    await bridge.prompt({ threadId: "t", text: "three" });
+    expect(agent.prompts[1]).toContain("card is in Design");
+    expect(agent.prompts[1]).not.toContain("still starting");
+    const starts = hooks.calls.filter((c) => c.event === "SessionStart");
+    expect(starts).toHaveLength(2);
+    expect([...(starts[1].only ?? [])]).toEqual(["card"]);
   });
 
   it("runs goose's PostToolUse at the bridge and delivers its feedback when the turn ends", async () => {

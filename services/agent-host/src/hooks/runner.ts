@@ -151,7 +151,12 @@ export interface HookRunnerDeps {
   disabled?: () => Promise<ReadonlySet<string>>;
   onRun?: (rec: HookRunRecord) => void;
   cwd?: string;
+  /** Whether the sandbox pod is Ready now, without waiting for it. */
+  sandboxReady?: () => Promise<boolean>;
 }
+
+/** Events that gate the model call, so they shouldn't wait on a cold pod. */
+const PRE_PROMPT_EVENTS: ReadonlySet<HookEvent> = new Set(["SessionStart", "UserPromptSubmit"]);
 
 const EMPTY: HookOutcome = { context: [], systemMessages: [], runs: [] };
 
@@ -205,13 +210,23 @@ export function createHookRunner(deps: HookRunnerDeps): HookRunner {
     async has(event) {
       return (await enabledHooks()).some((h) => h.event === event);
     },
-    async run(event, input, target, signal) {
-      const hooks = (await enabledHooks()).filter((h) => h.event === event && matches(h.matcher, target) && holds(h.when, input));
-      if (hooks.length === 0) return EMPTY;
+    async run(event, input, target, signal, only) {
+      const matching = (await enabledHooks()).filter(
+        (h) => h.event === event && matches(h.matcher, target) && holds(h.when, input) && (!only || only.has(h.id)),
+      );
+      if (matching.length === 0) return EMPTY;
+      const skippable = (h: HookDef) => PRE_PROMPT_EVENTS.has(event) && !h.failClosed;
+      // A failed readiness check runs the hooks anyway.
+      const cold =
+        !!deps.sandboxReady && matching.some(skippable) && !(await deps.sandboxReady().catch(() => true));
+      const skipped = cold ? matching.filter(skippable) : [];
+      const hooks = cold ? matching.filter((h) => !skippable(h)) : matching;
+      for (const h of skipped) deps.onRun?.({ id: h.id, event, decision: "skipped", ms: 0 });
       const payload = JSON.stringify({ cwd, hook_event_name: event, ...input });
       const answers = await Promise.all(hooks.map((h) => runOne(h, payload, signal)));
       return {
         ...merge(answers),
+        ...(skipped.length ? { skipped: skipped.map((h) => h.id) } : {}),
         runs: answers.map((a) => a.rec),
       };
     },
