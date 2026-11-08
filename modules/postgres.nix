@@ -536,6 +536,10 @@ in
                     # Per-query stats, for finding the expensive ones.
                     "-c" "shared_preload_libraries=pg_stat_statements"
                     "-c" "pg_stat_statements.track=all"
+                    # Memory sized to the 1Gi limit below.
+                    "-c" "shared_buffers=256MB"
+                    "-c" "effective_cache_size=768MB"
+                    "-c" "work_mem=16MB"
                   ];
                   resources = lib.mkDefault {
                     requests = { cpu = "100m"; memory = "512Mi"; };
