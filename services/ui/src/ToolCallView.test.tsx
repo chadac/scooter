@@ -94,6 +94,19 @@ describe("ToolCallView", () => {
     expect(html).not.toContain("provider-tool-card");
   });
 
+  it("offers no inline Allow/Deny on a tool call left without a result", () => {
+    // Approvals are answered in the Approvals panel; the chat card has no way to answer one.
+    const html = renderWithRun(
+      createElement(ToolCallView, part({
+        toolName: "deploy_service",
+        argsText: "{\"env\":\"prod\"}",
+        status: { type: "requires-action", reason: "tool-calls" },
+      })),
+      false,
+    );
+    expect(html).not.toMatch(/Allow|Deny/);
+  });
+
   it("shows a generic tool result's images while the card is collapsed", () => {
     const url = "/conversations/c1/assets/abc.png";
     const html = renderToStaticMarkup(
