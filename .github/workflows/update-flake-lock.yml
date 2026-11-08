@@ -47,13 +47,12 @@ jobs:
       # flake.lock, so a bump that skips this fails flake evaluation.
       - name: Regenerate stubs.lock against the bumped nixpkgs
         run: |
-          # Both systems explicitly: `gen` defaults to the runner's system alone, and
-          # a lock missing aarch64 makes the arm sandbox-os image fail to evaluate.
+          # Match `just check-stubs`; `gen` defaults to the runner's system only.
           nix run github:chadac/nix-stubs#gen -- \
             --flake . --attr stubs \
             --lock modules/sandbox-os/stubs.lock \
             --flake-lock flake.lock \
-            --system x86_64-linux --system aarch64-linux
+            --system x86_64-linux --system aarch64-linux --system aarch64-darwin
 
       # Mirrors `just check-flake`; advisory, since CI on the PR is the real gate.
       - name: nix flake show (post-update evaluation sanity)

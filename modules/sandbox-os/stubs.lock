@@ -2,11 +2,11 @@
   "version": 1,
   "inputs": {
     "nixpkgs": {
-      "lastModified": 1793341285,
-      "narHash": "sha256-Y1CiZ4SoBUjLQyQM/pY+rS2dXD3CHLPstF0lmOc73D4=",
+      "lastModified": 1793876309,
+      "narHash": "sha256-Wojg9lIH/hDH91iDVH2/EPw8oDSpxjxhXONbU1yf4Zg=",
       "owner": "NixOS",
       "repo": "nixpkgs",
-      "rev": "1c89083e451e891152365b799595cf7790a43325",
+      "rev": "f9a75f41be3a74eab55d3a7679d34ad6cc0da977",
       "type": "github"
     },
     "uv-nix": {
@@ -59,18 +59,18 @@
       },
       "google-cloud-sdk": {
         "attr": "google-cloud-sdk",
-        "drv": "/nix/store/pkg20adfz2jnz9zpqad0g2iwq5is2fsm-google-cloud-sdk-583.0.0.drv",
+        "drv": "/nix/store/cyj9ag0vc79j6gyrb64vryn8y4jx1wlm-google-cloud-sdk-591.0.0.drv",
         "output": "out",
         "bins": [
           "gcloud",
           "gsutil",
           "bq"
         ],
-        "name": "google-cloud-sdk-583.0.0"
+        "name": "google-cloud-sdk-591.0.0"
       },
       "marimo": {
         "attr": "marimo",
-        "drv": "/nix/store/smzxmflnnj1k0xfwrba7v8p1a5b4w9yq-python3.14-marimo-0.25.1.drv",
+        "drv": "/nix/store/nzx28vwdh5rw48cmzvr3xijjwdfv8xb8-python3.14-marimo-0.25.1.drv",
         "output": "out",
         "bins": [
           "marimo"
@@ -147,7 +147,7 @@
       },
       "crun": {
         "attr": "crun",
-        "drv": "/nix/store/dbsq0nh3y70wr2ix0bps0jd2gdqhzb0z-crun-1.30.1.drv",
+        "drv": "/nix/store/xmy5kqybaxy18p8f7130fk62lg8m0i9x-crun-1.30.1.drv",
         "output": "out",
         "bins": [
           "crun"
@@ -156,7 +156,7 @@
       },
       "docker": {
         "attr": "docker",
-        "drv": "/nix/store/ngga00n51c8s83bq7179vh6w6xxyazqc-docker-29.9.2.drv",
+        "drv": "/nix/store/hwbxnbckmp4i6xm5gkd9rb3dy6nc9aqa-docker-29.9.2.drv",
         "output": "out",
         "bins": [
           "docker",
@@ -184,14 +184,14 @@
       },
       "google-cloud-sdk": {
         "attr": "google-cloud-sdk",
-        "drv": "/nix/store/qw5fsz0046nj2xs9qa72a4pbfx9sa5hp-google-cloud-sdk-583.0.0.drv",
+        "drv": "/nix/store/42527h5glb2lsldkr4vwk3ccwjrppsm9-google-cloud-sdk-591.0.0.drv",
         "output": "out",
         "bins": [
           "gcloud",
           "gsutil",
           "bq"
         ],
-        "name": "google-cloud-sdk-583.0.0"
+        "name": "google-cloud-sdk-591.0.0"
       },
       "k3d": {
         "attr": "k3d",
@@ -204,16 +204,16 @@
       },
       "kubectl": {
         "attr": "kubectl",
-        "drv": "/nix/store/mwrxm0vssbp14726dpym1ivrl84aly8a-kubectl-1.37.1.drv",
+        "drv": "/nix/store/2vdvqyzfc91qc8izkv4airhgqw9jbjv0-kubectl-1.37.2.drv",
         "output": "out",
         "bins": [
           "kubectl"
         ],
-        "name": "kubectl-1.37.1"
+        "name": "kubectl-1.37.2"
       },
       "marimo": {
         "attr": "marimo",
-        "drv": "/nix/store/5gqr5q7wnqs22j9sf0pj37y461d5aw57-python3.14-marimo-0.25.1.drv",
+        "drv": "/nix/store/k5wayxhw0p6k8mdkp6xd83xm5vx3n80g-python3.14-marimo-0.25.1.drv",
         "output": "out",
         "bins": [
           "marimo"
@@ -290,7 +290,7 @@
       },
       "crun": {
         "attr": "crun",
-        "drv": "/nix/store/q4avppbxnjdldx4gq5mbx0fc31365cma-crun-1.30.1.drv",
+        "drv": "/nix/store/g8l71d07dnbamzghjwbvvgfgij1d8jm2-crun-1.30.1.drv",
         "output": "out",
         "bins": [
           "crun"
@@ -299,7 +299,7 @@
       },
       "docker": {
         "attr": "docker",
-        "drv": "/nix/store/kzmr38b20q1fdy3q9kvsjps6dicxzcww-docker-29.9.2.drv",
+        "drv": "/nix/store/8p8biwaf38mj09wmx29f099ivczq4brw-docker-29.9.2.drv",
         "output": "out",
         "bins": [
           "docker",
@@ -327,14 +327,14 @@
       },
       "google-cloud-sdk": {
         "attr": "google-cloud-sdk",
-        "drv": "/nix/store/dh9q672psrgch6dmm0z57shqqpipbm1r-google-cloud-sdk-583.0.0.drv",
+        "drv": "/nix/store/cf89py94lql653vfixnsljablayd1i93-google-cloud-sdk-591.0.0.drv",
         "output": "out",
         "bins": [
           "gcloud",
           "gsutil",
           "bq"
         ],
-        "name": "google-cloud-sdk-583.0.0"
+        "name": "google-cloud-sdk-591.0.0"
       },
       "k3d": {
         "attr": "k3d",
@@ -347,16 +347,16 @@
       },
       "kubectl": {
         "attr": "kubectl",
-        "drv": "/nix/store/cqsiprwk16bb1wfq0kfzl3skcfv35ji8-kubectl-1.37.1.drv",
+        "drv": "/nix/store/mhb72cpcx5a48jdvzyv378lgrs4bqsrk-kubectl-1.37.2.drv",
         "output": "out",
         "bins": [
           "kubectl"
         ],
-        "name": "kubectl-1.37.1"
+        "name": "kubectl-1.37.2"
       },
       "marimo": {
         "attr": "marimo",
-        "drv": "/nix/store/jrczi9zn1bcw731ph6y2abs42naancpc-python3.14-marimo-0.25.1.drv",
+        "drv": "/nix/store/x1x8rlkf0qs13i7dgv7g0nh57jqcjb9m-python3.14-marimo-0.25.1.drv",
         "output": "out",
         "bins": [
           "marimo"
