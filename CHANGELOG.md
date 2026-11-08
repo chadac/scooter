@@ -4,6 +4,108 @@ Each release's section becomes its GitHub Release notes. Images keep their
 content tags and also gain `vX.Y.Z`; the flake is published to
 [FlakeHub](https://flakehub.com/flake/chadac-me/scooter).
 
+## v1.2.0
+
+### Features
+
+- **Kanban boards.** `/boards` shows a board's conversations as cards in
+  columns, with the open card's chat beside the board. (#1150)
+- **Boards and their stages are locked folders.** Kanban makes each board a
+  locked folder and each stage a locked folder inside it, so a card's stage is
+  the folder its conversation is filed in, and the sidebar shows the stages.
+  (#1152, #1158)
+- **Cards can be blocked by other cards.** A blocked card's agent can work in
+  its stage, but can't move the card on until every blocker reaches the board's
+  last stage. (#1171)
+- **Tags on cards**, defined per board with a name, color and order in the
+  board's edit mode. (#1170)
+- **A New conversation tile at the top of each stage** opens a draft filed in
+  that stage. (#1169)
+- **Agents can add cards to a board and list its cards.** `handoff_spawn` takes
+  a folder to file the new conversation in. (#1172)
+- **A Details tab for the open card** shows and edits its stage, note,
+  priority, tags, description and blockers. (#1178)
+- **Contrib views.** A contrib can add its own view of conversations beside the
+  chat, picked from a switcher in the header. (#1147)
+- **Markdown and conversation links in the contrib SDK.** (#1179)
+- **`echo`, a minimal contrib view at `/echo`**, as a reference for each
+  contrib surface. (#1151)
+- **Nested folders, static folders and folder lifetimes.** Folders nest up to
+  3 deep; Starred and contrib-declared folders can't be renamed, moved or
+  deleted; a folder can keep its idle conversations forever, 1 day, 1 week or
+  30 days. (#1148)
+- **The right panel updates live.** Session, Shares and linked resources come
+  over one state stream per conversation instead of each tab polling. (#1133)
+- **Long-idle sandboxes give back their volumes.** A sandbox suspended for 7
+  days (`sandboxRetentionSeconds`) has its volumes deleted; the conversation
+  and its history stay. (#1149)
+- **The agent hears when its PR starts to conflict.** (#1180)
+- **The agent is told why a command never started** when its sandbox pod isn't
+  Ready: a volume that won't attach, an unbound PVC, a stuck image pull.
+  (#1153)
+- **HTML files preview in the files viewer**, in a sandboxed frame. (#1156)
+- **Relayed approvers need a router user assertion.** An approver service
+  account can no longer name any user as the approver. Off unless
+  `scooter.auth.userAssertionSecret` is set. (#1168)
+- **Hidden per-conversation variables for contribs**, kept in the webhooks
+  database where neither the agent nor the UI reads them. (#1181)
+- **Shared approvals for contribs.** `scooter_broker_lib.approvals` gives an
+  approval contrib its request table, routes, expiry and card raising, and
+  `scooter.approvals.<name>` is derived. (#1194)
+- **Handoff and commit approvals use it**, so their cards work until decided or
+  expired, however long ago the run ended. (#1203)
+- **PgBouncer in front of the in-cluster Postgres**
+  (`scooter.postgres.pooler`), on by default, so rolling deploys stay under
+  `max_connections`. (#1199)
+
+### Bug fixes
+
+- **Sandbox updates wait for the pod to restart.** After a rollout, a running
+  sandbox is no longer restarted mid-session to adopt the new template; set
+  `sandboxUpdatePolicy = "immediate"` for the old behavior. (#1184)
+- **The overlay Nix store is garbage-collected**, so sandbox volumes stop
+  filling up, and each pass spends its budget only on paths in the upper layer.
+  (#1188, #1204)
+- **Sandboxes run Nix 2.35**, so flake evals stop copying the source tree into
+  the store each time. (#1189)
+- **`uv` is in the image and pinned to its nixpkgs**, so the first PyPI MCP
+  server no longer builds it or downloads nixpkgs. (#1185, #1186)
+- **Approval cards work after their run ends.** (#1193)
+- **No stray Allow/Deny buttons on tool cards in the chat.** (#1196)
+- **The sidebar "!" clears when a question is answered**, even after a failed
+  database write. (#1197)
+- **Postgres stops running out of connections.** `max_connections` is raised,
+  agent-host shares one pool and the Python pools are smaller. (#1195, #1198)
+- **The agent hears why a sandbox pod isn't Ready**, and `restart_sandbox` says
+  more than "the wait gave up". (#1182)
+- **A suspended conversation's sandbox isn't resumed by a cleanup timer.**
+  (#1145)
+- **Waiting for a sandbox restart finds its pod.** (#1142)
+- **Writing a file into a new directory works**, and ACP error logs are
+  redacted. (#1146)
+- **A conversation's first sandbox no longer gets a "sandbox was deleted"
+  note.** (#1155)
+- **An errored BYOC run no longer gets handed off again.** (#1187)
+- **A superseded AWS request withdraws its approval card.** (#1143)
+- **Kanban:** the agent's status updates reach its card (#1157), it is asked
+  for a status every run and after the user moves its card (#1162), and boards
+  can be created without extra config (#1154).
+- **Handoffs reach the owner's private conversations only from ones the owner
+  wrote entirely**, and start on the default model. (#1159, #1167)
+- **Folders:** a folder's count stays visible after reordering (#1144), and a
+  drop lands where it was dropped (#1163).
+- **The header's conversation actions fold into a menu on phones.** (#1190)
+- **Share files are served with a CSP sandbox** (#1164), and zip and
+  multi-file shares are disabled until they work behind the login proxy
+  (#1173).
+- **BYOC:** a device keeps its session id across a controller restart (#1141),
+  the ingress serves only the container's routes (#1165), and Settings lists
+  and revokes devices again (#1166).
+- **`flake.lock` bumps regenerate the darwin stubs too.** (#1191)
+- **An orphaned ephemeral Postgres is stopped on the next start.** (#1183)
+- **CI:** a failing nixosTest leg fails the `nixos` gate (#1205), and flaky
+  tests are fixed (#1160, #1161, #1202).
+
 ## v1.1.0
 
 ### Features
