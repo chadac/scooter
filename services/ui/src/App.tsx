@@ -82,7 +82,8 @@ function PopOutChatButton() {
       aria-label="Pop out chat"
       title="Pop out chat"
       onClick={() => window.open(chatPath(id), `scooter-chat-${id}`, "popup,width=480,height=820")}
-      className="text-muted-foreground"
+      // A phone has no second window to pop out into.
+      className="hidden text-muted-foreground desk:inline-flex"
     >
       <PictureInPicture2 />
     </Button>

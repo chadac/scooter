@@ -172,6 +172,34 @@ test.describe("session selector & titles", () => {
     await expect(starred).toHaveCount(0, { timeout: 10_000 });
   });
 
+  test("on a phone, the conversation's actions fold into one menu and the header fits", async ({ chat, page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await chat.open();
+    await chat.send("phone header");
+    await chat.waitForReply(/dummy agent/i);
+
+    const menu = page.locator('[data-testid="header-conversation"] [data-testid="session-menu"]');
+    await expect(menu).toBeVisible();
+    await expect(page.locator(header.starButton)).toBeHidden();
+    await expect(page.locator('[data-testid="pop-out-chat"]')).toBeHidden();
+
+    // No header control may sit on top of another or spill past the edge.
+    const boxes = await page.locator("header button:visible").evaluateAll((els) =>
+      els.map((el) => el.getBoundingClientRect()).map((r) => ({ l: r.left, r: r.right })),
+    );
+    for (let i = 1; i < boxes.length; i++) expect(boxes[i].l, `button ${i} overlaps the one before`).toBeGreaterThanOrEqual(boxes[i - 1].r - 0.5);
+    expect(boxes.at(-1)!.r).toBeLessThanOrEqual(390);
+
+    const row = page.locator(sidebar.item).filter({ hasText: /phone header/i });
+    await menu.click();
+    await page.locator('[data-testid="session-menu-star"]').click();
+    await expect(row).toHaveAttribute("data-starred", "true", { timeout: 10_000 });
+
+    await menu.click();
+    await page.locator('[data-testid="session-menu-move"]').click();
+    await expect(page.getByLabel("Filter folders")).toBeFocused();
+  });
+
   test("Move to… files a conversation in a new folder, and deleting the folder returns it to Recent", async ({ chat, page }) => {
     await chat.open();
     await chat.send("file me away");

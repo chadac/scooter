@@ -4,9 +4,9 @@
  * drawer, and hover-revealed tiles on a row are easy to hit while selecting a conversation.
  */
 
-import { useState } from "react";
-import { Check, FolderInput, FolderPlus, Lock, LockOpen, Pencil, Star, Trash2 } from "lucide-react";
-import { Popover } from "radix-ui";
+import { useState, type ReactNode } from "react";
+import { Check, EllipsisVertical, FolderInput, FolderPlus, Lock, LockOpen, Pencil, Star, Trash2 } from "lucide-react";
+import { DropdownMenu, Popover } from "radix-ui";
 import { flushSync } from "react-dom";
 
 import { FolderGlyph } from "./FolderGlyph.js";
@@ -65,78 +65,149 @@ function RenameInput({ session: s }: { session: Session }) {
   );
 }
 
+const menuItem =
+  "flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[highlighted]:bg-accent [&_svg]:size-4 [&_svg]:text-muted-foreground";
+
+/** Star / move / visibility / rename / delete: inline buttons on desktop, a "⋯" menu on phones. */
 function Actions({ session: s }: { session: Session }) {
   const { currentUser, currentUserAnonymous } = useSessions();
+  const [moving, setMoving] = useState(false);
   const backed = isServerBacked(s);
   const isPrivate = s.visibility === "private";
+  // Star and move are top-level only; subagents are not independently retained.
+  const starrable = !s.parentId;
+  const movable = starrable && backed;
+  // Only the owner of a top-level conversation; subagents follow their parent.
+  const canShare = canChangeVisibility(s, currentUser, currentUserAnonymous);
+  const star = () => void moveTo(s, s.starred ? null : STARRED);
   // Rename is local-first, so a never-sent conversation can still be named.
   const openRename = () => flushSync(() => sessionStore.setEditing(s.id));
   const remove = () => {
     if (!window.confirm(confirmDeleteMessage(s, backed))) return;
     void removeSession(s);
   };
-  return (
-    <div data-testid="session-actions" className="flex shrink-0 items-center gap-0.5">
-      {/* Star is top-level only; subagents are not independently retained. */}
-      {!s.parentId && (
+  const menu = (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger asChild>
         <Button
           variant="ghost"
           size="icon-sm"
-          data-testid="session-star"
-          aria-label={s.starred ? `Unstar ${s.title}` : `Star ${s.title}`}
-          aria-pressed={s.starred ? true : false}
-          // Starred is server-owned, so an unsent conversation cannot be starred.
-          disabled={!backed}
-          title={backed ? (s.starred ? "Unstar" : "Star") : "Send a message first — an unsent conversation can't be starred"}
-          onClick={() => void moveTo(s, s.starred ? null : STARRED)}
-          className={cn(s.starred ? "text-warning" : "text-muted-foreground hover:text-warning")}
-        >
-          <Star fill={s.starred ? "currentColor" : "none"} />
-        </Button>
-      )}
-      {!s.parentId && backed && <MoveTo session={s} />}
-      {/* Only the owner of a top-level conversation; subagents follow their parent. */}
-      {canChangeVisibility(s, currentUser, currentUserAnonymous) && (
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          data-testid="session-visibility"
-          aria-label={isPrivate ? `Make ${s.title} shared` : `Make ${s.title} private`}
-          aria-pressed={isPrivate}
-          title={
-            isPrivate
-              ? "Private: only you can see it. Click to share"
-              : "Shared: anyone signed in can see it. Click to make private"
-          }
-          onClick={() => void toggleVisibility(s)}
+          data-testid="session-menu"
+          aria-label={`Actions for ${s.title}`}
+          title="Conversation actions"
           className="text-muted-foreground"
         >
-          {isPrivate ? <Lock /> : <LockOpen />}
+          <EllipsisVertical />
         </Button>
-      )}
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        data-testid="session-rename"
-        aria-label={`Rename ${s.title}`}
-        title="Rename"
-        onClick={openRename}
-        className="text-muted-foreground"
-      >
-        <Pencil />
-      </Button>
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        data-testid="session-delete"
-        aria-label={`Delete ${s.title}`}
-        title="Delete"
-        onClick={remove}
-        className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-      >
-        <Trash2 />
-      </Button>
-    </div>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          align="end"
+          sideOffset={6}
+          className="z-50 min-w-44 rounded-md border bg-popover p-1 text-sm text-popover-foreground shadow-md"
+        >
+          {starrable && (
+            // Starred is server-owned, so an unsent conversation cannot be starred.
+            <DropdownMenu.Item data-testid="session-menu-star" disabled={!backed} onSelect={star} className={menuItem}>
+              <Star fill={s.starred ? "currentColor" : "none"} className={cn(s.starred && "text-warning!")} />
+              {s.starred ? "Unstar" : "Star"}
+            </DropdownMenu.Item>
+          )}
+          {movable && (
+            // Deferred so the menu has closed and returned focus before the picker takes it.
+            <DropdownMenu.Item data-testid="session-menu-move" onSelect={() => setTimeout(() => setMoving(true))} className={menuItem}>
+              <FolderInput />
+              Move to…
+            </DropdownMenu.Item>
+          )}
+          {canShare && (
+            <DropdownMenu.Item data-testid="session-menu-visibility" onSelect={() => void toggleVisibility(s)} className={menuItem}>
+              {isPrivate ? <LockOpen /> : <Lock />}
+              {isPrivate ? "Make shared" : "Make private"}
+            </DropdownMenu.Item>
+          )}
+          <DropdownMenu.Item data-testid="session-menu-rename" onSelect={() => setTimeout(openRename)} className={menuItem}>
+            <Pencil />
+            Rename
+          </DropdownMenu.Item>
+          <DropdownMenu.Separator className="my-1 h-px bg-border" />
+          <DropdownMenu.Item
+            data-testid="session-menu-delete"
+            onSelect={() => setTimeout(remove)}
+            className={cn(menuItem, "text-destructive data-[highlighted]:bg-destructive/10 [&_svg]:text-destructive")}
+          >
+            <Trash2 />
+            Delete
+          </DropdownMenu.Item>
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
+  );
+  return (
+    <>
+      <div data-testid="session-actions" className="hidden shrink-0 items-center gap-0.5 desk:flex">
+        {starrable && (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            data-testid="session-star"
+            aria-label={s.starred ? `Unstar ${s.title}` : `Star ${s.title}`}
+            aria-pressed={s.starred ? true : false}
+            disabled={!backed}
+            title={backed ? (s.starred ? "Unstar" : "Star") : "Send a message first — an unsent conversation can't be starred"}
+            onClick={star}
+            className={cn(s.starred ? "text-warning" : "text-muted-foreground hover:text-warning")}
+          >
+            <Star fill={s.starred ? "currentColor" : "none"} />
+          </Button>
+        )}
+        {movable && <MoveTo session={s} />}
+        {canShare && (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            data-testid="session-visibility"
+            aria-label={isPrivate ? `Make ${s.title} shared` : `Make ${s.title} private`}
+            aria-pressed={isPrivate}
+            title={
+              isPrivate
+                ? "Private: only you can see it. Click to share"
+                : "Shared: anyone signed in can see it. Click to make private"
+            }
+            onClick={() => void toggleVisibility(s)}
+            className="text-muted-foreground"
+          >
+            {isPrivate ? <Lock /> : <LockOpen />}
+          </Button>
+        )}
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          data-testid="session-rename"
+          aria-label={`Rename ${s.title}`}
+          title="Rename"
+          onClick={openRename}
+          className="text-muted-foreground"
+        >
+          <Pencil />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          data-testid="session-delete"
+          aria-label={`Delete ${s.title}`}
+          title="Delete"
+          onClick={remove}
+          className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+        >
+          <Trash2 />
+        </Button>
+      </div>
+      {/* A phone header has no room for five buttons, so they fold into one menu. */}
+      <div className="flex shrink-0 desk:hidden">
+        {movable ? <MoveTo session={s} open={moving} onOpenChange={setMoving} anchor={menu} /> : menu}
+      </div>
+    </>
   );
 }
 
@@ -169,10 +240,22 @@ export function HeaderConversationTitle({ actions = false }: { actions?: boolean
   );
 }
 
-/** "Move to…": Starred, a folder, a new folder, or Recent. */
-function MoveTo({ session: s }: { session: Session }) {
+/** "Move to…": Starred, a folder, a new folder, or Recent. With `anchor`, the caller opens it. */
+function MoveTo({
+  session: s,
+  open: openProp,
+  onOpenChange,
+  anchor,
+}: {
+  session: Session;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  anchor?: ReactNode;
+}) {
   const { folders } = useFolders();
-  const [open, setOpen] = useState(false);
+  const [ownOpen, setOwnOpen] = useState(false);
+  const open = openProp ?? ownOpen;
+  const setOpen = onOpenChange ?? setOwnOpen;
   const [filter, setFilter] = useState("");
   const current = folderOf(s);
   const pick = (id: string | null) => {
@@ -194,18 +277,22 @@ function MoveTo({ session: s }: { session: Session }) {
   const item = "flex w-full items-center gap-2 rounded px-2 py-1 text-start text-sm hover:bg-accent";
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
-      <Popover.Trigger asChild>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          data-testid="session-move"
-          aria-label={`Move ${s.title} to a folder`}
-          title="Move to…"
-          className="text-muted-foreground"
-        >
-          <FolderInput />
-        </Button>
-      </Popover.Trigger>
+      {anchor ? (
+        <Popover.Anchor className="flex">{anchor}</Popover.Anchor>
+      ) : (
+        <Popover.Trigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            data-testid="session-move"
+            aria-label={`Move ${s.title} to a folder`}
+            title="Move to…"
+            className="text-muted-foreground"
+          >
+            <FolderInput />
+          </Button>
+        </Popover.Trigger>
+      )}
       <Popover.Portal>
         <Popover.Content
           align="start"

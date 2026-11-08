@@ -23,6 +23,8 @@ describe("HeaderConversationTitle", () => {
     const html = render(true);
     expect(html).toContain("Fix the parser");
     for (const id of ["session-star", "session-rename", "session-delete"]) expect(html).toContain(id);
+    // Phones get the same actions behind one menu button.
+    expect(html).toContain("session-menu");
   });
 
   it("shows only the title without actions (the /chat subpage)", () => {
