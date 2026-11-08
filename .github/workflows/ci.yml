@@ -1525,11 +1525,11 @@ jobs:
   # emits a per-shard Playwright JSON report.
   e2e-shard:
     name: e2e fast shard ${{ matrix.shard }}
-    needs: e2e-distribute
+    needs: [tier, e2e-distribute]
     permissions:
       contents: read
       actions: write   # fail fast: cancel the run
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.tier.outputs.runners)[strategy.job-index] }}
     strategy:
       fail-fast: false # one shard failing must not cancel the others (collect reports all)
       matrix: ${{ fromJSON(needs.e2e-distribute.outputs.matrix) }}
@@ -1550,7 +1550,9 @@ jobs:
         env:
           CI: "1"
           PLAYWRIGHT_JSON_OUTPUT_NAME: "report-shard-${{ matrix.shard }}.json"
-        run: nix develop --command bash -c 'npm install && npm run test:e2e -- --reporter=json,list ${{ matrix.specs }}'
+          # Onprem runners share a host: isolate fixed ports and /tmp.
+          ISOLATE: ${{ startsWith(runner.name, 'onprem') && '.github/scripts/isolated-net.sh' || '' }}
+        run: nix develop --command bash -c 'npm install && $ISOLATE npm run test:e2e -- --reporter=json,list ${{ matrix.specs }}'
 
       # Uploaded on success or failure so collect can merge a weights artifact from
       # a fully-green run.
