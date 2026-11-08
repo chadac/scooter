@@ -524,8 +524,6 @@ jobs:
     name: nixosTest ${{ matrix.test }}
     needs: [nixos-tests-matrix, tier]
     runs-on: ${{ fromJSON(needs.tier.outputs.runners)[strategy.job-index] }}
-    # Non-required until the KVM-accelerated matrix is consistently green on the runner.
-    continue-on-error: true
     strategy:
       fail-fast: false
       # Cap concurrent VM jobs so the runner pool is not exhausted.
