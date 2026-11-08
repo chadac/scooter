@@ -10,7 +10,8 @@
 
 export const REMOTE_PROTOCOL_VERSION = 1;
 
-export type Channel = "acp" | "exec" | "tunnel";
+/** `link` carries the resumable link's acks (see link.ts). */
+export type Channel = "acp" | "exec" | "tunnel" | "link";
 
 export interface WireFrame<P = unknown> {
   ch: Channel;
@@ -18,6 +19,8 @@ export interface WireFrame<P = unknown> {
   id?: string;
   /** The ACP session this frame belongs to, stamped by the container, by which the relay routes container-to-cloud frames to the matching in-flight run. */
   sid?: string;
+  /** Link sequence number; absent on link frames and old peers. */
+  seq?: number;
   payload: P;
 }
 

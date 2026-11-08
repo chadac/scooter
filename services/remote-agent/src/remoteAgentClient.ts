@@ -5,6 +5,7 @@
  * the cloud sandbox over Channel B. The Claude subscription token stays local.
  */
 
+import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 
 import { WebSocket } from "ws";
@@ -15,7 +16,8 @@ import "./echoBackend.js"; // self-registers
 
 import { REMOTE_PROTOCOL_VERSION, type WireFrame } from "./protocol.js";
 import { parsePermissionAnswer, type PermissionAnswer } from "./permissionAnswer.js";
-import { nextReconnectDelay, closeDisposition } from "./reconnect.js";
+import { CLOSE_AUTH_REJECTED, CLOSE_SUPERSEDED, closeDisposition } from "./reconnect.js";
+import { LINK_GRACE_MS, LINK_ID_PARAM, LINK_SEQ_PARAM, Link, type LinkResume } from "./link.js";
 import { generateDeviceKey, loadDeviceIdentity, saveDeviceIdentity, signChallenge } from "./deviceKey.js";
 import { createTunnelExecBackend } from "./tunnelExec.js";
 import { startMcpProxies } from "./mcpProxy.js";
@@ -116,6 +118,22 @@ export async function buildConnectUrl(deps: RemoteAgentClientDeps): Promise<stri
   return url.toString();
 }
 
+/** The connect URL plus the link to resume. */
+export function withLink(url: string, link: Link): string {
+  const u = new URL(url);
+  u.searchParams.set(LINK_ID_PARAM, link.id);
+  u.searchParams.set(LINK_SEQ_PARAM, String(link.received));
+  return u.toString();
+}
+
+/** Agent state for one link, outliving any single socket. */
+interface AgentState {
+  link: Link;
+  dispatch(frame: WireFrame): void;
+  /** Close every brain and fail its waiters. */
+  teardown(): void;
+}
+
 export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentClient {
   const log = deps.log ?? ((m: string) => console.log(`[remote-agent] ${m}`));
   let stopped = false;
@@ -124,23 +142,38 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
   let resolveClosed!: () => void;
   const closed = new Promise<void>((r) => (resolveClosed = r));
 
-  const connect = async () => {
-    if (stopped) return;
-    // The controller authorizes at the upgrade, so credentials must ride on the URL.
-    const connectUrl = await buildConnectUrl(deps);
-    ws = new WebSocket(connectUrl);
+  // Live sessions' skill dirs, which pruning must keep.
+  const liveSkillDirs = new Set<string>();
+
+  let state: AgentState | undefined;
+  let graceTimer: NodeJS.Timeout | undefined;
+  let droppedAt = 0;
+  // Serialized so no frame overtakes a state rebuild.
+  let inbound: Promise<void> = Promise.resolve();
+
+  const endState = (why: string) => {
+    clearTimeout(graceTimer);
+    graceTimer = undefined;
+    if (!state) return;
+    log(`dropping agent sessions: ${why}`);
+    state.teardown();
+    state = undefined;
+  };
+
+  const createState = async (linkId: string): Promise<AgentState> => {
+    const link = new Link(linkId);
+    let dead = false;
     const frameCbs = new Set<(f: WireFrame) => void>();
     const send = (f: WireFrame) => {
-      if (ws && ws.readyState === ws.OPEN) {
-        ws.send(JSON.stringify(f));
-        return;
+      if (dead) return;
+      link.send(f);
+      // Disconnected with an unreplayable outbox: the state is lost.
+      if (link.overflowed && !link.attached) {
+        queueMicrotask(() => {
+          if (state?.link === link) endState("outbox overflowed while disconnected");
+        });
       }
-      // A dropped frame must be logged, or an MCP call becomes a silent 30s timeout.
-      log(`DROPPED ${f.ch}/${f.type} frame — socket ${ws ? "state " + ws.readyState : "absent"}`);
     };
-
-    // Live sessions' skill dirs, which pruning must keep.
-    const liveSkillDirs = new Set<string>();
 
     // Permission answers route by unique frame id, so one shared waiter map serves every per-session client.
     const permissionWaiters = new Map<string, (ans: PermissionAnswer) => void>();
@@ -237,53 +270,6 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
     const sdk = primary.sdk;
     const clients = new Map<string, { sdk: typeof primary.sdk; stamp: { sid?: string }; closeMcp?: () => Promise<void> }>();
 
-    // A path dying without FIN shows only as missing pings.
-    const pingTimeoutMs = deps.pingTimeoutMs ?? PING_TIMEOUT_MS;
-    let pingWatch: NodeJS.Timeout | undefined;
-    const armPingWatch = () => {
-      clearTimeout(pingWatch);
-      pingWatch = setTimeout(() => {
-        log(`no ping from the controller for ${pingTimeoutMs}ms; reconnecting`);
-        ws?.terminate();
-      }, pingTimeoutMs);
-    };
-    ws.on("ping", armPingWatch);
-
-    ws.on("open", () => {
-      armPingWatch();
-      void (async () => {
-        attempt = 0; // a successful connect resets the backoff window
-        // Auth already happened at the upgrade; the hello only negotiates the protocol version.
-        ws!.send(JSON.stringify({ protocolVersion: REMOTE_PROTOCOL_VERSION, joinToken: deps.joinToken }));
-      })();
-    });
-
-    ws.on("message", (data) => {
-      let frame: WireFrame;
-      try {
-        frame = JSON.parse(data.toString());
-      } catch {
-        return;
-      }
-      // Server confirmations.
-      if (frame.type === "connected") {
-        log(`registered as owner ${(frame.payload as { owner?: string })?.owner ?? "?"} — ready`);
-        return;
-      }
-      // Channel B exec_result frames go to the tunnel backend's waiters.
-      if (frame.ch === "exec") {
-        for (const cb of frameCbs) cb(frame);
-        return;
-      }
-      // MCP replies; without this every call hangs.
-      if (frame.ch === "tunnel") {
-        for (const cb of frameCbs) cb(frame);
-        return;
-      }
-      // Channel A: drive the SDK.
-      if (frame.ch === "acp") void handleAcp(frame);
-    });
-
     const ack = (id: string | undefined, result: unknown, error?: string) => {
       if (id) send({ ch: "acp", type: "ack", id, payload: error ? { error } : { result } });
     };
@@ -370,30 +356,147 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
       }
     };
 
+
+    return {
+      link,
+      dispatch(frame) {
+        // Exec results and MCP replies go to the tunnel waiters.
+        if (frame.ch === "exec" || frame.ch === "tunnel") {
+          for (const cb of frameCbs) cb(frame);
+          return;
+        }
+        // Channel A: drive the SDK.
+        if (frame.ch === "acp") void handleAcp(frame);
+      },
+      teardown() {
+        dead = true;
+        link.dispose();
+        // Cancel every parked permission, or the local SDK waits forever on an approval that can never arrive.
+        for (const [id, waiter] of [...permissionWaiters]) {
+          permissionWaiters.delete(id);
+          waiter({ cancelled: true });
+        }
+        void sdk.close().catch(() => {});
+        for (const c of clients.values()) {
+          void c.sdk.close().catch(() => {});
+          // A stale proxy pointing at a dead session would hang the SDK instead of failing it.
+          void c.closeMcp?.().catch(() => {});
+        }
+        clients.clear();
+      },
+    };
+  };
+
+  const connect = async () => {
+    if (stopped) return;
+    state ??= await createState(randomUUID());
+    const current = state;
+    // The controller authorizes at the upgrade, so credentials ride on the URL.
+    const connectUrl = withLink(await buildConnectUrl(deps), current.link);
+    const sock = new WebSocket(connectUrl);
+    ws = sock;
+    const write = (raw: string) => sock.send(raw);
+
+    // A path dying without FIN shows only as missing pings.
+    const pingTimeoutMs = deps.pingTimeoutMs ?? PING_TIMEOUT_MS;
+    let pingWatch: NodeJS.Timeout | undefined;
+    const armPingWatch = () => {
+      clearTimeout(pingWatch);
+      pingWatch = setTimeout(() => {
+        log(`no ping from the controller for ${pingTimeoutMs}ms; reconnecting`);
+        sock.terminate();
+      }, pingTimeoutMs);
+    };
+    sock.on("ping", armPingWatch);
+
+    sock.on("open", () => {
+      armPingWatch();
+      attempt = 0; // a successful connect resets the backoff window
+      // Grace expired while dialing, so this link id is stale.
+      if (state !== current) {
+        sock.terminate();
+        return;
+      }
+      // Auth already happened at the upgrade; the hello only negotiates the protocol version.
+      sock.send(JSON.stringify({ protocolVersion: REMOTE_PROTOCOL_VERSION, joinToken: deps.joinToken }));
+      // Nothing to replay, so don't wait for the resume answer.
+      if (!current.link.used) current.link.attach(write, 0);
+    });
+
+    /** Apply the resume answer; absent means a controller without links. */
+    const handshake = async (resume: LinkResume | undefined) => {
+      let s = state;
+      if (!s || ws !== sock) return;
+      clearTimeout(graceTimer);
+      graceTimer = undefined;
+      if (!resume) {
+        if (s.link.used && !s.link.attached) {
+          endState("the controller cannot resume links");
+          s = state = await createState(randomUUID());
+        }
+        s.link.attachLegacy(write);
+        return;
+      }
+      if (s.link.attached) return;
+      if (resume.resumed) {
+        s.link.attach(write, resume.seq);
+        log(`link resumed after ${Date.now() - droppedAt}ms, replaying ${s.link.pending} frames`);
+        return;
+      }
+      // The controller already failed this link's runs.
+      endState("the controller could not resume the link");
+      s = state = await createState(s.link.id);
+      s.link.attach(write, 0);
+    };
+
+    const onFrame = async (frame: WireFrame) => {
+      // Server confirmations.
+      if (frame.type === "connected") {
+        const payload = frame.payload as { owner?: string; link?: LinkResume } | undefined;
+        log(`registered as owner ${payload?.owner ?? "?"} — ready`);
+        await handshake(payload?.link);
+        return;
+      }
+      const s = state;
+      if (!s || ws !== sock || !s.link.receive(frame)) return;
+      s.dispatch(frame);
+    };
+
+    sock.on("message", (data) => {
+      let frame: WireFrame;
+      try {
+        frame = JSON.parse(data.toString());
+      } catch {
+        return;
+      }
+      inbound = inbound.then(() => onFrame(frame)).catch((err) => log(`frame handling failed: ${String(err)}`));
+    });
+
     // Set when the upgrade itself was rejected, so the meaningless 1006 close that follows terminate() takes the auth disposition.
     let upgradeAuthRejected = false;
-    ws.on("close", (code, reasonBuf) => {
+    sock.on("close", (code, reasonBuf) => {
       clearTimeout(pingWatch);
       // The controller uses application close codes for conditions a container must react to differently than a network blip.
       const disposition = upgradeAuthRejected
         ? closeDisposition(4001, "rejected at the WebSocket upgrade (HTTP 401)", attempt + 1)
         : closeDisposition(code, reasonBuf?.toString() ?? "", attempt + 1);
       if (!upgradeAuthRejected) log(disposition.message ?? `disconnected (code ${code})`);
-      // Cancel every parked permission, or the local SDK waits forever on an approval that can never arrive.
-      for (const [id, waiter] of [...permissionWaiters]) {
-        permissionWaiters.delete(id);
-        waiter({ cancelled: true });
-      }
-      void sdk.close().catch(() => {});
-      for (const c of clients.values()) {
-        void c.sdk.close().catch(() => {});
-        // A stale proxy pointing at a dead session would hang the SDK instead of failing it.
-        void c.closeMcp?.().catch(() => {});
-      }
-      clients.clear();
+      const s = state;
+      if (ws === sock) s?.link.detach();
       if (stopped) {
+        endState("stopped");
         resolveClosed();
         return;
+      }
+      // Rejected or superseded: there is nothing to resume.
+      if (upgradeAuthRejected || code === CLOSE_AUTH_REJECTED || code === CLOSE_SUPERSEDED) {
+        endState(`closed with ${upgradeAuthRejected ? 4001 : code}`);
+      } else if (s?.link.overflowed) {
+        endState("outbox overflowed");
+      } else if (s?.link.used && !graceTimer) {
+        droppedAt = Date.now();
+        log(`holding agent sessions for ${LINK_GRACE_MS}ms while reconnecting`);
+        graceTimer = setTimeout(() => endState(`no reconnect within ${LINK_GRACE_MS}ms`), LINK_GRACE_MS);
       }
       // Exponential backoff with jitter (see reconnect.ts).
       attempt += 1;
@@ -402,7 +505,7 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
       setTimeout(() => void connect(), delay);
     });
     // A non-101 upgrade response, which the ws lib would otherwise surface as a generic error.
-    ws.on("unexpected-response", (_req, res) => {
+    sock.on("unexpected-response", (_req, res) => {
       if (res.statusCode === 401) {
         upgradeAuthRejected = true;
         log(
@@ -413,9 +516,9 @@ export function runRemoteAgentClient(deps: RemoteAgentClientDeps): RemoteAgentCl
         log(`unexpected server response ${res.statusCode ?? "?"} during connect`);
       }
       // terminate() fires the close handler, which schedules the retry.
-      ws?.terminate();
+      sock.terminate();
     });
-    ws.on("error", (e) => log(`ws error: ${(e as Error).message}`));
+    sock.on("error", (e) => log(`ws error: ${(e as Error).message}`));
   };
 
   void connect();

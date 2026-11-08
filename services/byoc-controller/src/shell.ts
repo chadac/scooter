@@ -7,7 +7,8 @@ import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
 
 import { createSessionRegistry, type SessionStore } from "./sessionRegistry.js";
-import { createRunRelay } from "./runRelay.js";
+import { createRunRelay, type LinkRequest } from "./runRelay.js";
+import { LINK_ID_PARAM, LINK_SEQ_PARAM } from "./link.js";
 import { createServer } from "./server.js";
 import { createDeviceAuth, type DeviceStore } from "./deviceAuth.js";
 
@@ -159,6 +160,10 @@ export async function startController(opts: ControllerOptions): Promise<RunningC
     const deviceId = url.searchParams.get("deviceId");
     const nonce = url.searchParams.get("nonce");
     const signature = url.searchParams.get("signature");
+    // Absent from containers that predate links.
+    const linkId = url.searchParams.get(LINK_ID_PARAM);
+    const linkSeq = Number(url.searchParams.get(LINK_SEQ_PARAM) ?? "0");
+    const link: LinkRequest | undefined = linkId ? { id: linkId, seq: linkSeq } : undefined;
     void (async () => {
       const authorized =
         deviceId && nonce && signature
@@ -199,15 +204,22 @@ export async function startController(opts: ControllerOptions): Promise<RunningC
         console.log(`[byoc] container attached: session=${liveSessionId} owner=${authorized.owner}`);
         sockets.add(ws);
         ws.on("pong", () => missedPongs.delete(ws));
-        // Confirm the attach, which the client waits for before logging ready.
-        ws.send(JSON.stringify({ type: "connected", payload: { owner: authorized.owner, sessionId: liveSessionId } }));
+        const attachedLink = relay.onContainerAttached(liveSessionId, containerSocket, link);
+        // Confirm the attach, then replay what the container missed.
+        ws.send(
+          JSON.stringify({
+            type: "connected",
+            payload: { owner: authorized.owner, sessionId: liveSessionId, link: attachedLink.resume },
+          }),
+        );
+        attachedLink.start();
 
         ws.on("message", (data) => relay.onContainerFrame(liveSessionId, data.toString()));
         ws.on("close", () => {
           sockets.delete(ws);
           console.log(`[byoc] container gone: session=${liveSessionId}`);
-          // End the in-flight runs first so their streams terminate with an error ack, then release the socket.
-          relay.onContainerGone(liveSessionId);
+          // Hold or end the runs, then release the socket.
+          relay.onContainerClosed(liveSessionId, containerSocket);
           registry.detachIfCurrent(liveSessionId, containerSocket);
         });
         ws.on("error", (e) => console.warn(`[byoc] socket error session=${liveSessionId}: ${e.message}`));

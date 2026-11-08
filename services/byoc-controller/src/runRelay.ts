@@ -12,7 +12,8 @@
 
 import { randomUUID } from "node:crypto";
 
-import type { SessionRegistry } from "./sessionRegistry.js";
+import type { ContainerSocket, SessionRegistry } from "./sessionRegistry.js";
+import { LINK_GRACE_MS, Link, type LinkResume } from "./link.js";
 import type { AcpPromptPayload, ExecResultPayload, WireFrame } from "./remoteProtocol.js";
 
 /** The user's decision on a permission request. */
@@ -22,6 +23,22 @@ export type AnswerResult = { ok: true } | { ok: false; reason: string };
 
 export interface RunRelayConfig {
   registry: SessionRegistry;
+  /** How long a dropped container's runs wait for it. */
+  linkGraceMs?: number;
+}
+
+/** The link a connecting container asks to resume. */
+export interface LinkRequest {
+  id: string;
+  /** Highest controller seq the container received. */
+  seq: number;
+}
+
+export interface AttachedLink {
+  /** For the `connected` frame; absent without links. */
+  resume?: LinkResume;
+  /** Bind and replay; call after sending `connected`. */
+  start(): void;
 }
 
 export interface RunRelay {
@@ -39,7 +56,11 @@ export interface RunRelay {
   onTunnelFrame(cb: (sessionId: string, frame: WireFrame) => void): () => void;
   /** Feed a raw frame received from a container's socket. */
   onContainerFrame(sessionId: string, raw: string): void;
-  /** The container's socket closed, so terminate every run still waiting on it. */
+  /** Resume the session's link if asked, else start fresh. */
+  onContainerAttached(sessionId: string, socket: ContainerSocket, link?: LinkRequest): AttachedLink;
+  /** Hold a resumable link for the grace window, else end runs. */
+  onContainerClosed(sessionId: string, socket: ContainerSocket): void;
+  /** The container is gone for good: terminate its runs. */
   onContainerGone(sessionId: string): void;
 }
 
@@ -57,6 +78,9 @@ interface PendingRun {
 
 export function createRunRelay(config: RunRelayConfig): RunRelay {
   const { registry } = config;
+  const graceMs = config.linkGraceMs ?? LINK_GRACE_MS;
+  // sessionId -> its container link and currently bound socket.
+  const links = new Map<string, { link: Link; socket?: ContainerSocket; grace?: ReturnType<typeof setTimeout> }>();
   // requestId -> the run awaiting frames, keyed by the id put on the wire so a frame is delivered only to the run whose id it carries.
   const runs = new Map<string, PendingRun>();
   // Requests the container is blocked on (permission and exec ids), kept per-session so a disconnect can abandon them wholesale.
@@ -95,6 +119,40 @@ export function createRunRelay(config: RunRelayConfig): RunRelay {
     }
   };
 
+  /** Whether a frame can reach the container, now or after resume. */
+  const reachable = (sessionId: string): boolean =>
+    links.has(sessionId) || registry.resolveBySession(sessionId)?.socket !== undefined;
+
+  /** Send via the link when there is one, so drops queue. */
+  const sendDown = (sessionId: string, frame: WireFrame): AnswerResult => {
+    const entry = links.get(sessionId);
+    if (entry) {
+      entry.link.send(frame);
+      if (entry.link.overflowed && !entry.socket) expire(sessionId, "outbox overflowed while disconnected");
+      return { ok: true };
+    }
+    const socket = registry.resolveBySession(sessionId)?.socket;
+    if (!socket) return { ok: false, reason: `container not connected (session ${sessionId})` };
+    try {
+      socket.send(JSON.stringify(frame));
+    } catch (err) {
+      return { ok: false, reason: `send failed: ${String(err)}` };
+    }
+    return { ok: true };
+  };
+
+  /** Drop a session's link and fail its waiting work. */
+  const expire = (sessionId: string, why: string): void => {
+    const entry = links.get(sessionId);
+    if (!entry) return;
+    clearTimeout(entry.grace);
+    entry.link.dispose();
+    links.delete(sessionId);
+    // eslint-disable-next-line no-console
+    console.log(`[byoc] link lost: session=${sessionId}: ${why}`);
+    relay.onContainerGone(sessionId);
+  };
+
   /** Send a reply down to the container for a request it is blocked on, rejecting an unknown or already-answered id. */
   const replyToContainer = (
     sessionId: string,
@@ -107,19 +165,13 @@ export function createRunRelay(config: RunRelayConfig): RunRelay {
     if (!entry || entry.sessionId !== sessionId || entry.kind !== kind) {
       return { ok: false, reason: `unknown ${kind} ${id}` };
     }
-    const session = registry.resolveBySession(sessionId);
-    if (!session?.socket) return { ok: false, reason: "container not connected" };
+    if (!reachable(sessionId)) return { ok: false, reason: "container not connected" };
     // Delete before sending so a concurrent duplicate cannot also pass the check above.
     awaiting.delete(id);
-    try {
-      session.socket.send(JSON.stringify(frame));
-    } catch (err) {
-      return { ok: false, reason: `send failed: ${String(err)}` };
-    }
-    return { ok: true };
+    return sendDown(sessionId, frame);
   };
 
-  return {
+  const relay: RunRelay = {
     prompt(sessionId, payload, callerId) {
       return this.request(sessionId, "prompt", payload, callerId);
     },
@@ -136,16 +188,14 @@ export function createRunRelay(config: RunRelayConfig): RunRelay {
 
       let failure: string | undefined;
       if (!session) failure = `unknown session ${sessionId}`;
-      else if (!session.socket) failure = `container not connected (session ${sessionId} is offline)`;
+      else if (!reachable(sessionId)) failure = `container not connected (session ${sessionId} is offline)`;
 
-      if (!failure && session?.socket) {
+      if (!failure) {
         runs.set(requestId, run);
-        const frame: WireFrame = { ch: "acp", type, id: requestId, payload };
-        try {
-          session.socket.send(JSON.stringify(frame));
-        } catch (err) {
+        const sent = sendDown(sessionId, { ch: "acp", type, id: requestId, payload });
+        if (!sent.ok) {
           runs.delete(requestId);
-          failure = `send failed: ${String(err)}`;
+          failure = sent.reason;
         }
       }
 
@@ -175,6 +225,13 @@ export function createRunRelay(config: RunRelayConfig): RunRelay {
       } catch {
         return; // a malformed frame is dropped rather than killing the socket
       }
+      // Link acks and replayed duplicates stop here.
+      const entry = links.get(sessionId);
+      if (entry && !entry.link.receive(frame)) return;
+      // Skip the hello and stray link frames.
+      if (frame.ch === "link" || typeof frame.type !== "string") return;
+      // The agent-host never sees link bookkeeping.
+      delete frame.seq;
       // Tunnel frames go to their subscribers only, never into a run's transcript.
       if (frame.ch === "tunnel") {
         for (const cb of [...tunnelCbs]) cb(sessionId, frame);
@@ -218,17 +275,8 @@ export function createRunRelay(config: RunRelayConfig): RunRelay {
     },
 
     answerTunnel(sessionId, streamId, frame) {
-      const session = registry.resolveBySession(sessionId);
-      if (!session?.socket) {
-        // Fail rather than drop, so the container's SDK sees a failing tool call instead of a hanging one.
-        return { ok: false, reason: `container not connected (session ${sessionId})` };
-      }
-      try {
-        session.socket.send(JSON.stringify(frame));
-        return { ok: true };
-      } catch (err) {
-        return { ok: false, reason: `send failed: ${String(err)}` };
-      }
+      // Fail rather than drop, so the tool call fails, not hangs.
+      return sendDown(sessionId, frame);
     },
 
     onTunnelFrame(cb) {
@@ -238,6 +286,54 @@ export function createRunRelay(config: RunRelayConfig): RunRelay {
 
     answerExec(sessionId, execId, payload) {
       return replyToContainer(sessionId, execId, "exec", { ch: "exec", type: "exec_result", id: execId, payload });
+    },
+
+    onContainerAttached(sessionId, socket, want) {
+      const entry = links.get(sessionId);
+      const write = (raw: string) => socket.send(raw);
+      if (!want) {
+        if (entry) expire(sessionId, "replaced by a container without links");
+        return { start() {} };
+      }
+      if (entry && entry.link.id === want.id && entry.link.canResume(want.seq)) {
+        clearTimeout(entry.grace);
+        entry.grace = undefined;
+        // Unbind a half-open predecessor.
+        entry.link.detach();
+        entry.socket = socket;
+        // eslint-disable-next-line no-console
+        console.log(`[byoc] link resumed: session=${sessionId} replaying ${entry.link.pending} frames`);
+        return {
+          resume: { resumed: true, seq: entry.link.received },
+          start: () => {
+            if (entry.socket === socket) entry.link.attach(write, want.seq);
+          },
+        };
+      }
+      if (entry) expire(sessionId, entry.link.id === want.id ? "the container's link could not be resumed" : "a new container link");
+      const fresh: { link: Link; socket?: ContainerSocket } = { link: new Link(want.id), socket };
+      links.set(sessionId, fresh);
+      return {
+        resume: { resumed: false, seq: 0 },
+        start: () => {
+          if (fresh.socket === socket) fresh.link.attach(write, 0);
+        },
+      };
+    },
+
+    onContainerClosed(sessionId, socket) {
+      const entry = links.get(sessionId);
+      // Without a link, runs end with the socket.
+      if (!entry) return relay.onContainerGone(sessionId);
+      // A superseded socket's close arrives after its replacement attached.
+      if (entry.socket !== socket) return;
+      entry.socket = undefined;
+      entry.link.detach();
+      if (entry.link.overflowed) return expire(sessionId, "outbox overflowed");
+      // eslint-disable-next-line no-console
+      console.log(`[byoc] holding session=${sessionId} for ${graceMs}ms while the container reconnects`);
+      entry.grace = setTimeout(() => expire(sessionId, `no reconnect within ${graceMs}ms`), graceMs);
+      entry.grace.unref?.();
     },
 
     onContainerGone(sessionId) {
@@ -257,4 +353,5 @@ export function createRunRelay(config: RunRelayConfig): RunRelay {
       }
     },
   };
+  return relay;
 }
