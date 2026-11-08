@@ -18,7 +18,8 @@ export type ConversationStreamFrame =
   | { kind: "snapshot"; conversations: ConversationView[] }
   | { kind: "upsert"; conversation: ConversationView }
   | { kind: "remove"; id: string }
-  | { kind: "folders" };
+  | { kind: "folders" }
+  | { kind: "contrib"; contrib: string; conversations: string[] };
 
 export interface ConversationStreamCallbacks {
   /** The initial full visible list (replaces the sidebar's known set). */
@@ -29,6 +30,8 @@ export interface ConversationStreamCallbacks {
   onRemove(id: string): void;
   /** The viewer's folders changed (another tab or device); refetch them. */
   onFolders?(): void;
+  /** A contrib's data on these conversations changed; none named means any. */
+  onContrib?(contrib: string, conversations: string[]): void;
 }
 
 export type ConversationSubscription = SSESubscription;
@@ -50,6 +53,7 @@ export function subscribeConversations(
         else if (frame.kind === "upsert") callbacks.onUpsert(frame.conversation);
         else if (frame.kind === "remove" && frame.id) callbacks.onRemove(frame.id);
         else if (frame.kind === "folders") callbacks.onFolders?.();
+        else if (frame.kind === "contrib" && frame.contrib) callbacks.onContrib?.(frame.contrib, frame.conversations ?? []);
       },
     },
     { token: config.token, fetchImpl: deps?.fetchImpl, staleAfterMs: deps?.staleAfterMs, label: "conversationStream" },

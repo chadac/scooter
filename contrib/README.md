@@ -829,6 +829,10 @@ ui.views.roadmap = {
     one open conversation at a time, shared with the chat view), `<ConversationSidebar />`,
     `<StatusDot />`.
   - Its own backend: `contribFetch(contrib, path)` and `conversationApi(contrib, id, path, init)`.
+  - Staying fresh without polling: `useContribChanges(contrib, (ids) => …)` runs when the
+    broker half posts `{contrib, conversations?}` to the router's `POST /conversations/events`
+    as a folder service naming the user, and again after the list stream reconnects. An
+    empty `ids` means anything may have changed.
 - **Failure is contained.** A missing entry, a chunk that fails to load or a render that
   throws shows an error in that view only. A deployment that does not ship the contrib
   serves its URL as the chat.

@@ -12,6 +12,7 @@ import { loadWhoami } from "./client.js";
 import { setUploadLimits } from "./fileUpload.js";
 import { subscribeConversations } from "./conversationStream.js";
 import { folderStore } from "./folders.js";
+import { contribEvents } from "./contribEvents.js";
 import { initTelemetryFromServer, installGlobalErrorHandlers } from "./telemetry.js";
 import { loadContribManifest } from "./contribManifest.js";
 import { installTitleSync } from "./pageTitle.js";
@@ -52,8 +53,9 @@ void loadWhoami({ baseUrl: BASE_URL }).then((me) => {
 subscribeConversations({ baseUrl: BASE_URL }, "all", {
   onSnapshot: (list) => {
     sessionStore.mergeFromServer(list);
-    // A reconnect may have missed folder frames.
+    // A reconnect may have missed folder and contrib frames.
     void folderStore.load();
+    contribEvents.emitAll();
     chatListStatus.markLoaded();
   },
   // An upsert carries the row's whole link set, re-read when it was pushed, so it owns its own
@@ -61,6 +63,7 @@ subscribeConversations({ baseUrl: BASE_URL }, "all", {
   onUpsert: (c) => sessionStore.mergeFromServer([c], { fullList: false }),
   onRemove: (id) => sessionStore.removeFromServer(id),
   onFolders: () => void folderStore.load(),
+  onContrib: (contrib, ids) => contribEvents.emit(contrib, ids),
 });
 
 // Deep-link support (?thread=<id>): requestSelect's pending target selects the

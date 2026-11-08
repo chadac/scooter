@@ -20,7 +20,7 @@ import (
 // StarredFolderID is the wire id of every user's built-in Starred folder.
 const StarredFolderID = "starred"
 
-// foldersChannel carries each folder change's owner.
+// foldersChannel carries each folder change's owner, and folder services' events.
 const foldersChannel = "conversation_folders_changed"
 
 const (
@@ -348,28 +348,16 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// runFolderListener tells an owner's list streams to refetch folders.
+// runFolderListener pushes folder and contrib changes to their owner's streams.
 func runFolderListener(ctx context.Context, store *Store, hub *sseHub) {
 	if store == nil {
 		return
 	}
-	frame := sseData([]byte(`{"kind":"folders"}`))
 	listenLoop(ctx, logger("folders-listen"), foldersChannel, store.NewListenConn, func(payload string) {
-		if owner, ok := folderNotifyOwner(payload); ok {
-			hub.deliver(frame, func(s *sseSub) bool { return s.callerOwner == owner })
+		if owner, frame, ok := folderNotify(payload); ok {
+			hub.deliver(sseData(frame), func(s *sseSub) bool { return s.callerOwner == owner })
 		}
 	})
-}
-
-// folderNotifyOwner parses a payload; "" is the anonymous owner.
-func folderNotifyOwner(payload string) (string, bool) {
-	var c struct {
-		Owner *string `json:"owner"`
-	}
-	if err := json.Unmarshal([]byte(payload), &c); err != nil || c.Owner == nil {
-		return "", false
-	}
-	return *c.Owner, true
 }
 
 // Folders reads the caller's folders and visible placements.

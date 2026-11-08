@@ -312,18 +312,18 @@ func TestServePlacement(t *testing.T) {
 func TestFolderFramesReachOnlyTheirOwner(t *testing.T) {
 	hub := newSSEHub()
 	alice, bob := hub.subscribe("alice", "all"), hub.subscribe("bob", "all")
-	owner, ok := folderNotifyOwner(`{"owner":"alice"}`)
+	owner, frame, ok := folderNotify(`{"owner":"alice"}`)
 	if !ok {
 		t.Fatal("payload rejected")
 	}
-	hub.deliver(sseData([]byte(`{"kind":"folders"}`)), func(s *sseSub) bool { return s.callerOwner == owner })
+	hub.deliver(sseData(frame), func(s *sseSub) bool { return s.callerOwner == owner })
 	if got := recv(alice); !strings.Contains(got, `"folders"`) {
 		t.Errorf("alice got %q", got)
 	}
 	if got := recv(bob); got != "" {
 		t.Errorf("bob got %q", got)
 	}
-	if _, ok := folderNotifyOwner(`{}`); ok {
+	if _, _, ok := folderNotify(`{}`); ok {
 		t.Error("a payload with no owner is dropped")
 	}
 }

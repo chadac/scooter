@@ -318,6 +318,14 @@ func newRouter(shutdownCtx context.Context, cfg config, resolver ownerResolver, 
 			serveSubagentCreate(w, r, creator, parents, parentID, ownerFrom(r), trusted)
 			return
 		}
+		if IsOwnerEventPost(r.Method, r.URL.Path) {
+			if writeStore == nil {
+				writeJSONError(w, http.StatusServiceUnavailable, "conversation store unavailable")
+				return
+			}
+			serveOwnerEvent(w, r, writeStore, folderServices)
+			return
+		}
 		if IsConversationListRoute(r.Method, r.URL.Path) {
 			if store == nil {
 				http.Error(w, "conversation store unavailable", http.StatusServiceUnavailable)

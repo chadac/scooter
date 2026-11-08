@@ -4,9 +4,10 @@
  * anything twice. Re-exported from ./sdk, the only module a contrib may import.
  */
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 import { promptConversation } from "../client.js";
+import { contribEvents } from "../contribEvents.js";
 import { agentHostConfig } from "../config.js";
 import { folderStore, moveTo, STARRED, useFolders as useFolderState } from "../folders.js";
 import { sessionStore, turnDot, useSessions, type SessionLink, type TurnDot } from "../sessions.js";
@@ -174,4 +175,11 @@ export function conversationApi(
     body: json !== undefined ? JSON.stringify(json) : rest.body,
     credentials: "same-origin",
   });
+}
+
+/** Runs `onChange` on this contrib's pushes and stream reconnects. */
+export function useContribChanges(contrib: string, onChange: (conversations: string[]) => void): void {
+  const latest = useRef(onChange);
+  latest.current = onChange;
+  useEffect(() => contribEvents.on(contrib, (ids) => latest.current(ids)), [contrib]);
 }

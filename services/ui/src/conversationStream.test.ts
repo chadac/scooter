@@ -34,7 +34,7 @@ function sseFetch(frames: unknown[]): typeof fetch {
 
 /** Run the subscription over a scripted body and collect what the callbacks saw. */
 async function collect(frames: unknown[]) {
-  const seen = { snapshots: [] as ConversationView[][], upserts: [] as ConversationView[], removes: [] as string[] };
+  const seen = { snapshots: [] as ConversationView[][], upserts: [] as ConversationView[], removes: [] as string[], contrib: [] as Array<[string, string[]]> };
   const sub = subscribeConversations(
     { baseUrl: "https://host" },
     "all",
@@ -42,6 +42,7 @@ async function collect(frames: unknown[]) {
       onSnapshot: (l) => void seen.snapshots.push(l),
       onUpsert: (c) => void seen.upserts.push(c),
       onRemove: (id) => void seen.removes.push(id),
+      onContrib: (name, ids) => void seen.contrib.push([name, ids]),
     },
     { fetchImpl: sseFetch(frames) },
   );
@@ -71,6 +72,18 @@ describe("subscribeConversations frames", () => {
   it("ignores a remove naming no conversation rather than removing something arbitrary", async () => {
     const seen = await collect([{ kind: "remove" }, { kind: "remove", id: "" }]);
     expect(seen.removes).toEqual([]);
+  });
+
+  it("passes a contrib's change on, an absent id list meaning any", async () => {
+    const seen = await collect([
+      { kind: "contrib", contrib: "notes", conversations: ["c1"] },
+      { kind: "contrib", contrib: "notes" },
+      { kind: "contrib", conversations: ["c2"] },
+    ]);
+    expect(seen.contrib).toEqual([
+      ["notes", ["c1"]],
+      ["notes", []],
+    ]);
   });
 
   it("ignores an unknown frame kind, so a newer server cannot break an older tab", async () => {

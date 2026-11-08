@@ -190,7 +190,7 @@ func TestPgFolderChangesNotifyTheirOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if owner, ok := folderNotifyOwner(n.Payload); !ok || owner != "alice" {
+	if owner, _, ok := folderNotify(n.Payload); !ok || owner != "alice" {
 		t.Errorf("payload %q, want owner alice", n.Payload)
 	}
 }
@@ -403,5 +403,32 @@ func TestPgLockedFolders(t *testing.T) {
 	}
 	if list, _ = s.Folders(ctx, "alice"); len(list.Placements) != 0 || len(list.Folders) != 2 {
 		t.Errorf("after delete: %+v", list)
+	}
+}
+
+func TestPgOwnerEventsReachTheFolderListener(t *testing.T) {
+	pool := startPG(t)
+	ctx := context.Background()
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, "listen "+foldersChannel); err != nil {
+		t.Fatal(err)
+	}
+	s := &WriteStore{pool: pool}
+	if err := s.NotifyFolders(ctx, []byte(`{"owner":"alice","contrib":"notes","conversations":["c1"]}`)); err != nil {
+		t.Fatal(err)
+	}
+	wctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	n, err := conn.Conn().WaitForNotification(wctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, frame, ok := folderNotify(n.Payload)
+	if !ok || owner != "alice" || !strings.Contains(string(frame), `"contrib":"notes"`) {
+		t.Errorf("payload %q gave %q %s", n.Payload, owner, frame)
 	}
 }
