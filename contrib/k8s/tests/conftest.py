@@ -42,6 +42,8 @@ class FakeKube:
 
     objects: dict[tuple, dict] = field(default_factory=dict)
     calls: list[tuple] = field(default_factory=list)
+    #: (verb, actor) for every call that took one.
+    actors: list[tuple] = field(default_factory=list)
     #: Raised by every dry run, as validation or admission would.
     dry_run_error: K8sError | None = None
     version: int = 0
@@ -66,20 +68,23 @@ class FakeKube:
         return [copy.deepcopy(o) for (k, ns, _), o in self.objects.items()
                 if k == res.kind and (namespace is None or ns == namespace)]
 
-    async def get(self, res, name, namespace):
+    async def get(self, res, name, namespace, *, actor=None):
+        if actor is not None:
+            self.actors.append(("get", actor))
         return copy.deepcopy(self._find(res, name, namespace))
 
     async def logs(self, pod, namespace, **kw):
         self._find(Resource("v1", "Pod", "pods", True), pod, namespace)
         return "line 1\nline 2\n"
 
-    def _write(self, verb, dry_run):
+    def _write(self, verb, dry_run, actor):
         self.calls.append((verb, dry_run))
+        self.actors.append((verb, actor))
         if dry_run and self.dry_run_error:
             raise self.dry_run_error
 
-    async def apply(self, res, body, *, dry_run):
-        self._write("apply", dry_run)
+    async def apply(self, res, body, *, dry_run, actor):
+        self._write("apply", dry_run, actor)
         m = body["metadata"]
         live = self.objects.get((res.kind, m.get("namespace"), m["name"]), {})
         out = merge(live, body)
@@ -89,20 +94,20 @@ class FakeKube:
             self.add(out)
         return copy.deepcopy(out)
 
-    async def delete(self, res, name, namespace, *, dry_run):
+    async def delete(self, res, name, namespace, *, dry_run, actor):
         self._find(res, name, namespace)
-        self._write("delete", dry_run)
+        self._write("delete", dry_run, actor)
         if not dry_run:
             del self.objects[(res.kind, namespace, name)]
 
-    async def patch(self, res, name, namespace, patch, *, dry_run):
+    async def patch(self, res, name, namespace, patch, *, dry_run, actor):
         out = merge(self._find(res, name, namespace), patch)
-        self._write("patch", dry_run)
+        self._write("patch", dry_run, actor)
         if not dry_run:
             self.add(out)
 
-    async def exec(self, pod, namespace, argv, **kw):
-        self._write("exec", False)
+    async def exec(self, pod, namespace, argv, *, actor, **kw):
+        self._write("exec", False, actor)
         return ExecResult(stdout=f"ran {' '.join(argv)}\n", stderr="", exit_code=0)
 
 

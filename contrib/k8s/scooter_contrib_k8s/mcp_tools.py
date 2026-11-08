@@ -43,21 +43,23 @@ async def _answer(work: Awaitable[Any]) -> ToolResult:
     return ToolResult.ok(out if isinstance(out, str) else json.dumps(out, indent=1, default=str))
 
 
-async def _gated(ctx: ToolContext, plan: Callable[[K8sService], Awaitable[Op]]) -> Any:
+async def _gated(ctx: ToolContext, plan: Callable[[K8sService, str], Awaitable[Op]]) -> Any:
     svc = _svc()
-    return await svc.submit(ctx.identity.conversation_id, await plan(svc))
+    cid = ctx.identity.conversation_id
+    return await svc.submit(cid, await plan(svc, cid))
 
 
 @mcp.tool
 async def k8s_clusters() -> ToolResult:
     """The clusters you can reach: each one's default namespace, whether it is read-only,
-    whether it allows write grants, and who approves its requests (empty: the conversation's owner)."""
+    whether it allows write grants, who approves its requests (empty: the conversation's owner),
+    and the Kubernetes user writes run as (null: the broker's own)."""
     async def run():
         return [
             {"cluster": c.config.name, "default_namespace": c.config.default_namespace,
              "read_only": c.config.read_only, "grants": c.config.grants_enabled,
              "grant_max_minutes": c.config.grant_max_minutes if c.config.grants_enabled else None,
-             "approvers": list(c.config.approvers)}
+             "approvers": list(c.config.approvers), "writes_as": c.config.impersonate}
             for c in _svc().clusters.values()
         ]
     return await _answer(run())
@@ -165,7 +167,7 @@ async def k8s_secret_reveal(name: str, keys: list[str] | None = None, cluster: s
     """Ask a person to show you a Secret's values: `keys` names which (empty: all). Always
     needs approval; the values come back in a message and land in the transcript, so ask
     only for the keys you need."""
-    return await _answer(_gated(ctx, lambda s: s.plan_reveal(cluster, name, keys or [], namespace)))
+    return await _answer(_gated(ctx, lambda s, cid: s.plan_reveal(cid, cluster, name, keys or [], namespace)))
 
 
 @mcp.tool
@@ -173,28 +175,28 @@ async def k8s_apply(manifests: str, cluster: str = "", ctx: ToolContext = ToolCo
     """Server-side apply YAML (one or more `---` documents, at most 20 objects). A dry run
     checks it first: errors come back at once, and the approver sees the diff. Objects
     without a namespace get the cluster's default. Render Helm or Kustomize yourself first."""
-    return await _answer(_gated(ctx, lambda s: s.plan_apply(cluster, manifests)))
+    return await _answer(_gated(ctx, lambda s, cid: s.plan_apply(cid, cluster, manifests)))
 
 
 @mcp.tool
 async def k8s_delete(kind: str, name: str, cluster: str = "", namespace: str = "", api_version: str = "",
                      ctx: ToolContext = ToolContextDep) -> ToolResult:
     """Delete one object; what it owns goes with it."""
-    return await _answer(_gated(ctx, lambda s: s.plan_delete(cluster, kind, name, namespace, api_version)))
+    return await _answer(_gated(ctx, lambda s, cid: s.plan_delete(cid, cluster, kind, name, namespace, api_version)))
 
 
 @mcp.tool
 async def k8s_scale(kind: str, name: str, replicas: int, cluster: str = "", namespace: str = "",
                     api_version: str = "", ctx: ToolContext = ToolContextDep) -> ToolResult:
     """Set spec.replicas on a Deployment, StatefulSet or ReplicaSet."""
-    return await _answer(_gated(ctx, lambda s: s.plan_scale(cluster, kind, name, replicas, namespace, api_version)))
+    return await _answer(_gated(ctx, lambda s, cid: s.plan_scale(cid, cluster, kind, name, replicas, namespace, api_version)))
 
 
 @mcp.tool
 async def k8s_rollout_restart(kind: str, name: str, cluster: str = "", namespace: str = "", api_version: str = "",
                               ctx: ToolContext = ToolContextDep) -> ToolResult:
     """Restart a Deployment, StatefulSet or DaemonSet's pods, like `kubectl rollout restart`."""
-    return await _answer(_gated(ctx, lambda s: s.plan_restart(cluster, kind, name, namespace, api_version)))
+    return await _answer(_gated(ctx, lambda s, cid: s.plan_restart(cid, cluster, kind, name, namespace, api_version)))
 
 
 @mcp.tool
@@ -203,7 +205,7 @@ async def k8s_exec(pod: str, command: list[str], cluster: str = "", namespace: s
     """Run one command in a pod: `command` is the argv, e.g. ["sh", "-c", "ls /data"]. No TTY
     or stdin; it is stopped after 120s and its output capped at 64 KiB. Always needs its
     own approval, even under a grant; the approver sees the exact argv."""
-    return await _answer(_gated(ctx, lambda s: s.plan_exec(cluster, pod, command, namespace, container)))
+    return await _answer(_gated(ctx, lambda s, _: s.plan_exec(cluster, pod, command, namespace, container)))
 
 
 @mcp.tool
@@ -213,7 +215,7 @@ async def k8s_request_grant(namespace: str, minutes: int, reason: str, cluster: 
     and rollout restart calls there needs no card each. Only on clusters that allow grants
     (k8s_clusters); ask only when you expect several changes. Exec, Secret reveals and
     cluster-scoped objects still need their own approval."""
-    return await _answer(_gated(ctx, lambda s: s.plan_grant(cluster, namespace, minutes, reason)))
+    return await _answer(_gated(ctx, lambda s, _: s.plan_grant(cluster, namespace, minutes, reason)))
 
 
 @mcp.tool

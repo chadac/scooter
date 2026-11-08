@@ -50,5 +50,18 @@ prefix:
   # echo's sample provider, since echo ships to no cluster (skill-providers.spec.ts).
   agent.skillProviders.echo-sample.command = builtins.readFile ../../contrib/echo/skill-provider.sh;
   # e2e configures no credentials; drop contribs needing one.
-  contribs = testContribs;
+  # k8s needs none in-cluster: the broker stays on view, writes go as scooter-k8s.
+  contribs = testContribs // {
+    k8s = {
+      enable = true;
+      clusters.e2e = {
+        auth.inCluster = { };
+        defaultNamespace = "agent-sandbox";
+        impersonate = {
+          user = "scooter-k8s";
+          namespaceRoles.agent-sandbox = [ "edit" ];
+        };
+      };
+    };
+  };
 }

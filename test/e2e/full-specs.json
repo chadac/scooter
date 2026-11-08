@@ -11,6 +11,7 @@
   "first-message.spec.ts",
   "interrupt-queue-recovery.spec.ts",
   "interrupt.spec.ts",
+  "k8s-impersonation.spec.ts",
   "linked-resources.spec.ts",
   "live-monitoring.spec.ts",
   "live-real-agent.spec.ts",

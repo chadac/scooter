@@ -39,6 +39,9 @@ value lengths.
 
 - The call first runs a server-side dry run. If it fails (validation, RBAC,
   admission), you get the error at once and no card is raised.
+- On a cluster where `k8s_clusters` shows `writes_as`, writes, exec and
+  Secret reads run as that Kubernetes user. A 403 then means that user lacks
+  the permission. Tell the user which one; retrying won't help.
 - Otherwise the call returns `pending_approval` straight away. **Don't retry
   and don't wait.** Carry on with other work, or end your turn. A message
   tells you the outcome, with the result.

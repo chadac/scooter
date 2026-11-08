@@ -1318,7 +1318,10 @@ let
   k8sEval = sysEval {
     contribs.k8s.enable = nixpkgsLib.mkForce true;
     contribs.k8s.clusters = {
-      home.auth.inCluster.clusterRoles = [ "view" "edit" ];
+      home = {
+        auth.inCluster.clusterRoles = [ "view" "edit" ];
+        impersonate = { user = "scooter-k8s"; clusterRoles = [ "view" ]; namespaceRoles.agent-sandbox = [ "edit" ]; };
+      };
       prod-eu = {
         auth.kubeconfig.secret.name = "k8s-prod";
         approvers = [ "admin@example.com" ];
@@ -1338,14 +1341,28 @@ let
           && (k8sClusters.prod-eu.approvers or [ ]) == [ "admin@example.com" ]
           && (k8sClusters.home.auth.type or "") == "inCluster" then [ ]
         else [ "K8S_CLUSTERS_JSON does not carry each cluster's auth and approvers" ])
+    ++ (if (k8sClusters.home.impersonate or null) == "scooter-k8s" && (k8sClusters.prod-eu.impersonate or "x") == null then [ ]
+        else [ "K8S_CLUSTERS_JSON does not carry each cluster's impersonate user" ])
+    ++ (let r = k8sEval.config.kubernetes.resources; in
+        if (builtins.head (r.clusterRoles.agent-broker-k8s-impersonate.rules or [ { } ])).resourceNames or [ ] == [ "scooter-k8s" ]
+          && (r.clusterRoleBindings.agent-broker-k8s-impersonate.subjects or [ ]) != [ ]
+          && (r.clusterRoleBindings.k8s-user-scooter-k8s-view.subjects or [ ]) == [ { kind = "User"; apiGroup = "rbac.authorization.k8s.io"; name = "scooter-k8s"; } ]
+          && (r.roleBindings.agent-sandbox-k8s-user-scooter-k8s-edit.metadata.namespace or "") == "agent-sandbox" then [ ]
+        else [ "k8s impersonate did not render the broker's impersonate role and the user's bindings" ])
+    ++ (if !(builtins.tryEval (builtins.deepSeq (sysEval { contribs.k8s = { enable = nixpkgsLib.mkForce true;
+          clusters.far = { auth.kubeconfig.secret.name = "k"; impersonate = { user = "u"; clusterRoles = [ "edit" ]; }; }; }; })
+          .config.kubernetes.resources.deployments.agent-broker.spec true)).success then [ ]
+        else [ "k8s impersonate roles on a kubeconfig cluster rendered" ])
     ++ (if map (e: e.valueFrom.secretKeyRef or null) (k8sEnv "K8S_KUBECONFIG_PROD_EU") == [ { name = "k8s-prod"; key = "config"; } ] then [ ]
         else [ "the prod-eu kubeconfig is not a secretKeyRef on k8s-prod/config" ])
     ++ (if (k8sEval.config.kubernetes.resources.clusterRoleBindings ? agent-broker-k8s-edit)
           && (k8sEval.config.kubernetes.resources.clusterRoleBindings ? agent-broker-k8s-view) then [ ]
         else [ "an in-cluster k8s cluster's clusterRoles are not bound to agent-broker" ])
     ++ (if !((sysEval { contribs.k8s = { enable = nixpkgsLib.mkForce true; clusters = nixpkgsLib.mkForce { }; }; })
-          .config.kubernetes.resources.clusterRoleBindings ? agent-broker-k8s-view) then [ ]
-        else [ "k8s with no clusters bound roles to agent-broker" ])
+          .config.kubernetes.resources.clusterRoleBindings ? agent-broker-k8s-view)
+          && !((sysEval { contribs.k8s = { enable = nixpkgsLib.mkForce true; clusters = nixpkgsLib.mkForce { home.auth.inCluster = { }; }; }; })
+          .config.kubernetes.resources.clusterRoles ? agent-broker-k8s-impersonate) then [ ]
+        else [ "k8s with no clusters bound roles, or without impersonate rendered its role" ])
     ++ (if !(builtins.tryEval (builtins.deepSeq (sysEval { contribs.k8s = { enable = nixpkgsLib.mkForce true; clusters."Bad_Name".auth.inCluster = { }; }; })
           .config.kubernetes.resources.deployments.agent-broker.spec true)).success then [ ]
         else [ "a k8s cluster name that is not lowercase and dashes rendered" ]);

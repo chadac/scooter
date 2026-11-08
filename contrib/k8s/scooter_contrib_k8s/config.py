@@ -23,6 +23,8 @@ class ClusterConfig:
     approvers: tuple[str, ...] = ()
     grants_enabled: bool = False
     grant_max_minutes: int = 60
+    #: The user writes, exec and Secret reads run as; None means the broker.
+    impersonate: str | None = None
 
 
 def parse_clusters(raw: str) -> dict[str, ClusterConfig]:
@@ -40,6 +42,7 @@ def parse_clusters(raw: str) -> dict[str, ClusterConfig]:
             approvers=tuple(c.get("approvers") or ()),
             grants_enabled=bool(grants.get("enable", False)),
             grant_max_minutes=int(grants.get("max_minutes", 60)),
+            impersonate=c.get("impersonate") or None,
         )
     return out
 

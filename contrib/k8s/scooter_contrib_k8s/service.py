@@ -22,7 +22,7 @@ from scooter_broker_lib.owner import OwnerResolver
 from . import objects
 from .approvals import GRANTABLE, KIND, Op, card, headline, may_approve, target
 from .config import ClusterConfig
-from .kube import K8sError, Kube, Resource
+from .kube import Actor, K8sError, Kube, Resource
 from .store import GrantStore
 
 logger = logging.getLogger(__name__)
@@ -101,7 +101,7 @@ class K8sService:
             raise Refused("no conversation for this caller")
         grant = await self._grant_for(conversation_id, op)
         if grant is not None:
-            result = await self.run(op)
+            result = await self.run(op, Actor(conversation_id, grant.approved_by))
             logger.info("k8s write under grant", extra=self._audit(op, conversation_id, grant=grant.id))
             return {"status": "done", "grant_id": grant.id, "result": result}
         access = await self.owners.access(conversation_id) if self.owners else None
@@ -139,7 +139,7 @@ class K8sService:
         obj = await c.kube.get(res, name, ns or None)
         return res, ns, obj
 
-    async def plan_apply(self, cluster: str, manifests: str) -> Op:
+    async def plan_apply(self, conversation_id: str, cluster: str, manifests: str) -> Op:
         c = self.cluster(cluster)
         if len(manifests.encode()) > MAX_MANIFEST_BYTES:
             raise Refused(f"manifests exceed {MAX_MANIFEST_BYTES} bytes")
@@ -151,6 +151,7 @@ class K8sService:
             raise Refused("no objects in manifests")
         if len(docs) > MAX_MANIFESTS:
             raise Refused(f"at most {MAX_MANIFESTS} objects per apply")
+        actor = Actor(conversation_id)
         planned, previews = [], []
         for d in docs:
             if not isinstance(d, dict) or not d.get("apiVersion") or not d.get("kind") or not (d.get("metadata") or {}).get("name"):
@@ -167,7 +168,7 @@ class K8sService:
                 if e.status != 404:
                     raise
                 live = None
-            dry = await c.kube.apply(res, d, dry_run=True)
+            dry = await c.kube.apply(res, d, dry_run=True, actor=actor)
             change = objects.diff(live, dry, kind=res.kind)
             state = "created" if live is None else ("changed" if change else "unchanged")
             previews.append(f"{objects.describe(d)}: {state}" + (f"\n{change}" if change else ""))
@@ -175,10 +176,10 @@ class K8sService:
         preview = clip("\n\n".join(previews), MAX_PREVIEW)
         return self._op(c, "apply", manifests=planned, preview=preview)
 
-    async def plan_delete(self, cluster: str, kind: str, name: str, namespace: str, api_version: str) -> Op:
+    async def plan_delete(self, conversation_id: str, cluster: str, kind: str, name: str, namespace: str, api_version: str) -> Op:
         c = self.cluster(cluster)
         res, ns, obj = await self.lookup(c, kind, name, namespace, api_version)
-        await c.kube.delete(res, name, ns or None, dry_run=True)
+        await c.kube.delete(res, name, ns or None, dry_run=True, actor=Actor(conversation_id))
         notes = ["Objects it owns are deleted with it (propagation Background)."]
         owners = (obj.get("metadata") or {}).get("ownerReferences") or []
         if owners:
@@ -187,7 +188,7 @@ class K8sService:
         return self._op(c, "delete", namespace=ns, kind=res.kind, api_version=res.api_version, name=name,
                         preview=" ".join(notes))
 
-    async def plan_scale(self, cluster: str, kind: str, name: str, replicas: int, namespace: str,
+    async def plan_scale(self, conversation_id: str, cluster: str, kind: str, name: str, replicas: int, namespace: str,
                          api_version: str) -> Op:
         if replicas < 0:
             raise Refused("replicas must be 0 or more")
@@ -195,16 +196,17 @@ class K8sService:
         res, ns, obj = await self.lookup(c, kind, name, namespace, api_version)
         if "replicas" not in (obj.get("spec") or {}):
             raise Refused(f"{res.kind} {name} has no spec.replicas to scale")
-        await c.kube.patch(res, name, ns or None, {"spec": {"replicas": replicas}}, dry_run=True)
+        await c.kube.patch(res, name, ns or None, {"spec": {"replicas": replicas}}, dry_run=True,
+                           actor=Actor(conversation_id))
         return self._op(c, "scale", namespace=ns, kind=res.kind, api_version=res.api_version, name=name,
                         replicas=replicas, preview=f"Replicas: {obj['spec']['replicas']} → {replicas}.")
 
-    async def plan_restart(self, cluster: str, kind: str, name: str, namespace: str, api_version: str) -> Op:
+    async def plan_restart(self, conversation_id: str, cluster: str, kind: str, name: str, namespace: str, api_version: str) -> Op:
         c = self.cluster(cluster)
         res, ns, obj = await self.lookup(c, kind, name, namespace, api_version)
         if "template" not in (obj.get("spec") or {}):
             raise Refused(f"{res.kind} {name} has no pod template to restart")
-        await c.kube.patch(res, name, ns or None, _restart_patch(), dry_run=True)
+        await c.kube.patch(res, name, ns or None, _restart_patch(), dry_run=True, actor=Actor(conversation_id))
         return self._op(c, "restart", namespace=ns, kind=res.kind, api_version=res.api_version, name=name,
                         preview="Every pod is replaced, following its rollout strategy.")
 
@@ -218,10 +220,10 @@ class K8sService:
                         container=container,
                         preview=f"Argv: {json.dumps(command)}\nIts output, up to 64 KiB, goes to the agent.")
 
-    async def plan_reveal(self, cluster: str, name: str, keys: list[str], namespace: str) -> Op:
+    async def plan_reveal(self, conversation_id: str, cluster: str, name: str, keys: list[str], namespace: str) -> Op:
         c = self.cluster(cluster)
         ns = self.namespace(c, namespace)
-        secret = await c.kube.get(await c.kube.resource("Secret", "v1"), name, ns)
+        secret = await c.kube.get(await c.kube.resource("Secret", "v1"), name, ns, actor=Actor(conversation_id))
         missing = sorted(set(keys) - set(secret.get("data") or {}))
         if missing:
             raise Refused(f"Secret {ns}/{name} has no key {', '.join(missing)}")
@@ -247,8 +249,8 @@ class K8sService:
 
     # --- running what was approved --------------------------------------------------
 
-    async def run(self, op: Op) -> Any:
-        """Carry out `op` for real; its result as the agent sees it."""
+    async def run(self, op: Op, actor: Actor) -> Any:
+        """Carry out `op` for real, for `actor`; its result as the agent sees it."""
         kube = self.cluster(op.cluster).kube
         res = Resource(api_version=op.api_version, kind=op.kind, name="", namespaced=bool(op.namespace))
         ns = op.namespace or None
@@ -256,26 +258,26 @@ class K8sService:
             case "apply":
                 done = []
                 for m in op.manifests:
-                    out = await kube.apply(Resource(**m["resource"]), m["body"], dry_run=False)
+                    out = await kube.apply(Resource(**m["resource"]), m["body"], dry_run=False, actor=actor)
                     done.append(f"{objects.describe(out)}: applied (resourceVersion "
                                 f"{(out.get('metadata') or {}).get('resourceVersion')})")
                 return "\n".join(done)
             case "delete":
-                await kube.delete(res, op.name, ns, dry_run=False)
+                await kube.delete(res, op.name, ns, dry_run=False, actor=actor)
                 return f"{target(op)}: deleted"
             case "scale":
-                await kube.patch(res, op.name, ns, {"spec": {"replicas": op.replicas}}, dry_run=False)
+                await kube.patch(res, op.name, ns, {"spec": {"replicas": op.replicas}}, dry_run=False, actor=actor)
                 return f"{target(op)}: scaled to {op.replicas} replicas"
             case "restart":
-                await kube.patch(res, op.name, ns, _restart_patch(), dry_run=False)
+                await kube.patch(res, op.name, ns, _restart_patch(), dry_run=False, actor=actor)
                 return f"{target(op)}: rollout restarted"
             case "exec":
-                r = await kube.exec(op.name, op.namespace, op.argv, container=op.container,
+                r = await kube.exec(op.name, op.namespace, op.argv, actor=actor, container=op.container,
                                     timeout=MAX_EXEC_SECONDS, limit=MAX_OUTPUT)
                 return {"exit_code": r.exit_code, "stdout": r.stdout, "stderr": r.stderr}
             case "reveal":
                 secret = await kube.get(Resource(api_version="v1", kind="Secret", name="secrets", namespaced=True),
-                                        op.name, op.namespace)
+                                        op.name, op.namespace, actor=actor)
                 return _reveal(secret.get("data") or {}, op.keys)
         raise Refused(f"unknown verb {op.verb!r}")
 
@@ -299,7 +301,7 @@ class K8sService:
                 f"rollout restart calls in namespace {op.namespace} on cluster {op.cluster} run without a card.",
                 body={"grant_id": g.id},
             )
-        result = await self.run(op)
+        result = await self.run(op, Actor(req.conversation_id, who.id))
         text = result if isinstance(result, str) else json.dumps(result, indent=1)
         return Decision(f"The user approved your request to {headline(op)}.\n\n{clip(text, MAX_OUTPUT)}")
 

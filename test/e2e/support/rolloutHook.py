@@ -7,8 +7,11 @@ deletes the pod hosting <thread>'s conversation so the controller reassigns it. 
 stories read and disturb the overlay pool: GET /overlay/<thread>, GET /pool, POST and GET
 /canary/<thread>, POST /warm-store/scale/<n>. POST /pooler/restart rolls the PgBouncer pooler and GET /db/connections lists
 the server's client sessions. POST /locked-folder and DELETE /locked-folder/<id>
-manage a user's locked folder as the broker, the only way to make one. Stdlib only, shells out
-to kubectl on PATH.
+manage a user's locked folder as the broker, the only way to make one. POST /k8s/<thread>
+calls a broker k8s tool from that conversation's sandbox; GET /k8s/pod/<thread>,
+/k8s/mark/<thread>, /k8s/configmap/<name> and /k8s/broker-can/<verb>/<resource> read back
+what it did. Stdlib only, shells out to
+kubectl on PATH.
 """
 
 from __future__ import annotations
@@ -30,6 +33,8 @@ def sh(*args: str) -> subprocess.CompletedProcess:
 # A file in the overlay volume's root, outside the overlay itself.
 CANARY = "/nix/.scooter-rw/e2e-canary"
 POOL_LABEL = "scooter.io/pool"
+# What the k8s spec's approved exec writes in the sandbox.
+K8S_MARK = "/tmp/k8s-e2e-mark"
 WSC_SELECTOR = "app=warm-store-controller"
 
 def kget(*args: str) -> dict | None:
@@ -75,6 +80,37 @@ def as_folder_service(method: str, path: str, user: str, body: dict | None = Non
     finally:
         pf.terminate()
         pf.wait()
+
+def mcp_call(thread: str, tool: str, arguments: dict) -> tuple[int, str]:
+    """Call a broker MCP tool as the sandbox does, with its own ServiceAccount token."""
+    rpc = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                      "params": {"name": tool, "arguments": arguments}})
+    r = subprocess.run(
+        ["kubectl", "-n", NS, "exec", "-i", sandbox_of(thread), "-c", "sandbox", "--",
+         "agent-broker", "mcp/", "-X", "POST", "-H", "Content-Type: application/json",
+         "-H", "Accept: application/json, text/event-stream", "--data-binary", "@-"],
+        input=rpc, capture_output=True, text=True, timeout=180)
+    if r.returncode != 0:
+        return 500, r.stdout + r.stderr
+    # Streamable HTTP may answer as an SSE frame; the last data line is the reply.
+    frames = [ln.partition("data:")[2] for ln in r.stdout.splitlines() if ln.startswith("data:")]
+    try:
+        reply = json.loads(frames[-1] if frames else r.stdout)
+    except ValueError:
+        return 502, r.stdout
+    if "error" in reply:
+        return 502, json.dumps(reply["error"])
+    result = reply["result"]
+    text = "\n".join(b.get("text", "") for b in result.get("content") or [])
+    error = bool(result.get("isError"))
+    # The broker serializes ToolResult as JSON text, so its flag is in the body.
+    try:
+        body = json.loads(text)
+    except ValueError:
+        body = None
+    if isinstance(body, dict) and "is_error" in body:
+        error, text = error or bool(body["is_error"]), str(body.get("text", ""))
+    return 200, json.dumps({"error": error, "text": text})
 
 def thread_ok(thread: str) -> bool:
     return re.fullmatch(r"[A-Za-z0-9-]+", thread) is not None
@@ -148,6 +184,14 @@ class Hook(BaseHTTPRequestHandler):
             code, out = as_folder_service("POST", "/folders", req["user"], {"name": req["name"], "locked": True})
             return self._reply(code, out)
 
+        if self.path.startswith("/k8s/"):
+            thread = self.path.removeprefix("/k8s/")
+            req = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+            if not (thread_ok(thread) and isinstance(req.get("tool"), str) and req["tool"].startswith("k8s_")):
+                return self._reply(400, "want /k8s/<thread> with {tool: k8s_*, arguments}")
+            code, out = mcp_call(thread, req["tool"], req.get("arguments") or {})
+            return self._reply(code, out)
+
         m = re.fullmatch(r"/warm-store/scale/([01])", self.path)
         if m:
             r = sh("kubectl", "-n", NS, "scale", "deployment/warm-store-controller", f"--replicas={m[1]}")
@@ -208,6 +252,29 @@ class Hook(BaseHTTPRequestHandler):
                 "pv": None if pv is None else pv_view(pv),
             })
 
+        if self.path.startswith("/k8s/pod/"):
+            thread = self.path.removeprefix("/k8s/pod/")
+            return self._reply(200, sandbox_of(thread)) if thread_ok(thread) else self._reply(400, "bad conversation id")
+
+        if self.path.startswith("/k8s/mark/"):
+            thread = self.path.removeprefix("/k8s/mark/")
+            if not thread_ok(thread):
+                return self._reply(400, "bad conversation id")
+            r = sh("kubectl", "-n", NS, "exec", sandbox_of(thread), "-c", "sandbox", "--", "cat", K8S_MARK)
+            return self._reply(200 if r.returncode == 0 else 404, r.stdout.strip() or r.stderr)
+
+        m = re.fullmatch(r"/k8s/configmap/([a-z0-9-]+)", self.path)
+        if m:
+            cm = kget("configmap", m[1])
+            return self._json(200, cm.get("data") or {}) if cm else self._reply(404, "no such configmap")
+
+        m = re.fullmatch(r"/k8s/broker-can/([a-z]+)/([a-z/]+)", self.path)
+        if m:
+            r = sh("kubectl", "-n", NS, "auth", "can-i", m[1], m[2],
+                   f"--as=system:serviceaccount:{NS}:agent-broker")
+            # can-i exits 1 for "no", which is an answer, not a failure.
+            return self._reply(200 if r.stdout.strip() in ("yes", "no") else 500, r.stdout.strip() or r.stderr)
+
         if self.path.startswith("/canary/"):
             thread = self.path.removeprefix("/canary/")
             if not thread_ok(thread):
@@ -218,6 +285,10 @@ class Hook(BaseHTTPRequestHandler):
         return self._reply(404, "unknown hook")
 
     def do_DELETE(self) -> None:  # noqa: N802 — BaseHTTPRequestHandler contract
+        k = re.fullmatch(r"/k8s/configmap/([a-z0-9-]+)", self.path)
+        if k:
+            r = sh("kubectl", "-n", NS, "delete", "configmap", k[1], "--ignore-not-found")
+            return self._reply(200 if r.returncode == 0 else 500, r.stdout + r.stderr)
         m = re.fullmatch(r"/locked-folder/([A-Za-z0-9-]+)", self.path)
         user = self.headers.get("X-Scooter-User") or ""
         if not (m and user):

@@ -11,6 +11,20 @@ let
       name;
 
   # The env var a cluster's kubeconfig Secret is mounted as.
+  # The impersonated user, after checks that need the whole cluster.
+  impersonateUser = name: c:
+    let
+      i = c.impersonate;
+      where = "contribs.k8s.clusters.${name}.impersonate";
+    in
+    lib.throwIf (i.user != null && lib.hasPrefix "system:" i.user)
+      "${where}.user: system: names belong to Kubernetes"
+    (lib.throwIf (i.user == null && (i.clusterRoles != [ ] || i.namespaceRoles != { }))
+      "${where}: roles need a user to bind them to"
+    (lib.throwIf (!(c.auth ? inCluster) && (i.clusterRoles != [ ] || i.namespaceRoles != { }))
+      "${where}: roles are bound only on inCluster clusters; bind a kubeconfig cluster's user there"
+      i.user));
+
   kubeconfigEnv = name: "K8S_KUBECONFIG_${lib.toUpper (lib.replaceStrings [ "-" ] [ "_" ] (checkName name))}";
 
   authType = types.attrTag {
@@ -78,6 +92,36 @@ let
           the conversation's owner. When set, the owner may approve only if listed.
         '';
       };
+      impersonate = {
+        user = mkOption {
+          type = types.nullOr types.str;
+          default = null;
+          example = "scooter-k8s";
+          description = ''
+            A Kubernetes username that writes, exec and Secret reads run as, via
+            impersonation, so the broker's own identity can stay on `view`. Reads
+            still run as the broker. Null runs everything as the broker. The audit
+            log records each call with the conversation and approver as extras.
+            For `inCluster`, the broker is allowed to impersonate this user;
+            for `kubeconfig`, grant that kubeconfig's user `impersonate` yourself.
+          '';
+        };
+        clusterRoles = mkOption {
+          type = types.listOf types.str;
+          default = [ ];
+          example = [ "edit" ];
+          description = "ClusterRoles bound cluster-wide to `impersonate.user`. `inCluster` only.";
+        };
+        namespaceRoles = mkOption {
+          type = types.attrsOf (types.listOf types.str);
+          default = { };
+          example = { agent-sandbox = [ "edit" ]; };
+          description = ''
+            ClusterRoles bound to `impersonate.user` in one namespace each, by
+            namespace. `edit` covers exec and Secret reads. `inCluster` only.
+          '';
+        };
+      };
       grants = {
         enable = mkOption {
           type = types.bool;
@@ -140,6 +184,7 @@ in
             default_namespace = c.defaultNamespace;
             read_only = c.readOnly;
             inherit (c) approvers;
+            impersonate = impersonateUser name c;
             grants = { enable = c.grants.enable; max_minutes = c.grants.maxMinutes; };
           }) config.clusters);
         } // lib.mapAttrs' (name: c: lib.nameValuePair (kubeconfigEnv name) c.auth.kubeconfig.secret)

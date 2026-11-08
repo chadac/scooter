@@ -28,7 +28,7 @@ def clusters_from(raw: str) -> dict[str, Cluster]:
     out = {}
     for name, cfg in parse_clusters(raw).items():
         try:
-            out[name] = Cluster(config=cfg, kube=Kube(auth_for(cfg.auth)))
+            out[name] = Cluster(config=cfg, kube=Kube(auth_for(cfg.auth), cfg.impersonate))
         except ValueError as e:
             logger.error("k8s cluster left out", extra={"cluster": name, "error": str(e)})
     return out

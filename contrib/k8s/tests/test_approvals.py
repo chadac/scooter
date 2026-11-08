@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from scooter_contrib_k8s.kube import K8sError
+from scooter_contrib_k8s.kube import Actor, K8sError
 from scooter_contrib_k8s.mcp_tools import (
     k8s_apply, k8s_delete, k8s_exec, k8s_grants, k8s_request_grant, k8s_rollout_restart, k8s_scale,
     k8s_secret_reveal,
@@ -170,3 +170,20 @@ async def test_grant_limits(configured):
     assert "between 1 and 30" in (await k8s_request_grant("default", 90, "x", cluster="home", ctx=ctx())).text
     assert "does not allow" in (await k8s_request_grant("default", 10, "x", cluster="prod", ctx=ctx())).text
     assert "reason" in (await k8s_request_grant("default", 10, " ", cluster="home", ctx=ctx())).text
+
+
+async def test_privileged_calls_carry_the_conversation_then_the_approver(configured, kube, http):
+    rid = pending(await k8s_apply(CM, cluster="home", ctx=ctx()))
+    await http.post(f"/k8s/approvals/{rid}/approve", json=who("alice"))
+    assert kube.actors == [("apply", Actor("conv")), ("apply", Actor("conv", "alice"))]
+
+
+async def test_reveal_reads_the_secret_as_the_actor(configured, kube, http):
+    rid = pending(await k8s_secret_reveal("db", ["password"], cluster="home", ctx=ctx()))
+    await http.post(f"/k8s/approvals/{rid}/approve", json=who("alice"))
+    assert kube.actors == [("get", Actor("conv")), ("get", Actor("conv", "alice"))]
+
+
+async def test_grant_writes_carry_the_grants_approver(granted, kube):
+    await k8s_scale("deploy", "web", 3, cluster="home", ctx=ctx())
+    assert kube.actors[-1] == ("patch", Actor("conv", "alice"))
