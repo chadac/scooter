@@ -340,6 +340,22 @@ export function createManagementApi(deps: ManagementDeps): Router {
   const { sessions, store, server } = deps;
   const models = deps.models ?? { available: [] };
   const r = createRouter(deps.resolveUser);
+
+  /** Settle an approval card nobody can answer any more, in the log and live; false if already settled. */
+  const withdrawApproval = async (id: SessionId, requestId: string): Promise<boolean> => {
+    const resolved: AguiEvent = { type: "PERMISSION_RESOLVED", toolCallId: requestId, optionId: null };
+    // A live bridge persists the event itself; otherwise append it to the log.
+    if (!sessions.get(id)?.bridge?.withdrawInterrupt(requestId)) {
+      const events: AguiEvent[] = [];
+      for await (const e of store.readEvents(id)) events.push(e);
+      if (!isUnansweredInterrupt(events, requestId)) return false;
+      await store.appendEvent(id, resolved);
+    }
+    // Persisting does not broadcast, so open panels drop the card here.
+    server.broadcast(id, resolved);
+    return true;
+  };
+
   // Probes start only once a tab subscribes.
   const stateHub =
     deps.stateHub ??
@@ -1006,9 +1022,18 @@ export function createManagementApi(deps: ManagementDeps): Router {
     if (!deps.canApproveRequest) return { json: { canApprove: true } }; // unwired → don't block
     if (ctx.user.anonymous) return { json: { canApprove: false } };
     const approver = { id: ctx.user.id, email: ctx.user.email, name: ctx.user.name, assertion: userAssertionOf(ctx.req) };
-    const answer = await deps
+    const answer: { canApprove: boolean; pending?: boolean } = await deps
       .canApproveRequest(ctx.params.id, ctx.params.contrib, ctx.params.requestId, approver)
       .catch(() => ({ canApprove: false })); // fail closed (greyed) on any error
+    // A request the contrib no longer has cannot be answered, so its card goes for everyone.
+    if (answer.pending === false) {
+      const conv = sessions.get(ctx.params.id) ?? (await sessions.getBySandboxKey(ctx.params.id));
+      if (conv) {
+        await withdrawApproval(conv.id as SessionId, ctx.params.requestId).catch((err) =>
+          log.warn("withdrawing a stale approval failed", { conversation_id: conv.id, error: formatError(err) }),
+        );
+      }
+    }
     return { json: answer };
   });
 
@@ -1291,13 +1316,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
     if (!(await fromService(ctx.req))) return serviceOnly;
     const conv = sessions.get(ctx.params.id) ?? (await sessions.getBySandboxKey(ctx.params.id));
     if (!conv) return { status: 404, json: { error: "unknown conversation" } };
-    const requestId = ctx.params.requestId;
-    if (sessions.get(conv.id)?.bridge?.withdrawInterrupt(requestId)) return { json: { withdrawn: true } };
-    const events: AguiEvent[] = [];
-    for await (const e of store.readEvents(conv.id as SessionId)) events.push(e);
-    if (!isUnansweredInterrupt(events, requestId)) return { json: { withdrawn: false } };
-    await store.appendEvent(conv.id as SessionId, { type: "PERMISSION_RESOLVED", toolCallId: requestId, optionId: null });
-    return { json: { withdrawn: true } };
+    return { json: { withdrawn: await withdrawApproval(conv.id as SessionId, ctx.params.requestId) } };
   });
 
   // --- Scheduled tasks (UI settings page) ----------------------------------------
