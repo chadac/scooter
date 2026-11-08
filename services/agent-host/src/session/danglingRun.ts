@@ -6,7 +6,7 @@
  * a RUN_STARTED seen first means it is dangling.
  */
 
-import type { AguiEvent } from "../bridge.js";
+import type { AguiEvent, AguiInterrupt } from "../bridge.js";
 
 /**
  * True iff the conversation's last run started but never finished and was not started by
@@ -118,12 +118,18 @@ export function orphanRuns(events: AguiEvent[], self?: RunOrigin): OrphanRun[] {
 
 /** True iff the log raised interrupt `id` and never settled it. */
 export function isUnansweredInterrupt(events: AguiEvent[], id: string): boolean {
+  return unansweredInterrupt(events, id) !== undefined;
+}
+
+/** The latest raise of interrupt `id`, unless something settled it since. */
+export function unansweredInterrupt(events: AguiEvent[], id: string): AguiInterrupt | undefined {
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i];
-    if (e.type === "PERMISSION_RESOLVED" && e.toolCallId === id) return false;
-    if (e.type === "RUN_FINISHED" && e.outcome?.type === "interrupt" && e.outcome.interrupts.some((x) => x.id === id)) {
-      return true;
+    if (e.type === "PERMISSION_RESOLVED" && e.toolCallId === id) return undefined;
+    if (e.type === "RUN_FINISHED" && e.outcome?.type === "interrupt") {
+      const raised = e.outcome.interrupts.find((x) => x.id === id);
+      if (raised) return raised;
     }
   }
-  return false;
+  return undefined;
 }

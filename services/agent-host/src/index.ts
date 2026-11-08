@@ -21,7 +21,7 @@ import { parseBlockingTools } from "./agent/blockingTools.js";
 import {
   createManagementApi,
   raiseApprovalInterrupt,
-  fetchPendingApprovals,
+  fetchPendingApprovalsByKeys,
   approvalAgentMessage,
   type ApprovalContrib,
 } from "./api/management.js";
@@ -112,6 +112,7 @@ import { createSubagentManager, DEFAULT_SUBAGENT_LIMITS } from "./session/subage
 import { createRouterSubagentCreator } from "./session/routerSubagents.js";
 import { isUnansweredInterrupt, lastRunCompleted } from "./session/danglingRun.js";
 import { orphanedAnswerPrompt } from "./session/orphanedAnswer.js";
+import { answerApprovalFromLog, loggedApproval } from "./session/approvalAnswer.js";
 import { randomUUID } from "node:crypto";
 import { createHttpSchedulerClient } from "./agent/schedulerClient.js";
 import type { ConversationOwnerLookup, SchedulerToolsWiring } from "./agent/schedulerTools.js";
@@ -976,9 +977,9 @@ export async function main(
     const headers = await brokerAuthHeaders();
     for (const [contrib, cfg] of Object.entries(approvalContribs)) {
       if (!cfg.pendingPath) continue;
-      // The broker keys requests by sandbox key, not conversation id.
-      const pending = await fetchPendingApprovals(
-        brokerUrl, cfg.pendingPath, keyOf(id), headers,
+      // aws keys by sandbox key; handoff and commits by conversation id.
+      const pending = await fetchPendingApprovalsByKeys(
+        brokerUrl, cfg.pendingPath, [keyOf(id), id], headers,
         (status) => hostLog.warn("broker pending-approvals returned a non-2xx", { conversation_id: id, contrib, status }),
       ).catch((err) => {
         // One contrib's broker being unreachable must not stop the others' re-raises.
@@ -1528,9 +1529,9 @@ export async function main(
     }
   });
 
-  // assistant-ui resumes a paused run by POSTing /agui with resume[]; if the direct answer
-  // does not land (the run is gone after a rollout or idle-suspend), revive and re-raise
-  // the pending interrupt, then retry, returning whether it was answered so the caller can
+  // assistant-ui resumes a paused run by POSTing /agui with resume[]. With no live run to
+  // take the answer, an approval goes straight to its broker, and anything else revives
+  // and re-raises first; the outcome says whether it was answered, so the caller can
   // close with RUN_ERROR instead of hanging.
   const resumeInterrupt: Parameters<typeof server.onResume>[0] = async (sessionId, entry, approver) => {
     // cancelled -> empty optionId (which the bridge treats as a cancel); resolved -> the
@@ -1549,7 +1550,30 @@ export async function main(
     // 1) Fast path — the run is still live and holding this interrupt.
     if (answer()) return { ok: true };
 
-    // 2) Dormant / lost-interrupt path: revive and re-raise (both idempotent and
+    // 2) Approvals block no run: answer from the log, to the broker.
+    const approval = loggedApproval(
+      await collectEventsSafe(store.readEvents(sessionId as SessionId)),
+      entry.interruptId,
+    );
+    if (approval) {
+      hostLog.info("resume: answering an approval with no live run", {
+        conversation_id: sessionId,
+        contrib: approval.contrib,
+        request_id: approval.requestId,
+      });
+      // Anonymous deployments name the conversation, as a live bridge does.
+      return answerApprovalFromLog(approval, entry.interruptId, optionId, approver ?? { id: sessionId }, {
+        relay: (contrib, requestId, verb, who) => resolveApprovalForBroker(sessionId, contrib, requestId, verb, who),
+        settle: async (toolCallId, chosen) => {
+          const resolved: AguiEvent = { type: "PERMISSION_RESOLVED", toolCallId, optionId: chosen };
+          await store.appendEvent(sessionId as SessionId, resolved);
+          // Mirror onto this resume's stream, like a live bridge.
+          server.broadcast(sessionId as SessionId, resolved);
+        },
+      });
+    }
+
+    // 3) Dormant / lost-interrupt path: revive and re-raise (both idempotent and
     //    best-effort), then retry.
     await sessions.revive(sessionId as SessionId).catch((err) => {
       hostLog.warn("resume: revive failed; answering best-effort", {
@@ -1565,7 +1589,7 @@ export async function main(
     });
     if (answer()) return { ok: true };
 
-    // 3) No live run holds it: settle a dismissal, or prompt with a question's answers.
+    // 4) No live run holds it: settle a dismissal, or prompt with a question's answers.
     const orphanedPrompt = entry.status === "cancelled" ? undefined : orphanedAnswerPrompt(result);
     if (entry.status === "cancelled" || orphanedPrompt) {
       const events = await collectEventsSafe(store.readEvents(sessionId as SessionId));
@@ -1590,7 +1614,7 @@ export async function main(
       }
     }
 
-    // 4) Genuinely unanswerable; the caller turns this into a RUN_ERROR on the stream.
+    // 5) Genuinely unanswerable; the caller turns this into a RUN_ERROR on the stream.
     return { ok: false, reason: "this approval is no longer awaiting an answer (it may have expired or already been answered)" };
   };
   server.onResume(resumeInterrupt);

@@ -244,7 +244,7 @@ export function approvalAgentMessage(body: string): string | undefined {
   }
 }
 
-/** A conversation's pending broker approvals, by sandbox key; [] on error. */
+/** A conversation's pending broker approvals under one key; [] on error. */
 export async function fetchPendingApprovals(
   brokerUrl: string,
   pendingPath: string,
@@ -265,6 +265,23 @@ export async function fetchPendingApprovals(
   }
   const body = (await res.json().catch(() => ({}))) as { requests?: ApprovalRequest[] };
   return (body.requests ?? []).filter((r) => r.request_id);
+}
+
+/** Pending approvals under any of these keys, deduplicated by request. */
+export async function fetchPendingApprovalsByKeys(
+  brokerUrl: string,
+  pendingPath: string,
+  keys: string[],
+  authHeaders: Record<string, string>,
+  onWarn?: (status: number) => void,
+): Promise<ApprovalRequest[]> {
+  const byId = new Map<string, ApprovalRequest>();
+  for (const key of new Set(keys)) {
+    for (const req of await fetchPendingApprovals(brokerUrl, pendingPath, key, authHeaders, onWarn)) {
+      if (!byId.has(req.request_id)) byId.set(req.request_id, req);
+    }
+  }
+  return [...byId.values()];
 }
 
 /** Raise the Approve/Deny interrupt for a contrib's approval request on a conversation's

@@ -8,7 +8,7 @@ import { describe, it, expect, vi } from "vitest";
 import { PassThrough } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import { createManagementApi, SANDBOX_SOURCE, raiseApprovalInterrupt, fetchPendingApprovals, approvalAgentMessage } from "../../src/api/management.js";
+import { createManagementApi, SANDBOX_SOURCE, raiseApprovalInterrupt, fetchPendingApprovals, fetchPendingApprovalsByKeys, approvalAgentMessage } from "../../src/api/management.js";
 import { UserSkillError, type UserSkillStore } from "../../src/session/userSkillStore.js";
 import { createMemoryUserHookSettingsStore, type UserHookSettingsStore } from "../../src/hooks/userHookSettingsStore.js";
 import type { HookDef } from "../../src/hooks/types.js";
@@ -1320,6 +1320,22 @@ describe("management API", () => {
       vi.stubGlobal("fetch", fetchJunk);
       try {
         expect(await fetchPendingApprovals("http://broker:8080", PATH, SHORT, {})).toEqual([{ request_id: "ok" }]);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it("byKeys finds requests a contrib stored under the full conversation id, once each", async () => {
+      // handoff and commits key by the conversation id, aws by the sandbox key.
+      const fetchFn = mockFetch({
+        [SHORT]: [{ request_id: "aws-1" }],
+        [UUID]: [{ request_id: "handoff-1" }, { request_id: "aws-1" }],
+      });
+      vi.stubGlobal("fetch", fetchFn);
+      try {
+        const pending = await fetchPendingApprovalsByKeys("http://broker:8080", PATH, [SHORT, UUID, SHORT], {});
+        expect(pending.map((r) => r.request_id)).toEqual(["aws-1", "handoff-1"]);
+        expect(fetchFn).toHaveBeenCalledTimes(2);
       } finally {
         vi.unstubAllGlobals();
       }
