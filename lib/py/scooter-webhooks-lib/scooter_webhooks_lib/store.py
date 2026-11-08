@@ -47,11 +47,14 @@ async def init_db(settings: DatabaseConfig) -> None:
     """Initialize the async engine; tables are provisioned by the Atlas migrate job from lib/sql/webhooks/schema.sql, not here."""
     global _engine, _session_factory
     # pool_pre_ping recycles a connection the server closed underneath us, and pool_recycle retires one before common idle timeouts.
+    # Bounded so every replica fits under the shared Postgres's max_connections.
+    sizing = {"pool_size": 2, "max_overflow": 4} if settings.dsn.startswith("postgresql") else {}
     _engine = create_async_engine(
         settings.dsn,
         echo=False,
         pool_pre_ping=True,
         pool_recycle=1800,
+        **sizing,
     )
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
     logger.info("database initialized", extra={**_C, "db_host": settings.db_host})

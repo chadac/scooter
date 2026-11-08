@@ -60,11 +60,14 @@ class Store:
     def __init__(self, dsn: str):
         # pool_pre_ping recycles a connection the server closed underneath the pool, and
         # pool_recycle retires connections before common idle-timeout windows.
+        # Bounded so every replica fits under the shared Postgres's max_connections.
+        sizing = {"pool_size": 2, "max_overflow": 4} if dsn.startswith("postgresql") else {}
         self._engine = create_async_engine(
             dsn,
             future=True,
             pool_pre_ping=True,
             pool_recycle=1800,
+            **sizing,
         )
         self._session = async_sessionmaker(self._engine, expire_on_commit=False)
 

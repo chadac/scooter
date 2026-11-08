@@ -20,6 +20,9 @@ from sqlalchemy.ext.asyncio import (
 
 # Under typical idle-timeout windows.
 POOL_RECYCLE_SECONDS = 1800
+# The broker opens one engine per store, so each stays small under max_connections.
+POOL_SIZE = 1
+MAX_OVERFLOW = 4
 
 
 @dataclass
@@ -58,10 +61,14 @@ def open_sessions(
     config: StoreConfig,
 ) -> tuple[AsyncEngine, async_sessionmaker[AsyncSession]]:
     """The engine and session factory for `config` with the reconnect guards applied; `expire_on_commit=False` keeps a row readable after its transaction closes."""
+    dsn = config.resolved_dsn()
+    # SQLite's single-connection pools reject the sizing arguments.
+    sizing = {"pool_size": POOL_SIZE, "max_overflow": MAX_OVERFLOW} if dsn.startswith("postgresql") else {}
     engine = create_async_engine(
-        config.resolved_dsn(),
+        dsn,
         echo=False,
         pool_pre_ping=True,
         pool_recycle=POOL_RECYCLE_SECONDS,
+        **sizing,
     )
     return engine, async_sessionmaker(engine, expire_on_commit=False)

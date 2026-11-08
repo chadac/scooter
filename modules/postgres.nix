@@ -80,6 +80,9 @@ let
       if pg_isready -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" >/dev/null 2>&1; then break; fi
       sleep 2
     done
+  '' + lib.optionalString inCluster ''
+    # Query stats for every database, read from the postgres db.
+    psql -v ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS pg_stat_statements'
   '' + lib.optionalString needWait ''
     # Reader tables come from agent-db-migrate, which runs alongside this Job, so
     # wait for each in-process rather than crash-looping through kubelet backoff.
@@ -446,7 +449,12 @@ in
                 containers.postgres = {
                   name = "postgres";
                   image = pcfg.image;
-                  args = [ "-c" "max_connections=${toString pcfg.maxConnections}" ];
+                  args = [
+                    "-c" "max_connections=${toString pcfg.maxConnections}"
+                    # Per-query stats, for finding the expensive ones.
+                    "-c" "shared_preload_libraries=pg_stat_statements"
+                    "-c" "pg_stat_statements.track=all"
+                  ];
                   resources = lib.mkDefault {
                     requests = { cpu = "100m"; memory = "512Mi"; };
                     limits = { memory = "1Gi"; };
