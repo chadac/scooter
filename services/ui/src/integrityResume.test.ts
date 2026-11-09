@@ -1,7 +1,7 @@
 /**
  * The render pump resumes a reconnect from its stream cursor: it sends afterSeq/checksum,
  * keeps its fold on `resume`, and re-folds from empty on `reset` or a server that ignores
- * the cursor. A frame that does not chain onto the cursor drops it and forces a full replay.
+ * the cursor. A frame that does not chain is dropped and the gap fetched on reconnect.
  */
 
 import { describe, it, expect, vi } from "vitest";
@@ -114,18 +114,20 @@ describe("IntegrityAgent resume", () => {
     agent.dispose();
   });
 
-  it("drops the cursor and replays in full when a resumed frame does not chain", async () => {
-    const broken = { ...logged(7, { type: "RUN_STARTED", threadId: "c1", runId: "r-z" }), prevChecksum: sum(99) };
+  it("skips a frame that does not chain and resumes from the last good cursor", async () => {
+    // seq 6 is missing, so seq 7 does not chain onto the cursor at 5.
+    const [, ...afterGap] = turn(6, "b", "two");
     const { agent, urls, stop } = await pump(
       [
         [...turn(1, "a", "one"), synced(5)],
-        [{ kind: "resume" }, broken],
-        [...turn(1, "a", "one"), synced(5)],
+        [{ kind: "resume" }, ...afterGap.map((f) => ({ ...f, prevChecksum: sum(99) }))],
+        [{ kind: "resume" }, ...turn(6, "b", "two"), synced(10)],
       ],
       3,
     );
-    expect(urls[2]).not.toContain("afterSeq");
-    expect(texts(agent)).toEqual(["one"]);
+    expect(urls[2]).toContain(`afterSeq=5&checksum=${sum(5)}`);
+    expect(texts(agent)).toEqual(["one", "two"]);
+    expect(agent.streamCursor()).toEqual({ seq: 10, checksum: sum(10) });
     stop();
     agent.dispose();
   });

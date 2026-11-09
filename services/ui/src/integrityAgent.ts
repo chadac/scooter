@@ -725,18 +725,20 @@ export class IntegrityAgent extends AbstractAgent {
         };
         // With a cursor, the server's first frame says whether the fold survives.
         if (!resumeFrom) beginFold(true);
-        // False once a frame fails to chain onto the cursor, so it stops advancing.
+        // False once a frame fails to chain onto the cursor; later frames are dropped.
         let chained = true;
-        const advance = (pos: FramePosition) => {
-          if (!chained || pos.seq === undefined || !pos.checksum) return;
+        /** Advance the cursor; false means the frame must not be folded. */
+        const advance = (pos: FramePosition): boolean => {
+          if (!chained) return false;
+          if (pos.seq === undefined || !pos.checksum) return true;
           if (this.cursor && pos.prevChecksum !== undefined && pos.prevChecksum !== this.cursor.checksum) {
             chained = false;
-            this.cursor = undefined;
-            // The fold missed an event, so reconnect for a full replay.
+            // A gap: keep the last good cursor, so the reconnect fetches it.
             controller?.abort();
-            return;
+            return false;
           }
           this.cursor = { seq: pos.seq, checksum: pos.checksum };
+          return true;
         };
         controller = new AbortController();
         this.controllers.add(controller);
@@ -758,7 +760,7 @@ export class IntegrityAgent extends AbstractAgent {
           (e, pos) => {
             // A server that ignored the cursor replays without saying so.
             beginFold(true);
-            advance(pos);
+            if (!advance(pos)) return;
             // Reset the idle-watchdog clock.
             this.lastActivityAt = Date.now();
             // The first frame separates "connected but silent" from "delivering".
@@ -785,7 +787,7 @@ export class IntegrityAgent extends AbstractAgent {
           },
           (pos) => {
             beginFold(true);
-            advance({ seq: pos.seq, checksum: pos.checksum });
+            if (!advance({ seq: pos.seq, checksum: pos.checksum })) return;
             // Reaching `synced` means the session is valid again.
             if (this.streamAuthError) {
               this.streamAuthError = false;
