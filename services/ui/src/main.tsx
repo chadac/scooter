@@ -11,6 +11,7 @@ import { currentConversation, sessionStore } from "./sessions.js";
 import { loadWhoami } from "./client.js";
 import { setUploadLimits } from "./fileUpload.js";
 import { subscribeConversations } from "./conversationStream.js";
+import { conversationCache } from "./conversationCache.js";
 import { folderStore } from "./folders.js";
 import { contribEvents } from "./contribEvents.js";
 import { initTelemetryFromServer, installGlobalErrorHandlers } from "./telemetry.js";
@@ -42,6 +43,7 @@ if (chatId) {
 // the header.
 void loadWhoami({ baseUrl: BASE_URL }).then((me) => {
   sessionStore.setCurrentUser(me);
+  void conversationCache.setUser(me.id);
   // The upload caps come from the deployment (scooter.uploads), not the image.
   setUploadLimits(me.limits);
 });
@@ -62,7 +64,10 @@ subscribeConversations({ baseUrl: BASE_URL }, "all", {
   // An upsert carries the row's whole link set, re-read when it was pushed, so it owns its own
   // sources/links — but it says nothing about any other row, so it cannot prune. Why: PR #779.
   onUpsert: (c) => sessionStore.mergeFromServer([c], { fullList: false }),
-  onRemove: (id) => sessionStore.removeFromServer(id),
+  onRemove: (id) => {
+    sessionStore.removeFromServer(id);
+    void conversationCache.remove(id);
+  },
   onFolders: () => void folderStore.load(),
   onContrib: (contrib, ids) => contribEvents.emit(contrib, ids),
 });

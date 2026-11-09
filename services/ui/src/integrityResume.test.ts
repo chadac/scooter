@@ -149,3 +149,57 @@ describe("IntegrityAgent resume", () => {
     agent.dispose();
   });
 });
+
+describe("IntegrityAgent restored from the cache", () => {
+  /** A settled snapshot, JSON round-tripped like the cache. */
+  async function cachedSnapshot() {
+    const { agent, stop } = await pump([[...turn(1, "a", "one"), synced(5)]], 1);
+    const snap = JSON.parse(JSON.stringify(agent.snapshotFold()));
+    stop();
+    agent.dispose();
+    return snap;
+  }
+
+  it("snapshots nothing mid-replay or without a cursor", () => {
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: vi.fn() as never });
+    expect(agent.snapshotFold()).toBeUndefined();
+    agent.dispose();
+  });
+
+  it("paints the cached thread at once and resumes its first connection from the cursor", async () => {
+    const snap = await cachedSnapshot();
+    const { fetchImpl, urls } = scriptedFetch([[{ kind: "resume" }, ...turn(6, "b", "two"), synced(10)]]);
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl, idleReconnectMs: 0 });
+
+    agent.restoreFold(snap);
+    expect(texts(agent)).toEqual(["one"]);
+    expect(agent.isSyncingFromCache()).toBe(true);
+
+    const stop = agent.renderPump();
+    await vi.waitFor(() => expect(agent.isSyncingFromCache()).toBe(false));
+
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).toContain(`afterSeq=5&checksum=${sum(5)}`);
+    expect((fetchImpl as unknown as { mock: { calls: string[][] } }).mock.calls.some(([u]) => u.includes("/tail"))).toBe(false);
+    expect(texts(agent)).toEqual(["one", "two"]);
+    stop();
+    agent.dispose();
+  });
+
+  it("keeps the cached thread on screen through a reset, then shows the fresh replay", async () => {
+    const snap = await cachedSnapshot();
+    const { fetchImpl } = scriptedFetch([[{ kind: "reset" }, ...turn(1, "x", "fresh"), synced(5)]]);
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl, idleReconnectMs: 0 });
+    const painted: number[] = [];
+    agent.subscribe({ onMessagesChanged: () => void painted.push(agent.messages.length) });
+
+    agent.restoreFold(snap);
+    const stop = agent.renderPump();
+    await vi.waitFor(() => expect(agent.isSyncingFromCache()).toBe(false));
+
+    expect(texts(agent)).toEqual(["fresh"]);
+    expect(painted, "never blanked between cache and replay").not.toContain(0);
+    stop();
+    agent.dispose();
+  });
+});

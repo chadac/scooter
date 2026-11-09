@@ -123,7 +123,7 @@ function SendErrorBanner() {
 /** The inline indicator, Stop button and error banner; null when
  *  idle with no error. */
 function RunStatus() {
-  const { isRunning, activeTool, runStartedAt, cancel, cancelState, runError, runRetrying, streamAuthError, conversationId } = useConversationInterrupts();
+  const { isRunning, activeTool, runStartedAt, cancel, cancelState, runError, runRetrying, streamAuthError, conversationId, syncing } = useConversationInterrupts();
 
   // Tick once a second while running so the elapsed time advances.
   const [now, setNow] = useState(() => Date.now());
@@ -209,13 +209,27 @@ function RunStatus() {
         data-testid="stop-run"
         // Disabled while a stop is in flight or there is no server-side run to stop; a
         // failed stop re-enables the button so the user can retry.
-        disabled={stopping || !hasId(conversationId)}
+        disabled={stopping || syncing || !hasId(conversationId)}
         aria-busy={stopping}
         onClick={() => void cancel()}
         className="shrink-0 rounded-full px-3 py-0.5 font-medium"
       >
         {stopping ? "Stopping…" : failed ? "Retry stop" : "Stop"}
       </Button>
+    </div>
+  );
+}
+
+/** Bar and pill shown while a cached thread catches up. */
+export function SyncingIndicator() {
+  const { syncing } = useConversationInterrupts();
+  if (!syncing) return null;
+  return (
+    <div data-testid="syncing-indicator" role="status" aria-live="polite" className="pointer-events-none relative z-10 h-0 w-full">
+      <div className="absolute inset-x-0 top-0 h-0.5 animate-pulse bg-primary/60" />
+      <span className="absolute top-2 left-1/2 -translate-x-1/2 rounded-full border bg-background/90 px-2.5 py-0.5 text-xs text-muted-foreground shadow-sm">
+        Syncing…
+      </span>
     </div>
   );
 }

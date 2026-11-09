@@ -29,8 +29,10 @@ import {
   type IntegrityAgent,
   type PendingInterrupt,
   type QueuedItem,
+  type FoldSnapshot,
   type ResumeEntry,
 } from "./integrityAgent.js";
+import { conversationCache } from "./conversationCache.js";
 import { ATTR, record } from "./telemetry.js";
 
 /** Sentinel prefixing the text part of a spliced-in system message (`${MARKER}${source}\n${text}`), paired with the `sys:` message-id prefix. */
@@ -151,6 +153,8 @@ export interface InterruptContextValue {
   streamAuthError: boolean;
   /** Messages queued behind the active run, from the integrity stream's QUEUE_UPDATED snapshots. */
   queuedMessages: ReadonlyArray<QueuedItem>;
+  /** A cached thread is painted, awaiting the server. */
+  syncing: boolean;
   /** Bumps on every render-pump push, used as the Thread error boundary's reset key. */
   renderTick: number;
 }
@@ -176,9 +180,13 @@ export const InterruptContext = createContext<InterruptContextValue>({
   streamAuthError: false,
   queuedMessages: [],
   renderTick: 0,
+  syncing: false,
 });
 
 export const useConversationInterrupts = () => useContext(InterruptContext);
+
+// Quiet period before a changed fold is written to the cache.
+const CACHE_SAVE_DEBOUNCE_MS = 2000;
 
 const BASE_URL = (import.meta.env.VITE_AGENT_HOST_URL ?? "").replace(/\/$/, "");
 
@@ -357,6 +365,7 @@ function ConversationRuntime({
   const [runError, setRunError] = useState<string | null>(null);
   const [runRetrying, setRunRetrying] = useState<{ attempt: number; max: number } | null>(null);
   const [streamAuthError, setStreamAuthError] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [queuedMessages, setQueuedMessages] = useState<
     ReadonlyArray<QueuedItem>
   >([]);
@@ -382,6 +391,7 @@ function ConversationRuntime({
       setHasOlder(agent.hasOlderHistory());
       setRunRetrying(agent.getRunRetrying());
       setStreamAuthError(agent.getStreamAuthError());
+      setSyncing(agent.isSyncingFromCache());
       if (agent.isReplaying()) return; // else a reconnect animates the indicators through history
       const active = agent.runIsActive();
       setIsRunning(active);
@@ -434,11 +444,39 @@ function ConversationRuntime({
       // Advance the error-boundary reset key so a transient runtime crash recovers on the next push.
       setRenderTick((n) => n + 1);
     };
-    const { unsubscribe } = agent.subscribe({ onMessagesChanged: () => push() });
-    const stopPump = agent.renderPump();
+    // Debounced, so a streaming run is not rewritten per token.
+    let saveTimer: ReturnType<typeof setTimeout> | undefined;
+    const save = () => {
+      const id = agent.currentConversationId();
+      const fold = agent.snapshotFold();
+      if (hasId(id) && fold) void conversationCache.save(id, fold);
+    };
+    const { unsubscribe } = agent.subscribe({
+      onMessagesChanged: () => {
+        push();
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(save, CACHE_SAVE_DEBOUNCE_MS);
+      },
+    });
+    let stopPump: (() => void) | undefined;
+    const startedAt = Date.now();
+    void (hasId(conversationId) ? conversationCache.load<FoldSnapshot>(conversationId) : Promise.resolve(undefined))
+      .catch(() => undefined)
+      .then((cached) => {
+        if (disposed) return;
+        record("cache.lookup", {
+          [ATTR.conversationId]: hasId(conversationId) ? conversationId : "(awaiting-id)",
+          "cache.hit": cached !== undefined,
+          "cache.lookup_ms": Date.now() - startedAt,
+        });
+        if (cached) agent.restoreFold(cached);
+        stopPump = agent.renderPump();
+      });
     return () => {
       disposed = true;
-      stopPump();
+      clearTimeout(saveTimer);
+      save();
+      stopPump?.();
       unsubscribe();
       agent.dispose();
     };
@@ -519,8 +557,9 @@ function ConversationRuntime({
       streamAuthError,
       queuedMessages: renderedQueue,
       renderTick,
+      syncing,
     }),
-    [interrupts, submitResume, conversationId, isRunning, activeTool, runStartedAt, contextFill, contextTokens, hasOlder, loadOlder, doCancel, cancelState, runError, sendError, clearSendError, runRetrying, streamAuthError, renderedQueue, renderTick],
+    [interrupts, submitResume, conversationId, isRunning, activeTool, runStartedAt, contextFill, contextTokens, hasOlder, loadOlder, doCancel, cancelState, runError, sendError, clearSendError, runRetrying, streamAuthError, renderedQueue, renderTick, syncing],
   );
 
   return (

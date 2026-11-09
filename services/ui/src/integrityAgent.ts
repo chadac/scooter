@@ -75,6 +75,26 @@ export interface StreamCursor {
   checksum: string;
 }
 
+/** A settled fold plus its derived state, as cached. */
+export interface FoldSnapshot {
+  cursor: StreamCursor;
+  messages: unknown[];
+  historyCursor: number;
+  pendingApprovals: PendingInterrupt[];
+  running: boolean;
+  activeToolName: string | null;
+  runStartedAt: number | null;
+  contextUsedTokens: number | null;
+  contextWindow: number | null;
+  systemMessages: Array<{ id: string; source: string; text: string; afterMessageId: string | null }>;
+  lastMessageId: string | null;
+  lastRunError: string | null;
+  retrying: { attempt: number; max: number } | null;
+  queued: ReadonlyArray<QueuedItem>;
+  messageImages: Array<[string, Array<{ assetId: string; mimeType: string; url: string }>]>;
+  messageTimes: Array<[string, number]>;
+}
+
 /** Where a frame sits in the log, when the server says. */
 type FramePosition = Pick<IntegrityFrame, "seq" | "checksum" | "prevChecksum">;
 
@@ -413,6 +433,56 @@ export class IntegrityAgent extends AbstractAgent {
     return run;
   }
 
+  /** True from restoreFold() until the stream first reaches `synced`. */
+  private fromCache = false;
+  isSyncingFromCache(): boolean {
+    return this.fromCache;
+  }
+
+  /** The settled fold, or undefined mid-replay or without cursor. */
+  snapshotFold(): FoldSnapshot | undefined {
+    if (!this.cursor || this.replaying) return undefined;
+    return {
+      cursor: this.cursor,
+      messages: this.messages as unknown[],
+      historyCursor: this.historyCursor,
+      pendingApprovals: [...this.pendingApprovals.values()],
+      running: this.running,
+      activeToolName: this.activeToolName,
+      runStartedAt: this.runStartedAt,
+      contextUsedTokens: this.contextUsedTokens,
+      contextWindow: this.contextWindow,
+      systemMessages: this.systemMessages,
+      lastMessageId: this.lastMessageId,
+      lastRunError: this.lastRunError,
+      retrying: this.retrying,
+      queued: this.queued,
+      messageImages: [...this.messageImages],
+      messageTimes: [...this.messageTimes],
+    };
+  }
+
+  /** Paint a cached fold; renderPump() then resumes its cursor. */
+  restoreFold(s: FoldSnapshot): void {
+    this.cursor = s.cursor;
+    this.historyCursor = s.historyCursor;
+    this.pendingApprovals = new Map(s.pendingApprovals.map((p) => [p.id, p]));
+    this.running = s.running;
+    this.activeToolName = s.activeToolName;
+    this.runStartedAt = s.runStartedAt;
+    this.contextUsedTokens = s.contextUsedTokens;
+    this.contextWindow = s.contextWindow;
+    this.systemMessages = s.systemMessages;
+    this.lastMessageId = s.lastMessageId;
+    this.lastRunError = s.lastRunError;
+    this.retrying = s.retrying;
+    this.queued = s.queued;
+    this.messageImages = new Map(s.messageImages);
+    this.messageTimes = new Map(s.messageTimes);
+    this.fromCache = true;
+    this.setMessages(s.messages as never);
+  }
+
   /** The interrupts the conversation is currently paused on, empty if none. */
   getPendingInterrupts(): readonly PendingInterrupt[] {
     // A stable identity when empty, because the caller feeds this to useState which bails out only on Object.is.
@@ -688,7 +758,7 @@ export class IntegrityAgent extends AbstractAgent {
           if (folded) return;
           if (fresh) {
             // Reset to empty so the replay rebuilds identical state instead of doubling onto the previous fold, except that the first connection after seedTail() keeps the seeded tail visible.
-            if (isFirstConnection && seeded) {
+            if (isFirstConnection && (seeded || restored)) {
               // The applier still folds from empty without wiping the visible tail.
               this.messages = [];
             } else {
@@ -800,6 +870,7 @@ export class IntegrityAgent extends AbstractAgent {
             // Wait a macrotask for the async fold's buffered per-event notifications to drain before flipping out of replay and rendering the history in one shot.
             setTimeout(() => {
               this.replaying = false;
+              this.fromCache = false;
               this.notifyMessages();
             }, 0);
           },
@@ -903,7 +974,9 @@ export class IntegrityAgent extends AbstractAgent {
     this.stopPump?.();
     this.stopPump = stop;
     // Fast first paint: seed the recent tail, then let the loop re-fold the full log from empty.
-    void this.seedTail()
+    // A restored fold is painted already; no tail needed.
+    const restored = this.fromCache;
+    void (restored ? Promise.resolve(false) : this.seedTail())
       .then((ok) => {
         seeded = ok;
       })
