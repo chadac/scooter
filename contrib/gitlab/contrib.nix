@@ -111,9 +111,11 @@ in
       };
       services.webhooks = {
         enable = true;
+        # The token posts acks and identifies the agent's own notes.
         env = {
           GITLAB_HOST = config.host;
           GITLAB_ENABLED = lib.boolToString config.webhooksEnabled;
+          GITLAB_TOKEN = config.tokenSecret;
         };
         # Only this half reads Jira keys, and the grammar is jira's.
         pythonDeps = ps: [ ps.scooterContrib.jira ];

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
+from fastapi import FastAPI
 from sqlalchemy import event
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.compiler import compiles
@@ -15,7 +18,7 @@ from sqlalchemy.ext.compiler import compiles
 from scooter_contrib_gitlab import webhooks_handler as gitlab_h
 from scooter_contrib_gitlab.config import settings
 from scooter_schema.webhooks import Base as SchemaBase
-from scooter_webhooks_lib import store
+from scooter_webhooks_lib import store, tasks
 from scooter_webhooks_lib.agent_host_client import SendOutcome
 
 MR_URL = "https://gitlab.com/acme/devops/infra/-/merge_requests/313"
@@ -118,3 +121,51 @@ async def test_an_unlinked_note_without_mention_is_ignored_and_logged(deliver, c
         await gitlab_h._handle_note(_mr_note())
     deliver.assert_not_awaited()
     assert "note on unlinked resource without mention; ignoring" in caplog.text
+
+
+@pytest.fixture
+def own_username(monkeypatch):
+    monkeypatch.setattr(gitlab_h, "get_own_username", AsyncMock(return_value="Scooter-Bot"))
+
+
+async def test_a_note_by_our_own_user_is_dropped(deliver, own_username):
+    await store.link_resource("conv-mr", "gitlab", "mr", MR_URL)
+    note = _mr_note(body="Intentional. One broker per cluster.")
+    note["user"]["username"] = "scooter-bot"
+    await gitlab_h._handle_note(note)
+    deliver.assert_not_awaited()
+
+
+async def test_our_own_user_mentioning_the_agent_still_reaches_it(deliver, own_username):
+    await store.link_resource("conv-mr", "gitlab", "mr", MR_URL)
+    note = _mr_note(body="@agent please rebase")
+    note["user"]["username"] = "scooter-bot"
+    await gitlab_h._handle_note(note)
+    assert deliver.await_args.args[0] == "conv-mr"
+
+
+async def test_the_route_answers_before_the_forward_finishes(deliver, monkeypatch):
+    monkeypatch.setattr(settings, "gitlab_webhook_secret", "s3cret")
+    await store.link_resource("conv-mr", "gitlab", "mr", MR_URL)
+    release = asyncio.Event()
+
+    async def slow_run(*_a, **_k):
+        await release.wait()
+        return SendOutcome.DELIVERED
+
+    deliver.side_effect = slow_run
+    app = FastAPI()
+    app.include_router(gitlab_h.router)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        resp = await asyncio.wait_for(
+            client.post(
+                "/webhooks/gitlab",
+                headers={"X-Gitlab-Event": "Note Hook", "X-Gitlab-Token": "s3cret"},
+                json=_mr_note(),
+            ),
+            timeout=5,
+        )
+    assert resp.status_code == 200
+    release.set()
+    await tasks.drain(timeout=5)
+    assert deliver.await_args.args[0] == "conv-mr"

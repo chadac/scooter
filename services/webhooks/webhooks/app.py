@@ -11,7 +11,7 @@ from scooter_webhooks_lib import store as db
 from .config import db_settings, require_relay_key, settings
 from scooter_lib.logging_config import configure_logging
 from scooter_webhooks_lib.registry import discover_webhooks
-from scooter_webhooks_lib import agent_host_client, policy
+from scooter_webhooks_lib import agent_host_client, policy, tasks
 from scooter_webhooks_lib.agent_host_client import resolve_sandbox_to_conversation
 
 # Bound at import rather than in the lifespan, since handlers are discovered at import.
@@ -25,6 +25,8 @@ configure_logging("webhooks", settings.log_level)
 async def lifespan(app: FastAPI):
     await db.init_db(db_settings)
     yield
+    # Let in-flight deliveries finish before the pool closes.
+    await tasks.drain(timeout=10)
     await db.close_db()
 
 

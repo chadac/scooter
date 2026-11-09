@@ -85,9 +85,8 @@ in
       description = ''
         Comment/review authors to drop outright (IGNORE_USERNAMES), matched
         case-insensitively — e.g. a noisy third-party bot. GitHub recognizes the
-        agent's own comments from the App identity (`contribs.github.appId`), so this is
-        for OTHER authors; GitLab payloads carry no bot flag at all, so it is the
-        only lever there.
+        agent's own comments from the App identity (`contribs.github.appId`), and
+        GitLab from the user its token belongs to, so this is for OTHER authors.
       '';
     };
     ignoreBotAuthors = mkOption {

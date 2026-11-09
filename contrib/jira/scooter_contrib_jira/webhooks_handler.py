@@ -5,7 +5,6 @@ creates one, and any comment on an issue with an active conversation is
 auto-forwarded.
 """
 
-import asyncio
 import hashlib
 import hmac
 import json
@@ -24,6 +23,7 @@ from scooter_webhooks_lib.agent_host_client import (
 from .responses import post_jira_comment
 from .senders import sender_of
 from scooter_webhooks_lib.sender import Sender
+from scooter_webhooks_lib.tasks import spawn
 
 logger = logging.getLogger(__name__)
 _C = {"component": "handlers.jira"}
@@ -108,7 +108,11 @@ async def handle_jira_webhook(
     event_type = payload.get("webhookEvent", "")
 
     logger.info("received event", extra={**_C, "source": "jira", "event_type": event_type})
+    spawn(_dispatch(event_type, payload), extra={"source": "jira", "event_type": event_type})
+    return {"status": "ok"}
 
+
+async def _dispatch(event_type: str, payload: dict) -> None:
     if event_type == "comment_created":
         await _handle_comment(payload)
     elif event_type == "comment_updated":
@@ -117,8 +121,6 @@ async def handle_jira_webhook(
         await _handle_issue_updated(payload)
     else:
         logger.debug("ignoring event type", extra={**_C, "source": "jira", "event_type": event_type})
-
-    return {"status": "ok"}
 
 
 async def _handle_comment(payload: dict):
@@ -195,7 +197,7 @@ async def _handle_comment(payload: dict):
     context = f"Context: Jira issue {issue_key} '{issue_summary}'"
     full_message = f"{context}\n\n{comment_text}{reply_hint}"
 
-    asyncio.create_task(
+    spawn(
         _background_create_conversation(
             issue_key=issue_key, message=full_message,
             conv_title=conv_title, sender=sender,
@@ -235,7 +237,7 @@ async def _handle_issue_updated(payload: dict):
     reply_hint = _response_instructions(issue_key)
     message = f"Jira issue {issue_key} '{issue_summary}'\n\n{issue_desc}{reply_hint}"
 
-    asyncio.create_task(
+    spawn(
         _background_create_conversation(
             issue_key=issue_key, message=message,
             conv_title=f"Jira {issue_key}: {issue_summary}",

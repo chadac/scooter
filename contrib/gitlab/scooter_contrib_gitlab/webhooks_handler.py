@@ -5,7 +5,6 @@ issue or MR creates one, and any comment on a resource with an active conversati
 is auto-forwarded.
 """
 
-import asyncio
 import hmac
 import logging
 
@@ -23,7 +22,8 @@ from scooter_webhooks_lib import policy
 from scooter_webhooks_lib.identity import resolve_owner
 from scooter_webhooks_lib.reply_workflow import reply_workflow
 from scooter_webhooks_lib.sender import Sender
-from .responses import post_gitlab_comment
+from scooter_webhooks_lib.tasks import spawn
+from .responses import get_own_username, post_gitlab_comment
 from .senders import sender_of
 
 logger = logging.getLogger(__name__)
@@ -160,7 +160,11 @@ async def handle_gitlab_webhook(
     event_type = x_gitlab_event
 
     logger.info("received event", extra={**_C, "source": "gitlab", "event_type": event_type})
+    spawn(_dispatch(event_type, payload), extra={"source": "gitlab", "event_type": event_type})
+    return {"status": "ok"}
 
+
+async def _dispatch(event_type: str, payload: dict) -> None:
     if event_type == "Note Hook":
         await _handle_note(payload)
     elif event_type == "Issue Hook":
@@ -169,8 +173,6 @@ async def handle_gitlab_webhook(
         await _handle_merge_request(payload)
     else:
         logger.debug("ignoring event type", extra={**_C, "source": "gitlab", "event_type": event_type})
-
-    return {"status": "ok"}
 
 
 async def _handle_note(payload: dict):
@@ -183,6 +185,10 @@ async def _handle_note(payload: dict):
     if policy.is_ignored_user(user):
         return
     if policy.is_own_ack(note_body):
+        return
+    # A mention still counts: the token may be a person's own PAT.
+    own = await get_own_username()
+    if own and user.lower() == own.lower() and not policy.mentions_agent(note_body):
         return
 
     # Branch-specific fields, bound up front so the noteable_type-gated blocks below are never "possibly unbound".
@@ -266,6 +272,17 @@ async def _handle_note(payload: dict):
             discussion_id=discussion_id, has_mention=has_mention, note_id=note.get("id"),
         )
         outcome = await deliver_message(existing, forward_msg, source="gitlab", sender=sender)
+        logger.info(
+            "forwarded note to conversation",
+            extra={
+                **_C,
+                "conversation_id": existing,
+                "outcome": outcome.value,
+                "source": "gitlab",
+                "resource_type": res_type,
+                "resource_id": res_id,
+            },
+        )
         if outcome is not SendOutcome.NOT_FOUND:
             # The conversation still exists, so a failed run keeps its mapping (issue #802).
             if outcome is not SendOutcome.DELIVERED:
@@ -302,7 +319,7 @@ async def _handle_note(payload: dict):
     reply_hint = _response_instructions(note_api_type, noteable_iid, note.get("id"))
     full_message = f"{context}\n{policy.repo_context(repo)}\n{comment_body}{reply_hint}"
 
-    asyncio.create_task(
+    spawn(
         _background_create_conversation(
             source="gitlab", res_type=res_type, res_id=res_id,
             message=full_message, repo=repo, conv_title=conv_title,
@@ -335,7 +352,7 @@ async def _handle_issue(payload: dict):
     reply_hint = _response_instructions("issues", issue_iid)
     message = f"Issue #{issue_iid} '{issue_title}' in {repo}\n\n{issue_desc}{reply_hint}"
 
-    asyncio.create_task(
+    spawn(
         _background_create_conversation(
             source="gitlab", res_type="issue", res_id=res_id,
             message=message, repo=repo,
@@ -371,7 +388,7 @@ async def _handle_merge_request(payload: dict):
     reply_hint = _response_instructions("merge_requests", mr_iid)
     message = f"MR !{mr_iid} '{mr_title}' (branch: {source_branch}) in {repo}\n\n{mr_desc}{reply_hint}"
 
-    asyncio.create_task(
+    spawn(
         _background_create_conversation(
             source="gitlab", res_type="merge_request", res_id=res_id,
             message=message, repo=repo,

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from scooter_contrib_jira import webhooks_handler as jira_h
+from scooter_webhooks_lib import tasks
 
 
 @pytest.fixture
@@ -139,13 +141,17 @@ def test_no_secret_configured_is_401_even_if_signed(client, jira_settings):
     handle.assert_not_called()
 
 
-def test_correctly_signed_delivery_is_handled(client, jira_settings):
+async def test_correctly_signed_delivery_is_handled(jira_settings):
     body = b'{"webhookEvent": "comment_created", "comment": {"body": "hi"}}'
+    app = FastAPI()
+    app.include_router(jira_h.router)
     with patch.object(jira_h, "_handle_comment", new=AsyncMock()) as handle:
-        resp = client.post(
-            "/webhooks/jira", content=body,
-            headers={"X-Hub-Signature": _sign(body), "Content-Type": "application/json"},
-        )
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+            resp = await client.post(
+                "/webhooks/jira", content=body,
+                headers={"X-Hub-Signature": _sign(body), "Content-Type": "application/json"},
+            )
+        await tasks.drain(timeout=5)
     assert resp.status_code == 200
     assert resp.json()["status"] == "ok"
     handle.assert_awaited_once()

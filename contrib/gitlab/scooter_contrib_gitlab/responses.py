@@ -12,6 +12,29 @@ _C = {"component": "responses.gitlab"}
 
 GITLAB_API = f"https://{settings.gitlab_host}/api/v4"
 
+# "" once looked up and absent; None until a lookup succeeds.
+_own_username: str | None = None
+
+
+async def get_own_username() -> str | None:
+    """The username GITLAB_TOKEN posts as, cached for the process."""
+    global _own_username
+    if _own_username is not None:
+        return _own_username or None
+    if not settings.gitlab_token:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(f"{GITLAB_API}/user", headers={"PRIVATE-TOKEN": settings.gitlab_token})
+            resp.raise_for_status()
+            username = resp.json().get("username", "")
+    except (httpx.HTTPError, ValueError) as e:
+        # Left unset so a transient failure is retried.
+        logger.error("get own username failed", extra={**_C, "error": format_error(e)})
+        return None
+    _own_username = username or ""
+    return _own_username or None
+
 
 async def post_gitlab_comment(
     project_id: int, noteable_type: str, noteable_iid: int, body: str,

@@ -26,6 +26,7 @@ from scooter_webhooks_lib import policy
 from scooter_webhooks_lib.identity import resolve_owner
 from scooter_webhooks_lib.reply_workflow import reply_workflow
 from scooter_webhooks_lib.sender import Sender
+from scooter_webhooks_lib.tasks import spawn
 from .responses import get_app_login, post_github_comment
 from .senders import actor_on, sender_from
 
@@ -170,7 +171,11 @@ async def handle_github_webhook(
         return {"status": "ignored"}
 
     logger.info("received event", extra={**_C, "source": "github", "event_type": event_type})
+    spawn(_dispatch(event_type, payload), extra={"source": "github", "event_type": event_type})
+    return {"status": "ok"}
 
+
+async def _dispatch(event_type: str, payload: dict) -> None:
     if event_type == "issue_comment":
         await _handle_comment(payload)
     elif event_type == "pull_request_review_comment":
@@ -187,8 +192,6 @@ async def handle_github_webhook(
         await _handle_push(payload)
     else:
         logger.debug("ignoring event type", extra={**_C, "source": "github", "event_type": event_type})
-
-    return {"status": "ok"}
 
 
 async def _handle_comment(payload: dict):
@@ -276,7 +279,7 @@ async def _handle_comment(payload: dict):
     context = f"Context: {kind} #{issue_number} '{issue_title}' in {full_repo}"
     full_message = f"{context}\n\n{comment_text}{reply_hint}"
 
-    asyncio.create_task(
+    spawn(
         _background_create_conversation(
             res_type=res_type, res_id=res_id,
             message=full_message, repo=full_repo, conv_title=conv_title,
@@ -533,7 +536,7 @@ async def _handle_issue_event(payload: dict):
     reply_hint = _response_instructions(owner, repo, issue_number, is_pr=False)
     message = f"Issue #{issue_number} '{issue_title}' in {full_repo}\n\n{issue_body}{reply_hint}"
 
-    asyncio.create_task(
+    spawn(
         _background_create_conversation(
             res_type="issue", res_id=res_id,
             message=message, repo=full_repo,
@@ -681,7 +684,7 @@ async def _handle_push(payload: dict):
     owner = repo_data.get("owner", {}).get("login", "")
     repo = repo_data.get("name", "")
     # Mergeability takes seconds to settle, longer than GitHub waits for a reply.
-    asyncio.create_task(_check_pulls_into(owner, repo, ref.removeprefix("refs/heads/")))
+    spawn(_check_pulls_into(owner, repo, ref.removeprefix("refs/heads/")))
 
 
 async def _handle_pr_event(payload: dict):
@@ -690,7 +693,7 @@ async def _handle_pr_event(payload: dict):
     if action == "synchronize":
         pr = payload.get("pull_request", {})
         repo_data = payload.get("repository", {})
-        asyncio.create_task(_notify_if_conflicting(
+        spawn(_notify_if_conflicting(
             repo_data.get("owner", {}).get("login", ""), repo_data.get("name", ""), pr.get("number"),
         ))
         return
@@ -723,7 +726,7 @@ async def _handle_pr_event(payload: dict):
     reply_hint = _response_instructions(owner, repo, pr_number, is_pr=True)
     message = f"PR #{pr_number} '{pr_title}' (branch: {source_branch}) in {full_repo}\n\n{pr_body}{reply_hint}"
 
-    asyncio.create_task(
+    spawn(
         _background_create_conversation(
             res_type="pull_request", res_id=res_id,
             message=message, repo=full_repo,
