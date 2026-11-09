@@ -139,6 +139,20 @@ export function openConversation(conversationId: string): void {
   else sessionStore.requestSelect(conversationId);
 }
 
+/** The conversation the URL's ?thread= names, or null. */
+export function threadInUrl(): string | null {
+  return new URLSearchParams(globalThis.location?.search ?? "").get("thread");
+}
+
+/** Name the conversation a view shows in ?thread=, so a reload reopens it; null drops it. */
+export function setThreadInUrl(conversationId: string | null): void {
+  const url = new URL(globalThis.location.href);
+  if (url.searchParams.get("thread") === conversationId) return;
+  if (conversationId === null) url.searchParams.delete("thread");
+  else url.searchParams.set("thread", conversationId);
+  globalThis.history.replaceState(globalThis.history.state, "", url);
+}
+
 /** Open a conversation in the chat view, leaving this one. */
 export function openInChat(conversationId: string): void {
   viewStore.set("chat");

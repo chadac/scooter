@@ -219,6 +219,17 @@ fastOnly("the kanban broker routes are stubbed in the browser")("kanban /boards 
       timeout: 30_000,
     });
 
+    // The URL names the open card, so a reload shows its chat beside the board again.
+    await expect.poll(() => threadId(page)).toBe(id);
+    await page.reload();
+    await expect(side).toBeVisible({ timeout: 20_000 });
+    await expect(card).toHaveAttribute("data-open", "true");
+    await expect(side.getByText(/I moved this card from/i).first()).toBeVisible({ timeout: 30_000 });
+
+    // Closing the chat drops it from the URL, so a reload leaves it closed.
+    await page.getByTestId("kanban-close-chat").click();
+    await expect.poll(() => threadId(page)).toBeNull();
+
     // Switching conversations keeps the board's state: the chat stays beside it.
     await page.getByTestId("kanban-new").click();
     await expect(side).toBeVisible();

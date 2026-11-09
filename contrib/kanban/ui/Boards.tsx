@@ -22,8 +22,10 @@ import {
   openConversation,
   openInChat,
   send,
+  setThreadInUrl,
   Spinner,
   StatusDot,
+  threadInUrl,
   useContribChanges,
   useConversations,
   useFolders,
@@ -521,7 +523,8 @@ function Board({
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState<string | null>(null);
   const [dropAt, setDropAt] = useState<{ column: string; before?: string } | null>(null);
-  const [panel, setPanel] = useState(false);
+  // A URL naming a conversation opens its chat; main.tsx selects it.
+  const [panel, setPanel] = useState(() => threadInUrl() !== null);
   // Edit board's unsaved stages and tags; null when not editing.
   const [draft, setDraft] = useState<Draft | null>(null);
   const [saving, setSaving] = useState(false);
@@ -640,6 +643,11 @@ function Board({
   const openConv = at >= 0 ? order[at] : undefined;
   // A new conversation has no card yet, so it shows its chat.
   const shownTab = openConv ? tab : "chat";
+  // Keep ?thread= naming the shown chat, so a reload reopens it.
+  useEffect(() => {
+    if (showing && openId) setThreadInUrl(openId);
+    else if (!panel) setThreadInUrl(null);
+  }, [showing, openId, panel]);
   const step = (by: -1 | 1) => {
     const next = order[at + by];
     if (next) openConversation(next.id);
