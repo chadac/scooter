@@ -158,6 +158,7 @@ export default defineConfig({
             AGENT_HOST_URL: "http://localhost:8080",
             AGENT_HOST_STREAM_URL: "http://localhost:8090",
             VITE_IDLE_RECONNECT_MS: "2000",
+            VITE_CACHE_DIR: "node_modules/.vite-5273",
             ...(process.env.E2E_TELEMETRY === "1" ? { VITE_TELEMETRY_CONSOLE: "1" } : {}),
           },
           // Same cold-compile warm-up as the 5173 server.

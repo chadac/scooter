@@ -5,6 +5,8 @@ import tailwindcss from "@tailwindcss/vite";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // One deps cache per dev server; a shared one races.
+  cacheDir: process.env.VITE_CACHE_DIR ?? "node_modules/.vite",
   // Define VITE_TELEMETRY_CONSOLE from the environment so it reaches import.meta.env when passed through playwright's webServer.env.
   define: {
     "import.meta.env.VITE_TELEMETRY_CONSOLE": JSON.stringify(process.env.VITE_TELEMETRY_CONSOLE),
