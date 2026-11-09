@@ -62,7 +62,9 @@
     .pin.held, .pin.held .num { background-color: #a16207; outline: 2px dashed #a16207; outline-offset: 2px; }
     .pin.area.held { background: rgb(161 98 7 / .06); border-color: #a16207; }
     .pin.resolved, .pin.resolved .num { background-color: #15803d; }
-    .pin.area.resolved { background: rgb(21 128 61 / .05); border-color: #15803d; }
+    .pin.area.resolved { background: none; border-color: rgb(21 128 61 / .5); border-style: dashed; }
+    .pin.point.just-resolved, .pin.just-resolved .num { animation: review-pop .45s ease-out var(--since, 0s); }
+    @keyframes review-pop { 0% { transform: scale(.6); } 60% { transform: scale(1.25); } 100% { transform: scale(1); } }
     .pin.detached { opacity: .55; }
     .pop { position: fixed; width: 320px; pointer-events: auto; background: Canvas; color: CanvasText; color-scheme: light dark; border: 1px solid #d4d4d8; border-radius: 10px; box-shadow: 0 12px 32px rgb(0 0 0 / .25); padding: 10px; display: grid; gap: 8px; }
     .pop textarea { width: 100%; min-height: 70px; resize: vertical; padding: 6px 8px; border: 1px solid #d4d4d8; border-radius: 6px; background: Canvas; color: CanvasText; }
@@ -410,6 +412,9 @@
 
   // --- pins and threads -----------------------------------------------------------
   let state = { notes: [] }, hidePins = false;
+  // When each note turned resolved here, so only that change animates.
+  const resolvedAt = new Map();
+  let loaded = false;
   function anchorRect(n) {
     let el = null;
     try { el = document.querySelector(n.anchor.selector); } catch { /* bad selector */ }
@@ -427,16 +432,21 @@
       if (pathOf(n.route) !== here) continue;
       const { r, detached } = anchorRect(n);
       const pin = document.createElement("div");
-      pin.className = `pin ${n.kind}${n.held ? " held" : ""}${n.resolved ? " resolved" : ""}${detached ? " detached" : ""}`;
+      const since = performance.now() - (resolvedAt.get(n.id) ?? -1e9);
+      const just = since < 450;
+      pin.className = `pin ${n.kind}${n.held ? " held" : ""}${n.resolved ? " resolved" : ""}${just ? " just-resolved" : ""}${detached ? " detached" : ""}`;
+      const label = n.resolved ? "✓" : String(n.num);
       pin.dataset.id = n.id;
-      pin.title = (detached ? "(element not found) " : "") + (n.thread[0]?.text ?? "");
+      pin.title = (detached ? "(element not found) " : "") + (n.resolved ? "Resolved: " : "") + (n.thread[0]?.text ?? "");
+      // Redraws recreate pins; a negative delay resumes the animation.
+      if (just) pin.style.setProperty("--since", `-${since}ms`);
       if (n.kind === "area") {
         Object.assign(pin.style, { left: r.left + n.rel.x + "px", top: r.top + n.rel.y + "px", width: n.rel.w + "px", height: n.rel.h + "px" });
-        pin.innerHTML = `<span class="num">${n.num}</span>`;
+        pin.innerHTML = `<span class="num">${label}</span>`;
         pin.firstChild.onclick = () => openThread(n.id);
       } else {
         Object.assign(pin.style, { left: r.left + n.rel.x + "px", top: r.top + n.rel.y + "px" });
-        pin.textContent = n.num;
+        pin.textContent = label;
         pin.onclick = () => openThread(n.id);
       }
       pinsEl.append(pin);
@@ -526,7 +536,10 @@
   function connect() {
     const es = new EventSource(API + "events?role=overlay");
     es.addEventListener("notes", (e) => {
+      const was = new Set(state.notes.filter((n) => n.resolved).map((n) => n.id));
       state = JSON.parse(e.data);
+      for (const n of state.notes) if (n.resolved && !was.has(n.id) && loaded) resolvedAt.set(n.id, performance.now());
+      loaded = true;
       draw();
       if (pop && pop.dataset.thread) {
         const id = pop.dataset.thread;

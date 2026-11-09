@@ -69,7 +69,8 @@
   #panel .empty { padding: 16px 12px; color: var(--muted); }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); display: inline-block; align-self: center; }
   .held .dot { background: var(--held); }
-  .resolved .dot { background: var(--ok); }
+  .resolved .dot { background: none; width: auto; height: auto; color: var(--ok); font-weight: 700; line-height: 1; }
+  .resolved .dot::before { content: "✓"; }
   #app { flex: 1; min-height: 0; }
 </style>
 </head>

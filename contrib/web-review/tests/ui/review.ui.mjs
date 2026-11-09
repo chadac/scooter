@@ -139,6 +139,7 @@ try {
   await stack.cli("resolve", id1);
   await until(async () => (await app().locator(`.pin.resolved[data-id="${id1}"]`).count()) === 1);
   check("`review resolve` turns the pin green", (await app().locator(`.pin.resolved[data-id="${id1}"]`).count()) === 1);
+  check("…and shows a checkmark in place of its number", (await app().locator(`.pin.resolved[data-id="${id1}"]`).textContent()) === "✓");
   await app().locator(`.pin[data-id="${id1}"]`).click();
   await app().locator(".pop .msg.agent").waitFor();
   check("`review reply` shows on the pin's thread", (await app().locator(".pop .msg.agent").textContent()).includes("Widened"));
@@ -148,6 +149,7 @@ try {
   const third = await until(async () => stack.messages[2]);
   check("a reply from the user wakes the agent again", third?.text.startsWith(`Reply on review note #1 [${id1}]`) && third.text.includes("> Still tight"), third?.text);
   check("…and reopens the note", await until(async () => (await app().locator(`.pin.resolved[data-id="${id1}"]`).count()) === 0));
+  check("…which brings its number back", (await app().locator(`.pin[data-id="${id1}"]`).textContent()) === "1");
   await page.keyboard.press("Escape");
 
   // --- hold and send all ----------------------------------------------------------
