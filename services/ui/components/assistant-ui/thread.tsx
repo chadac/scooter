@@ -30,6 +30,7 @@ import { QueuedMessages } from "@/src/QueuedMessages";
 import { attachStickToBottom } from "@/src/stickToBottom";
 import { useRenaming } from "@/src/sessions";
 import { useTypingElsewhere } from "@/src/typingElsewhere";
+import { embedded, useDocumentFocused } from "@/src/documentFocus";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -336,10 +337,13 @@ const ThreadSuggestionItem: FC = () => {
 
 const Composer: FC = () => {
   // The composer grabs focus on run start and auto-scroll; that would commit a half-typed
-  // rename, or close a popover the user is typing in, so it holds off.
+  // rename, close a popover the user is typing in, or pull focus from another frame.
   const renaming = useRenaming();
   const typingElsewhere = useTypingElsewhere();
-  const hold = renaming || typingElsewhere;
+  const focused = useDocumentFocused();
+  const hold = renaming || typingElsewhere || !focused;
+  // Framed, skip mount focus until the user focuses the composer.
+  const [autoFocus, setAutoFocus] = useState(() => !embedded || document.hasFocus());
   return (
     <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
       <ComposerPrimitive.AttachmentDropzone asChild>
@@ -353,7 +357,8 @@ const Composer: FC = () => {
             placeholder="Send a message..."
             className="aui-composer-input placeholder:text-muted-foreground max-h-32 min-h-10 w-full resize-none bg-transparent px-2.5 py-1 text-base outline-none"
             rows={1}
-            autoFocus
+            autoFocus={autoFocus}
+            onFocus={() => setAutoFocus(true)}
             unstable_focusOnRunStart={!hold}
             unstable_focusOnScrollToBottom={!hold}
             aria-label="Message input"
