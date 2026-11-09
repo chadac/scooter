@@ -1,7 +1,7 @@
 # Setting up contribs
 
 Scooter's integrations are packaged as **contribs**: GitHub, GitLab, Slack, AWS, web
-search and others. Each one adds some mix of broker routes, agent tools, skills, webhook
+search, kanban boards and others. Each one adds some mix of broker routes, agent tools, skills, webhook
 handlers and sandbox packages. This chapter turns on the common ones.
 
 ## How credentials work
@@ -288,6 +288,62 @@ Setup:
 that user's own Drive, Calendar and mail. Owners outside `ownerDomains` get a 403
 and never fall back to another identity. The scopes are the write gate: the
 defaults are all `*.readonly`, and Google rejects writes with them.
+
+## Kanban boards
+
+Kanban shows a folder as a board at `/boards`, with each conversation in it as a card.
+It needs no credentials, only the broker:
+
+```nix
+contribs.kanban = {
+  enable = true;
+  # Optional. The stages a new board starts with; users can change them per board.
+  stages = [ "Design" "In progress" "Review" "Done" ];
+  # Optional. Minutes before an untouched card reminds its agent to update it.
+  staleAfter = 30;
+};
+```
+
+Each board is a locked folder in the sidebar, with one locked folder inside it per
+stage. A card's stage is the folder its conversation is filed in. Users can only file
+conversations into these folders or take them out. The broker manages the folders
+themselves, since it is the router's folder service by default
+(`scooter.conversationController.folderServices`). The agent gets `kanban_*` tools and
+a skill for keeping its card current. Cards can have tags, a priority, a description,
+and other cards blocking them.
+
+Kanban keeps its boards in a database of its own, `contrib_kanban`, owned by the
+broker's role. You don't create it yourself. On the next deploy:
+
+1. The provisioning Job (`agent-postgres-init-<hash>`) creates the database and
+   applies the table grants. It does this for the in-cluster server and for an
+   `external` one.
+2. The migration Job (`agent-db-migrate-<hash>`) waits up to 5 minutes for the
+   database, then applies kanban's schema.
+
+Check that both completed before you open `/boards`:
+
+```bash
+kubectl -n scooter get jobs
+kubectl -n scooter logs job/<agent-postgres-init-…> --all-containers | tail
+```
+
+| Symptom | Likely cause |
+|---|---|
+| `/boards` is a 500, and the broker logs `database "contrib_kanban" does not exist` | The provisioning Job hasn't completed. Read its logs |
+| The router logs `permission denied for table conversation_folders` (or another table) | Same: the grants come from the provisioning Job |
+| The provisioning Job fails at `create secret … already exists` | Its ServiceAccount can't `get` one of the `agent-pg-*` Secrets. This happens if you replaced its Role with a list of `resourceNames`. List every consumer's Secret |
+| Creating a board fails with `only a folder service can create a locked folder` | `folderServices` doesn't include `agent-broker` |
+
+Each Job is named by a hash of its own spec. A fix outside that spec, such as a Role
+change, keeps the name, so the failed Job isn't recreated. Delete it and apply again:
+
+```bash
+kubectl -n scooter delete job <agent-postgres-init-…> <agent-db-migrate-…>
+```
+
+With Argo CD, sync the app after deleting them. Completed Jobs delete themselves after
+24 hours.
 
 ## Deploy and check
 

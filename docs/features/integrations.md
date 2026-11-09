@@ -53,3 +53,12 @@ with `uv tool run`) or a **nixpkgs** attribute (run with `nix run`), each with o
 arguments. The agent gets a server's tools as `sandbox-<name>` once it's running. A change
 reaches running sandboxes within a couple of minutes. There's no way to give these servers
 an API key yet, and anything in their arguments is readable by the agent.
+
+## Kanban boards
+
+With the `kanban` contrib enabled, `/boards` shows a folder as a board, with its
+conversations as cards in stage columns. Each stage is a locked folder inside the board,
+so moving a card files its conversation in another folder. The agent moves its own card as
+the work changes phase, and can add cards to the board for the work it hands off. A card
+can't move on until every card blocking it reaches the last stage. Setup is in
+[Setting up contribs](../tutorial/contribs.md#kanban-boards).
