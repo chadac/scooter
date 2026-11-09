@@ -3,10 +3,10 @@
 // path unchanged, WebSockets included), and a conversation that records the
 // messages the review service posts.
 //
-//   startStack({ bin, vendorDir, stateDir }) -> { origin, messages, stop() }
+//   startStack({ bin, vendorDir, stateDir }) -> { origin, messages, appDir, stop() }
 
 import { spawn } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { connect } from "node:net";
 import { dirname, join, resolve } from "node:path";
@@ -100,7 +100,10 @@ export async function startStack({ bin, vendorDir, stateDir, python = "python3",
     procs.push(p);
     return p;
   };
-  run(python, [join(exampleDir, "serve.py"), "--port", String(devPort), "--base", "/review-app/"]);
+  // A copy, so tests can edit the app's files.
+  const appDir = join(dirname(stateDir), "app");
+  cpSync(exampleDir, appDir, { recursive: true });
+  run(python, [join(appDir, "serve.py"), "--port", String(devPort), "--base", "/review-app/"]);
   run(bin, ["proxy"]);
   run(bin, ["shell"]);
   await waitFor(`http://127.0.0.1:${devPort}/review-app/`);
@@ -116,7 +119,7 @@ export async function startStack({ bin, vendorDir, stateDir, python = "python3",
   });
 
   return {
-    origin, messages, devPort, appPort, shellPort, env, cli,
+    origin, messages, appDir, devPort, appPort, shellPort, env, cli,
     async stop() {
       for (const p of procs) p.kill("SIGTERM");
       await Promise.all([conv, front].map((s) => new Promise((ok) => { s.closeAllConnections?.(); s.close(ok); })));

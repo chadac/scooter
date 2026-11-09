@@ -194,6 +194,17 @@ try {
   check("Hide pins hides them", await until(async () => (await app().locator(".pin").count()) === 0));
   await page.locator("#hide").click();
 
+  // --- hot reload -------------------------------------------------------------------
+  const assets = join(stack.appDir, "static", "assets");
+  await app().locator("h1").evaluate(() => { window.__sameDocument = true; });
+  writeFileSync(join(assets, "styles.css"), readFileSync(join(assets, "styles.css"), "utf8") + "\nh1 { letter-spacing: 3px; }\n");
+  check("a CSS edit restyles the page in place", await until(async () =>
+    (await app().locator("h1").evaluate((h) => getComputedStyle(h).letterSpacing === "3px" && window.__sameDocument === true))));
+  writeFileSync(join(assets, "app.js"), readFileSync(join(assets, "app.js"), "utf8") + "\n");
+  check("any other edit reloads the page", await until(async () =>
+    (await app().locator("h1").evaluate(() => window.__sameDocument !== true).catch(() => false))));
+  check("…on the same route", await until(async () => (await page.locator("#route").textContent()) === "/orders/1042"), await page.locator("#route").textContent());
+
   // --- review snap ----------------------------------------------------------------
   const out = (await stack.cli("snap")).trim();
   check("`review snap` captures the open page", out.endsWith(".png") && existsSync(out) && statSync(out).size > 5000, out);

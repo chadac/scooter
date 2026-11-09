@@ -4,12 +4,14 @@
 
 Static files, a small JSON API and an SPA fallback, all under --base (default
 $REVIEW_BASE, else /). It sends X-Frame-Options: DENY and a CSP, as a real app
-might, so the review proxy's header handling is exercised.
+might, so the review proxy's header handling is exercised. Edits under static/
+reach open pages over /__live: CSS swaps in place, anything else reloads.
 """
 
 import argparse
 import json
 import os
+import time
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -33,6 +35,11 @@ CUSTOMERS = [
     {"name": "Umbrella", "orders": 1, "since": "2022"},
 ]
 STATS = {"revenue": 22613.74, "orders": len(ORDERS), "late": 1, "trend": [12, 18, 15, 22, 19, 27, 31, 26, 34, 38]}
+
+
+def snapshot() -> dict[str, int]:
+    static = HERE / "static"
+    return {str(p.relative_to(static)): p.stat().st_mtime_ns for p in static.rglob("*") if p.is_file()}
 
 
 def make_handler(base: str):
@@ -66,6 +73,32 @@ def make_handler(base: str):
             self.end_headers()
             self.wfile.write(body)
 
+        def live(self):
+            """Hot reload: a server-sent event per batch of changed files."""
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            seen, idle = snapshot(), 0.0
+            try:
+                self.wfile.write(b": hello\n\n")
+                self.wfile.flush()
+                while True:
+                    time.sleep(0.25)
+                    now = snapshot()
+                    changed = sorted(k for k in now.keys() | seen.keys() if now.get(k) != seen.get(k))
+                    idle += 0.25
+                    if changed:
+                        seen, idle = now, 0.0
+                        self.wfile.write(f"event: change\ndata: {json.dumps(changed)}\n\n".encode())
+                    elif idle >= 15:
+                        idle = 0.0
+                        self.wfile.write(b": ping\n\n")
+                    else:
+                        continue
+                    self.wfile.flush()
+            except OSError:
+                pass
+
         def do_GET(self):
             path = urlsplit(self.path).path
             if path + "/" == base:
@@ -77,6 +110,8 @@ def make_handler(base: str):
                 self.send_error(HTTPStatus.NOT_FOUND, "outside the app's base path")
                 return
             rest = "/" + path[len(base):]
+            if rest == "/__live":
+                return self.live()
             if rest == "/api/stats":
                 return self.send_json(STATS)
             if rest == "/api/orders":
