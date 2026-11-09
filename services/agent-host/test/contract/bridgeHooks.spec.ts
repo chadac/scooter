@@ -106,6 +106,39 @@ describe("bridge conversation hooks", () => {
     expect(hookNotes(events)).toEqual(["Stop hook test-hook: Open the PR, you're pre-authorized."]);
   });
 
+  // Regression: prose `<title>` hid replies; Stop hook looped.
+  it("keeps replies visible to Stop hooks after the agent writes <title> in prose", async () => {
+    const mark = "<!-- done -->";
+    const agent = scriptedAgent([
+      { text: "Sessions get the fixed title, which blocks the agent's `<title>` marker." },
+      { text: `Fixed the router. ${mark}` },
+      { text: `Second turn reply. ${mark}` },
+    ]);
+    const hooks = scriptedHooks((event, input) =>
+      event === "Stop" && !String(input.last_assistant_message).includes(mark) ? { block: "End with the marker." } : undefined,
+    );
+    const { bridge, events } = makeBridge(agent.client, hooks.runner, { maxStopBlocks: 3 });
+    await bridge.prompt({ threadId: "t", text: "fix sessions" });
+    await bridge.prompt({ threadId: "t", text: "and again" });
+
+    const stops = hooks.calls.filter((c) => c.event === "Stop").map((c) => String(c.input.last_assistant_message));
+    expect(stops).toEqual([
+      "Sessions get the fixed title, which blocks the agent's `<title>` marker.",
+      `Fixed the router. ${mark}`,
+      `Second turn reply. ${mark}`,
+    ]);
+    // One send-back, never the cap.
+    expect(agent.prompts).toHaveLength(3);
+    expect(hookNotes(events).some((n) => n.startsWith("Hooks sent the agent back"))).toBe(false);
+    const shown = events
+      .filter((e): e is Extract<AguiEvent, { type: "TEXT_MESSAGE_CONTENT" }> => e.type === "TEXT_MESSAGE_CONTENT")
+      .map((e) => e.delta)
+      .join("");
+    expect(shown).toContain("`<title>` marker.");
+    expect(shown).toContain("Fixed the router.");
+    expect(shown).toContain("Second turn reply.");
+  });
+
   it("stops looping after maxStopBlocks and says so", async () => {
     const agent = scriptedAgent([]);
     const hooks = scriptedHooks((event) => (event === "Stop" ? { block: "keep going" } : undefined));

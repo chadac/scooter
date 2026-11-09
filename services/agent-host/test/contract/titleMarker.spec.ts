@@ -68,4 +68,49 @@ describe("title-marker extraction", () => {
     expect(r.text).toBe("answer ");
     expect(r.title).toBeUndefined();
   });
+
+  // Regression: prose `<title>` swallowed every later reply.
+  it("gives back prose that mentions <title> instead of swallowing the rest", () => {
+    const r = run([
+      "the fixed title \"Session\", which blocks the agent's `",
+      "<title>` marker from naming it.\n\nNext I'll fix the router.",
+    ]);
+    expect(r.title).toBeUndefined();
+    expect(r.text).toBe(
+      "the fixed title \"Session\", which blocks the agent's `<title>` marker from naming it.\n\nNext I'll fix the router.",
+    );
+  });
+
+  it("abandons a title that runs past the length cap", () => {
+    const long = "x".repeat(250);
+    const r = run(["<title>", long, " and more"]);
+    expect(r.title).toBeUndefined();
+    expect(r.text).toBe(`<title>${long} and more`);
+  });
+
+  it("treats a closed but multi-line 'title' as text", () => {
+    const r = run(["<title>a\nb</title> rest"]);
+    expect(r.title).toBeUndefined();
+    expect(r.text).toBe("<title>a\nb</title> rest");
+  });
+
+  it("matches only the first title; later tags are text", () => {
+    const r = run(["<title>First</title>ok. ", "Mention <title>Second</title> here"]);
+    expect(r.title).toBe("First");
+    expect(r.text).toBe("ok. Mention <title>Second</title> here");
+  });
+
+  it("flush releases an unclosed title and a held partial tag", () => {
+    const ex = createTitleExtractor();
+    expect(ex.push("see the `<title>` marker").text).toBe("see the `");
+    const f = ex.flush();
+    expect(f.abandoned).toBe(true);
+    expect(f.text).toBe("<title>` marker");
+    // The next message starts clean.
+    expect(ex.push("Next reply.").text).toBe("Next reply.");
+
+    const ex2 = createTitleExtractor();
+    expect(ex2.push("answer <tit").text).toBe("answer ");
+    expect(ex2.flush()).toEqual({ text: "<tit", abandoned: false });
+  });
 });

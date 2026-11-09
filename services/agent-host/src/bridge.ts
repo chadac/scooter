@@ -845,7 +845,22 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     return [command, ...args].join(" ").trim();
   };
 
+  const emitAssistantText = (st: RunState, text: string) => {
+    if (!st.openText) {
+      st.openText = nextId("msg");
+      emit({ type: "TEXT_MESSAGE_START", messageId: st.openText, role: "assistant" });
+    }
+    emit({ type: "TEXT_MESSAGE_CONTENT", messageId: st.openText, delta: text });
+    st.lastText += text;
+  };
+  // Release title-scanner holdback so it can't swallow replies.
+  const flushTitleText = (st: RunState) => {
+    const { text, abandoned } = titleExtractor.flush();
+    if (abandoned) log.warn("unclosed <title> in agent text; shown as text", { run_id: st.runId });
+    if (text.length > 0) emitAssistantText(st, text);
+  };
   const closeOpenText = (st: RunState) => {
+    flushTitleText(st);
     if (st.openText) {
       emit({ type: "TEXT_MESSAGE_END", messageId: st.openText });
       st.openText = undefined;
@@ -909,16 +924,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         const { text, title } = titleExtractor.push(blockText(u.content));
         if (title !== undefined) emitTitle(title);
         if (text.length === 0) break; // marker-only chunk -> nothing to show
-        if (!st.openText) {
-          st.openText = nextId("msg");
-          emit({ type: "TEXT_MESSAGE_START", messageId: st.openText, role: "assistant" });
-        }
-        emit({
-          type: "TEXT_MESSAGE_CONTENT",
-          messageId: st.openText,
-          delta: text,
-        });
-        st.lastText += text;
+        emitAssistantText(st, text);
         break;
       }
       case "agent_thought_chunk": {
@@ -1486,6 +1492,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         await drain();
         await Promise.allSettled(st.pendingHooks.splice(0));
         if (st.cancelled || st.terminated || stopReason === "cancelled" || stopReason === "error") break;
+        // Stop hooks read lastText; release holdback first.
+        flushTitleText(st);
         const next = await stopContinuation(st, stopBlocks);
         if (next === undefined || st.cancelled || st.terminated) break;
         closeOpenText(st);
