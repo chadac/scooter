@@ -10,6 +10,7 @@ import { DropdownMenu, Popover } from "radix-ui";
 import { flushSync } from "react-dom";
 
 import { FolderGlyph } from "./FolderGlyph.js";
+import { PrivacyPopover } from "./PrivacyPopover.js";
 import { folderOf, folderStore, moveTo, STARRED, useFolders } from "./folders.js";
 import { displayTitle } from "./pageTitle.js";
 import { sessionStore, useSessions, type Session } from "./sessions.js";
@@ -72,6 +73,7 @@ const menuItem =
 function Actions({ session: s }: { session: Session }) {
   const { currentUser, currentUserAnonymous } = useSessions();
   const [moving, setMoving] = useState(false);
+  const [privacy, setPrivacy] = useState(false);
   const backed = isServerBacked(s);
   const isPrivate = s.visibility === "private";
   // Star and move are top-level only; subagents are not independently retained.
@@ -121,9 +123,14 @@ function Actions({ session: s }: { session: Session }) {
             </DropdownMenu.Item>
           )}
           {canShare && (
-            <DropdownMenu.Item data-testid="session-menu-visibility" onSelect={() => void toggleVisibility(s)} className={menuItem}>
-              {isPrivate ? <LockOpen /> : <Lock />}
-              {isPrivate ? "Make shared" : "Make private"}
+            <DropdownMenu.Item
+              data-testid="session-menu-visibility"
+              // Opens the privacy panel after the menu returns focus.
+              onSelect={() => (isPrivate ? setTimeout(() => setPrivacy(true)) : void toggleVisibility(s))}
+              className={menuItem}
+            >
+              <Lock />
+              {isPrivate ? "Privacy…" : "Make private"}
             </DropdownMenu.Item>
           )}
           <DropdownMenu.Item data-testid="session-menu-rename" onSelect={() => setTimeout(openRename)} className={menuItem}>
@@ -143,6 +150,7 @@ function Actions({ session: s }: { session: Session }) {
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
   );
+  const phoneMenu = movable ? <MoveTo session={s} open={moving} onOpenChange={setMoving} anchor={menu} /> : menu;
   return (
     <>
       <div data-testid="session-actions" className="hidden shrink-0 items-center gap-0.5 desk:flex">
@@ -162,22 +170,19 @@ function Actions({ session: s }: { session: Session }) {
           </Button>
         )}
         {movable && <MoveTo session={s} />}
-        {canShare && (
+        {canShare && isPrivate && <PrivacyPopover session={s} />}
+        {canShare && !isPrivate && (
           <Button
             variant="ghost"
             size="icon-sm"
             data-testid="session-visibility"
-            aria-label={isPrivate ? `Make ${s.title} shared` : `Make ${s.title} private`}
-            aria-pressed={isPrivate}
-            title={
-              isPrivate
-                ? "Private: only you can see it. Click to share"
-                : "Shared: anyone signed in can see it. Click to make private"
-            }
+            aria-label={`Make ${s.title} private`}
+            aria-pressed={false}
+            title="Shared: anyone signed in can see it. Click to make private"
             onClick={() => void toggleVisibility(s)}
             className="text-muted-foreground"
           >
-            {isPrivate ? <Lock /> : <LockOpen />}
+            <LockOpen />
           </Button>
         )}
         <Button
@@ -205,7 +210,11 @@ function Actions({ session: s }: { session: Session }) {
       </div>
       {/* A phone header has no room for five buttons, so they fold into one menu. */}
       <div className="flex shrink-0 desk:hidden">
-        {movable ? <MoveTo session={s} open={moving} onOpenChange={setMoving} anchor={menu} /> : menu}
+        {canShare && isPrivate ? (
+          <PrivacyPopover session={s} open={privacy} onOpenChange={setPrivacy} anchor={phoneMenu} />
+        ) : (
+          phoneMenu
+        )}
       </div>
     </>
   );

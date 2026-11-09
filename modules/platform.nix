@@ -1554,6 +1554,12 @@ in
             Who wrote the text in each conversation. GET /conversations/{id} serves it to the
             broker, which vends personal credentials only while every author is the owner.'';
         };
+        conversation_author_clears = {
+          writers = [ "agent-host" ];
+          note = ''
+            Authors a conversation's owner vouched for, which no longer taint it. A history
+            of every clear: who cleared which author, when, and from the UI or the agent.'';
+        };
       };
     };
 

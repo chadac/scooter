@@ -30,6 +30,12 @@ logger = logging.getLogger(__name__)
 # Short, because a conversation turned shared must stop using personal credentials quickly.
 DEFAULT_TTL_SECONDS = 10.0
 
+# Tells the agent it may ask the owner to untaint.
+TAINTED_HINT = (
+    "conversation_status names who else wrote text here; call request_untaint to ask the owner "
+    "to vouch for it, rather than asking in chat."
+)
+
 # Fetches one conversation's agent-host view, None when it does not exist.
 ConversationFetcher = Callable[[str], Awaitable["dict[str, Any] | None"]]
 

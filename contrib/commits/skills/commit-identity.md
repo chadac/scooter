@@ -36,4 +36,5 @@ In shared conversations these tools aren't offered. Commits are authored by the 
 and the conversation's owner is credited in a `Co-authored-by` trailer.
 `conversation_status` shows which kind this is (so does a `GIT_AUTHOR_NAME` ending in
 `[bot]`). If the user wants commits under their own name, see
-`make_conversation_private` in the `scooter-ssh` skill.
+`make_conversation_private` in the `scooter-ssh` skill. The same skill covers a private
+conversation that is tainted, and `request_untaint`.

@@ -4,7 +4,7 @@
 from typing import Optional
 import datetime
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, Double, ForeignKeyConstraint, Index, Integer, PrimaryKeyConstraint, Text, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, Double, ForeignKeyConstraint, Identity, Index, Integer, PrimaryKeyConstraint, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -28,6 +28,26 @@ class ConversationAssets(Base):
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime(True), nullable=False, server_default=text('now()'))
 
 
+class ConversationAuthorClears(Base):
+    __tablename__ = 'conversation_author_clears'
+    __table_args__ = (
+        CheckConstraint("via = ANY (ARRAY['ui'::text, 'agent'::text])", name='conversation_author_clears_via_check'),
+        PrimaryKeyConstraint('id', name='conversation_author_clears_pkey'),
+        Index('conversation_author_clears_by_conversation', 'conversation_id')
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(always=True, start=1, increment=1, minvalue=1, maxvalue=9223372036854775807, cycle=False, cache=1), primary_key=True, autoincrement=True)
+    conversation_id: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    author: Mapped[str] = mapped_column(Text, nullable=False)
+    first_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    last_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    cleared_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    cleared_by: Mapped[str] = mapped_column(Text, nullable=False)
+    via: Mapped[str] = mapped_column(Text, nullable=False)
+    reason: Mapped[Optional[str]] = mapped_column(Text)
+
+
 class ConversationAuthors(Base):
     __tablename__ = 'conversation_authors'
     __table_args__ = (
@@ -39,6 +59,7 @@ class ConversationAuthors(Base):
     kind: Mapped[str] = mapped_column(Text, primary_key=True)
     author: Mapped[str] = mapped_column(Text, primary_key=True)
     first_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    last_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
 class ConversationEvents(Base):

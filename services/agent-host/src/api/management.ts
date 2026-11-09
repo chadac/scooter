@@ -28,8 +28,9 @@ import type { AguiServer } from "../agui/server.js";
 import type { WebServiceRegistry } from "../proxy/webServiceProxy.js";
 import type { IdentityStore } from "../auth/identityStore.js";
 import type { AssetStore } from "../session/assetStore.js";
+import { steeringAuthor, type AuthorStore, type ResolvedAuthor } from "../session/authorStore.js";
+import { describeAuthor, describeTaint, parseShown, shownRows, taintingAuthors } from "../session/taint.js";
 import { SubagentLimitError, type SubagentManager } from "../agent/subagentTools.js";
-import { steeringAuthor, type AuthorStore } from "../session/authorStore.js";
 import type { IdentityRegistry } from "../session/identityRegistry.js";
 import { targetError, type ConversationOwnerLookup, type SchedulerClient } from "../agent/schedulerTools.js";
 import { mountContribApi, type ContribApiDeps } from "./contribApi.js";
@@ -696,6 +697,46 @@ export function createManagementApi(deps: ManagementDeps): Router {
     }
     await sessions.setVisibility(conv.id, body.visibility);
     return { json: view(sessions.get(conv.id)!) };
+  });
+
+  /** The owner's view of who taints the tree; 403 for anyone else. */
+  const taintFor = async (id: string, user: { anonymous: boolean; id: string }) => {
+    if (!sessions.get(id)) await sessions.ensureReadable(id);
+    const conv = sessions.get(id);
+    if (!conv) return { status: 404 as const, error: "not found" };
+    if (user.anonymous || !conv.owner || conv.owner !== user.id) {
+      return { status: 403 as const, error: "only the owner can see or clear the taint" };
+    }
+    if (!deps.authorStore) return { status: 501 as const, error: "authors are not recorded here" };
+    const visibility = (await store.readAccess?.(conv.id))?.visibility ?? conv.visibility ?? "shared";
+    const authors = taintingAuthors(await deps.authorStore.listTree(conv.id), conv.owner);
+    return { conv, visibility, authors, owner: conv.owner };
+  };
+  const taintView = (visibility: string, authors: ResolvedAuthor[]) => ({
+    visibility,
+    summary: authors.length ? describeTaint(authors) : "",
+    authors: authors.map((a) => ({ conversationId: a.conversationId, kind: a.kind, author: a.author, lastAt: a.lastAt, label: describeAuthor(a) })),
+  });
+
+  // Non-owner authors keep the tree from acting as its owner.
+  r.get("/conversations/:id/taint", async (ctx) => {
+    const t = await taintFor(ctx.params.id, ctx.user);
+    if ("error" in t) return { status: t.status, json: { error: t.error } };
+    return { json: taintView(t.visibility, t.authors) };
+  });
+
+  // Clears only what the owner was shown; newer text still taints.
+  r.post("/conversations/:id/taint/clear", async (ctx) => {
+    const t = await taintFor(ctx.params.id, ctx.user);
+    if ("error" in t) return { status: t.status, json: { error: t.error } };
+    // Shared, anyone may still prompt it, so a clear would not last.
+    if (t.visibility !== "private") return { status: 409, json: { error: "make the conversation private before clearing its taint" } };
+    const shown = parseShown((await ctx.body<{ authors?: unknown }>()).authors);
+    if (!shown) return { status: 400, json: { error: "authors must be the rows GET /taint returned" } };
+    const cleared = await deps.authorStore!.clear(shownRows(shown, t.authors), { user: t.owner, via: "ui" });
+    const left = taintingAuthors(await deps.authorStore!.listTree(t.conv.id), t.owner);
+    log.info("owner cleared a conversation's taint", { conversation_id: t.conv.id, cleared, left: left.length });
+    return { json: { cleared, ...taintView(t.visibility, left) } };
   });
 
   r.post("/conversations/:id/suspend", async (ctx) => {

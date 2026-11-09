@@ -24,6 +24,9 @@ owner = "agent-host"
 [agent_host.tables]
 # Asset metadata (bytes on dedicated PVC). Replaces in-memory blob URLs.
 conversation_assets        = { writers = ["agent-host"], readers = [] }
+# Authors a conversation's owner vouched for, which no longer taint it. A history
+# of every clear: who cleared which author, when, and from the UI or the agent.
+conversation_author_clears = { writers = ["agent-host"], readers = [] }
 # Who wrote the text in each conversation. GET /conversations/{id} serves it to the
 # broker, which vends personal credentials only while every author is the owner.
 conversation_authors       = { writers = ["agent-host"], readers = [] }

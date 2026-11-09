@@ -287,7 +287,7 @@ describe("conversation authors", () => {
     await authorStore.record("c1", { kind: "user", id: "alice" });
     const { api } = setup({ visibility: "private" }, { authorStore });
     const got = await call(api, "GET", "/conversations/c1", undefined, undefined, { [SERVICE_HEADER]: "1" });
-    expect(got.json.authors).toEqual([{ kind: "user", author: "alice", user: "alice" }]);
+    expect(got.json.authors).toMatchObject([{ conversationId: "c1", kind: "user", author: "alice", user: "alice" }]);
 
     const failing = { ...authorStore, listTree: async () => { throw new Error("db down"); } };
     const { api: api2 } = setup({ visibility: "private" }, { authorStore: failing });
@@ -302,7 +302,7 @@ describe("conversation authors", () => {
     expect((await call(api, "POST", "/conversations/c1/messages", { text: "hi" }, "alice")).status).toBe(202);
     expect(await authorStore.listTree("c1")).toEqual([]);
     expect((await call(api, "POST", "/conversations/c1/messages", { text: "hi" }, "bob")).status).toBe(202);
-    expect(await authorStore.listTree("c1")).toEqual([{ kind: "user", author: "bob", user: "bob" }]);
+    expect(await authorStore.listTree("c1")).toMatchObject([{ kind: "user", author: "bob", user: "bob" }]);
   });
 
   it("records nothing for a platform service's message, and unknown for an anonymous one", async () => {
@@ -311,7 +311,7 @@ describe("conversation authors", () => {
     await call(api, "POST", "/conversations/c1/messages", { text: "hi", source: "kanban" }, undefined, { [SERVICE_HEADER]: "1" });
     expect(await authorStore.listTree("c1")).toEqual([]);
     await call(api, "POST", "/conversations/c1/messages", { text: "hi" });
-    expect(await authorStore.listTree("c1")).toEqual([{ kind: "unknown", author: "", user: null }]);
+    expect(await authorStore.listTree("c1")).toMatchObject([{ kind: "unknown", author: "", user: null }]);
   });
 
   it("refuses an interrupt whose author can't be recorded", async () => {
@@ -328,7 +328,7 @@ describe("conversation authors", () => {
     expect((await call(api, "POST", "/conversations/c1/files", file, undefined, { [SERVICE_HEADER]: "1" })).status).toBe(201);
     expect(await authorStore.listTree("c1")).toEqual([]);
     expect((await call(api, "POST", "/conversations/c1/files", file, "bob")).status).toBe(201);
-    expect(await authorStore.listTree("c1")).toEqual([{ kind: "user", author: "bob", user: "bob" }]);
+    expect(await authorStore.listTree("c1")).toMatchObject([{ kind: "user", author: "bob", user: "bob" }]);
   });
 
   it("leaves a shared conversation going private untainted", async () => {
@@ -336,5 +336,55 @@ describe("conversation authors", () => {
     const { api } = setup({}, { authorStore });
     expect((await call(api, "PATCH", "/conversations/c1/visibility", { visibility: "private" }, "alice")).status).toBe(200);
     expect(await authorStore.listTree("c1")).toEqual([]);
+  });
+});
+
+describe("conversation taint", () => {
+  async function tainted() {
+    const authorStore = createMemoryAuthorStore();
+    await authorStore.record("c1", { kind: "user", id: "bob" });
+    await authorStore.record("c1", { kind: "unknown" });
+    return authorStore;
+  }
+
+  it("shows the owner who taints the conversation, and nobody else", async () => {
+    const { api } = setup({ visibility: "private" }, { authorStore: await tainted() });
+    const got = await call(api, "GET", "/conversations/c1/taint", undefined, "alice");
+    expect(got.json.summary).toBe("user bob and unattributed text");
+    expect(got.json.authors.map((a: { label: string }) => a.label)).toEqual(["user bob", "unattributed text"]);
+
+    const { api: shared } = setup({}, { authorStore: await tainted() });
+    expect((await call(shared, "GET", "/conversations/c1/taint", undefined, "bob")).status).toBe(403);
+  });
+
+  it("clears exactly the rows the owner was shown", async () => {
+    const authorStore = await tainted();
+    const { api } = setup({ visibility: "private" }, { authorStore });
+    const shown = (await call(api, "GET", "/conversations/c1/taint", undefined, "alice")).json.authors;
+    // Bob writes again after the owner looked, so his row still taints.
+    await authorStore.record("c1", { kind: "user", id: "bob" });
+    const got = await call(api, "POST", "/conversations/c1/taint/clear", { authors: shown }, "alice");
+    expect(got.json).toMatchObject({ cleared: 1, summary: "user bob" });
+    expect(authorStore.clears).toMatchObject([{ kind: "unknown", user: "alice", via: "ui" }]);
+  });
+
+  it("ignores rows from outside the conversation's tree", async () => {
+    const authorStore = await tainted();
+    await authorStore.record("elsewhere", { kind: "user", id: "carol" });
+    const { api } = setup({ visibility: "private" }, { authorStore });
+    const stranger = [{ conversationId: "elsewhere", kind: "user", author: "carol", lastAt: 99 }];
+    const got = await call(api, "POST", "/conversations/c1/taint/clear", { authors: stranger }, "alice");
+    expect(got.json.cleared).toBe(0);
+    expect(await authorStore.listTree("elsewhere")).toHaveLength(1);
+  });
+
+  it("refuses a shared conversation, another user and a malformed body", async () => {
+    const shown = [{ conversationId: "c1", kind: "unknown", author: "", lastAt: 99 }];
+    const { api: shared } = setup({}, { authorStore: await tainted() });
+    expect((await call(shared, "POST", "/conversations/c1/taint/clear", { authors: shown }, "alice")).status).toBe(409);
+
+    const { api } = setup({ visibility: "private" }, { authorStore: await tainted() });
+    expect((await call(api, "POST", "/conversations/c1/taint/clear", { authors: shown }, "bob")).status).toBe(404);
+    expect((await call(api, "POST", "/conversations/c1/taint/clear", { authors: "all" }, "alice")).status).toBe(400);
   });
 });
