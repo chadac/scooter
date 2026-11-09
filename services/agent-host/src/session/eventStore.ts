@@ -4,7 +4,7 @@
  * insert, with no LISTEN/NOTIFY or triggers.
  */
 
-import { and, asc, desc, eq, gte, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, lt, sql } from "drizzle-orm";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { agent_host } from "@scooter/schema";
 
@@ -18,6 +18,9 @@ import type { SessionId } from "../types.js";
 const log = logger("eventStore");
 // conversations is read only by the append fence, never written here.
 const { conversationEvents, conversations } = agent_host;
+
+// Rows per keyset page of a full replay.
+const READ_PAGE_ROWS = 500;
 
 export interface PgEventStoreConfig {
   /** Postgres connection string, ignored when `db` is supplied. */
@@ -75,6 +78,9 @@ export interface PgEventStore {
   /** The last `limit` events by `seq`, trimmed forward to a boundary so the window never starts
    *  mid-message. */
   readEventsTailByCount(id: SessionId, limit: number): Promise<AguiEvent[]>;
+
+  /** Only RUN_MARKER_TYPES events in seq order, via partial index. */
+  readRunMarkers(id: SessionId): Promise<AguiEvent[]>;
 
   /** The `limit` events immediately before `beforeSeq`, oldest-first, with `firstSeq` to pass back
    *  as the next `beforeSeq` and `done` once the start of the log is reached; not trimmed to a
@@ -250,18 +256,26 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
     },
 
     async *readEventsWithChecksum(id) {
-      // Read, never recomputed: jsonb does not preserve key order.
-      const rows = await db
-        .select({
-          event: conversationEvents.event,
-          checksum: conversationEvents.checksum,
-          prevChecksum: conversationEvents.prevChecksum,
-        })
-        .from(conversationEvents)
-        .where(eq(conversationEvents.conversationId, id))
-        .orderBy(asc(conversationEvents.seq));
-      for (const r of rows) {
-        yield { event: r.event as AguiEvent, checksum: r.checksum, prevChecksum: r.prevChecksum };
+      // Keyset pages on seq, so a long log is never buffered whole.
+      let after = 0;
+      for (;;) {
+        // Read, never recomputed: jsonb does not preserve key order.
+        const rows = await db
+          .select({
+            seq: conversationEvents.seq,
+            event: conversationEvents.event,
+            checksum: conversationEvents.checksum,
+            prevChecksum: conversationEvents.prevChecksum,
+          })
+          .from(conversationEvents)
+          .where(and(eq(conversationEvents.conversationId, id), gt(conversationEvents.seq, after)))
+          .orderBy(asc(conversationEvents.seq))
+          .limit(READ_PAGE_ROWS);
+        for (const r of rows) {
+          yield { event: r.event as AguiEvent, checksum: r.checksum, prevChecksum: r.prevChecksum };
+        }
+        if (rows.length < READ_PAGE_ROWS) return;
+        after = Number(rows[rows.length - 1].seq);
       }
     },
 
@@ -299,6 +313,21 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
         .orderBy(desc(conversationEvents.seq))
         .limit(limit);
       return trimToBoundary(rows.reverse().map((r) => r.event as AguiEvent));
+    },
+
+    async readRunMarkers(id) {
+      // Must match the conversation_events_run_markers index predicate.
+      const rows = await db
+        .select({ event: conversationEvents.event })
+        .from(conversationEvents)
+        .where(
+          and(
+            eq(conversationEvents.conversationId, id),
+            sql`${conversationEvents.event}->>'type' in ('RUN_STARTED', 'RUN_FINISHED', 'RUN_ERROR', 'CANCEL_REQUESTED')`,
+          ),
+        )
+        .orderBy(asc(conversationEvents.seq));
+      return rows.map((r) => r.event as AguiEvent);
     },
 
     async readEventsBefore(id, beforeSeq, limit) {
@@ -398,6 +427,7 @@ export function withPgEvents<T extends object>(base: T, events: PgEventStore): T
     readEventsWithChecksum: events.readEventsWithChecksum.bind(events),
     readEventsTail: events.readEventsTail.bind(events),
     readEventsTailByCount: events.readEventsTailByCount.bind(events),
+    readRunMarkers: events.readRunMarkers.bind(events),
     readEventsBefore: events.readEventsBefore.bind(events),
     onAppend: events.onAppend.bind(events),
     onAppendError: events.onAppendError.bind(events),

@@ -1942,11 +1942,16 @@ export async function main(
       // Flush the subagent's pending appends first, since the store write is fire-and-forget
       // and the read below could otherwise miss the just-emitted RUN_FINISHED.
       await store.flush?.(subagentId).catch(() => {});
-      const events = await collectEventsSafe(store.readEvents(subagentId));
+      // The backstop re-reads idle subagents each sweep; tail suffices.
+      let events = store.readEventsTail
+        ? await store.readEventsTail(subagentId, 1).catch(() => [])
+        : await collectEventsSafe(store.readEvents(subagentId));
       if (!lastRunCompleted(events)) {
         notified.delete(subagentId); // hasn't actually run yet — re-check later
         return;
       }
+      // A reply-less last run reports an earlier reply.
+      if (!lastAssistantText(events)) events = await collectEventsSafe(store.readEvents(subagentId));
       const child = sessions.get(subagentId);
       if (sessions.get(parentId)) {
         const text = subagentDoneNotice(subagentId, child?.title, lastAssistantText(events));

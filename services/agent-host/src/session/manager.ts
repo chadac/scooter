@@ -10,12 +10,12 @@
 import type { SessionId, ThreadId, SandboxRef } from "../types.js";
 import type { JobRecord } from "./jobManager.js";
 import type { SessionBridge, AguiEvent, InterruptPolicy, PromptImage, PromptFile, MessageSender } from "../bridge.js";
-import { danglingRunInfo, orphanRuns } from "./danglingRun.js";
+import { danglingRunInfo, orphanRuns, RUN_MARKER_TYPES } from "./danglingRun.js";
 import { allowAllGuard, type OwnershipGuard } from "./ownershipGuard.js";
 import { noopRegistry, type ConversationRecord, type ConversationRegistry } from "./conversationRegistry.js";
 import { formatError, logger } from "../log.js";
 import { isDbUnavailable } from "../db/pgPool.js";
-import { DERIVED_SOURCES, humanTriggerFromLog } from "../acp/remoteAgentRegistry.js";
+import { DERIVED_SOURCES, humanTriggerFromLog, latestTrigger } from "../acp/remoteAgentRegistry.js";
 import type { AccessFacts, Visibility } from "./visibility.js";
 
 const log = logger("manager");
@@ -201,6 +201,8 @@ export interface ConversationStore {
   readEventsTail?(id: SessionId, runs: number): Promise<AguiEvent[]>;
   /** The last `limit` events by seq; optional. */
   readEventsTailByCount?(id: SessionId, limit: number): Promise<AguiEvent[]>;
+  /** Only RUN_MARKER_TYPES events in seq order; optional. */
+  readRunMarkers?(id: SessionId): Promise<AguiEvent[]>;
   readEventsBefore?(
     id: SessionId,
     beforeSeq: number,
@@ -463,6 +465,9 @@ interface Entry {
   /** No recorded Sandbox, so a fresh one is no reset. */
   neverProvisioned?: boolean;
 }
+
+// Runs searched for a trigger before reading the whole log.
+const TRIGGER_TAIL_RUNS = 4;
 
 /** Drain an async iterable of events into an array. */
 async function collectEvents(it: AsyncIterable<AguiEvent>): Promise<AguiEvent[]> {
@@ -751,6 +756,13 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     endedIds.add(id);
   };
 
+  // Settlement needs only run markers; other stores filter the log.
+  const runMarkers = async (id: SessionId): Promise<AguiEvent[]> => {
+    if (store.readRunMarkers) return store.readRunMarkers(id);
+    const markers = new Set(RUN_MARKER_TYPES);
+    return (await collectEvents(store.readEvents(id))).filter((e) => markers.has(e.type as string));
+  };
+
   // A subagent tree shares its root's trigger; a missing ancestor fails closed.
   const inheritedHumanTrigger = async (e: Entry): Promise<boolean> => {
     let root = e;
@@ -760,6 +772,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       root = up;
     }
     if (root.parentId) return false;
+    // The trigger is nearly always recent; full log as fallback.
+    const tail = await store.readEventsTail?.(root.id, TRIGGER_TAIL_RUNS);
+    const fromTail = tail && latestTrigger(tail);
+    if (fromTail !== undefined) return fromTail;
     return humanTriggerFromLog(await collectEvents(store.readEvents(root.id)));
   };
 
@@ -1440,13 +1456,13 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         // A run this pod started at this generation is in flight, not stranded; without a gen (lazy
         // adoption) a same-host run is left alone.
         const self = deps.selfPod ? { host: deps.selfPod, gen: expectedGen } : undefined;
-        const events = await collectEvents(store.readEvents(id));
+        const markers = await runMarkers(id);
 
         // Close every run left open anywhere in the log, not just at the tail, since a fenced
         // hand-off can bury an orphan under later turns; `self` keeps our own live run out of the
         // sweep.
-        const inFlight = danglingRunInfo(events, self)?.runId;
-        const orphans = orphanRuns(events, self).filter((o) => o.runId !== inFlight);
+        const inFlight = danglingRunInfo(markers, self)?.runId;
+        const orphans = orphanRuns(markers, self).filter((o) => o.runId !== inFlight);
         for (const o of orphans) {
           await store.appendEvent(id as SessionId, {
             type: "RUN_FINISHED",
@@ -1464,12 +1480,12 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           });
         }
 
-        const dangling = danglingRunInfo(events, self);
+        const dangling = danglingRunInfo(markers, self);
         if (!dangling) {
           // Logged so a no-op is distinguishable from the hook not firing.
           log.info("dangling-run check: nothing to settle", {
             conversation_id: id,
-            events_seen: events.length,
+            markers_seen: markers.length,
           });
         }
         if (dangling?.cancelRequested) {
@@ -1496,7 +1512,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
               log.info("dangling run: lost ownership during the hand-off grace — not resuming", { conversation_id: id });
               return;
             }
-            const after = danglingRunInfo(await collectEvents(store.readEvents(id)), self);
+            const after = danglingRunInfo(await runMarkers(id), self);
             if (after?.runId !== dangling.runId) {
               log.info("dangling run settled during the hand-off grace — not resuming", { conversation_id: id });
               return;

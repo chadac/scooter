@@ -133,3 +133,6 @@ export function unansweredInterrupt(events: AguiEvent[], id: string): AguiInterr
   }
   return undefined;
 }
+
+/** The only event types danglingRunInfo and orphanRuns read. */
+export const RUN_MARKER_TYPES: readonly string[] = ["RUN_STARTED", "RUN_FINISHED", "RUN_ERROR", "CANCEL_REQUESTED"];

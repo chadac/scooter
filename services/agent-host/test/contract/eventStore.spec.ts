@@ -30,12 +30,15 @@ function fakeDb(): {
   db: NodePgDatabase;
   rows: Array<Record<string, unknown>>;
   failNext: (e: Error) => void;
+  /** Full-replay pages served so far. */
+  replayPages: () => number;
   assign: (conv: string, a: { hostPod: string | null; hostGeneration?: number }) => void;
 } {
   const rows: Array<Record<string, unknown>> = [];
   // The conversations row the fence reads, where an absent row means deleted.
   const assigned = new Map<string, { hostPod: string | null; hostGeneration?: number }>();
   let fail: Error | undefined;
+  let replayPages = 0;
   const client = {
     async query(cfg: { text: string; values?: unknown[] } | string, params: unknown[] = []) {
       const text = typeof cfg === "string" ? cfg : cfg.text;
@@ -106,6 +109,12 @@ function fakeDb(): {
           const last = mine[mine.length - 1];
           return { rows: last ? [[last.seq, last.checksum]] : [], rowCount: last ? 1 : 0 };
         }
+        // run markers: the settlement read.
+        if (/CANCEL_REQUESTED/i.test(text)) {
+          const MARKERS = ["RUN_STARTED", "RUN_FINISHED", "RUN_ERROR", "CANCEL_REQUESTED"];
+          const hits = mine.filter((r) => MARKERS.includes((r.event as { type?: string }).type ?? ""));
+          return { rows: hits.map((r) => [r.event]), rowCount: hits.length };
+        }
         // tail step 1: the RUN_STARTED boundary, newest-first with an OFFSET.
         if (/RUN_STARTED/i.test(text)) {
           // drizzle omits the offset when it is 0, so params are [conv, limit] or [conv, limit, offset].
@@ -119,10 +128,12 @@ function fakeDb(): {
           mine = mine.filter((r) => (r.seq as number) >= from);
           return { rows: mine.map((r) => [r.event]), rowCount: mine.length };
         }
-        // full replay: event + the two checksum columns.
+        // full replay: one keyset page of seq, event and the two checksum columns, params [conv, after, limit].
+        const page = mine.filter((r) => (r.seq as number) > Number(values[1])).slice(0, Number(values[2]));
+        replayPages++;
         return {
-          rows: mine.map((r) => [r.event, r.checksum, r.prev_checksum]),
-          rowCount: mine.length,
+          rows: page.map((r) => [r.seq, r.event, r.checksum, r.prev_checksum]),
+          rowCount: page.length,
         };
       }
       throw new Error(`unexpected sql: ${text}`);
@@ -132,6 +143,7 @@ function fakeDb(): {
     db: drizzle(client as never),
     rows,
     failNext: (e) => (fail = e),
+    replayPages: () => replayPages,
     assign: (conv, a) => assigned.set(conv, a),
   };
 }
@@ -353,6 +365,46 @@ describe("eventStore — the integrity chain", () => {
     const read: ChecksummedEvent[] = [];
     for await (const c of s.readEventsWithChecksum(CONV)) read.push(c);
     expect(read[0].checksum).toBe(stored);
+  });
+});
+
+describe("eventStore — the full replay streams", () => {
+  it("pages a long log on seq and yields every event once, in order", async () => {
+    const { db, rows, replayPages } = fakeDb();
+    // 1,201 rows: three pages of the store's 500.
+    for (let i = 1; i <= 1201; i++) {
+      rows.push({ conversation_id: CONV, seq: i, event: { type: "CUSTOM", n: i }, checksum: `c${i}`, prev_checksum: `c${i - 1}` });
+    }
+    const seen: number[] = [];
+    for await (const e of store(db).readEvents(CONV)) seen.push((e as { n: number }).n);
+    expect(seen).toEqual(Array.from({ length: 1201 }, (_, i) => i + 1));
+    expect(replayPages()).toBe(3);
+  });
+
+  it("stops after the first page when a consumer breaks early", async () => {
+    const { db, rows, replayPages } = fakeDb();
+    for (let i = 1; i <= 1201; i++) {
+      rows.push({ conversation_id: CONV, seq: i, event: { type: "CUSTOM", n: i }, checksum: `c${i}`, prev_checksum: `c${i - 1}` });
+    }
+    for await (const e of store(db).readEvents(CONV)) if ((e as { n: number }).n === 10) break;
+    expect(replayPages()).toBe(1);
+  });
+});
+
+describe("eventStore — run markers", () => {
+  it("returns only the run markers, in seq order", async () => {
+    const { db } = fakeDb();
+    const s = store(db);
+    const log = [
+      ...run(1),
+      { type: "RUN_FINISHED", threadId: "t", runId: "r1" },
+      { type: "CANCEL_REQUESTED", runId: "r2" },
+      ...run(2),
+    ] as AguiEvent[];
+    for (const e of log) await s.appendEvent(CONV, e);
+
+    const types = (await s.readRunMarkers(CONV)).map((e) => e.type);
+    expect(types).toEqual(["RUN_STARTED", "RUN_FINISHED", "CANCEL_REQUESTED", "RUN_STARTED"]);
   });
 });
 

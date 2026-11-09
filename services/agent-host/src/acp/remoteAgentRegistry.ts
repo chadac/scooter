@@ -32,6 +32,11 @@ export const DERIVED_SOURCES: ReadonlySet<string> = new Set(["resume", "subagent
 
 /** Whether the log's latest direct trigger was human; none fails closed. */
 export function humanTriggerFromLog(events: readonly AguiEvent[]): boolean {
+  return latestTrigger(events) ?? false;
+}
+
+/** The latest direct trigger's humanness; undefined when none. */
+export function latestTrigger(events: readonly AguiEvent[]): boolean | undefined {
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i];
     if (e.type === "TEXT_MESSAGE_START" && e.role === "user") return true;
@@ -40,7 +45,7 @@ export function humanTriggerFromLog(events: readonly AguiEvent[]): boolean {
       return isHumanTrigger(e.source);
     }
   }
-  return false;
+  return undefined;
 }
 
 /** One connected remote agent: its live transport, bound to the owner it registered as. */

@@ -164,6 +164,9 @@ CREATE TABLE "conversation_events" (
   "created_at"      timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY ("conversation_id", "seq")
 );
+-- Run boundaries, so settlement skips message events.
+CREATE INDEX "conversation_events_run_markers" ON "conversation_events" ("conversation_id", "seq")
+  WHERE ((event ->> 'type'::text) = ANY (ARRAY['RUN_STARTED'::text, 'RUN_FINISHED'::text, 'RUN_ERROR'::text, 'CANCEL_REQUESTED'::text]));
 
 -- Conversation ASSETS (images, future: other media) — metadata only.
 -- The asset BYTES live on the dedicated assets PVC (/var/lib/agent-assets),

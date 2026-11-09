@@ -161,6 +161,7 @@ export const conversationEvents = pgTable("conversation_events", {
 	prevChecksum: text("prev_checksum").notNull(),
 	createdAt: timestamp("created_at", { withTimezone: true, mode: 'string' }).defaultNow().notNull(),
 }, (table) => [
+	index("conversation_events_run_markers").using("btree", table.conversationId.asc().nullsLast().op("int8_ops"), table.seq.asc().nullsLast().op("int8_ops")).where(sql`((event ->> 'type'::text) = ANY (ARRAY['RUN_STARTED'::text, 'RUN_FINISHED'::text, 'RUN_ERROR'::text, 'CANCEL_REQUESTED'::text]))`),
 	primaryKey({ columns: [table.seq, table.conversationId], name: "conversation_events_pkey"}),
 ]);
 

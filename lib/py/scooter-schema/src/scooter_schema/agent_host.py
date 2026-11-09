@@ -45,6 +45,7 @@ class ConversationEvents(Base):
     __tablename__ = 'conversation_events'
     __table_args__ = (
         PrimaryKeyConstraint('conversation_id', 'seq', name='conversation_events_pkey'),
+        Index('conversation_events_run_markers', 'conversation_id', 'seq', postgresql_where="((event ->> 'type'::text) = ANY (ARRAY['RUN_STARTED'::text, 'RUN_FINISHED'::text, 'RUN_ERROR'::text, 'CANCEL_REQUESTED'::text]))")
     )
 
     conversation_id: Mapped[str] = mapped_column(Text, primary_key=True)
