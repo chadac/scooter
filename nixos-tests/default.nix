@@ -35,6 +35,8 @@ in
   # contrib/files' sandbox half: the unit, the manifest entry and the base path the
   # proxy forwards, with the viewer's own behaviour left to its pytest suite.
   dev-env-contrib-files = runTest ./contrib-files.nix;
+  # contrib/web-review's sandbox half: the dev server unit, the base path and the overlay.
+  dev-env-contrib-web-review = runTest ./contrib-web-review.nix;
   # Web-service persistence across a pod recreate: the enabled set is recorded on the PVC and restored at boot.
   dev-env-service-persist = runTest ./service-persist.nix;
   # The mcpServers option: unit, discovery manifest, auto-assigned ports, open ports and the stdio wrapper.

@@ -36,5 +36,6 @@
     ./skills/contrib.nix
     ./slack/contrib.nix
     ./ssh/contrib.nix
+    ./web-review/contrib.nix
   ];
 }
