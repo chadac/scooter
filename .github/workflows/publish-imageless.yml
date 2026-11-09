@@ -1,0 +1,72 @@
+name: Publish imageless releases
+
+# Each image's imageless rootfs goes to the scooter cachix (the cachix action
+# pushes what the job builds), its placeholder to ghcr, and the content-addressed
+# release catalog to the imageless-catalog branch, which nodes read over HTTPS.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: publish-imageless-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write # push the imageless-catalog branch
+  packages: write # push placeholders to ghcr.io/<owner>/scooter/*
+
+jobs:
+  publish:
+    name: imageless releases (x86_64-linux)
+    runs-on: ubuntu-latest
+    env:
+      CONTAINERS_REGISTRIES_CONF: ${{ github.workspace }}/.registries.conf
+    steps:
+      - uses: actions/checkout@v5
+      - uses: nixbuild/nix-quick-install-action@v30
+      - uses: cachix/cachix-action@v15
+        with:
+          name: scooter
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
+      - name: neutralize the runner's v1 registries.conf
+        run: 'touch "$CONTAINERS_REGISTRIES_CONF"'
+
+      - name: install skopeo
+        run: nix profile install nixpkgs#skopeo
+
+      - name: log in to ghcr.io
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | skopeo login ghcr.io -u '${{ github.actor }}' --password-stdin
+
+      # Building it builds every rootfs, which the cachix action then pushes.
+      - name: build rootfs closures + placeholders
+        run: nix build .#imageless-publish .#imageless-catalog -o result
+
+      - name: push placeholders
+        run: |
+          set -euo pipefail
+          jq -c '.[]' result/push.json | while read -r entry; do
+            attr=$(jq -r .attr <<<"$entry"); image=$(jq -r .image <<<"$entry")
+            if skopeo inspect "docker://${image}" >/dev/null 2>&1; then
+              echo "== ${image} already published =="; continue
+            fi
+            "result/${attr}.copyTo/bin/copy-to" "docker://${image}"
+          done
+
+      # Manifests are named by digest, so the branch only ever gains files.
+      - name: publish the catalog
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          if git fetch origin imageless-catalog; then
+            git worktree add catalog origin/imageless-catalog && git -C catalog switch -c imageless-catalog
+          else
+            git worktree add --orphan -b imageless-catalog catalog
+          fi
+          cp -rL --no-preserve=mode result-1/. catalog/
+          git -C catalog add -A
+          git -C catalog diff --cached --quiet && { echo "== catalog unchanged =="; exit 0; }
+          git -C catalog commit -m "imageless releases for ${GITHUB_SHA}"
+          git -C catalog push origin imageless-catalog
