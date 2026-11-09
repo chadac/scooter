@@ -64,9 +64,11 @@ type Note struct {
 	Thread   []Msg    `json:"thread"`
 	Shot     string   `json:"shot,omitempty"`
 	// Why the shot may be incomplete (cross-origin images, WebGL, …).
-	ShotWarning string    `json:"shotWarning,omitempty"`
-	Resolved    bool      `json:"resolved,omitempty"`
-	Created     time.Time `json:"created"`
+	ShotWarning string `json:"shotWarning,omitempty"`
+	Resolved    bool   `json:"resolved,omitempty"`
+	// Cleared hides the pin on its page; it stays in the Pins list.
+	Cleared bool      `json:"cleared,omitempty"`
+	Created time.Time `json:"created"`
 	// The note is unread while the agent's last change is newer than ReadAt.
 	AgentAt *time.Time `json:"agentAt,omitempty"`
 	ReadAt  *time.Time `json:"readAt,omitempty"`
@@ -255,6 +257,24 @@ func (s *Store) MarkRead(id string) (Note, error) {
 		return nil
 	})
 	return out, err
+}
+
+// SetCleared hides or shows the given notes' pins.
+func (s *Store) SetCleared(ids []string, cleared bool) error {
+	return s.mutate(func(st *State) error {
+		notes := make([]*Note, len(ids))
+		for i, id := range ids {
+			n, err := find(st, id)
+			if err != nil {
+				return err
+			}
+			notes[i] = n
+		}
+		for _, n := range notes {
+			n.Cleared = cleared
+		}
+		return nil
+	})
 }
 
 func (s *Store) Delete(id string) error {

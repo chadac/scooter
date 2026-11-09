@@ -433,7 +433,7 @@
     if (hidePins) return;
     const here = pathOf(route());
     for (const n of state.notes) {
-      if (pathOf(n.route) !== here) continue;
+      if (n.cleared || pathOf(n.route) !== here) continue;
       const { r, detached } = anchorRect(n);
       const pin = document.createElement("div");
       const since = performance.now() - (resolvedAt.get(n.id) ?? -1e9);

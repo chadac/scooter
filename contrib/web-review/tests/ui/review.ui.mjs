@@ -196,6 +196,31 @@ try {
   check("Hide pins hides them", await until(async () => (await app().locator(".pin").count()) === 0));
   await page.locator("#hide").click();
 
+  // --- clear pins -----------------------------------------------------------------
+  await until(async () => (await app().locator(".pin").count()) === 2);
+  await page.locator("#clear").click();
+  check("Clear pins hides this page's pins", await until(async () => (await app().locator(".pin").count()) === 0));
+  check("…keeps them in the Pins list, marked cleared", await until(async () => (await page.locator("#list li.cleared").count()) === 2));
+  check("…and has nothing left to clear", await page.locator("#clear").isDisabled());
+  const nMessages = stack.messages.length;
+  await page.keyboard.press("c");
+  await armed();
+  const h1 = await app().locator("h1").boundingBox();
+  await page.mouse.move(h1.x + 5, h1.y + 5);
+  await page.mouse.move(h1.x + 10, h1.y + 8);
+  await page.mouse.down();
+  await page.mouse.up();
+  await composer.waitFor();
+  await composer.fill("Fresh feedback after clearing.");
+  await app().locator(".pop .save").click();
+  await until(async () => stack.messages.length > nMessages);
+  check("a new note after clearing still shows its pin", await until(async () => (await app().locator(".pin").count()) === 1));
+  await page.locator(`#list li[data-id="${id2}"]`).click();
+  check("opening a cleared note from the list brings its pin back", await until(async () =>
+    (await app().locator(`.pin[data-id="${id2}"]`).count()) === 1 && (await page.locator(`#list li.cleared[data-id="${id2}"]`).count()) === 0));
+  await page.keyboard.press("Escape");
+  await snap("08-cleared");
+
   // --- hot reload -------------------------------------------------------------------
   const assets = join(stack.appDir, "static", "assets");
   await app().locator("h1").evaluate(() => { window.__sameDocument = true; });

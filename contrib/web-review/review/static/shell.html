@@ -78,6 +78,8 @@
   #list .meta .route { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, monospace; }
   #list .text { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   #list .resolved .text { color: var(--muted); }
+  #list .cleared .badge { opacity: .45; }
+  #list .cleared .meta::after { content: "cleared"; font-style: italic; }
   #list .last { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #list .unread .text, #list .unread .last { font-weight: 600; color: var(--ink); }
   #list .empty { display: block; padding: 16px 12px; color: var(--muted); border: 0; cursor: default; }
@@ -98,6 +100,7 @@
       <span class="sep"></span>
       <span id="route" title="The app's route"></span>
       <button id="hide" type="button" aria-pressed="false" title="Hide pins (H)">Hide pins</button>
+      <button id="clear" type="button" title="Clear this page's pins; new ones still show, and the Pins list keeps them" disabled>Clear pins</button>
       <button id="reload" type="button" title="Reload the app">⟳</button>
       <button id="pins" type="button" aria-pressed="false" aria-controls="side" title="All pins (P)">Pins <span id="pins-n"></span><span id="pins-unread" title="Unread"></span></button>
     </div>
@@ -210,6 +213,8 @@ function setHide(h) {
 $("point").addEventListener("click", () => setMode("point"));
 $("area").addEventListener("click", () => setMode("area"));
 $("hide").addEventListener("click", () => setHide(!hide));
+const onPage = () => state.notes.filter((n) => !n.cleared && pathOf(n.route) === pathOf(currentRoute));
+$("clear").addEventListener("click", () => api("clear", { ids: onPage().map((n) => n.id), cleared: true }).catch(console.error));
 $("reload").addEventListener("click", () => frame.contentWindow.location.reload());
 const KEY_SIDE = "scooter.review.pinsOpen", KEY_FILTER = "scooter.review.pinsFilter";
 let filter = localStorage.getItem(KEY_FILTER) || "open";
@@ -261,6 +266,7 @@ function renderList() {
   const counts = { open: open.length, closed: notes.length - open.length, all: notes.length };
   $("pins-n").textContent = open.length ? `(${open.length})` : "";
   $("pins-unread").textContent = unread || "";
+  $("clear").disabled = onPage().length === 0;
   for (const b of document.querySelectorAll("#filter button")) {
     b.ariaPressed = String(b.dataset.filter === filter);
     b.querySelector("span").textContent = counts[b.dataset.filter];
@@ -275,7 +281,7 @@ function renderList() {
   for (const n of shown) {
     const li = document.createElement("li");
     const here = pathOf(n.route) === pathOf(currentRoute);
-    li.className = [n.resolved && "resolved", isUnread(n) && "unread", here && "here"].filter(Boolean).join(" ");
+    li.className = [n.resolved && "resolved", n.cleared && "cleared", isUnread(n) && "unread", here && "here"].filter(Boolean).join(" ");
     li.dataset.id = n.id;
     li.innerHTML = `<span class="badge"></span><div class="meta"><b></b><span></span><span class="route"></span></div><div class="text"></div><div class="last"></div>`;
     li.querySelector(".badge").textContent = n.resolved ? "✓" : n.num;
@@ -287,8 +293,9 @@ function renderList() {
     if (last) li.querySelector(".last").textContent = `${last.by === "agent" ? "Scooter" : "You"}: ${last.text}`;
     else li.querySelector(".last").remove();
     li.title = isUnread(n) ? "Unread: Scooter updated this note" : "";
-    li.addEventListener("click", () => {
+    li.addEventListener("click", async () => {
       if (hide) setHide(false);
+      if (n.cleared) await api("clear", { ids: [n.id], cleared: false }).catch(console.error);
       post({ type: "review:open", id: n.id, route: n.route });
     });
     list.append(li);
