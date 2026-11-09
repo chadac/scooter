@@ -26,6 +26,9 @@ interface Tag {
   position: number;
 }
 
+// Board folders this file made, deleted after each test so the sidebar stays short.
+const madeBoards: string[] = [];
+
 /** Kanban's broker half, in memory: the boards and stages (as router folders), card state, every PUT. */
 async function serveKanban(page: Page, request: APIRequestContext, base: string) {
   const boards: Array<{ folder: string; stages: Stage[]; tags: Tag[] }> = [];
@@ -55,6 +58,7 @@ async function serveKanban(page: Page, request: APIRequestContext, base: string)
     const made = { folder: await folder(name), stages: [] as Stage[], tags: [] as Tag[] };
     for (const [i, label] of STAGES.entries()) made.stages.push({ id: await folder(label, made.folder), label, position: i + 1 });
     boards.push(made);
+    madeBoards.push(made.folder);
     return made;
   };
   await page.route("**/contrib/manifest.json", (route) =>
@@ -162,6 +166,11 @@ async function filedIn(request: APIRequestContext, base: string, id: string) {
 const lane = (page: Page, id: string) => page.locator(`[data-testid="kanban-lane"][data-column="${id}"]`);
 
 fastOnly("the kanban broker routes are stubbed in the browser")("kanban /boards view", () => {
+  test.afterEach(async ({ request, baseURL }) => {
+    const base = baseURL ?? "http://localhost:5173";
+    for (const id of madeBoards.splice(0)) await request.delete(`${base}/folders/${id}?subfolders=delete`);
+  });
+
   test("a board made on /boards shows its cards, a move files the conversation in the stage and is told to the agent, and a card opens its chat beside it", async ({
     chat,
     page,
