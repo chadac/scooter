@@ -66,7 +66,8 @@ class ResourceLinks(Base):
     __tablename__ = 'resource_links'
     __table_args__ = (
         PrimaryKeyConstraint('id', name='resource_links_pkey'),
-        UniqueConstraint('source', 'resource_type', 'resource_id', name='resource_links_source_resource_type_resource_id_key')
+        UniqueConstraint('source', 'resource_type', 'resource_id', name='resource_links_source_resource_type_resource_id_key'),
+        Index('resource_links_conversation_id', 'conversation_id')
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)

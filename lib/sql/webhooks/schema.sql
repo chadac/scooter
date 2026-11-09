@@ -57,6 +57,8 @@ CREATE TABLE "resource_links" (
   -- would let one resource map to several conversations and break that routing.
   CONSTRAINT "resource_links_source_resource_type_resource_id_key" UNIQUE ("source", "resource_type", "resource_id")
 );
+-- Per-conversation link reads by router, agent-host and webhooks.
+CREATE INDEX "resource_links_conversation_id" ON "resource_links" ("conversation_id");
 
 -- Hidden per-conversation state for services; never shown to the agent or UI.
 -- No foreign key reaches conversations, so agent-host deletes these with one.
