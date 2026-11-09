@@ -789,7 +789,9 @@ export class IntegrityAgent extends AbstractAgent {
           },
           (pos) => {
             beginFold(true);
-            if (!advance({ seq: pos.seq, checksum: pos.checksum })) return;
+            // `synced` at the cursor is the head itself, not a redelivery.
+            const atHead = !!this.cursor && this.cursor.seq === pos.seq && this.cursor.checksum === pos.checksum;
+            if (!atHead && !advance({ seq: pos.seq, checksum: pos.checksum })) return;
             // Reaching `synced` means the session is valid again.
             if (this.streamAuthError) {
               this.streamAuthError = false;

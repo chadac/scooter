@@ -62,9 +62,10 @@ async function pump(connections: unknown[][], conns: number) {
 }
 
 describe("IntegrityAgent resume", () => {
-  it("reports the head cursor from `synced`", async () => {
+  it("reports the head cursor from `synced` and ends the replay", async () => {
     const { agent, stop } = await pump([[...turn(1, "a", "one"), synced(5)]], 1);
     expect(agent.streamCursor()).toEqual({ seq: 5, checksum: sum(5) });
+    expect(agent.isReplaying()).toBe(false);
     stop();
     agent.dispose();
   });
