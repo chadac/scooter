@@ -731,6 +731,8 @@ export class IntegrityAgent extends AbstractAgent {
         const advance = (pos: FramePosition): boolean => {
           if (!chained) return false;
           if (pos.seq === undefined || !pos.checksum) return true;
+          // A redelivered frame is already folded; skip it without reconnecting.
+          if (this.cursor && pos.seq <= this.cursor.seq) return false;
           if (this.cursor && pos.prevChecksum !== undefined && pos.prevChecksum !== this.cursor.checksum) {
             chained = false;
             // A gap: keep the last good cursor, so the reconnect fetches it.

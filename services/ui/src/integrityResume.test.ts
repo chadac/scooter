@@ -131,4 +131,20 @@ describe("IntegrityAgent resume", () => {
     stop();
     agent.dispose();
   });
+
+  it("skips a redelivered frame without reconnecting", async () => {
+    const b = turn(6, "b", "two");
+    const { agent, urls, stop } = await pump(
+      [
+        [...turn(1, "a", "one"), synced(5)],
+        [{ kind: "resume" }, ...b, b[4], b[4], synced(10)],
+      ],
+      2,
+    );
+    expect(urls).toHaveLength(2);
+    expect(texts(agent)).toEqual(["one", "two"]);
+    expect(agent.streamCursor()).toEqual({ seq: 10, checksum: sum(10) });
+    stop();
+    agent.dispose();
+  });
 });
