@@ -627,6 +627,13 @@ in
               };
               spec = {
                 securityContext = { runAsNonRoot = true; runAsUser = 998; runAsGroup = 996; fsGroup = 996; };
+                # Every pooled query crosses this hop, so keep it on-node.
+                affinity = lib.optionalAttrs inCluster {
+                  podAffinity.requiredDuringSchedulingIgnoredDuringExecution = [{
+                    labelSelector.matchLabels.app = "agent-shared-db";
+                    topologyKey = "kubernetes.io/hostname";
+                  }];
+                };
                 # Waits for each provisioned agent-pg-<name> Secret.
                 initContainers = [{
                   name = "userlist";
