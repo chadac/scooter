@@ -190,3 +190,99 @@ async def test_download_files_no_token_returns_empty(monkeypatch):
     monkeypatch.setattr(settings, "slack_bot_token", "", raising=False)
     out = await sf.download_files([_file("doc.pdf", mimetype="application/pdf")])
     assert out.images == [] and out.file_parts == [] and out.inline_text == ""
+
+
+# --- skipped files: each one is listed so the message can say so -------------
+
+
+async def test_oversize_file_is_listed_with_its_url(monkeypatch):
+    monkeypatch.setattr(settings, "slack_bot_token", "xoxb-123", raising=False)
+    monkeypatch.setattr(settings, "file_max_bytes", 1024 * 1024, raising=False)
+    _patch(monkeypatch, lambda req: httpx.Response(200, content=b"x"))
+    out = await sf.download_files(
+        [_file("demo.mov", mimetype="video/quicktime", url="https://files.slack.com/demo", size=3 * 1024 * 1024)]
+    )
+    assert out.notice == (
+        "[Attachment not forwarded: demo.mov (video/quicktime, 3.0 MB): over the 1.0 MB limit."
+        " URL: https://files.slack.com/demo]"
+    )
+
+
+async def test_oversize_by_downloaded_size_reports_the_real_size(monkeypatch):
+    monkeypatch.setattr(settings, "slack_bot_token", "xoxb-123", raising=False)
+    monkeypatch.setattr(settings, "file_max_bytes", 2048, raising=False)
+    _patch(monkeypatch, lambda req: httpx.Response(200, content=b"x" * 4096))
+    out = await sf.download_files([_file("doc.pdf", mimetype="application/pdf")])
+    assert out.file_parts == []
+    assert [(s.size, s.reason) for s in out.skipped] == [(4096, "over the 2 KB limit")]
+
+
+async def test_failed_download_is_listed(monkeypatch):
+    monkeypatch.setattr(settings, "slack_bot_token", "xoxb-123", raising=False)
+    _patch(monkeypatch, lambda req: httpx.Response(403))
+    out = await sf.download_files([_file("doc.pdf", mimetype="application/pdf")])
+    assert [s.reason for s in out.skipped] == ["the download failed"]
+
+
+async def test_file_parts_past_the_per_message_limit_are_listed(monkeypatch):
+    monkeypatch.setattr(settings, "slack_bot_token", "xoxb-123", raising=False)
+    monkeypatch.setattr(settings, "file_max_per_message", 2, raising=False)
+    fetched = []
+
+    def handler(req):
+        fetched.append(str(req.url))
+        return httpx.Response(200, content=b"BIN")
+
+    _patch(monkeypatch, handler)
+    out = await sf.download_files(
+        [_file(f"{i}.zip", mimetype="application/zip", url=f"https://x/{i}") for i in range(3)]
+        + [_file("a.png", mimetype="image/png", url="https://x/img")]
+    )
+    assert [p["name"] for p in out.file_parts] == ["0.zip", "1.zip"]
+    assert len(out.images) == 1
+    assert [(s.name, s.reason) for s in out.skipped] == [("2.zip", "more than 2 files in one message")]
+    assert "https://x/2" not in fetched
+
+
+async def test_without_a_token_every_file_is_listed(monkeypatch):
+    monkeypatch.setattr(settings, "slack_bot_token", "", raising=False)
+    out = await sf.download_files([_file("a.pdf"), _file("b.png", mimetype="image/png")])
+    assert [s.name for s in out.skipped] == ["a.pdf", "b.png"]
+
+
+def test_notice_line_without_type_or_size():
+    s = sf.Skipped(name="x", mimetype="", size=None, reason="the download failed", url="")
+    assert s.line() == "[Attachment not forwarded: x: the download failed.]"
+
+
+# --- files.info fallback ------------------------------------------------------
+
+
+async def test_file_without_url_is_looked_up_via_files_info(monkeypatch):
+    monkeypatch.setattr(settings, "slack_bot_token", "xoxb-123", raising=False)
+    seen = []
+
+    def handler(req):
+        seen.append((req.url.path, req.url.params.get("file"), req.headers.get("authorization")))
+        if req.url.path == "/api/files.info":
+            return httpx.Response(
+                200,
+                json={"ok": True, "file": {"id": "F1", "name": "doc.pdf", "mimetype": "application/pdf",
+                                           "url_private_download": "https://files.slack.com/F1/doc.pdf"}},
+            )
+        return httpx.Response(200, content=b"PDF")
+
+    _patch(monkeypatch, handler)
+    out = await sf.download_files([{"id": "F1", "file_access": "check_file_info"}])
+    assert seen == [("/api/files.info", "F1", "Bearer xoxb-123"), ("/F1/doc.pdf", None, "Bearer xoxb-123")]
+    assert [p["name"] for p in out.file_parts] == ["doc.pdf"]
+    assert out.skipped == []
+
+
+async def test_files_info_failure_lists_the_file(monkeypatch):
+    monkeypatch.setattr(settings, "slack_bot_token", "xoxb-123", raising=False)
+    _patch(monkeypatch, lambda req: httpx.Response(200, json={"ok": False, "error": "file_not_found"}))
+    out = await sf.download_files([{"id": "F1", "name": "doc.pdf", "permalink": "https://x.slack.com/files/F1"}])
+    assert out.notice == (
+        "[Attachment not forwarded: doc.pdf: Slack gave no download link. URL: https://x.slack.com/files/F1]"
+    )

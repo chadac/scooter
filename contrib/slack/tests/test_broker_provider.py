@@ -74,3 +74,20 @@ def test_the_proxy_does_not_swallow_the_awaiting_input_route(monkeypatch):
     r = TestClient(app).post("/slack/awaiting-input", json=notice)
     assert r.status_code == 200, r.text
     assert [str(s.url) for s in sent] == ["https://slack.com/api/chat.postMessage"]
+
+
+@pytest.mark.asyncio
+async def test_files_host_is_a_read_only_forge_host(monkeypatch):
+    from scooter_broker_lib.forge import ForgeHosts, ForgeRequest
+
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-123")
+    provider = slack()
+    forge = next(t for t in provider.transports if isinstance(t, ForgeHosts))
+    assert [h.host for h in forge.hosts] == ["files.slack.com"]
+
+    def req(method):
+        return ForgeRequest(identity=_identity(), provider="slack", via="forge-proxy", method=method,
+                            host="files.slack.com", path="/files-pri/T1-F1/doc.pdf", query="", kind="api")
+
+    assert (await provider.forge_policy.check(req("GET"))).allowed
+    assert not (await provider.forge_policy.check(req("POST"))).allowed

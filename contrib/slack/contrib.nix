@@ -12,7 +12,9 @@ in
         secret must exist in the broker namespace.
 
         Enabling this contrib enables the Slack provider: an http-proxy to
-        slack.com/api with the bot token injected.
+        slack.com/api with the bot token injected, and read-only access to
+        files.slack.com through the forge proxy, so sandboxes can download
+        attachments.
       '';
     };
 

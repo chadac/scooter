@@ -1,8 +1,9 @@
-"""Slack provider: a static bot token over http-proxy and the agent tools."""
+"""Slack provider: a static bot token over http-proxy, the agent tools, and file downloads via the forge proxy."""
 
 from __future__ import annotations
 
 from .config import SlackSettings
+from scooter_broker_lib.forge import Decision, ForgeHost, ForgeHosts, ForgeRequest
 from scooter_broker_lib.registry import register_provider
 from scooter_broker_lib.types import Provider
 from scooter_broker_lib.sources.static_token import StaticTokenSource
@@ -14,6 +15,18 @@ from .mcp_tools import slack_mcp_server
 
 
 UPSTREAM = "https://slack.com/api"
+
+# Lets the agent download attachments the webhook skipped.
+FILES_HOST = "files.slack.com"
+
+
+class ReadOnly:
+    """Allow downloads only; uploads go through files.slack.com too."""
+
+    async def check(self, request: ForgeRequest) -> Decision:
+        if request.is_mutation:
+            return Decision.deny(f"{FILES_HOST} is read-only through Scooter")
+        return Decision.allow()
 
 
 @register_provider
@@ -29,6 +42,8 @@ def slack() -> Provider:
             # The agent tools share the proxy's upstream so the two cannot drift.
             McpTools(server=slack_mcp_server(), upstream=UPSTREAM),
             HttpProxy(upstream=UPSTREAM, methods=("GET", "POST")),
+            ForgeHosts(hosts=[ForgeHost(FILES_HOST, api_prefixes=("/",))]),
         ],
+        forge_policy=ReadOnly(),
         enabled=bool(settings.slack_bot_token),
     )

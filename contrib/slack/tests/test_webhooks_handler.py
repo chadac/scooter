@@ -106,3 +106,16 @@ async def test_slack_ack_posts_before_the_run():
     assert order == ["ack", "run"], "the ack must post BEFORE the run finishes"
     body = post.call_args.kwargs["text"]
     assert "follow along" in body and "conv-xyz" in body
+
+
+def test_weave_appends_inline_text_then_skipped_notices():
+    from scooter_contrib_slack.files import DownloadedFiles, Skipped
+
+    dl = DownloadedFiles(
+        inline_text="[Attached file: a.txt]",
+        skipped=[Skipped(name="b.mov", mimetype="", size=None, reason="the download failed", url="")],
+    )
+    assert slack_h._weave_attachments("hi", dl) == (
+        "hi\n\n[Attached file: a.txt]\n\n[Attachment not forwarded: b.mov: the download failed.]"
+    )
+    assert slack_h._weave_attachments("hi", DownloadedFiles()) == "hi"

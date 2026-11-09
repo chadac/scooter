@@ -3,7 +3,8 @@
 Attachments are split three ways: images become multimodal image parts, text files
 are inlined into the message as fenced blocks, and binary files become file parts
 the agent-host writes into the sandbox. Best-effort throughout: a file that cannot
-be downloaded, is over the size cap or lacks a URL is skipped and logged.
+be downloaded, is over a cap or lacks a URL is skipped, and listed in `skipped` so
+the message can say so. Files Slack sends without a URL are looked up via files.info.
 """
 
 from __future__ import annotations
@@ -20,6 +21,8 @@ from scooter_lib.logging_config import format_error
 
 logger = logging.getLogger(__name__)
 _C = {"component": "handlers.slack_files"}
+
+_SLACK_API = "https://slack.com/api"
 
 # Mirrors the agent-host AssetStore allow-list.
 _ALLOWED_MIME = {"image/png", "image/jpeg", "image/gif", "image/webp"}
@@ -51,6 +54,24 @@ _TEXT_EXT_LANG = {
 }
 
 
+@dataclass(frozen=True)
+class Skipped:
+    """A file left out of the message, and why."""
+
+    name: str
+    mimetype: str
+    size: int | None
+    reason: str
+    # The download URL, else the permalink.
+    url: str
+
+    def line(self) -> str:
+        details = ", ".join(x for x in (self.mimetype, _human_size(self.size) if self.size is not None else "") if x)
+        head = f"{self.name} ({details})" if details else self.name
+        tail = f" URL: {self.url}" if self.url else ""
+        return f"[Attachment not forwarded: {head}: {self.reason}.{tail}]"
+
+
 @dataclass
 class DownloadedFiles:
     """The split result of a Slack message's `files` array: image parts, the inlined text block, and binary file parts."""
@@ -58,6 +79,12 @@ class DownloadedFiles:
     images: list[dict] = field(default_factory=list)
     inline_text: str = ""
     file_parts: list[dict] = field(default_factory=list)
+    skipped: list[Skipped] = field(default_factory=list)
+
+    @property
+    def notice(self) -> str:
+        """One line per file that was not forwarded, so the agent knows it exists."""
+        return "\n".join(s.line() for s in self.skipped)
 
 
 def _image_max_bytes() -> int:
@@ -66,6 +93,10 @@ def _image_max_bytes() -> int:
 
 def _file_max_bytes() -> int:
     return getattr(settings, "file_max_bytes", _image_max_bytes())
+
+
+def _max_file_parts() -> int:
+    return getattr(settings, "file_max_per_message", 4)
 
 
 def _cap_for(f: dict) -> int:
@@ -110,8 +141,54 @@ def _inline_block(name: str, content: str, lang: str) -> str:
     return f"[Attached file: {name}]\n{fence}{fence_lang}\n{content}\n{fence}"
 
 
+def _human_size(n: int) -> str:
+    if n >= 1024 * 1024:
+        return f"{n / (1024 * 1024):.1f} MB"
+    if n >= 1024:
+        return f"{n / 1024:.0f} KB"
+    return f"{n} B"
+
+
+def _skip(result: DownloadedFiles, f: dict, reason: str) -> None:
+    size = f.get("size")
+    result.skipped.append(
+        Skipped(
+            name=f.get("name") or "file",
+            mimetype=(f.get("mimetype") or "").lower(),
+            size=size if isinstance(size, int) else None,
+            reason=reason,
+            url=f.get("url_private_download") or f.get("url_private") or f.get("permalink") or "",
+        )
+    )
+
+
+async def _file_info(client: httpx.AsyncClient, token: str, f: dict) -> dict:
+    """The file's full record from files.info, for shared-channel files Slack sends without a URL; `f` on failure."""
+    file_id = f.get("id")
+    if not file_id:
+        return f
+    try:
+        resp = await client.get(
+            f"{_SLACK_API}/files.info",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"file": file_id},
+        )
+        data = resp.json()
+    except (httpx.HTTPError, ValueError) as e:
+        logger.warning("files.info failed", extra={**_C, "file_id": file_id, "error": format_error(e)})
+        return f
+    if not data.get("ok") or not isinstance(data.get("file"), dict):
+        logger.info("files.info not ok", extra={**_C, "file_id": file_id, "slack_error": data.get("error")})
+        return f
+    return {**f, **data["file"]}
+
+
+def _needs_info(f: dict) -> bool:
+    return f.get("file_access") == "check_file_info" or not (f.get("url_private_download") or f.get("url_private"))
+
+
 async def download_files(files: list[dict] | None) -> DownloadedFiles:
-    """Fetch and split a Slack message's `files`, skipping what cannot be downloaded or is over the cap."""
+    """Fetch and split a Slack message's `files`, recording what cannot be forwarded in `skipped`."""
     result = DownloadedFiles()
     if not files:
         return result
@@ -121,15 +198,24 @@ async def download_files(files: list[dict] | None) -> DownloadedFiles:
             "message has files but slack bot token is unset, cannot download",
             extra={**_C, "file_count": len(files)},
         )
+        for f in files:
+            _skip(result, f, "the Slack bot token is not configured")
         return result
 
     text_blocks: list[str] = []
+    max_parts = _max_file_parts()
 
     async with httpx.AsyncClient(timeout=30) as client:
         for f in files:
+            if _needs_info(f):
+                f = await _file_info(client, token, f)
             name = f.get("name") or "file"
             mimetype = (f.get("mimetype") or "").lower()
             max_bytes = _cap_for(f)
+            over_cap = f"over the {_human_size(max_bytes)} limit"
+            # Non-UTF-8 text also becomes a part, re-checked below.
+            becomes_part = mimetype not in _ALLOWED_MIME and not _is_text_file(f)
+            too_many = f"more than {max_parts} files in one message"
 
             size = f.get("size")
             if isinstance(size, int) and size > max_bytes:
@@ -143,10 +229,15 @@ async def download_files(files: list[dict] | None) -> DownloadedFiles:
                         "size_from": "declared",
                     },
                 )
+                _skip(result, f, over_cap)
+                continue
+            if becomes_part and len(result.file_parts) >= max_parts:
+                _skip(result, f, too_many)
                 continue
 
             url = f.get("url_private_download") or f.get("url_private")
             if not url:
+                _skip(result, f, "Slack gave no download link")
                 continue
 
             try:
@@ -158,6 +249,7 @@ async def download_files(files: list[dict] | None) -> DownloadedFiles:
                     "file download failed",
                     extra={**_C, "file_name": name, "error": format_error(e)},
                 )
+                _skip(result, f, "the download failed")
                 continue
 
             if len(data) > max_bytes:
@@ -171,13 +263,15 @@ async def download_files(files: list[dict] | None) -> DownloadedFiles:
                         "size_from": "downloaded",
                     },
                 )
+                _skip(result, {**f, "size": len(data)}, over_cap)
                 continue
 
             if mimetype in _ALLOWED_MIME:
                 result.images.append(
                     {"data": base64.b64encode(data).decode("ascii"), "mimeType": mimetype}
                 )
-            elif _is_text_file(f):
+                continue
+            if not becomes_part:
                 try:
                     text = data.decode("utf-8")
                 except UnicodeDecodeError:
@@ -186,23 +280,19 @@ async def download_files(files: list[dict] | None) -> DownloadedFiles:
                         "file is not valid utf-8, forwarding as a binary attachment",
                         extra={**_C, "file_name": name, "mime_type": mimetype},
                     )
-                    result.file_parts.append(
-                        {
-                            "name": name,
-                            "data": base64.b64encode(data).decode("ascii"),
-                            "mimeType": mimetype or "application/octet-stream",
-                        }
-                    )
+                else:
+                    text_blocks.append(_inline_block(name, text, _lang_hint(name, f.get("filetype") or "")))
                     continue
-                text_blocks.append(_inline_block(name, text, _lang_hint(name, f.get("filetype") or "")))
-            else:
-                result.file_parts.append(
-                    {
-                        "name": name,
-                        "data": base64.b64encode(data).decode("ascii"),
-                        "mimeType": mimetype or "application/octet-stream",
-                    }
-                )
+            if len(result.file_parts) >= max_parts:
+                _skip(result, f, too_many)
+                continue
+            result.file_parts.append(
+                {
+                    "name": name,
+                    "data": base64.b64encode(data).decode("ascii"),
+                    "mimeType": mimetype or "application/octet-stream",
+                }
+            )
 
     result.inline_text = "\n\n".join(text_blocks)
     return result

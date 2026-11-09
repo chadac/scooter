@@ -25,6 +25,9 @@ class SlackSettings(ScooterBaseSettings):
     # Max bytes for any non-image inbound attachment.
     file_max_bytes: int = 10 * 1024 * 1024
 
+    # Mirrors agent-host FILE_MAX_PER_MESSAGE; past it, it rejects everything.
+    file_max_per_message: int = 4
+
     # Shared API key for the /slack/reply relay endpoint; empty disables the gate.
     relay_api_key: str = ""
 

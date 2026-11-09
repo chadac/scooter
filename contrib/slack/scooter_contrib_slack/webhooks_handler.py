@@ -113,10 +113,9 @@ def _resource_id(channel: str, thread_ts: str) -> str:
 
 
 def _weave_attachments(text: str, dl: DownloadedFiles) -> str:
-    """Append the inlined text attachments to the message; binary files and images ride as content parts instead."""
-    if not dl.inline_text:
-        return text
-    return text + "\n\n" + dl.inline_text
+    """Append inlined text files and skipped-file notices; images and binary files ride as content parts instead."""
+    extra = [x for x in (dl.inline_text, dl.notice) if x]
+    return "\n\n".join([text, *extra])
 
 
 def _format_forwarded_message(
