@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -297,32 +298,41 @@ func TestNotesWakeTheConversation(t *testing.T) {
 	if res.StatusCode != http.StatusCreated {
 		t.Fatalf("%d %v", res.StatusCode, n)
 	}
+	id, _ := n["id"].(string)
+	if len(id) != 36 || n["num"] != float64(1) {
+		t.Fatalf("id %q, num %v", id, n["num"])
+	}
 	text := waitWake(t, f)
 	for _, want := range []string{
-		"Review note #1 (area) on /orders/42, viewport 1440×900 (dark):",
+		"Review note #1 [" + id + "] (area) on /orders/42, viewport 1440×900 (dark):",
 		"area 312,180 → 860,420 inside `main > section.summary` (\"Order total $1,204\")",
 		"overlaps: `.summary .total`",
 		"> Too tight",
-		"Screenshot: " + filepath.Join(f.site.StateDir, "shots", "1.png"),
+		"Screenshot: " + filepath.Join(f.site.StateDir, "shots", id+".png"),
 		"Source: /workspace/app (dev server :",
-		"`review reply 1 \"…\"`",
+		"`review reply " + id + " \"…\"`",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("missing %q in\n%s", want, text)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(f.site.StateDir, "shots", "1.png")); err != nil {
+	if _, err := os.Stat(filepath.Join(f.site.StateDir, "shots", id+".png")); err != nil {
 		t.Error(err)
 	}
 
+	// The label alone is refused, so a stale "#1" can't land on another note.
+	if res, out := post(t, api+"notes/1/reply", map[string]any{"text": "x", "by": "agent"}); res.StatusCode != http.StatusNotFound || !strings.Contains(fmt.Sprint(out["error"]), id) {
+		t.Errorf("reply by label: %d %v", res.StatusCode, out)
+	}
+
 	// Agent replies wake nobody; a user's reply wakes and reopens.
-	post(t, api+"notes/1/resolve", map[string]any{"resolved": true, "by": "agent"})
-	post(t, api+"notes/1/reply", map[string]any{"text": "fixed", "by": "agent"})
-	post(t, api+"notes/1/reply", map[string]any{"text": "not on mobile"})
-	if text := waitWake(t, f); !strings.HasPrefix(text, "Reply on review note #1") || !strings.Contains(text, "> not on mobile") {
+	post(t, api+"notes/"+id+"/resolve", map[string]any{"resolved": true, "by": "agent"})
+	post(t, api+"notes/"+id+"/reply", map[string]any{"text": "fixed", "by": "agent"})
+	post(t, api+"notes/"+id+"/reply", map[string]any{"text": "not on mobile"})
+	if text := waitWake(t, f); !strings.HasPrefix(text, "Reply on review note #1 ["+id+"]") || !strings.Contains(text, "> not on mobile") {
 		t.Errorf("reply wake: %s", text)
 	}
-	if n, _ := f.app.store.Get(1); n.Resolved || len(n.Thread) != 3 {
+	if n, _ := f.app.store.Get(id); n.Resolved || len(n.Thread) != 3 {
 		t.Errorf("after reply: %+v", n)
 	}
 }

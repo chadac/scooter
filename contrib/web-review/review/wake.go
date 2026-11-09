@@ -48,7 +48,7 @@ func describe(n Note, shotsDir string) string {
 	if scheme == "" {
 		scheme = "light"
 	}
-	fmt.Fprintf(&b, "Review note #%d (%s) on %s, viewport %d×%d (%s):\n", n.ID, n.Kind, n.Route, vp.W, vp.H, scheme)
+	fmt.Fprintf(&b, "Review note #%d [%s] (%s) on %s, viewport %d×%d (%s):\n", n.Num, n.ID, n.Kind, n.Route, vp.W, vp.H, scheme)
 	if n.Kind == "area" {
 		fmt.Fprintf(&b, "  area %.0f,%.0f → %.0f,%.0f inside %s\n", n.Doc.X, n.Doc.Y, n.Doc.X+n.Doc.W, n.Doc.Y+n.Doc.H, refString(n.Anchor))
 		if len(n.Overlaps) > 0 {
@@ -87,10 +87,10 @@ func sourceLine(t *Target) string {
 	return fmt.Sprintf("Dev server :%d.\n", t.Port)
 }
 
-func hints(ids ...int) string {
+func hints(ids ...string) string {
 	id := "<id>"
 	if len(ids) == 1 {
-		id = fmt.Sprint(ids[0])
+		id = ids[0]
 	}
 	return fmt.Sprintf("`review reply %s \"…\"` · `review resolve %s` · `review snap` for the live page", id, id)
 }
@@ -102,7 +102,7 @@ func noteMessage(n Note, shotsDir string, t *Target) string {
 func batchMessage(notes []Note, shotsDir string, t *Target) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Review: %d notes.\n\n", len(notes))
-	ids := make([]int, len(notes))
+	ids := make([]string, len(notes))
 	for i, n := range notes {
 		ids[i] = n.ID
 		b.WriteString(describe(n, shotsDir) + "\n")
@@ -111,11 +111,11 @@ func batchMessage(notes []Note, shotsDir string, t *Target) string {
 }
 
 func replyMessage(n Note, text string) string {
-	return fmt.Sprintf("Reply on review note #%d (%s on %s):\n%s\n%s", n.ID, n.Kind, n.Route, quote(text), hints(n.ID))
+	return fmt.Sprintf("Reply on review note #%d [%s] (%s on %s):\n%s\n%s", n.Num, n.ID, n.Kind, n.Route, quote(text), hints(n.ID))
 }
 
 func reopenMessage(n Note) string {
-	return fmt.Sprintf("Review note #%d on %s was reopened.\n%s", n.ID, n.Route, hints(n.ID))
+	return fmt.Sprintf("Review note #%d [%s] on %s was reopened.\n%s", n.Num, n.ID, n.Route, hints(n.ID))
 }
 
 // Waker posts a message into this conversation, which wakes the agent.

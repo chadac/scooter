@@ -215,24 +215,24 @@ func cliTarget(site Site, args []string) error {
 	return nil
 }
 
-func cliShow(c *client, rawID string) error {
+func cliShow(c *client, id string) error {
 	var st State
 	if _, err := c.do("GET", "notes", nil, &st); err != nil {
 		return err
 	}
-	id, _ := strconv.Atoi(rawID)
-	for _, n := range st.Notes {
-		if n.ID != id {
-			continue
-		}
+	n, err := find(&st, id)
+	if err != nil {
+		return err
+	}
+	{
 		if n.Shot != "" {
 			fmt.Println(filepath.Join(c.site.ShotsDir(), n.Shot))
 			return nil
 		}
 		vp := n.Viewport
 		vp.H = min(max(vp.H, int(n.Doc.Y+n.Doc.H)+48), 4000)
-		full := filepath.Join(os.TempDir(), fmt.Sprintf("review-%d-full.png", id))
-		out := filepath.Join(os.TempDir(), fmt.Sprintf("review-%d.png", id))
+		full := filepath.Join(os.TempDir(), fmt.Sprintf("review-%s-full.png", id))
+		out := filepath.Join(os.TempDir(), fmt.Sprintf("review-%s.png", id))
 		if err := headless(c.site, n.Route, vp, full); err != nil {
 			return err
 		}
@@ -243,7 +243,6 @@ func cliShow(c *client, rawID string) error {
 		fmt.Println("note: headless render from the URL; the user's page state isn't reproduced")
 		return nil
 	}
-	return fmt.Errorf("no note #%s", rawID)
 }
 
 func cliSnap(c *client, route string) error {

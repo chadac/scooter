@@ -154,8 +154,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request, rest string) {
 	case route == "POST notes" && len(parts) == 3:
 		a.noteAction(w, r, parts[1], parts[2])
 	case route == "DELETE notes" && len(parts) == 2:
-		id, _ := strconv.Atoi(parts[1])
-		if err := a.store.Delete(id); err != nil {
+		if err := a.store.Delete(parts[1]); err != nil {
 			fail(w, http.StatusNotFound, err.Error())
 			return
 		}
@@ -218,8 +217,7 @@ func (a *App) addNote(w http.ResponseWriter, r *http.Request) {
 	writeJSONResponse(w, http.StatusCreated, n)
 }
 
-func (a *App) noteAction(w http.ResponseWriter, r *http.Request, rawID, action string) {
-	id, _ := strconv.Atoi(rawID)
+func (a *App) noteAction(w http.ResponseWriter, r *http.Request, id, action string) {
 	var body struct {
 		Text     string `json:"text"`
 		By       string `json:"by"`

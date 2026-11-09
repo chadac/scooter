@@ -432,17 +432,17 @@
       pin.title = (detached ? "(element not found) " : "") + (n.thread[0]?.text ?? "");
       if (n.kind === "area") {
         Object.assign(pin.style, { left: r.left + n.rel.x + "px", top: r.top + n.rel.y + "px", width: n.rel.w + "px", height: n.rel.h + "px" });
-        pin.innerHTML = `<span class="num">${n.id}</span>`;
+        pin.innerHTML = `<span class="num">${n.num}</span>`;
         pin.firstChild.onclick = () => openThread(n.id);
       } else {
         Object.assign(pin.style, { left: r.left + n.rel.x + "px", top: r.top + n.rel.y + "px" });
-        pin.textContent = n.id;
+        pin.textContent = n.num;
         pin.onclick = () => openThread(n.id);
       }
       pinsEl.append(pin);
     }
     if (pop && pop.dataset.thread) {
-      const n = state.notes.find((x) => String(x.id) === pop.dataset.thread);
+      const n = state.notes.find((x) => x.id === pop.dataset.thread);
       const pin = pinsEl.querySelector(`[data-id="${pop.dataset.thread}"]`);
       if (n && pin) place(pop, pin.getBoundingClientRect());
     }
@@ -466,7 +466,7 @@
     pop.dataset.thread = String(id);
     const status = n.resolved ? "resolved" : n.held ? "held, not sent yet" : "open";
     pop.innerHTML = `
-      <div class="row"><b class="grow">#${n.id} · ${n.kind}</b><span class="meta">${status}</span></div>
+      <div class="row"><b class="grow">#${n.num} · ${n.kind}</b><span class="meta">${status}</span></div>
       <div class="thread"></div>
       <textarea class="short" placeholder="Reply…"></textarea>
       <div class="row">
@@ -529,7 +529,7 @@
       state = JSON.parse(e.data);
       draw();
       if (pop && pop.dataset.thread) {
-        const id = Number(pop.dataset.thread);
+        const id = pop.dataset.thread;
         const n = state.notes.find((x) => x.id === id);
         const typed = pop.querySelector("textarea").value;
         if (n) { openThread(id); pop.querySelector("textarea").value = typed; } else closePopover();

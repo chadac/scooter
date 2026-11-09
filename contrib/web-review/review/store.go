@@ -1,11 +1,14 @@
 package main
 
 import (
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -44,7 +47,9 @@ type Msg struct {
 
 // Note is a review comment on an element or an area.
 type Note struct {
-	ID    int    `json:"id"`
+	// ID addresses the note; Num is just its display label.
+	ID    string `json:"id"`
+	Num   int    `json:"num"`
 	Kind  string `json:"kind"`
 	Route string `json:"route"`
 	Title string `json:"title,omitempty"`
@@ -66,9 +71,9 @@ type Note struct {
 }
 
 type State struct {
-	NextID int    `json:"nextId"`
-	Hold   bool   `json:"hold"`
-	Notes  []Note `json:"notes"`
+	NextNum int    `json:"nextNum"`
+	Hold    bool   `json:"hold"`
+	Notes   []Note `json:"notes"`
 }
 
 // Store is notes.json plus its screenshots, on the workspace PVC.
@@ -86,7 +91,7 @@ const maxShotBytes = 50 << 20
 var errNoNote = errors.New("no such note")
 
 func openStore(dir string) (*Store, error) {
-	s := &Store{dir: dir, state: State{NextID: 1}, now: time.Now}
+	s := &Store{dir: dir, state: State{NextNum: 1}, now: time.Now}
 	raw, err := os.ReadFile(s.path())
 	switch {
 	case errors.Is(err, os.ErrNotExist):
@@ -97,8 +102,8 @@ func openStore(dir string) (*Store, error) {
 			return nil, err
 		}
 	}
-	if s.state.NextID < 1 {
-		s.state.NextID = 1
+	if s.state.NextNum < 1 {
+		s.state.NextNum = 1
 	}
 	return s, nil
 }
@@ -142,15 +147,16 @@ func (s *Store) mutate(f func(*State) error) error {
 // Add stores a note, held while the review is on hold.
 func (s *Store) Add(n Note, comment string, shot []byte) (Note, error) {
 	err := s.mutate(func(st *State) error {
-		n.ID = st.NextID
-		st.NextID++
+		n.ID = newID()
+		n.Num = st.NextNum
+		st.NextNum++
 		n.Created = s.now().UTC()
 		n.Held = st.Hold
 		n.Resolved = false
 		n.Thread = []Msg{{By: "user", Text: comment, At: n.Created}}
 		n.Shot = ""
 		if len(shot) > 0 {
-			name := strconv.Itoa(n.ID) + ".png"
+			name := n.ID + ".png"
 			if err := s.writeShot(name, shot); err == nil {
 				n.Shot = name
 			}
@@ -161,31 +167,46 @@ func (s *Store) Add(n Note, comment string, shot []byte) (Note, error) {
 	return n, err
 }
 
-func (s *Store) find(st *State, id int) *Note {
+// newID is a random v4 UUID.
+func newID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+// find matches full IDs; a bare label is refused as ambiguous.
+func find(st *State, id string) (*Note, error) {
 	for i := range st.Notes {
 		if st.Notes[i].ID == id {
-			return &st.Notes[i]
+			return &st.Notes[i], nil
 		}
 	}
-	return nil
-}
-
-func (s *Store) Get(id int) (Note, error) {
-	st := s.Snapshot()
+	label := strings.TrimPrefix(id, "#")
 	for _, n := range st.Notes {
-		if n.ID == id {
-			return n, nil
+		if strconv.Itoa(n.Num) == label {
+			return nil, fmt.Errorf("%w: notes are addressed by id; #%d is %s", errNoNote, n.Num, n.ID)
 		}
 	}
-	return Note{}, errNoNote
+	return nil, fmt.Errorf("%w %q", errNoNote, id)
 }
 
-func (s *Store) Reply(id int, by, text string) (Note, error) {
+func (s *Store) Get(id string) (Note, error) {
+	st := s.Snapshot()
+	n, err := find(&st, id)
+	if err != nil {
+		return Note{}, err
+	}
+	return *n, nil
+}
+
+func (s *Store) Reply(id string, by, text string) (Note, error) {
 	var out Note
 	err := s.mutate(func(st *State) error {
-		n := s.find(st, id)
-		if n == nil {
-			return errNoNote
+		n, err := find(st, id)
+		if err != nil {
+			return err
 		}
 		n.Thread = append(n.Thread, Msg{By: by, Text: text, At: s.now().UTC()})
 		// A user's reply reopens the thread.
@@ -198,12 +219,12 @@ func (s *Store) Reply(id int, by, text string) (Note, error) {
 	return out, err
 }
 
-func (s *Store) Resolve(id int, resolved bool) (Note, error) {
+func (s *Store) Resolve(id string, resolved bool) (Note, error) {
 	var out Note
 	err := s.mutate(func(st *State) error {
-		n := s.find(st, id)
-		if n == nil {
-			return errNoNote
+		n, err := find(st, id)
+		if err != nil {
+			return err
 		}
 		n.Resolved = resolved
 		out = *n
@@ -212,18 +233,18 @@ func (s *Store) Resolve(id int, resolved bool) (Note, error) {
 	return out, err
 }
 
-func (s *Store) Delete(id int) error {
+func (s *Store) Delete(id string) error {
 	return s.mutate(func(st *State) error {
-		for i, n := range st.Notes {
-			if n.ID == id {
-				if n.Shot != "" {
-					_ = os.Remove(filepath.Join(s.dir, "shots", n.Shot))
-				}
-				st.Notes = append(st.Notes[:i], st.Notes[i+1:]...)
-				return nil
-			}
+		n, err := find(st, id)
+		if err != nil {
+			return err
 		}
-		return errNoNote
+		if n.Shot != "" {
+			_ = os.Remove(filepath.Join(s.dir, "shots", n.Shot))
+		}
+		i := slices.IndexFunc(st.Notes, func(x Note) bool { return x.ID == id })
+		st.Notes = slices.Delete(st.Notes, i, i+1)
+		return nil
 	})
 }
 

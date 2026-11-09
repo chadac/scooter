@@ -103,13 +103,14 @@ try {
   check("saving a note wakes the conversation", !!first);
   check("…tagged with the contrib's source", first?.source === "web-review", first?.source);
   check("…naming the route, element and comment",
-    /Review note #1 \(point\) on \/orders\/1042, viewport \d+×\d+ \(\w+\):/.test(first?.text) &&
+    /Review note #1 \[[0-9a-f-]{36}\] \(point\) on \/orders\/1042, viewport \d+×\d+ \(\w+\):/.test(first?.text) &&
       first.text.includes("at `") && first.text.includes("$1,204.50") && first.text.includes("> The total is cramped"), first?.text);
-  check("…with the source directory and the commands", first?.text.includes("Source: /workspace/acme-ops") && first.text.includes("`review reply 1"), first?.text);
+  const id1 = /\[([0-9a-f-]{36})\]/.exec(first?.text ?? "")?.[1];
+  check("…with the source directory and the commands", first?.text.includes("Source: /workspace/acme-ops") && first.text.includes("`review reply " + id1), first?.text);
   const shotPath = /Screenshot: (\S+)/.exec(first?.text ?? "")?.[1];
   check("…and a screenshot path", !!shotPath && shotPath.startsWith(stateDir), first?.text);
   check("the screenshot exists and isn't blank", shotPath && existsSync(shotPath) && statSync(shotPath).size > 3000, shotPath && existsSync(shotPath) ? statSync(shotPath).size : "missing");
-  await app().locator('.pin.point[data-id="1"]').waitFor();
+  await app().locator(`.pin.point[data-id="${id1}"]`).waitFor();
   check("a pin marks the element", true);
   check("the Notes count goes up", (await page.locator("#open-n").textContent()) === "1");
 
@@ -127,23 +128,26 @@ try {
   const second = await until(async () => stack.messages[1]);
   check("an area note names its container and overlaps",
     /\(area\)/.test(second?.text) && /area \d+,\d+ → \d+,\d+ inside `[^`]*summary/.test(second?.text) && second.text.includes("overlaps:"), second?.text);
-  await app().locator('.pin.area[data-id="2"]').waitFor();
+  const id2 = /\[([0-9a-f-]{36})\]/.exec(second?.text ?? "")?.[1];
+  check("each note gets its own id", !!id2 && id2 !== id1, [id1, id2]);
+  await app().locator(`.pin.area[data-id="${id2}"]`).waitFor();
   await snap("04-pins");
 
   // --- the agent answers ----------------------------------------------------------
-  await stack.cli("reply", "1", "Widened the summary column.");
-  await stack.cli("resolve", "1");
-  await until(async () => (await app().locator('.pin.resolved[data-id="1"]').count()) === 1);
-  check("`review resolve` turns the pin green", (await app().locator('.pin.resolved[data-id="1"]').count()) === 1);
-  await app().locator('.pin[data-id="1"]').click();
+  check("the label alone is refused", await stack.cli("resolve", "1").then(() => false, (e) => String(e).includes(id1)));
+  await stack.cli("reply", id1, "Widened the summary column.");
+  await stack.cli("resolve", id1);
+  await until(async () => (await app().locator(`.pin.resolved[data-id="${id1}"]`).count()) === 1);
+  check("`review resolve` turns the pin green", (await app().locator(`.pin.resolved[data-id="${id1}"]`).count()) === 1);
+  await app().locator(`.pin[data-id="${id1}"]`).click();
   await app().locator(".pop .msg.agent").waitFor();
   check("`review reply` shows on the pin's thread", (await app().locator(".pop .msg.agent").textContent()).includes("Widened"));
   await snap("05-thread");
   await app().locator(".pop textarea").fill("Still tight on mobile.");
   await app().locator(".pop .reply").click();
   const third = await until(async () => stack.messages[2]);
-  check("a reply from the user wakes the agent again", third?.text.startsWith("Reply on review note #1") && third.text.includes("> Still tight"), third?.text);
-  check("…and reopens the note", await until(async () => (await app().locator('.pin.resolved[data-id="1"]').count()) === 0));
+  check("a reply from the user wakes the agent again", third?.text.startsWith(`Reply on review note #1 [${id1}]`) && third.text.includes("> Still tight"), third?.text);
+  check("…and reopens the note", await until(async () => (await app().locator(`.pin.resolved[data-id="${id1}"]`).count()) === 0));
   await page.keyboard.press("Escape");
 
   // --- hold and send all ----------------------------------------------------------

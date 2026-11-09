@@ -254,7 +254,7 @@ function renderList() {
     const li = document.createElement("li");
     li.className = n.resolved ? "resolved" : n.held ? "held" : "";
     const here = pathOf(n.route) === pathOf(currentRoute);
-    li.innerHTML = `<div class="meta"><span class="dot"></span><b>#${n.id}</b><span>${n.kind}</span><span></span><span></span></div><div class="text"></div>`;
+    li.innerHTML = `<div class="meta"><span class="dot"></span><b>#${n.num}</b><span>${n.kind}</span><span></span><span></span></div><div class="text"></div>`;
     li.querySelector(".meta span:nth-of-type(3)").textContent = here ? "this page" : n.route;
     li.querySelector(".meta span:nth-of-type(4)").textContent = n.resolved ? "resolved" : n.held ? "held" : `${n.thread.length} msg`;
     li.querySelector(".text").textContent = n.thread[0]?.text ?? "";
