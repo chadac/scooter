@@ -60,11 +60,23 @@ export interface ResumeEntry {
 }
 
 interface IntegrityFrame {
-  kind: "event" | "synced" | "topic";
+  kind: "event" | "synced" | "topic" | "resume" | "reset";
   event?: Record<string, unknown>;
   topic?: string;
   data?: unknown;
+  seq?: number;
+  checksum?: string;
+  prevChecksum?: string;
 }
+
+/** The last log position the fold has applied, sent to resume a reconnect. */
+export interface StreamCursor {
+  seq: number;
+  checksum: string;
+}
+
+/** Where a frame sits in the log, when the server says. */
+type FramePosition = Pick<IntegrityFrame, "seq" | "checksum" | "prevChecksum">;
 
 /** A pending interrupt parsed from the log's RUN_FINISHED(outcome=interrupt), mirroring the bridge's AguiInterrupt shape. */
 export interface PendingInterrupt {
@@ -112,6 +124,12 @@ export class IntegrityAgent extends AbstractAgent {
   private foldEpoch = 0;
   foldGeneration(): number {
     return this.foldEpoch;
+  }
+
+  /** The log position `messages` reflects, or undefined when unknown. */
+  private cursor: StreamCursor | undefined;
+  streamCursor(): StreamCursor | undefined {
+    return this.cursor;
   }
 
   /** True while a goose run is in flight, derived from RUN_STARTED/RUN_FINISHED/RUN_ERROR and ignoring out-of-band `ext-` runs. */
@@ -535,8 +553,9 @@ export class IntegrityAgent extends AbstractAgent {
     url: string,
     headers: Record<string, string>,
     controller: AbortController,
-    onEvent: (e: BaseEvent) => void,
-    onSynced?: () => void,
+    onEvent: (e: BaseEvent, pos: FramePosition) => void,
+    onSynced?: (pos: FramePosition) => void,
+    onMode?: (mode: "resume" | "reset") => void,
   ): Promise<ConnectionOutcome> {
     // Topics name the conversation this connection was opened for.
     const id = this.cfg.conversationId;
@@ -588,11 +607,13 @@ export class IntegrityAgent extends AbstractAgent {
               stateFeed.open(stateId);
               fedState = true;
             }
-            onSynced?.();
+            onSynced?.(frame);
+          } else if (frame.kind === "resume" || frame.kind === "reset") {
+            onMode?.(frame.kind);
           } else if (frame.kind === "topic" && frame.topic && stateId) {
             stateFeed.frame(stateId, { kind: "topic", topic: frame.topic, data: frame.data });
           } else if (frame.kind === "event" && frame.event) {
-            onEvent(frame.event as unknown as BaseEvent);
+            onEvent(frame.event as unknown as BaseEvent, frame);
           }
         }
       }
@@ -628,6 +649,8 @@ export class IntegrityAgent extends AbstractAgent {
     let controller: AbortController | undefined;
     // Set by the idle watchdog when it forced the disconnect, so the loop reconnects without the drop backoff.
     let watchdogForced = false;
+    // Set by the idle watchdog so its reconnect ignores the cursor.
+    let refoldNext = false;
     // True once seedTail() painted the recent tail, so the first connection keeps it on screen through the replay.
     let seeded = false;
 
@@ -653,43 +676,70 @@ export class IntegrityAgent extends AbstractAgent {
             if (!seeded) seeded = await this.seedTail().catch(() => false);
           waitTicks = 0;
         }
-        // Reset to empty so the replay rebuilds identical state instead of doubling onto the previous fold, except that the first connection after seedTail() keeps the seeded tail visible.
-        if (firstConn && seeded) {
-          // The applier still folds from empty without wiping the visible tail.
-          this.messages = [];
-        } else {
-          this.setMessages([]);
-        }
         const isFirstConnection = firstConn;
         firstConn = false;
-        // A fresh connection replays the whole log, so pending interrupts are recomputed from scratch in log order.
-        this.pendingApprovals.clear();
-        // Re-derived from the replayed log.
-        this.lastRunError = null;
-        // Re-derived from the log's last QUEUE_UPDATED snapshot.
-        this.queued = [];
-        // The new replay's snapshot carries its own window start.
-        this.historyCursor = 1;
-        // System messages and their anchor are re-derived from the replayed log too.
-        this.systemMessages = [];
-        this.lastMessageId = null;
-        // Entering (re)replay: suppress per-event renders until `synced`.
-        this.replaying = true;
-        // A new fold starts here, so consumers must not compare its length against the previous fold's.
-        this.foldEpoch++;
+        // A watchdog heal re-folds everything, in case the fold itself went wrong.
+        const resumeFrom = refoldNext ? undefined : this.cursor;
+        refoldNext = false;
+        const events$ = new Subject<BaseEvent>();
+        let folded: Promise<void> | undefined;
+        // Starts this connection's fold; the applier clones `messages` when subscribed, so reset first.
+        const beginFold = (fresh: boolean) => {
+          if (folded) return;
+          if (fresh) {
+            // Reset to empty so the replay rebuilds identical state instead of doubling onto the previous fold, except that the first connection after seedTail() keeps the seeded tail visible.
+            if (isFirstConnection && seeded) {
+              // The applier still folds from empty without wiping the visible tail.
+              this.messages = [];
+            } else {
+              this.setMessages([]);
+            }
+            // A fresh connection replays the whole log, so pending interrupts are recomputed from scratch in log order.
+            this.pendingApprovals.clear();
+            // Re-derived from the replayed log.
+            this.lastRunError = null;
+            // Re-derived from the log's last QUEUE_UPDATED snapshot.
+            this.queued = [];
+            // The new replay's snapshot carries its own window start.
+            this.historyCursor = 1;
+            // System messages and their anchor are re-derived from the replayed log too.
+            this.systemMessages = [];
+            this.lastMessageId = null;
+            // Unknown until this replay's `synced` reports it.
+            this.cursor = undefined;
+            // A new fold starts here, so consumers must not compare its length against the previous fold's.
+            this.foldEpoch++;
+          }
+          // Suppress per-event renders until `synced`.
+          this.replaying = true;
+          // The applier's fold is async and drains buffered events after the source completes, so track its completion rather than tearing it down mid-flight.
+          folded = new Promise<void>((resolve) => {
+            connSub = this.processApplyEvents(
+              input,
+              this.apply(input, events$, this.subscribers),
+              this.subscribers,
+            )
+              .pipe(catchError(() => EMPTY))
+              .subscribe({ error: () => resolve(), complete: () => resolve() });
+          });
+        };
+        // With a cursor, the server's first frame says whether the fold survives.
+        if (!resumeFrom) beginFold(true);
+        // False once a frame fails to chain onto the cursor, so it stops advancing.
+        let chained = true;
+        const advance = (pos: FramePosition) => {
+          if (!chained || pos.seq === undefined || !pos.checksum) return;
+          if (this.cursor && pos.prevChecksum !== undefined && pos.prevChecksum !== this.cursor.checksum) {
+            chained = false;
+            this.cursor = undefined;
+            // The fold missed an event, so reconnect for a full replay.
+            controller?.abort();
+            return;
+          }
+          this.cursor = { seq: pos.seq, checksum: pos.checksum };
+        };
         controller = new AbortController();
         this.controllers.add(controller);
-        const events$ = new Subject<BaseEvent>();
-        // The applier's fold is async and drains buffered events after the source completes, so track its completion rather than tearing it down mid-flight.
-        const folded = new Promise<void>((resolve) => {
-          connSub = this.processApplyEvents(
-            input,
-            this.apply(input, events$, this.subscribers),
-            this.subscribers,
-          )
-            .pipe(catchError(() => EMPTY))
-            .subscribe({ error: () => resolve(), complete: () => resolve() });
-        });
 
         const connectionOpenedAt = Date.now();
         let framesThisConnection = 0;
@@ -697,13 +747,18 @@ export class IntegrityAgent extends AbstractAgent {
           [ATTR.conversationId]: hasId(this.cfg.conversationId) ? this.cfg.conversationId : "(awaiting-id)",
           // A reconnect (false) is what "it restarted" looks like to a user.
           "stream.first_connection": isFirstConnection,
+          "stream.resume_offered": resumeFrom !== undefined,
         });
-        const url = streamUrl() as string; // non-undefined: guarded at the loop head
+        const base = streamUrl() as string; // non-undefined: guarded at the loop head
+        const url = resumeFrom ? `${base}?afterSeq=${resumeFrom.seq}&checksum=${resumeFrom.checksum}` : base;
         const outcome = await this.readConnection(
           url,
           headers,
           controller,
-          (e) => {
+          (e, pos) => {
+            // A server that ignored the cursor replays without saying so.
+            beginFold(true);
+            advance(pos);
             // Reset the idle-watchdog clock.
             this.lastActivityAt = Date.now();
             // The first frame separates "connected but silent" from "delivering".
@@ -728,7 +783,9 @@ export class IntegrityAgent extends AbstractAgent {
             if (changed && !this.replaying) this.notifyMessages();
             events$.next(e);
           },
-          () => {
+          (pos) => {
+            beginFold(true);
+            advance({ seq: pos.seq, checksum: pos.checksum });
             // Reaching `synced` means the session is valid again.
             if (this.streamAuthError) {
               this.streamAuthError = false;
@@ -740,6 +797,7 @@ export class IntegrityAgent extends AbstractAgent {
               this.notifyMessages();
             }, 0);
           },
+          (mode) => beginFold(mode === "reset"),
         );
         // Signal end-of-events and wait for the fold to finish before deciding whether to reconnect.
         events$.complete();
@@ -807,6 +865,7 @@ export class IntegrityAgent extends AbstractAgent {
         // Abort so the loop reconnects and re-folds from the log.
         this.lastActivityAt = Date.now(); // avoid re-firing while the reconnect runs
         watchdogForced = true; // reconnect promptly (no drop-backoff delay)
+        refoldNext = true;
         controller?.abort();
       }, Math.max(50, Math.floor(idleMs / 2)));
       (watchdog as { unref?: () => void }).unref?.();
