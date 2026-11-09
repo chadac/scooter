@@ -148,7 +148,8 @@ class Kanban(Transport):
 
         async def _list(owner: str, **extra: str) -> dict:
             try:
-                return {"boards": await _boards().list(owner), **extra}
+                async with _store().reading():
+                    return {"boards": await _boards().list(owner), **extra}
             except BoardError as e:
                 raise _http(e) from None
 
@@ -160,21 +161,24 @@ class Kanban(Transport):
 
         @router.get("/card")
         async def own_card(folder: str = "", since: str = "", identity: Identity = Depends(authed)) -> dict:
-            if not identity.conversation_id:
+            key = identity.conversation_id
+            if not key:
                 raise HTTPException(status_code=403, detail="a conversation identity is required")
-            card = await _store().card(identity.conversation_id)
-            try:
-                found = await _boards().at(_folder(folder)) if folder else None
-            except BoardError as e:
-                raise _http(e) from None
-            if found is None:
-                return {"board": False, "card": card.payload() if card else None}
-            place, stages, stage = found
-            try:
-                blockers = await _boards().blockers(identity.conversation_id, place.owner, place.board)
-            except BoardError as e:
-                raise _http(e) from None
-            tags = await _boards().tag_view(identity.conversation_id, place.board)
+            async with _store().reading():
+                card = await _store().card(key)
+                try:
+                    found = await _boards().at(_folder(folder)) if folder else None
+                except BoardError as e:
+                    raise _http(e) from None
+                if found is None:
+                    return {"board": False, "card": card.payload() if card else None}
+                place, stages, stage = found
+                try:
+                    blockers = await _boards().blockers(key, place.owner, place.board)
+                except BoardError as e:
+                    raise _http(e) from None
+                tags = await _boards().tag_view(key, place.board)
+                details = await _store().details(key)
             return view(
                 card,
                 stages,
@@ -184,7 +188,7 @@ class Kanban(Transport):
                 now=self.now(),
                 since=_since(since),
                 blockers=blockers,
-                details=await _store().details(identity.conversation_id),
+                details=details,
             )
 
         @router.get("/user/boards")
@@ -238,22 +242,26 @@ class Kanban(Transport):
             if len(ids) > MAX_READ_CARDS:
                 raise HTTPException(status_code=400, detail=f"ask for at most {MAX_READ_CARDS} cards at once")
             try:
-                return {"cards": await _boards().board_cards(owner, _folder(board), ids)}
+                async with _store().reading():
+                    return {"cards": await _boards().board_cards(owner, _folder(board), ids)}
             except BoardError as e:
                 raise _http(e) from None
 
         @router.get("/conversation/{key}/card")
         async def get_card(key: str, owner: str = user) -> dict:
-            card = await _store().card(key)
-            try:
-                blockers = await _boards().blockers_of(key, owner)
-            except BoardError as e:
-                raise _http(e) from None
+            async with _store().reading():
+                card = await _store().card(key)
+                try:
+                    blockers = await _boards().blockers_of(key, owner)
+                except BoardError as e:
+                    raise _http(e) from None
+                tags = await _store().card_tags(key)
+                details = await _store().details(key)
             return {
                 "card": card.payload() if card else None,
                 "blockers": [b.payload() for b in blockers],
-                "tags": await _store().card_tags(key),
-                "priority": (await _store().details(key)).payload()["priority"],
+                "tags": tags,
+                "priority": details.payload()["priority"],
             }
 
         @router.put("/conversation/{key}/card")
@@ -295,13 +303,15 @@ class Kanban(Transport):
             return {"blockers": [b.payload() for b in blockers]}
 
         async def _details(key: str, owner: str) -> dict:
-            try:
-                blocked_by = await _boards().blockers_of(key, owner)
-                blocking = await _boards().dependents_of(key, owner)
-            except BoardError as e:
-                raise _http(e) from None
+            async with _store().reading():
+                try:
+                    blocked_by = await _boards().blockers_of(key, owner)
+                    blocking = await _boards().dependents_of(key, owner)
+                except BoardError as e:
+                    raise _http(e) from None
+                details = await _store().details(key)
             return {
-                **(await _store().details(key)).payload(),
+                **details.payload(),
                 "blocked_by": [b.payload() for b in blocked_by],
                 "blocking": [b.payload() for b in blocking],
             }

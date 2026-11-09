@@ -138,15 +138,17 @@ async def kanban_get_status(ctx: ToolContext = ToolContextDep) -> ToolResult:
     if isinstance(key, ToolResult):
         return key
     assert _boards is not None
-    try:
-        where = await _boards.locate(key)
-        blockers = await _boards.blockers(key, where.conversation.owner, where.place.board)
-    except BoardError as e:
-        return ToolResult.error(f"{e.detail}.")
-    card = await _boards.store.card(key)
-    tags = await _boards.tag_view(key, where.place.board)
+    async with _boards.store.reading():
+        try:
+            where = await _boards.locate(key)
+            blockers = await _boards.blockers(key, where.conversation.owner, where.place.board)
+        except BoardError as e:
+            return ToolResult.error(f"{e.detail}.")
+        card = await _boards.store.card(key)
+        tags = await _boards.tag_view(key, where.place.board)
+        details = await _boards.store.details(key)
     v = view(
-        card, where.stages, where.stage, **tags, details=await _boards.store.details(key),
+        card, where.stages, where.stage, **tags, details=details,
         stale_after=_stale_after, now=datetime.now(timezone.utc),
     )
     return ToolResult.ok(_describe(v, blockers))
@@ -163,8 +165,9 @@ async def kanban_list_cards(ctx: ToolContext = ToolContextDep) -> ToolResult:
         return key
     assert _boards is not None
     try:
-        where = await _boards.locate(key)
-        cards = await _boards.cards(where.conversation.owner, where.place.board)
+        async with _boards.store.reading():
+            where = await _boards.locate(key)
+            cards = await _boards.cards(where.conversation.owner, where.place.board)
     except BoardError as e:
         return ToolResult.error(f"{e.detail}.")
     for c in cards:

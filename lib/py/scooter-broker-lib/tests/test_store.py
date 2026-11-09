@@ -1,11 +1,11 @@
-"""The DSN assembly, and the reconnect guards every broker store inherits from `open_sessions`."""
+"""The DSN assembly, and the pool settings every broker store inherits from `open_sessions`."""
 
 from __future__ import annotations
 
 import ast
 from pathlib import Path
 
-from scooter_broker_lib.store import POOL_RECYCLE_SECONDS, StoreConfig
+from scooter_broker_lib.store import MAX_OVERFLOW, POOL_RECYCLE_SECONDS, POOL_SIZE, StoreConfig
 
 _STORE = Path(__file__).resolve().parents[1] / "scooter_broker_lib" / "store.py"
 
@@ -23,9 +23,12 @@ def _engine_kwargs() -> dict[str, ast.expr]:
     return {kw.arg: kw.value for kw in calls[0].keywords}
 
 
-def test_engine_pre_pings():
-    pre_ping = _engine_kwargs().get("pool_pre_ping")
-    assert isinstance(pre_ping, ast.Constant) and pre_ping.value is True
+def test_engine_skips_the_per_checkout_ping():
+    assert "pool_pre_ping" not in _engine_kwargs()
+
+
+def test_engine_keeps_its_connections_open():
+    assert POOL_SIZE > 1 and MAX_OVERFLOW == 0
 
 
 def test_engine_recycles_within_common_idle_timeouts():

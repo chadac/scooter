@@ -9,12 +9,16 @@ which folders are boards and stages.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 
 from sqlalchemy import Float, Integer, String, Text, delete, func, select
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from scooter_broker_lib.store import StoreConfig, open_sessions
@@ -186,9 +190,41 @@ class KanbanStore:
     def __init__(self, config: StoreConfig) -> None:
         self._engine: AsyncEngine
         self._engine, self._session = open_sessions(config)
+        # The session `reading` shares; the lock serialises its queries.
+        self._shared: ContextVar[tuple[AsyncSession, asyncio.Lock] | None] = ContextVar(
+            f"kanban-session-{id(self)}", default=None
+        )
+
+    @asynccontextmanager
+    async def reading(self) -> AsyncIterator[None]:
+        """Run every read in this block, and the tasks it starts, on one session; writes keep their own."""
+        if self._shared.get() is not None:
+            yield
+            return
+        async with self._session() as s:
+            token = self._shared.set((s, asyncio.Lock()))
+            try:
+                yield
+            finally:
+                self._shared.reset(token)
+
+    @asynccontextmanager
+    async def _read(self) -> AsyncIterator[AsyncSession]:
+        shared = self._shared.get()
+        if shared is None:
+            async with self._session() as s:
+                yield s
+            return
+        s, lock = shared
+        async with lock:
+            try:
+                yield s
+            finally:
+                # Drop cached rows so other sessions' writes stay visible.
+                s.expunge_all()
 
     async def card(self, conversation_id: str) -> Card | None:
-        async with self._session() as s:
+        async with self._read() as s:
             row = await s.get(_Card, conversation_id)
             return _card(row) if row else None
 
@@ -229,14 +265,14 @@ class KanbanStore:
 
     async def boards(self, owner: str) -> list[str]:
         """The folder ids of `owner`'s boards, oldest first."""
-        async with self._session() as s:
+        async with self._read() as s:
             rows = await s.execute(
                 select(_Board.folder_id).where(_Board.owner == owner).order_by(_Board.created_at)
             )
             return list(rows.scalars())
 
     async def is_board(self, folder_id: str) -> bool:
-        async with self._session() as s:
+        async with self._read() as s:
             return await s.get(_Board, folder_id) is not None
 
     async def add_board(self, owner: str, folder_id: str) -> None:
@@ -246,13 +282,13 @@ class KanbanStore:
                 s.add(_Board(folder_id=folder_id, owner=owner, created_at=now_iso()))
 
     async def board_owner(self, folder_id: str) -> str | None:
-        async with self._session() as s:
+        async with self._read() as s:
             row = await s.get(_Board, folder_id)
             return row.owner if row else None
 
     async def place(self, folder_id: str) -> Place | None:
         """The board a folder belongs to, as its root or one of its stages; None off every board."""
-        async with self._session() as s:
+        async with self._read() as s:
             board = await s.get(_Board, folder_id)
             if board is not None:
                 return Place(board=board.folder_id, owner=board.owner, stage=None)
@@ -262,7 +298,7 @@ class KanbanStore:
 
     async def layout(self, owner: str, board_id: str | None = None) -> list[tuple[str, list[Stage], list[Tag]]]:
         """`owner`'s boards, oldest first, with their stages and tags; only `board_id` when given."""
-        async with self._session() as s:
+        async with self._read() as s:
             q = select(_Board.folder_id).where(_Board.owner == owner)
             if board_id is not None:
                 q = q.where(_Board.folder_id == board_id)
@@ -313,7 +349,7 @@ class KanbanStore:
 
     async def stages(self, board_id: str) -> list[Stage]:
         """A board's stages in board order."""
-        async with self._session() as s:
+        async with self._read() as s:
             rows = await s.execute(
                 select(_Stage).where(_Stage.board_id == board_id).order_by(_Stage.position, _Stage.folder_id)
             )
@@ -336,7 +372,7 @@ class KanbanStore:
 
     async def blockers(self, conversation_id: str) -> list[str]:
         """The keys of the cards `conversation_id` waits on, oldest edge first."""
-        async with self._session() as s:
+        async with self._read() as s:
             rows = await s.execute(
                 select(_Blocker.blocker_id)
                 .where(_Blocker.conversation_id == conversation_id)
@@ -346,7 +382,7 @@ class KanbanStore:
 
     async def dependents(self, blocker_id: str) -> list[str]:
         """The keys of the cards waiting on `blocker_id`."""
-        async with self._session() as s:
+        async with self._read() as s:
             rows = await s.execute(
                 select(_Blocker.conversation_id).where(_Blocker.blocker_id == blocker_id).order_by(_Blocker.conversation_id)
             )
@@ -371,7 +407,7 @@ class KanbanStore:
 
     async def tags(self, board_id: str) -> list[Tag]:
         """A board's tags in board order."""
-        async with self._session() as s:
+        async with self._read() as s:
             rows = await s.execute(
                 select(_Tag).where(_Tag.board_id == board_id).order_by(_Tag.position, _Tag.id)
             )
@@ -379,13 +415,13 @@ class KanbanStore:
 
     async def card_tags(self, conversation_id: str) -> list[str]:
         """The ids of a card's tags, from any board."""
-        async with self._session() as s:
+        async with self._read() as s:
             rows = await s.execute(select(_CardTag.tag_id).where(_CardTag.conversation_id == conversation_id))
             return list(rows.scalars())
 
     async def tag_boards(self, owner: str, tag_ids: list[str]) -> dict[str, str]:
         """Tag id -> board id, for those of `tag_ids` on `owner`'s boards."""
-        async with self._session() as s:
+        async with self._read() as s:
             rows = await s.execute(
                 select(_Tag.id, _Tag.board_id)
                 .join(_Board, _Board.folder_id == _Tag.board_id)
@@ -412,7 +448,7 @@ class KanbanStore:
 
     async def details(self, conversation_id: str) -> Details:
         """A card's description and priority; empty when none were set."""
-        async with self._session() as s:
+        async with self._read() as s:
             row = await s.get(_Details, conversation_id)
             return _details(row) if row else Details()
 
@@ -439,7 +475,7 @@ class KanbanStore:
         out = BoardView()
         if not keys:
             return out
-        async with self._session() as s:
+        async with self._read() as s:
             for row in (await s.execute(select(_Card).where(_Card.conversation_id.in_(keys)))).scalars():
                 out.cards[row.conversation_id] = _card(row)
             tags = await s.execute(select(_CardTag.conversation_id, _CardTag.tag_id).where(_CardTag.conversation_id.in_(keys)))

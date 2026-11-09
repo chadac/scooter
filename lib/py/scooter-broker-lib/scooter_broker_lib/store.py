@@ -1,9 +1,10 @@
 """Shared async-DB plumbing: the broker DSN, and the one place an engine is built.
 
-Every broker store (and every contrib store, each in its own database) needs the same reconnect
-guards (`pool_pre_ping` and `pool_recycle`, without which a connection Postgres
-already closed is handed out and the service stays broken until restarted), so
-every store opens its engine through `open_sessions`.
+Every broker store (and every contrib store, each in its own database) opens its engine
+through `open_sessions`, so all share one pool shape. There is no `pool_pre_ping`: it costs a
+round trip per checkout, while PgBouncer in transaction mode absorbs Postgres restarts and
+SQLAlchemy drops the pool on the first disconnect error. `pool_recycle` retires connections
+before idle timeouts close them.
 """
 
 from __future__ import annotations
@@ -21,8 +22,9 @@ from sqlalchemy.ext.asyncio import (
 # Under typical idle-timeout windows.
 POOL_RECYCLE_SECONDS = 1800
 # The broker opens one engine per store, so each stays small under max_connections.
-POOL_SIZE = 1
-MAX_OVERFLOW = 4
+# No overflow: an overflow connection is redialled every use.
+POOL_SIZE = 5
+MAX_OVERFLOW = 0
 
 
 @dataclass
@@ -60,14 +62,13 @@ class StoreConfig:
 def open_sessions(
     config: StoreConfig,
 ) -> tuple[AsyncEngine, async_sessionmaker[AsyncSession]]:
-    """The engine and session factory for `config` with the reconnect guards applied; `expire_on_commit=False` keeps a row readable after its transaction closes."""
+    """The engine and session factory for `config` with the shared pool settings; `expire_on_commit=False` keeps a row readable after its transaction closes."""
     dsn = config.resolved_dsn()
     # SQLite's single-connection pools reject the sizing arguments.
     sizing = {"pool_size": POOL_SIZE, "max_overflow": MAX_OVERFLOW} if dsn.startswith("postgresql") else {}
     engine = create_async_engine(
         dsn,
         echo=False,
-        pool_pre_ping=True,
         pool_recycle=POOL_RECYCLE_SECONDS,
         **sizing,
     )

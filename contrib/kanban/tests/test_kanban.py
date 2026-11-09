@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
+from sqlalchemy import event
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
@@ -1063,3 +1064,70 @@ async def test_a_failed_push_leaves_the_change_made(app, boards, folders, store)
     out = await mcp_tools.kanban_set_status(column="Review", note="up", ctx=_ctx("thread-api"))
     assert not out.is_error
     assert (await store.card("key-api")).note == "up"
+
+
+# --- one session per read ------------------------------------------------------------
+
+def _count_checkouts(store: KanbanStore) -> list[int]:
+    """A one-item list counting the store's pool checkouts from now on."""
+    n = [0]
+
+    def on_checkout(*_: object) -> None:
+        n[0] += 1
+
+    event.listen(store._engine.sync_engine, "checkout", on_checkout)
+    return n
+
+
+async def _busy_card(app, boards, folders) -> dict:
+    """key-api, blocked by schema and blocking ui, with tags and details."""
+    board = await _cards(app, boards, folders, "api", "schema", "ui")
+    await mcp_tools.kanban_set_blockers(blocked_by=["conv-schema"], ctx=_ctx("thread-api"))
+    await mcp_tools.kanban_set_blockers(blocked_by=["conv-api"], ctx=_ctx("thread-ui"))
+    await mcp_tools.kanban_set_status(column="Design", note="drafting", ctx=_ctx("thread-api"))
+    await mcp_tools.kanban_set_details(priority="high", ctx=_ctx("thread-api"))
+    async with as_(app, user="alice") as c:
+        saved = (await _save(c, board, _kept(board), [{"name": "bug"}])).json()
+        tag = saved["board"]["tags"][0]["id"]
+        assert (await c.put("/kanban/conversation/key-api/card/tags", json={"tags": [tag]})).status_code == 200
+    return board
+
+
+@pytest.mark.parametrize("read", ["hook card", "board card", "details", "board cards", "boards", "get status", "list cards"])
+async def test_a_read_checks_out_one_connection(app, boards, folders, store, read):
+    board = await _busy_card(app, boards, folders)
+    checkouts = _count_checkouts(store)
+    if read == "hook card":
+        async with as_(app, conversation="key-api") as c:
+            r = await c.get("/kanban/card", params={"folder": _stage(board, "Design")})
+        assert r.json()["blocked_by"] and r.json()["card_tags"] == ["bug"]
+    elif read == "get status":
+        assert "Schema" in (await mcp_tools.kanban_get_status(ctx=_ctx("thread-api"))).text
+    elif read == "list cards":
+        assert "conv-ui" in (await mcp_tools.kanban_list_cards(ctx=_ctx("thread-api"))).text
+    else:
+        async with as_(app, user="alice") as c:
+            if read == "board card":
+                r = await c.get("/kanban/conversation/key-api/card")
+                assert r.json()["blockers"] and r.json()["priority"] == "high"
+            elif read == "details":
+                r = await c.get("/kanban/conversation/key-api/details")
+                assert r.json()["blocked_by"] and r.json()["blocking"]
+            elif read == "board cards":
+                asked = {"conversations": ["conv-api", "conv-schema", "conv-ui"]}
+                r = await c.post(f"/kanban/user/boards/{board['folder']}/cards", json=asked)
+                assert len(r.json()["cards"]) == 3
+            else:
+                r = await c.get("/kanban/user/boards")
+                assert r.json()["boards"]
+        assert r.status_code == 200, r.text
+    assert checkouts[0] == 1
+
+
+async def test_a_read_sees_a_write_made_inside_it(store):
+    async with store.reading():
+        assert await store.card("k") is None
+        await store.put("k", column="c", by="user", note="first")
+        assert (await store.card("k")).note == "first"
+        await store.put("k", column="c", by="user", note="second")
+        assert (await store.card("k")).note == "second"

@@ -1,5 +1,5 @@
 """No broker store may build its own async engine, since scooter_broker_lib.store.open_sessions
-is the one constructor carrying the pool_pre_ping and pool_recycle guards and a store
+is the one constructor carrying the pool sizing and pool_recycle, and a store
 inherits them by having no other option.
 """
 
@@ -30,6 +30,6 @@ def test_no_store_builds_its_own_engine() -> None:
     assert not offenders, (
         "these modules call create_async_engine directly instead of "
         "scooter_broker_lib.store.open_sessions, so their pool has no "
-        "pool_pre_ping/pool_recycle and a postgres restart or failover will break "
-        f"the service until it is itself restarted: {[str(p) for p in offenders]}"
+        "pool sizing or pool_recycle: "
+        f"{[str(p) for p in offenders]}"
     )
