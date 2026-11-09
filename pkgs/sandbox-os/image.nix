@@ -180,7 +180,45 @@ let
     fi
     exec ${toplevel}/init "$@"
   '';
+
+  # Under imageless the root is read-only: these get emptyDirs, seeded at boot.
+  imagelessWritable = [ "/etc" "/var" "/bin" "/usr" "/root" "/home" "/srv" "/opt" "/mnt" "/nix/var" ];
+
+  imagelessSeed = pkgs.runCommand "sandbox-os-imageless-seed" { } ''
+    mkdir -p $out
+    cp -rT ${rootExtras} $out
+    chmod -R u+w $out
+    mkdir -p $out/nix
+    cp -rT ${nixDb}/nix/var $out/nix/var
+    rm -rf $out/run $out/tmp $out/sbin
+  '';
+
+  imagelessInit = pkgs.writeScript "sandbox-imageless-init" ''
+    #!${pkgs.busybox}/bin/sh
+    # No-clobber, so a container restart keeps what systemd wrote.
+    for d in ${lib.concatStringsSep " " imagelessWritable}; do
+      [ -d "${imagelessSeed}$d" ] && ${pkgs.coreutils}/bin/cp -rn --no-preserve=mode,ownership "${imagelessSeed}$d/." "$d/"
+    done
+    exec ${initWrapper} "$@"
+  '';
+
   # nix build .#sandbox-os-image  ->  a nix2container image booting systemd PID 1.
+  imageConfig = {
+    # Boot systemd PID 1 via the init wrapper.
+    Entrypoint = [ "${initWrapper}" ];
+    # systemd's container detection, which Docker does not set itself.
+    Env = [
+      "container=docker"
+      # PID 1's PATH is inherited by every kubelet exec, so the per-user nix profile
+      # and the setuid wrappers come first.
+      "PATH=/workspace/.nix-profile/bin:/run/wrappers/bin:/run/current-system/sw/bin:/usr/bin:/bin"
+      "UV_NIX_NIXPKGS=${nixos.config.environment.variables.UV_NIX_NIXPKGS}"
+    ];
+    # systemd's clean-shutdown signal differs from k8s's default SIGTERM.
+    StopSignal = "SIGRTMIN+3";
+    WorkingDir = "/workspace";
+  };
+
   image = n2c.buildImage {
     inherit name tag;
 
@@ -191,20 +229,15 @@ let
     # maxLayers applies to the (empty) customization layer.
     maxLayers = 1;
 
-    config = {
-      # Boot systemd PID 1 via the init wrapper.
-      Entrypoint = [ "${initWrapper}" ];
-      # systemd's container detection, which Docker does not set itself.
-      Env = [
-        "container=docker"
-        # PID 1's PATH is inherited by every kubelet exec, so the per-user nix profile
-        # and the setuid wrappers come first.
-        "PATH=/workspace/.nix-profile/bin:/run/wrappers/bin:/run/current-system/sw/bin:/usr/bin:/bin"
-        "UV_NIX_NIXPKGS=${nixos.config.environment.variables.UV_NIX_NIXPKGS}"
-      ];
-      # systemd's clean-shutdown signal differs from k8s's default SIGTERM.
-      StopSignal = "SIGRTMIN+3";
-      WorkingDir = "/workspace";
+    config = imageConfig;
+  } // {
+    imagelessSource = {
+      inherit name;
+      copyToRoot = [ ];
+      config = imageConfig // { Entrypoint = [ "${imagelessInit}" ]; };
+      writableDirs = imagelessWritable;
+      # /tmp and /run are the provisioner's own tmpfs volumes.
+      mountPoints = [ "/tmp" "/workspace" "/nix/.scooter-rw" "/nix/.scooter-ro" ];
     };
   };
   # Local-only push scripts, so image JSON and layers match.

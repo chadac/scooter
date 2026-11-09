@@ -83,16 +83,23 @@ let
   # The enabled contribs' sandbox-pod parts as a manifest overlay spliced into the
   # Sandbox CR the agent-host creates; empty when nothing contributes.
   contribPodOverlay = lib.optionalAttrs
-    (cfg.sandboxPod.extraEnv != [ ] || cfg.sandboxPod.extraVolumes != [ ] || cfg.sandboxPod.extraVolumeMounts != [ ])
+    (cfg.sandboxPod.extraEnv != [ ] || cfg.sandboxPod.extraVolumes != [ ] || cfg.sandboxPod.extraVolumeMounts != [ ]
+      || cfg.sandboxPod.annotations != { } || cfg.sandboxPod.runtimeClassName != null)
     {
-      spec.podTemplate.spec = {
-        # `sandbox` is the container the overlay's strategic merge keys on.
-        containers = [{
-          name = "sandbox";
-          env = cfg.sandboxPod.extraEnv;
-          volumeMounts = cfg.sandboxPod.extraVolumeMounts;
-        }];
-        volumes = cfg.sandboxPod.extraVolumes;
+      spec.podTemplate = lib.optionalAttrs (cfg.sandboxPod.annotations != { }) {
+        metadata.annotations = cfg.sandboxPod.annotations;
+      } // {
+        spec = lib.optionalAttrs (cfg.sandboxPod.runtimeClassName != null) {
+          inherit (cfg.sandboxPod) runtimeClassName;
+        } // {
+          # `sandbox` is the container the overlay's strategic merge keys on.
+          containers = [{
+            name = "sandbox";
+            env = cfg.sandboxPod.extraEnv;
+            volumeMounts = cfg.sandboxPod.extraVolumeMounts;
+          }];
+          volumes = cfg.sandboxPod.extraVolumes;
+        };
       };
     };
   # One ConfigMap carries both halves, so it renders when either is non-empty.
@@ -316,7 +323,7 @@ in
   # ./testing.nix is absent on purpose (test-only overrides are opted into by a test
   # manifest), and the contribs arrive via `contribModules`, each declaring its own
   # `contribs.<name>` options and manifests with contrib/spec.nix as their schema.
-  imports = [ kubenix.modules.k8s ./images.nix ./availability.nix ./scooter-packages.nix ./db-spec.nix ./postgres.nix ./db-migrate.nix ./schema-gate.nix ./contrib-db.nix ./contrib-env.nix ./contrib-approvals.nix ./broker.nix ./sandbox-pod.nix ./sandbox-volumes.nix ./webhooks.nix ./byoc.nix ./scheduler.nix ./conversation-controller.nix ./warm-store-controller.nix ./network-policy.nix ./legacy-state-migration.nix ./event-backfill.nix ./skills ]
+  imports = [ kubenix.modules.k8s ./images.nix ./imageless.nix ./availability.nix ./scooter-packages.nix ./db-spec.nix ./postgres.nix ./db-migrate.nix ./schema-gate.nix ./contrib-db.nix ./contrib-env.nix ./contrib-approvals.nix ./broker.nix ./sandbox-pod.nix ./sandbox-volumes.nix ./webhooks.nix ./byoc.nix ./scheduler.nix ./conversation-controller.nix ./warm-store-controller.nix ./network-policy.nix ./legacy-state-migration.nix ./event-backfill.nix ./skills ]
     ++ contribModules;
 
   # Declared only so a definition on the old root reaches `legacyRoot`'s message; no
@@ -441,14 +448,14 @@ in
     };
     agentHostImage = mkOption {
       type = types.str;
-      default = cfg.images.agent-host.ref.fullUrl;
-      defaultText = literalExpression "config.scooter.images.agent-host.ref.fullUrl";
+      default = cfg.images.agent-host.pod.image;
+      defaultText = literalExpression "config.scooter.images.agent-host.pod.image";
       description = "OCI ref of the agent-host image.";
     };
     sandboxImage = mkOption {
       type = types.str;
-      default = cfg.images.agent-sandbox-os.ref.fullUrl;
-      defaultText = literalExpression "config.scooter.images.agent-sandbox-os.ref.fullUrl";
+      default = cfg.images.agent-sandbox-os.pod.image;
+      defaultText = literalExpression "config.scooter.images.agent-sandbox-os.pod.image";
       description = "OCI ref of the generic Nix sandbox image.";
     };
     sandboxRuntimeClass = mkOption {
@@ -669,8 +676,8 @@ in
     };
     uiImage = mkOption {
       type = types.str;
-      default = cfg.images.agent-sandbox-ui.ref.fullUrl;
-      defaultText = literalExpression "config.scooter.images.agent-sandbox-ui.ref.fullUrl";
+      default = cfg.images.agent-sandbox-ui.pod.image;
+      defaultText = literalExpression "config.scooter.images.agent-sandbox-ui.pod.image";
       description = "OCI ref of the UI image (nginx + static build + API proxy).";
     };
     ui.enable = mkOption {
@@ -1746,7 +1753,7 @@ in
             rollingUpdate = { maxSurge = 1; maxUnavailable = 0; };
           };
           selector.matchLabels.app = "agent-host";
-          template = {
+          template = cfg.imageless.wrapPod "agent-host" "agent-host" {
             metadata.labels.app = "agent-host";
             spec = {
               serviceAccountName = "agent-host";
@@ -2298,7 +2305,7 @@ in
           # Stateless, so several replicas keep the UI up through a node drain.
           replicas = cfg.statelessReplicas;
           selector.matchLabels.app = "ui";
-          template = {
+          template = cfg.imageless.wrapPod "agent-sandbox-ui" "ui" {
             metadata.labels.app = "ui";
             # Rolls the pods when the contrib set changes; nginx reads the file at start.
             metadata.annotations."checksum/contrib-manifest" =

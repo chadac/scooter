@@ -23,9 +23,14 @@
       url = "github:chadac/uv-nix/bin";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # Imageless release catalogs; source only.
+    imageless = {
+      url = "github:dmadisetti/imageless";
+      flake = false;
+    };
   };
 
-  outputs = inputs@{ self, nixpkgs, flake-parts, nix2container, kubenix, nix-stubs, uv-nix }:
+  outputs = inputs@{ self, nixpkgs, flake-parts, nix2container, kubenix, nix-stubs, uv-nix, imageless }:
     let
       # The platform's agent skills.
       scooterSkills =
@@ -37,7 +42,7 @@
           (builtins.readDir dir));
 
       # Scooter's own inputs, which scooter.config builds from.
-      inputsModule = { scooter.config.inputs = { inherit nixpkgs nix2container nix-stubs uv-nix; }; };
+      inputsModule = { scooter.config.inputs = { inherit nixpkgs nix2container nix-stubs uv-nix imageless; }; };
       platformModule = { imports = [ ./modules/platform.nix inputsModule ]; };
 
       # The platform eval, which owns every package and image.
@@ -189,6 +194,9 @@
             flake = self;
             manifests = localManifests;
           };
+
+          # The ghcr images that have an imageless release.
+          imagelessImages = lib.filterAttrs (_: img: img.attr != null && img.imageless.release != null) ghcrImageRefs;
 
           # Tier-1-style config-correctness tests for the dev-environment sandbox
           devEnvTests =
@@ -584,6 +592,30 @@
 
             # nix build .#ghcr-image-refs -> JSON { <camelName> = "ghcr.io/…:<tag>" }
             ghcr-image-refs = pkgs.writeText "ghcr-image-refs.json" (builtins.toJSON ghcrRefs);
+
+            # nix build .#imageless-image-refs -> JSON { <camelName> = "<issuer>/<name>@sha256:…" }
+            imageless-image-refs = pkgs.writeText "imageless-image-refs.json" (builtins.toJSON
+              (lib.mapAttrs' (_: img: lib.nameValuePair img.refKey img.imageless.reference)
+                (lib.filterAttrs (_: img: img.refKey != null) imagelessImages)));
+
+            # The release catalog to serve over HTTPS: sha256/<digest>.json per image.
+            imageless-catalog = pkgs.symlinkJoin {
+              name = "scooter-imageless-catalog";
+              paths = map (img: img.imageless.release) (builtins.attrValues imagelessImages);
+            };
+
+            # Everything the publish job needs: each rootfs (cached on build) and placeholder.
+            imageless-publish = pkgs.runCommand "scooter-imageless-publish" { } ''
+              mkdir -p $out
+              ln -s ${pkgs.writeText "imageless-push.json" (builtins.toJSON (lib.mapAttrsToList (_: img: {
+                inherit (img) attr;
+                inherit (img.imageless) image;
+              }) imagelessImages))} $out/push.json
+              ${lib.concatMapStrings (img: ''
+                ln -s ${img.imageless.built.rootfs} $out/${img.attr}.rootfs
+                ln -s ${img.imageless.placeholder.copyTo} $out/${img.attr}.copyTo
+              '') (builtins.attrValues imagelessImages)}
+            '';
           } (lib.optionals (!pkgs.stdenv.hostPlatform.isLinux) linuxOnlyPackages);
 
           # `nix run github:chadac-me/scooter#local -- up`

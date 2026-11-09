@@ -35,8 +35,8 @@ in
   options.scooter.conversationController = with lib; {
     image = mkOption {
       type = types.str;
-      default = cfg.images.conversation-controller.ref.fullUrl;
-      defaultText = literalExpression "config.scooter.images.conversation-controller.ref.fullUrl";
+      default = cfg.images.conversation-controller.pod.image;
+      defaultText = literalExpression "config.scooter.images.conversation-controller.pod.image";
       description = "OCI ref of the conversation-controller image.";
     };
     replicas = mkOption {
@@ -128,8 +128,8 @@ in
     };
     routerImage = mkOption {
       type = types.str;
-      default = cfg.images.conversation-router.ref.fullUrl;
-      defaultText = literalExpression "config.scooter.images.conversation-router.ref.fullUrl";
+      default = cfg.images.conversation-router.pod.image;
+      defaultText = literalExpression "config.scooter.images.conversation-router.pod.image";
       description = "OCI ref of the conversation-router image.";
     };
     routerReplicas = mkOption {
@@ -389,7 +389,7 @@ in
         spec = {
           replicas = ccfg.replicas;
           selector.matchLabels.app = "conversation-controller";
-          template = {
+          template = cfg.imageless.wrapPod "conversation-controller" "controller" {
             metadata.labels.app = "conversation-controller";
             spec = {
               serviceAccountName = "conversation-controller";
@@ -481,7 +481,7 @@ in
         spec = {
           replicas = ccfg.routerReplicas;   # stateless proxy — safe to run several
           selector.matchLabels.app = "conversation-router";
-          template = {
+          template = cfg.imageless.wrapPod "conversation-router" "router" {
             metadata.labels.app = "conversation-router";
             spec = {
               serviceAccountName = "conversation-router";

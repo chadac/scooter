@@ -39,7 +39,12 @@ let
       metadata = { name = "conv-${id}"; namespace = cfg.namespace; };
       spec = {
         operatingMode = "Running"; # "Suspended" hibernates while keeping the object alive.
-        podTemplate.spec = {
+        podTemplate.metadata = lib.optionalAttrs (cfg.sandboxPod.annotations != { }) {
+          inherit (cfg.sandboxPod) annotations;
+        };
+        podTemplate.spec = lib.optionalAttrs (cfg.sandboxPod.runtimeClassName != null) {
+          inherit (cfg.sandboxPod) runtimeClassName;
+        } // {
           serviceAccountName = "sandbox-${id}";
           # The broker token is projected explicitly below.
           automountServiceAccountToken = false;

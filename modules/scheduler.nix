@@ -142,8 +142,8 @@ in
     };
     image = mkOption {
       type = types.str;
-      default = cfg.images.agent-scheduler.ref.fullUrl;
-      defaultText = literalExpression "config.scooter.images.agent-scheduler.ref.fullUrl";
+      default = cfg.images.agent-scheduler.pod.image;
+      defaultText = literalExpression "config.scooter.images.agent-scheduler.pod.image";
       description = "OCI ref of the scheduler image.";
     };
     tickSeconds = mkOption {
@@ -209,7 +209,7 @@ in
           # Multiple replicas are safe because claim_due advances next_run_at under FOR UPDATE SKIP LOCKED.
           replicas = cfg.statelessReplicas;
           selector.matchLabels.app = "agent-scheduler";
-          template = {
+          template = cfg.imageless.wrapPod "agent-scheduler" "agent-scheduler" {
             metadata.labels.app = "agent-scheduler";
             # A changed task list rolls the pod, which re-syncs it.
             metadata.annotations."checksum/system-tasks" = builtins.hashString "sha256" systemTasksJson;

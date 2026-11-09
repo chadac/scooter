@@ -15,5 +15,8 @@ in
     });
     attr = "ui-image";
     refKey = "ui";
+    # nginx writes its config, logs, cache and pid.
+    imageless.writableDirs = [ "/tmp" "/var/log/nginx" "/var/cache/nginx" "/var/run" ];
+    imageless.mountPoints = [ "/etc/scooter-ui/contrib" ];
   };
 }

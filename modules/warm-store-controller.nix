@@ -17,8 +17,8 @@ in
 
     image = mkOption {
       type = types.str;
-      default = cfg.images.warm-store-controller.ref.fullUrl;
-      defaultText = literalExpression "config.scooter.images.warm-store-controller.ref.fullUrl";
+      default = cfg.images.warm-store-controller.pod.image;
+      defaultText = literalExpression "config.scooter.images.warm-store-controller.pod.image";
       description = "OCI ref of the warm-store-controller image.";
     };
     replicas = mkOption {
@@ -227,7 +227,7 @@ in
           # Only the leader is Ready, so a surge pod never would be.
           strategy.type = "Recreate";
           selector.matchLabels.app = "warm-store-controller";
-          template = {
+          template = cfg.imageless.wrapPod "warm-store-controller" "controller" {
             metadata.labels.app = "warm-store-controller";
             spec = {
               serviceAccountName = "warm-store-controller";

@@ -88,7 +88,14 @@ in
 
         n2c = mkOption {
           type = types.raw;
-          default = cfg.inputs.nix2container.packages.${cfg.buildSystem}.nix2container;
+          default =
+            let raw = cfg.inputs.nix2container.packages.${cfg.buildSystem}.nix2container;
+            in raw // {
+              # Keeps the root and config, for an imageless rootfs.
+              buildImage = args: raw.buildImage args // {
+                imagelessSource = { inherit (args) name; copyToRoot = args.copyToRoot or [ ]; config = args.config or { }; };
+              };
+            };
           defaultText = literalExpression "nix2container for this system";
           internal = true;
           description = "The nix2container builder the images use.";

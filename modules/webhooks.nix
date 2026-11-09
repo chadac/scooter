@@ -38,8 +38,8 @@ in
     };
     image = mkOption {
       type = types.str;
-      default = cfg.images.agent-webhooks.ref.fullUrl;
-      defaultText = literalExpression "config.scooter.images.agent-webhooks.ref.fullUrl";
+      default = cfg.images.agent-webhooks.pod.image;
+      defaultText = literalExpression "config.scooter.images.agent-webhooks.pod.image";
       description = "OCI ref of the webhooks image.";
     };
     testWebhook = mkOption {
@@ -209,7 +209,7 @@ in
           # Stateless; the conversation map lives in Postgres.
           replicas = cfg.statelessReplicas;
           selector.matchLabels.app = "agent-webhooks";
-          template = {
+          template = cfg.imageless.wrapPod "agent-webhooks" "agent-webhooks" {
             metadata.labels.app = "agent-webhooks";
             spec = {
               serviceAccountName = "agent-webhooks";

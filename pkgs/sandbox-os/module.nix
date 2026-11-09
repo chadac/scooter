@@ -32,5 +32,8 @@ in
     }).image;
     attr = "sandbox-os-image";
     refKey = "sandboxOs";
+    # A handler wrapping the sandbox's own runtime, e.g. imageless-crun.
+    imageless.runtimeClass = lib.mkIf ((config.scooter.sandboxRuntimeClass or null) != null)
+      (lib.mkDefault "imageless-${config.scooter.sandboxRuntimeClass}");
   };
 }

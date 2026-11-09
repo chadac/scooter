@@ -87,7 +87,7 @@ let
     backoffLimit = 3;
     # Reap a superseded Job after a day, leaving time to read its logs.
     ttlSecondsAfterFinished = 86400;
-    template = {
+    template = cfg.imageless.wrapPod "agent-db-migrator" "migrate" {
       metadata.labels = jobLabels;
       spec = {
         restartPolicy = "OnFailure";
@@ -146,8 +146,8 @@ in
     };
     image = mkOption {
       type = types.str;
-      default = cfg.images.agent-db-migrator.ref.fullUrl;
-      defaultText = literalExpression "config.scooter.images.agent-db-migrator.ref.fullUrl";
+      default = cfg.images.agent-db-migrator.pod.image;
+      defaultText = literalExpression "config.scooter.images.agent-db-migrator.pod.image";
       description = "OCI ref of the db-migrator image.";
     };
   };

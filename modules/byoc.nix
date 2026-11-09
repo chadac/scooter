@@ -21,8 +21,8 @@ in
     };
     image = mkOption {
       type = types.str;
-      default = cfg.images.byoc-controller.ref.fullUrl;
-      defaultText = literalExpression "config.scooter.images.byoc-controller.ref.fullUrl";
+      default = cfg.images.byoc-controller.pod.image;
+      defaultText = literalExpression "config.scooter.images.byoc-controller.pod.image";
       description = "OCI ref of the BYOC controller image.";
     };
     traceTunnel = mkOption {
@@ -130,7 +130,7 @@ in
             # Overlapping replicas would each hold a subset of the container sockets.
             strategy.type = "Recreate";
             selector.matchLabels."app.kubernetes.io/name" = "byoc-controller";
-            template = {
+            template = cfg.imageless.wrapPod "byoc-controller" "byoc-controller" {
               metadata.labels."app.kubernetes.io/name" = "byoc-controller";
               spec = {
                 # Starts only once agent-db-migrate has applied this release.

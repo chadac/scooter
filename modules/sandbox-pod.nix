@@ -32,5 +32,15 @@ in
       default = [ ];
       description = "Extra volumeMounts on the sandbox container, paired with extraVolumes.";
     };
+    annotations = mkOption {
+      type = types.attrsOf types.str;
+      default = { };
+      description = "Extra annotations on the sandbox pod.";
+    };
+    runtimeClassName = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      description = "RuntimeClass for the sandbox pod, over `scooter.sandboxRuntimeClass`.";
+    };
   };
 }

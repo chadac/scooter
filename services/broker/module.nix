@@ -18,5 +18,6 @@ in
     });
     attr = "broker-image";
     refKey = "broker";
+    imageless.mountPoints = [ "/etc/agent-broker" "/etc/scooter/forge-ca" ];
   };
 }

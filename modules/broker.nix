@@ -21,8 +21,8 @@ in
     };
     image = mkOption {
       type = types.str;
-      default = cfg.images.agent-broker.ref.fullUrl;
-      defaultText = literalExpression "config.scooter.images.agent-broker.ref.fullUrl";
+      default = cfg.images.agent-broker.pod.image;
+      defaultText = literalExpression "config.scooter.images.agent-broker.pod.image";
       description = "OCI ref of the broker image.";
     };
     testProvider = mkOption {
@@ -212,7 +212,7 @@ in
           # Stateless apart from an in-memory STS cache that re-vends on a miss.
           replicas = cfg.statelessReplicas;
           selector.matchLabels.app = "agent-broker";
-          template = {
+          template = cfg.imageless.wrapPod "agent-broker" "agent-broker" {
             metadata = {
               labels.app = "agent-broker";
               # Contribs stamp a hash of their ConfigMap here so a config change

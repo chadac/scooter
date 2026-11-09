@@ -73,7 +73,7 @@ in
         };
         spec = {
           backoffLimit = 2;
-          template = {
+          template = cfg.imageless.wrapPod "agent-host" "backfill" {
             metadata.labels = {
               app = "agent-event-backfill";
               "app.kubernetes.io/name" = "agent-event-backfill";

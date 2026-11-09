@@ -73,6 +73,22 @@
         "type": "github"
       }
     },
+    "imageless": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1785597403,
+        "narHash": "sha256-QzfBHyeb6CvJaGjuqiHZF2hPkWrVmcUytZ0Y90Vdu6c=",
+        "owner": "dmadisetti",
+        "repo": "imageless",
+        "rev": "e5de96ba5f98aaa3f942d46dbf156da4cfe5a09e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "dmadisetti",
+        "repo": "imageless",
+        "type": "github"
+      }
+    },
     "import-tree": {
       "locked": {
         "lastModified": 1784254960,
@@ -203,6 +219,7 @@
     "root": {
       "inputs": {
         "flake-parts": "flake-parts",
+        "imageless": "imageless",
         "kubenix": "kubenix",
         "nix-stubs": "nix-stubs",
         "nix2container": "nix2container",

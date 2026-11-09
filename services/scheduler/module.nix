@@ -41,6 +41,9 @@ in
     });
     attr = "scheduler-image";
     refKey = "scheduler";
+    # /tmp is already a volume.
+    imageless.writableDirs = [ "/var/run/secrets" ];
+    imageless.mountPoints = [ "/tmp" "/data" "/etc/scheduler/system-tasks" ];
   };
 
   # The deployment's enabled contrib tasks, in the shared task tree.

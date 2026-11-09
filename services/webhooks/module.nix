@@ -18,5 +18,6 @@ in
     });
     attr = "webhooks-image";
     refKey = "webhooks";
+    imageless.mountPoints = [ "/data" ];
   };
 }
