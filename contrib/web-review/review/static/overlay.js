@@ -99,6 +99,8 @@
   const cssEsc = (s) => (window.CSS && CSS.escape ? CSS.escape(s) : s.replace(/[^\w-]/g, "\\$&"));
   const unique = (sel) => { try { return document.querySelectorAll(sel).length === 1; } catch { return false; } };
   const looksGenerated = (s) => /\d{3,}|^[a-z]{1,3}-[a-z0-9]{5,}$|^(css|sc|jsx|svelte)-/i.test(s);
+  // State classes come and go, so a selector naming one goes stale.
+  const isState = (s) => /^(is-|has-)|^(active|selected|current|open|focus(ed)?|hover(ed)?|disabled|checked|expanded|on)$/i.test(s);
   function step(el) {
     if (el.id && !looksGenerated(el.id) && unique("#" + cssEsc(el.id))) return { sel: "#" + cssEsc(el.id), done: true };
     for (const a of ["data-testid", "data-test", "data-cy", "aria-label", "name"]) {
@@ -109,7 +111,7 @@
       }
     }
     let sel = el.localName;
-    const classes = [...el.classList].filter((c) => !looksGenerated(c)).slice(0, 2);
+    const classes = [...el.classList].filter((c) => !looksGenerated(c) && !isState(c)).slice(0, 2);
     if (classes.length) sel += "." + classes.map(cssEsc).join(".");
     const parent = el.parentElement;
     if (parent && [...parent.children].filter((c) => c.localName === el.localName).length > 1) {
