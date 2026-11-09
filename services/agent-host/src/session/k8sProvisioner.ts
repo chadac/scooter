@@ -689,6 +689,10 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
     (await readSize(id)) ?? sandboxResources;
 
   return {
+    refFor(id: string): SandboxRef {
+      return { name: sandboxName(id), namespace: ns };
+    },
+
     async create(id: string, threadId?: string): Promise<ProvisionedRef> {
       // The URL deep-links on the full conversation id, not the short hash used for resource names.
       const urlThread = threadId ?? id;

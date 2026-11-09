@@ -84,6 +84,8 @@ export interface ExecBackend {
   writeTextFile(path: string, content: string): Promise<void>;
   /** Write raw bytes (base64) to a file in the sandbox, creating parent dirs, streamed over stdin so the single-argv limit does not apply. */
   writeBinaryFile(path: string, base64: string): Promise<void>;
+  /** Queue a binary write that every later call waits for; resolves when it lands. */
+  writeBinaryFileLater?(path: string, base64: string): Promise<void>;
 }
 
 export interface TerminalHandle {

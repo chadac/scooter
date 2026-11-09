@@ -177,3 +177,57 @@ describe("a prompt to a conversation that is still waking up", () => {
     }
   });
 });
+
+describe("start() with a provisioner that knows the ref up front", () => {
+  /** A harness whose create() waits for `create`'s promise. */
+  function predicting(root: string, create: (id: string) => Promise<{ name: string; namespace: string }>) {
+    const h = harness(root, async (ref) => ref);
+    h.provisioner.create = vi.fn(create);
+    h.provisioner.refFor = (id: string) => ({ name: `conv-${id}`, namespace: "ns" });
+    return h;
+  }
+
+  it("returns before create() lands, and the first prompt runs once it does", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cold-start-"));
+    try {
+      let land!: () => void;
+      const landed = new Promise<void>((r) => (land = r));
+      const { agent, sessions } = predicting(root, async (id) => {
+        await landed;
+        return { name: `conv-${id}`, namespace: "ns" };
+      });
+      const conv = await sessions.start("thread-early");
+      expect(conv.sandbox).toEqual({ name: "conv-thread-early", namespace: "ns" });
+
+      const run = sessions.promptByThread("thread-early" as never, "hello", undefined);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(agent.sessions(), "nothing touches the agent before create() lands").toBe(0);
+
+      land();
+      await run;
+      expect(agent.prompts.some((p) => p.includes("hello"))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("a failed create fails the queued run, and the next prompt recreates the sandbox", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cold-start-fail-"));
+    try {
+      let calls = 0;
+      const { agent, provisioner, sessions } = predicting(root, async (id) => {
+        if (++calls === 1) throw new Error("quota exceeded");
+        return { name: `conv-${id}`, namespace: "ns" };
+      });
+      // The k8s provisioner's resume recreates a Sandbox that is gone.
+      provisioner.resume = vi.fn(async (ref) => provisioner.create(ref.name.replace(/^conv-/, "")));
+      await sessions.start("thread-fail");
+      await sessions.promptByThread("thread-fail" as never, "first", undefined).catch(() => {});
+      await sessions.promptByThread("thread-fail" as never, "second", undefined);
+      expect(calls).toBe(2);
+      expect(agent.prompts.some((p) => p.includes("second"))).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

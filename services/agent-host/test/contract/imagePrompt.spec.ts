@@ -209,7 +209,7 @@ describe("bridge: binary file attachments", () => {
     expect(noteBlock!.text).toContain("saved into your sandbox");
   });
 
-  it("a failed write is best-effort — the turn still completes and no note is added", async () => {
+  it("a failed write still completes the turn and tells the agent on its next prompt", async () => {
     const { client, lastPrompt } = capturingAcp();
     const api = createFakeSandboxApi();
     api.failUploadBinary(new Error("disk full"));
@@ -225,9 +225,9 @@ describe("bridge: binary file attachments", () => {
       files: [{ name: "x.bin", data: "QQ==", mimeType: "application/octet-stream" }],
     });
     expect(lastPrompt()).toBeTruthy();
+    await bridge.prompt({ threadId: "t1", text: "again" });
     const blocks = lastPrompt()!.prompt as ContentBlock[];
-    // No saved-path note for a file that never landed.
-    expect(blocks.some((b) => b.type === "text" && (b as { text: string }).text.includes("saved into your sandbox"))).toBe(false);
+    expect(blocks.some((b) => b.type === "text" && (b as { text: string }).text.includes("could not be written"))).toBe(true);
   });
 
   it("a prompt with no files writes nothing (unchanged path)", async () => {

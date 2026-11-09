@@ -43,9 +43,25 @@ export interface SandboxExecOptions {
 const DEFAULT_COMMAND_TIMEOUT_MS = 5 * 60 * 1000;
 
 /** Constructs an ExecBackend bound to one sandbox. */
-export function createSandboxExecBackend(api: SandboxApiClient, opts: SandboxExecOptions = {}): ExecBackend {
+export function createSandboxExecBackend(raw: SandboxApiClient, opts: SandboxExecOptions = {}): ExecBackend {
   const commandTimeoutMs = opts.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
+  // Every call waits for queued background writes, so a tool sees its uploads.
+  let writes: Promise<unknown> = Promise.resolve();
+  const api: SandboxApiClient = {
+    mode: raw.mode,
+    execute: (req, signal) => writes.then(() => raw.execute(req, signal)),
+    download: (path) => writes.then(() => raw.download(path)),
+    upload: (path, content) => writes.then(() => raw.upload(path, content)),
+    uploadBinary: (path, base64) => writes.then(() => raw.uploadBinary(path, base64)),
+    ...(raw.waitingFor ? { waitingFor: () => raw.waitingFor!() } : {}),
+  };
   return {
+    writeBinaryFileLater(path, base64) {
+      const write = writes.then(() => raw.uploadBinary(path, base64));
+      writes = write.catch(() => {});
+      return write;
+    },
+
     run(req, signal) {
       return api.execute(req, signal);
     },

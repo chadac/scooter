@@ -94,6 +94,8 @@ export interface SandboxProvisioner {
   pendingRestart?(ref: SandboxRef): Promise<PendingRestart | undefined>;
   /** Cycles the pod onto the current template and size. */
   restart?(ref: SandboxRef, hooks?: { onRunning?: () => void }): Promise<SandboxRestartResult>;
+  /** The ref create() will return, so a bridge can be built before it does. */
+  refFor?(conversationId: string): SandboxRef;
 }
 
 export interface PendingRestart {
@@ -1192,14 +1194,42 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // controller place it while the sandbox spins up; idempotent and non-throwing.
       await conversationRegistry.register(id, { model, owner, sandboxRef: entry.sandbox.name, creatorPod: deps.selfPod });
 
-      // Provision the sandbox and attach the bridge.
-      const { fresh: _new, ...created } = await provisioner.create(sandboxKey(name), threadId);
-      entry.sandbox = created;
-      entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model, owner: entry.owner });
-      wireEventLog(entry); // after the bridge exists
-      // Re-persist with the real sandbox ref so a crash mid-provision leaves a resumable entry.
+      const key = sandboxKey(name);
+      const predicted = provisioner.refFor?.(key);
+      if (!predicted) {
+        const { fresh: _new, ...created } = await provisioner.create(key, threadId);
+        entry.sandbox = created;
+        entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model, owner: entry.owner });
+        wireEventLog(entry); // after the bridge exists
+        // Re-persist with the real sandbox ref so a crash mid-provision leaves a resumable entry.
+        await saveMeta(entry);
+        return toConversation(entry);
+      }
+      // Return before create() lands; prompts queue behind the bridge's gate.
+      entry.sandbox = predicted;
+      const provisioning = provisioner.create(key, threadId);
+      const early = bridgeFactory?.({
+        conversationId: id, sandbox: predicted, model, owner: entry.owner,
+        sandboxReady: async () => {
+          const ref = await provisioning;
+          if (!sameRef(ref, predicted)) throw new Error(`sandbox created as ${ref.namespace}/${ref.name}, not ${predicted.namespace}/${predicted.name}`);
+        },
+      });
+      entry.bridge = early;
+      wireEventLog(entry);
+      // A resumable ref: revive's resume recreates a Sandbox that never landed.
       await saveMeta(entry);
-      // bridge.prompt() lazily starts goose on first use, after emitting RUN_STARTED.
+      void provisioning.then(
+        async (ref) => {
+          // end() may have destroyed the ref before create() made it.
+          if (endedIds.has(id)) await provisioner.destroy(ref);
+        },
+        (err: unknown) => {
+          log.errorWith("sandbox create failed; the next prompt retries it", err, { conversation_id: id });
+          // Queued runs fail on the gate; the next prompt revives.
+          if (entry.bridge === early) entry.bridge = undefined;
+        },
+      ).catch((err: unknown) => log.errorWith("failed to destroy a sandbox created for an ended conversation", err, { conversation_id: id }));
       return toConversation(entry);
     },
 
@@ -1312,18 +1342,22 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         } else {
           // A placeholder ref with no namespace means the Sandbox is absent, so create rather than
           // resume.
-          const from = entry.sandbox;
-          const provisioning = from.namespace
-            ? provisioner.resume(from, entry.threadId)
-            : provisioner.create(sandboxKey(from.name), entry.threadId);
+          const placeholder = !entry.sandbox.namespace;
+          const key = sandboxKey(entry.sandbox.name);
+          const from = (placeholder && provisioner.refFor?.(key)) || entry.sandbox;
+          const provisioning = placeholder
+            ? provisioner.create(key, entry.threadId)
+            : provisioner.resume(from, entry.threadId);
           if (from.namespace) {
-            // Resume keeps the ref, so build the bridge now.
+            // The ref is known up front, so build the bridge now.
+            entry.sandbox = from;
+            const firstSandbox = entry.neverProvisioned === true;
             early = buildBridge(async () => {
               const ref = await provisioning;
               if (!sameRef(ref, from)) {
                 throw new Error(`sandbox moved from ${from.namespace}/${from.name} to ${ref.namespace}/${ref.name} while reviving`);
               }
-              if (ref.fresh) noteReset();
+              if (ref.fresh && !firstSandbox) noteReset();
               if (ref.updatePending) noteUpdate();
             });
             entry.lastActivityAt = nowMs();

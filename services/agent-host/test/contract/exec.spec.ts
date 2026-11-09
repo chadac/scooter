@@ -255,3 +255,41 @@ describe("ExecBackend hard command timeout (P0 — runaway-command deadlock fix)
     }
   });
 });
+
+describe("writeBinaryFileLater", () => {
+  it("holds later calls until the queued write lands", async () => {
+    const api = createFakeSandboxApi();
+    let land!: () => void;
+    const gate = new Promise<void>((r) => (land = r));
+    const order: string[] = [];
+    const slow: SandboxApiClient = {
+      ...api,
+      mode: api.mode,
+      uploadBinary: async (path, b64) => {
+        await gate;
+        order.push("write");
+        return api.uploadBinary(path, b64);
+      },
+      execute: async (req, signal) => {
+        order.push("exec");
+        return api.execute(req, signal);
+      },
+    };
+    const exec = createSandboxExecBackend(slow);
+    const written = exec.writeBinaryFileLater!("/workspace/uploads/a.bin", "QQ==");
+    const ran = exec.run({ command: "cat", args: ["/workspace/uploads/a.bin"] });
+    await Promise.resolve();
+    expect(order).toEqual([]);
+    land();
+    await Promise.all([written, ran]);
+    expect(order).toEqual(["write", "exec"]);
+  });
+
+  it("a failed write rejects its own promise but doesn't block later calls", async () => {
+    const api = createFakeSandboxApi();
+    api.failUploadBinary(new Error("disk full"));
+    const exec = createSandboxExecBackend(api);
+    await expect(exec.writeBinaryFileLater!("/workspace/uploads/a.bin", "QQ==")).rejects.toThrow("disk full");
+    expect((await exec.run({ command: "true", args: [] })).exitCode).toBe(0);
+  });
+});

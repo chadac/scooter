@@ -49,15 +49,9 @@ export function safeUploadName(name: string): string {
 
 /** Write a base64 file to `dir`/<sanitized name> in the sandbox; returns the path. */
 export async function writeSandboxFile(exec: ExecBackend, dir: string, file: { name: string; data: string }): Promise<string> {
-  const name = safeUploadName(file.name);
-  const path = `${dir}/${name}`;
+  const path = `${dir}/${safeUploadName(file.name)}`;
   await exec.writeBinaryFile(path, file.data);
   return path;
-}
-
-/** Write one base64 file attachment into the sandbox at UPLOADS_DIR/<name>. */
-async function writeUploadedFile(exec: ExecBackend, file: { name: string; data: string }): Promise<string> {
-  return writeSandboxFile(exec, UPLOADS_DIR, file);
 }
 
 /** The note appended to the prompt listing where uploaded files were saved. */
@@ -1392,8 +1386,18 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       const files = batch.flatMap((b) => b.files ?? []);
       const savedFilePaths: string[] = [];
       for (const f of files) {
+        const path = `${UPLOADS_DIR}/${safeUploadName(f.name)}`;
+        // Queued where supported, so a cold pod doesn't hold the prompt.
+        if (deps.exec.writeBinaryFileLater) {
+          savedFilePaths.push(path);
+          void deps.exec.writeBinaryFileLater(path, f.data).catch((err: unknown) => {
+            log.warn("failed to write an uploaded file", { conversation_id: conversationId, path, error: formatError(err) });
+            self.addNote?.("sandbox", `The upload ${path} could not be written into your sandbox; ask the user to attach it again.`);
+          });
+          continue;
+        }
         try {
-          savedFilePaths.push(await writeUploadedFile(deps.exec, f));
+          savedFilePaths.push(await writeSandboxFile(deps.exec, UPLOADS_DIR, f));
         } catch (err) {
           debug("[bridge] failed to write uploaded file %s (continuing): %s", f.name, err);
         }
