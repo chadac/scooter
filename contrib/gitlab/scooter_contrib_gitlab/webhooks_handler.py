@@ -2,16 +2,20 @@
 
 A mention in a comment creates or forwards a conversation, the trigger label on an
 issue or MR creates one, and any comment on a resource with an active conversation
-is auto-forwarded.
+is auto-forwarded, as are a linked MR's pipeline results and state changes.
 """
 
 import hmac
 import logging
 
+import httpx
 from fastapi import APIRouter, Header, HTTPException, Request
+
+from scooter_lib.logging_config import format_error
 
 from scooter_webhooks_lib import store as db
 from scooter_webhooks_lib.store import PENDING_CONVERSATION_ID, is_pending
+from scooter_webhooks_lib.vars import ConversationVars
 
 from .config import settings
 from scooter_webhooks_lib.agent_host_client import (
@@ -23,7 +27,7 @@ from scooter_webhooks_lib.identity import resolve_owner
 from scooter_webhooks_lib.reply_workflow import reply_workflow
 from scooter_webhooks_lib.sender import Sender
 from scooter_webhooks_lib.tasks import spawn
-from .responses import get_own_username, post_gitlab_comment
+from .responses import GITLAB_API, get_own_username, post_gitlab_comment
 from .senders import sender_of
 
 logger = logging.getLogger(__name__)
@@ -171,6 +175,8 @@ async def _dispatch(event_type: str, payload: dict) -> None:
         await _handle_issue(payload)
     elif event_type == "Merge Request Hook":
         await _handle_merge_request(payload)
+    elif event_type == "Pipeline Hook":
+        await _handle_pipeline(payload)
     else:
         logger.debug("ignoring event type", extra={**_C, "source": "gitlab", "event_type": event_type})
 
@@ -226,12 +232,7 @@ async def _handle_note(payload: dict):
         return
 
     has_mention = policy.mentions_agent(note_body)
-    existing = (
-        await db.lookup_conversation("gitlab", res_type, res_id)
-        or await db.get_conversation_for_resource("gitlab", res_type, res_id)
-        # A link stored under a URL the configured host can't rebuild.
-        or (web_url and await db.get_conversation_for_resource("gitlab", res_type, web_url))
-    )
+    existing = await _resolve_conversation(res_type, res_id, web_url)
 
     if not existing and noteable_type == "MergeRequest":
         mr_desc = mr.get("description", "")
@@ -366,6 +367,9 @@ async def _handle_issue(payload: dict):
 
 async def _handle_merge_request(payload: dict):
     action = payload.get("object_attributes", {}).get("action", "")
+    if action in _MR_STATE_ACTIONS:
+        await _handle_mr_state(payload)
+        return
     labels = [l.get("title", "").lower() for l in payload.get("labels", [])]
     if action != "update" or not any(policy.is_trigger_label(l) for l in labels):
         return
@@ -398,6 +402,167 @@ async def _handle_merge_request(payload: dict):
             noteable_iid=mr_iid, event=payload,
         )
     )
+
+
+async def _resolve_conversation(res_type: str, res_id: str, web_url: str | None = None) -> str | None:
+    """The conversation linked to this resource, by short form or by URL."""
+    return (
+        await db.lookup_conversation("gitlab", res_type, res_id)
+        or await db.get_conversation_for_resource("gitlab", res_type, res_id)
+        # A link stored under a URL the configured host can't rebuild.
+        or (web_url and await db.get_conversation_for_resource("gitlab", res_type, web_url))
+        or None
+    )
+
+
+async def _linked_conversation(res_id: str, web_url: str | None) -> str | None:
+    """The started conversation linked to this MR; an unlinked MR is not ours."""
+    conversation = await _resolve_conversation("merge_request", res_id, web_url)
+    return None if not conversation or is_pending(conversation) else conversation
+
+
+async def _forward_once(conversation: str, res_id: str, message: str, key: str, value: dict) -> None:
+    """Forward `message` unless `value` was already forwarded under `key`."""
+    if not await ConversationVars(conversation, "gitlab").claim(key, value):
+        return
+    outcome = await deliver_message(conversation, message, source="gitlab")
+    logger.info(
+        "forwarded event to conversation",
+        extra={
+            **_C,
+            "conversation_id": conversation,
+            "outcome": outcome.value,
+            "source": "gitlab",
+            "resource_type": "merge_request",
+            "resource_id": res_id,
+            "key": key.split(":", 1)[0],
+        },
+    )
+
+
+_MR_STATE_ACTIONS = {
+    "merge": "was MERGED",
+    "close": "was CLOSED WITHOUT MERGING",
+    "reopen": "was REOPENED",
+    "approved": "is now APPROVED",
+    "unapproved": "is NO LONGER APPROVED",
+}
+
+_MR_STATE_HINTS = {
+    "merge": "The branch is done: do not push more commits to it. Follow-up work needs a new branch off the updated `{target}`.",
+    "close": "Stop work on this MR unless asked otherwise. Check the thread for why it was closed.",
+    "reopen": "Check the thread for why it was reopened before picking the work back up.",
+    "approved": "No action needed unless you were waiting on approval to merge or mark it ready.",
+    "unapproved": "Check the thread for what changed before merging.",
+}
+
+
+async def _handle_mr_state(payload: dict) -> None:
+    """Merge Request Hook merge/close/reopen/approval: tell the linked conversation."""
+    mr = payload.get("object_attributes", {})
+    action = mr.get("action", "")
+    user = payload.get("user", {}).get("username", "unknown")
+    own = await get_own_username()
+    if own and user.lower() == own.lower():
+        return
+
+    repo = _extract_repo(payload)
+    iid = mr.get("iid")
+    res_id = _resource_id(repo, "merge_request", iid)
+    conversation = await _linked_conversation(res_id, mr.get("url"))
+    if not conversation:
+        return
+    target = mr.get("target_branch") or "the target branch"
+    sha = mr.get("merge_commit_sha") or ""
+    into = f" into `{target}`" if action == "merge" else ""
+    commit = f" ({sha[:12]})" if action == "merge" and sha else ""
+    message = (
+        f"MR !{iid} in {repo} {_MR_STATE_ACTIONS[action]} by @{user}{into}{commit}.\n\n---\n\n"
+        + _MR_STATE_HINTS[action].format(target=target)
+    )
+    # updated_at tells a repeated delivery from a second reopen or approval.
+    await _forward_once(
+        conversation, res_id, message,
+        f"mr_state:{res_id}", {"action": action, "at": mr.get("updated_at")},
+    )
+
+
+async def _open_mr_iids(project_id: int, branch: str) -> list[int]:
+    """The iids of the open MRs from `branch`, or [] when the lookup fails."""
+    if not settings.gitlab_token or not project_id or not branch:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{GITLAB_API}/projects/{project_id}/merge_requests",
+                headers={"PRIVATE-TOKEN": settings.gitlab_token},
+                params={"source_branch": branch, "state": "opened", "per_page": 20},
+            )
+            resp.raise_for_status()
+            return [mr["iid"] for mr in resp.json() if mr.get("iid")]
+    except (httpx.HTTPError, ValueError) as e:
+        logger.warning(
+            "open-MR lookup failed; dropping the pipeline event",
+            extra={**_C, "source": "gitlab", "project_id": project_id, "error": format_error(e)},
+        )
+        return []
+
+
+async def _handle_pipeline(payload: dict) -> None:
+    """Pipeline Hook: forward a failure, and a success that follows a forwarded failure."""
+    pipeline = payload.get("object_attributes", {})
+    status = pipeline.get("status")
+    if status not in ("failed", "success") or pipeline.get("tag"):
+        return
+
+    repo = _extract_repo(payload)
+    mr = payload.get("merge_request") or {}
+    if mr.get("iid"):
+        iids, web_url = [mr["iid"]], mr.get("url")
+    else:
+        iids, web_url = await _open_mr_iids(payload.get("project", {}).get("id"), pipeline.get("ref", "")), None
+
+    pipeline_id = pipeline.get("id") or 0
+    url = pipeline.get("url") or f"{payload.get('project', {}).get('web_url', '')}/-/pipelines/{pipeline_id}"
+    branch = mr.get("source_branch") or pipeline.get("ref", "")
+    failed = [
+        b.get("name", "?") for b in payload.get("builds") or []
+        if b.get("status") == "failed" and not b.get("allow_failure")
+    ]
+    for iid in iids:
+        res_id = _resource_id(repo, "merge_request", iid)
+        await _forward_pipeline(res_id, web_url, iid, branch, pipeline_id, status, url, failed)
+
+
+async def _forward_pipeline(
+    res_id: str, web_url: str | None, iid: int, branch: str,
+    pipeline_id: int, status: str, url: str, failed: list[str],
+) -> None:
+    conversation = await _linked_conversation(res_id, web_url)
+    if not conversation:
+        return
+    key = f"pipeline:{res_id}"
+    last = await ConversationVars(conversation, "gitlab").get(key) or {}
+    # An older pipeline finishing late says nothing about the MR now.
+    if (last.get("id") or 0) > pipeline_id:
+        return
+    if status == "success":
+        if last.get("status") != "failed":
+            return
+        message = (
+            f"CI is GREEN: pipeline #{pipeline_id} passes on `{branch}` (MR !{iid}).\n\n{url}\n\n---\n\n"
+            "The previous pipeline failed, so this unblocks the MR. "
+            "No action needed unless you were waiting to do something after CI."
+        )
+    else:
+        listed = "\n".join(f"- {j}" for j in failed) if failed else "- (job names unavailable)"
+        message = (
+            f"CI FAILED: pipeline #{pipeline_id} on `{branch}` (MR !{iid}).\n\n"
+            f"Failing jobs:\n{listed}\n\n{url}\n\n---\n\n"
+            "Investigate before pushing again: read the failing job's log rather than "
+            "guessing. If it is a known flake, say so explicitly rather than silently re-running."
+        )
+    await _forward_once(conversation, res_id, message, key, {"id": pipeline_id, "status": status})
 
 
 async def _background_create_conversation(
