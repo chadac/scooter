@@ -7,7 +7,7 @@
  * agent-host (POD_NAME unset) uses noopRegistry.
  */
 
-import type { Visibility } from "./visibility.js";
+import type { ConversationKind, Visibility } from "./visibility.js";
 
 export interface ConversationSpec {
   /** The model the conversation runs (the row's model). */
@@ -16,6 +16,8 @@ export interface ConversationSpec {
   owner?: string;
   /** Parent conversation id for a subagent, else undefined (parent_id). */
   parentId?: string;
+  /** Read-only here: set by the router's insert. */
+  kind?: ConversationKind;
   /** The backing Sandbox name, if known at start (sandbox_ref). */
   sandboxRef?: string;
   /** The pod that created the conversation (creator_pod), a placement hint the controller

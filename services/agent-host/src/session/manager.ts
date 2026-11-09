@@ -16,7 +16,7 @@ import { noopRegistry, type ConversationRecord, type ConversationRegistry } from
 import { formatError, logger } from "../log.js";
 import { isDbUnavailable } from "../db/pgPool.js";
 import { DERIVED_SOURCES, humanTriggerFromLog, latestTrigger } from "../acp/remoteAgentRegistry.js";
-import type { AccessFacts, Visibility } from "./visibility.js";
+import type { AccessFacts, ConversationKind, Visibility } from "./visibility.js";
 
 const log = logger("manager");
 
@@ -134,6 +134,11 @@ export interface SandboxRestartResult {
   notReadyReason?: string;
 }
 
+/** A subagent needs its task; a session starts idle. */
+export type SpawnChildArgs =
+  | { kind?: undefined; prompt: string; title?: string; model?: string }
+  | { kind: "session"; title?: string; model?: string };
+
 /** Who chose a conversation's model. */
 export type ModelSetBy = "user" | "agent";
 
@@ -151,6 +156,8 @@ export interface ConversationMeta {
   owner?: string;
   /** The spawning conversation when this is a subagent, which shares its parent's sandbox pod. */
   parentId?: SessionId;
+  /** Written by the router's insert, never by saveMeta. */
+  kind?: ConversationKind;
   /** The user renamed this conversation, so the agent's <title> marker no longer overwrites
    *  `title`. */
   userTitled?: boolean;
@@ -303,6 +310,8 @@ export interface Conversation {
   /** The spawning conversation when this is a subagent; children are found by scanning for
    *  `parentId === id`. */
   readonly parentId?: SessionId;
+  /** "session": a person drives it; it never reports back. */
+  readonly kind?: ConversationKind;
   /** The title is user-set and locked against the agent's <title> marker. */
   readonly userTitled?: boolean;
   /** The user starred it. */
@@ -316,11 +325,7 @@ export interface SessionManager {
   start(threadId: ThreadId, model?: string, owner?: string, opts?: { visibility?: Visibility }): Promise<Conversation>;
   /** Spawn a subagent: a new conversation with its own bridge that shares the parent's sandbox pod,
    *  inherits its owner and carries `parentId`; throws if the parent is unknown. */
-  spawnChild(
-    parentId: SessionId,
-    childThreadId: ThreadId,
-    args: { prompt: string; title?: string; model?: string },
-  ): Promise<Conversation>;
+  spawnChild(parentId: SessionId, childThreadId: ThreadId, args: SpawnChildArgs): Promise<Conversation>;
   /** Subscribe to subagent completions, fired as (subagentId, parentId) when a subagent's run
    *  finishes or errors (an interrupt pause does not count); returns an unsubscribe. */
   onSubagentComplete(cb: (subagentId: SessionId, parentId: SessionId) => void): () => void;
@@ -469,6 +474,7 @@ interface Entry {
   pickedProvider?: string;
   owner?: string;
   parentId?: SessionId;
+  kind?: ConversationKind;
   userTitled?: boolean;
   starred?: boolean;
   visibility?: Visibility;
@@ -557,6 +563,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     modelSetBy: e.modelSetBy,
     owner: e.owner,
     parentId: e.parentId,
+    kind: e.kind,
     userTitled: e.userTitled,
     starred: e.starred,
     visibility: e.visibility,
@@ -608,6 +615,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       modelSetBy: m.modelSetBy,
       owner: m.owner,
       parentId: m.parentId,
+      kind: m.kind,
       userTitled: m.userTitled,
       starred: m.starred,
       pendingQueue: m.pendingQueue,
@@ -685,6 +693,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         model: c.spec.model,
         owner: c.spec.owner,
         parentId: c.spec.parentId,
+        kind: c.spec.kind,
         visibility: c.spec.visibility,
         ...(c.spec.sandboxRef ? { sandboxRef: c.spec.sandboxRef } : {}),
       };
@@ -810,6 +819,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       modelSetBy: e.modelSetBy,
       owner: e.owner,
       parentId: e.parentId,
+      kind: e.kind,
       userTitled: e.userTitled,
       starred: e.starred,
       visibility: e.visibility,
@@ -1259,12 +1269,13 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         sandbox: parent.sandbox, // shared, no provisioner.create
         bridge: undefined,
         status: "running",
-        title: args.title ?? "Subagent",
+        title: args.title ?? (args.kind === "session" ? "Session" : "Subagent"),
         createdAt: nowMs(),
         lastActivityAt: nowMs(),
         model,
         owner: parent.owner,
         parentId,
+        kind: args.kind ?? "subagent",
         // It shares the parent's pod, so it is exactly as private (the router's insert agrees).
         ...(parent.visibility === "private" ? { visibility: "private" as const } : {}),
       };
@@ -1280,6 +1291,8 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
       entry.bridge = bridgeFactory?.({ conversationId: id, sandbox: entry.sandbox, model, owner: entry.owner });
       wireEventLog(entry);
+      // A session waits for its first message, reporting nowhere.
+      if (args.kind === "session") return toConversation(entry);
       // Fire onSubagentComplete when this subagent's run terminates; a RUN_FINISHED with outcome
       // "interrupt" is a pause, not a completion.
       entry.bridge?.onEvent((event) => {
@@ -1976,6 +1989,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           model: c.spec.model,
           owner: c.spec.owner,
           parentId: c.spec.parentId,
+          kind: c.spec.kind,
           visibility: c.spec.visibility,
           ...(c.spec.sandboxRef ? { sandboxRef: c.spec.sandboxRef } : {}),
         };

@@ -1,4 +1,4 @@
-h1:Q0U2CTHvIdaVX7uUtXg/nb7MCBSBkuWyKnWa1w3K/lQ=
+h1:NCNZ+/HWkEbb/oIrde7/p9/+5dq7tYKViqUDjZ+Bbyo=
 20260831184920_create_conversation_jobs.sql h1:iuMeVplqACz56tY81stXZq2zM5gojTDGkZby4hdIaAw=
 20260831203036_create_conversations.sql h1:FWFJ5L5WjnUtjyNz9OyXmLqF64UWgDgjSDWS21CLhqA=
 20260901163900_create_conversation_events.sql h1:MD1+P9uCLlF7y28sjec1JXqVTnpSl5UTqPY9am/30Zk=
@@ -22,3 +22,4 @@ h1:Q0U2CTHvIdaVX7uUtXg/nb7MCBSBkuWyKnWa1w3K/lQ=
 20261106153239_add_folder_icon.sql h1:F4mqqVgVBBqM9Yfs9UQBniRrL+BJcNNXDi9ddw1fNqA=
 20261106235329_nested_folders.sql h1:3IRC2dYaraRdr8pI1IL/63VSQwsHx/kR0HuG6/2JiXs=
 20261108233630_conversation_events_run_markers.sql h1:wCwXqUkeGuMkIKcNaod5eyypITV/oqPS0sUisBgzy0E=
+20261109204442_conversation_kind.sql h1:eJ8tExVmTpnCmcm9bJ5nYLEK2dVLWlAg8rj47pTB8x8=

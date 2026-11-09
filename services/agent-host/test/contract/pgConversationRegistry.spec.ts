@@ -32,14 +32,14 @@ function fakeDb(opts: { fail?: boolean; rows?: unknown[][] } = {}): {
   return { db: drizzle(client as never), stmts };
 }
 
-// Column order of the registry's select: id, model, owner, parent_id, sandbox_ref, creator_pod,
+// Column order of the registry's select: id, model, owner, parent_id, kind, sandbox_ref, creator_pod,
 // phase, host_pod, host_generation.
 const row = (over: Partial<Record<string, unknown>> = {}): unknown[] => {
   const r = {
-    id: "conv-a", model: "m", owner: "alice", parentId: null, sandboxRef: "conv-xyz",
+    id: "conv-a", model: "m", owner: "alice", parentId: null, kind: null, sandboxRef: "conv-xyz",
     creatorPod: "pod-0", phase: "Assigned", hostPod: "pod-1", hostGeneration: "3", ...over,
   };
-  return [r.id, r.model, r.owner, r.parentId, r.sandboxRef, r.creatorPod, r.phase, r.hostPod, r.hostGeneration];
+  return [r.id, r.model, r.owner, r.parentId, r.kind, r.sandboxRef, r.creatorPod, r.phase, r.hostPod, r.hostGeneration];
 };
 
 describe("the row-backed conversation registry: writes", () => {

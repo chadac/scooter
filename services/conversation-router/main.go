@@ -664,7 +664,8 @@ func buildSelfServer(kubeCfg *rest.Config, cfg config, store *Store, handler htt
 		log.Warn("self-access TokenReview client init failed: self-access disabled", errAttr(err))
 		return nil
 	}
-	self := newSelfAccess(review, cfg.namespace, store.ConversationByID, identityConfigFromEnv(), atoi(env("SELF_MESSAGES_PER_MINUTE", "10")))
+	self := newSelfAccess(review, cfg.namespace, store.ConversationByID, identityConfigFromEnv(),
+		atoi(env("SELF_MESSAGES_PER_MINUTE", "10")), atoi(env("SELF_SESSIONS_PER_MINUTE", "10")))
 	log.Info("self-access listener enabled", slog.String("listen_addr", addr), slog.String("audience", audience))
 	return &http.Server{Addr: addr, Handler: self.wrap(handler)}
 }

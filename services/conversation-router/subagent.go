@@ -23,10 +23,18 @@ type subagentRequest struct {
 	Title string `json:"title"`
 	// Empty inherits the parent's.
 	Model string `json:"model"`
+	// KindSubagent (the default) or KindSession.
+	Kind string `json:"kind"`
 }
 
 // defaultSubagentTitle shows until the child emits its own <title>.
 const defaultSubagentTitle = "Subagent"
+
+// A child's kind: only a subagent reports to its parent.
+const (
+	KindSubagent = "subagent"
+	KindSession  = "session"
+)
 
 // SubagentCreate returns the parent id when this route matches.
 func SubagentCreate(method, path string) (parentID string, ok bool) {
@@ -61,6 +69,13 @@ func serveSubagentCreate(w http.ResponseWriter, r *http.Request, creator Convers
 	}
 	if req.Model != "" && !modelRe.MatchString(req.Model) {
 		writeJSONError(w, http.StatusBadRequest, "invalid model")
+		return
+	}
+	if req.Kind == "" {
+		req.Kind = KindSubagent
+	}
+	if req.Kind != KindSubagent && req.Kind != KindSession {
+		writeJSONError(w, http.StatusBadRequest, "invalid kind")
 		return
 	}
 
@@ -99,6 +114,8 @@ func serveSubagentCreate(w http.ResponseWriter, r *http.Request, creator Convers
 	} else if parent.Model != nil && *parent.Model != "" {
 		spec["model"] = *parent.Model
 	}
+
+	spec["kind"] = req.Kind
 
 	title := req.Title
 	if title == "" {

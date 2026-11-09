@@ -8,6 +8,7 @@
 
 import type { SessionId } from "../types.js";
 import type { AguiEvent } from "../bridge.js";
+import type { SpawnChildArgs } from "../session/manager.js";
 import { renderTurns, type SubagentTurn } from "./subagentTranscript.js";
 
 /** An MCP tool result (matches mcpServer.ts's ToolResult). */
@@ -27,12 +28,9 @@ export interface SubagentStatus {
 
 /** The seam the tools drive, implemented over the SessionManager and kept narrow so the handlers are unit-testable without a real bridge or pod. */
 export interface SubagentManager {
-  /** Spawn a child of `parentId`, returning its id and title. */
-  spawn(
-    parentId: SessionId,
-    args: { prompt: string; title?: string; model?: string },
-  ): Promise<{ id: string; title?: string }>;
-  /** This conversation's children and their statuses. */
+  /** Spawn a subagent, or an idle session, under `parentId`. */
+  spawn(parentId: SessionId, args: SpawnChildArgs): Promise<{ id: string; title?: string }>;
+  /** This conversation's subagents, not sessions, with statuses. */
   list(parentId: SessionId): Promise<SubagentStatus[]>;
   /** One child's status, or undefined if it is not a child of `parentId`. */
   check(parentId: SessionId, subagentId: string): Promise<SubagentStatus | undefined>;

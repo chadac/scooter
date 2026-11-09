@@ -33,12 +33,13 @@ func selfFixture(t *testing.T) (*selfAccess, *int, *http.Request) {
 	}
 	rows := map[string]*ConversationRow{
 		"conv-1": {ID: "conv-1", SandboxRef: strp("conv-abc123"), Owner: strp("alice")},
-		"sub-1":  {ID: "sub-1", SandboxRef: strp("conv-abc123"), Owner: strp("alice")},
+		"sub-1":  {ID: "sub-1", SandboxRef: strp("conv-abc123"), Owner: strp("alice"), ParentID: strp("conv-1")},
+		"ses-1":  {ID: "ses-1", SandboxRef: strp("conv-abc123"), Owner: strp("alice"), ParentID: strp("conv-1"), Kind: strp(KindSession)},
 		"conv-2": {ID: "conv-2", SandboxRef: strp("conv-zzz999"), Owner: strp("bob")},
 		"conv-3": {ID: "conv-3"}, // sandbox_ref not yet written
 	}
 	lookup := func(_ context.Context, id string) (*ConversationRow, error) { return rows[id], nil }
-	s := newSelfAccess(review, selfNS, lookup, identityConfig{mode: "header", userHeader: "x-auth-user", albIdentityHeader: "x-amzn-oidc-identity"}, 2)
+	s := newSelfAccess(review, selfNS, lookup, identityConfig{mode: "header", userHeader: "x-auth-user", albIdentityHeader: "x-amzn-oidc-identity"}, 2, 1)
 	return s, &reviews, nil
 }
 
@@ -89,6 +90,12 @@ func TestSelfRouteAllowlist(t *testing.T) {
 		{"POST", "/agui", false},
 		{"PATCH", "/conversations/c/title", false},
 		{"GET", "/conversations/c/events/x", false},
+		{"POST", "/conversations/c/sessions", true},
+		{"GET", "/conversations/c/sessions", true},
+		{"POST", "/conversations/c/suspend", true},
+		{"DELETE", "/conversations/c", false},
+		{"GET", "/conversations/c/suspend", false},
+		{"POST", "/conversations/c/subagents", false},
 	}
 	for _, tc := range cases {
 		if _, _, ok := selfRoute(tc.method, tc.path); ok != tc.ok {
@@ -227,5 +234,31 @@ func TestSelfAccessRateLimitsMessages(t *testing.T) {
 	now = now.Add(time.Minute)
 	if code, _ := do(s, "POST", "/conversations/conv-1/messages", "good", nil); code != http.StatusAccepted {
 		t.Fatalf("after a minute: code %d", code)
+	}
+}
+
+func TestSelfAccessRateLimitsSessions(t *testing.T) {
+	s, _, _ := selfFixture(t)
+	if code, _ := do(s, "POST", "/conversations/conv-1/sessions", "good", nil); code != http.StatusAccepted {
+		t.Fatalf("1st session: code %d", code)
+	}
+	if code, _ := do(s, "POST", "/conversations/conv-1/sessions", "good", nil); code != http.StatusTooManyRequests {
+		t.Fatalf("2nd session: code %d, want 429", code)
+	}
+	// Creating sessions does not spend the message cap.
+	if code, _ := do(s, "POST", "/conversations/conv-1/messages", "good", nil); code != http.StatusAccepted {
+		t.Fatalf("message after session: code %d", code)
+	}
+}
+
+func TestSelfAccessClosesOnlySessions(t *testing.T) {
+	s, _, _ := selfFixture(t)
+	if code, got := do(s, "POST", "/conversations/ses-1/suspend", "good", nil); code != http.StatusAccepted || !got.called {
+		t.Fatalf("close session: code %d called %v", code, got.called)
+	}
+	for _, id := range []string{"conv-1", "sub-1"} {
+		if code, got := do(s, "POST", "/conversations/"+id+"/suspend", "good", nil); code != http.StatusForbidden || got.called {
+			t.Fatalf("close %s: code %d called %v, want 403", id, code, got.called)
+		}
 	}
 }

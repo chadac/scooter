@@ -343,6 +343,11 @@ in
         default = 10;
         description = "Per-conversation cap on messages a sandbox may post (0 = unlimited), so the agent cannot drive itself in a loop.";
       };
+      sessionsPerMinute = mkOption {
+        type = types.int;
+        default = 10;
+        description = "Per-conversation cap on sessions (child conversations, e.g. VS Code chats) a sandbox may create (0 = unlimited).";
+      };
     };
 
   };
@@ -570,6 +575,7 @@ in
                   { name = "SELF_LISTEN_ADDR"; value = ":${toString ccfg.selfAccess.port}"; }
                   { name = "SELF_TOKEN_AUDIENCE"; value = ccfg.selfAccess.audience; }
                   { name = "SELF_MESSAGES_PER_MINUTE"; value = toString ccfg.selfAccess.messagesPerMinute; }
+                  { name = "SELF_SESSIONS_PER_MINUTE"; value = toString ccfg.selfAccess.sessionsPerMinute; }
                 ];
                 readinessProbe.httpGet = { path = "/healthz"; port = "agui"; };
                 resources = lib.mkDefault {

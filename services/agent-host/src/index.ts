@@ -1702,6 +1702,7 @@ export async function main(
   server.use(
     createManagementApi({
     uploadLimits,
+    subagents: subagentManager,
     accessCheck,
     authEnforced: process.env.AUTH_ENFORCE === "true",
     // Live appends only reach the owner's local store, so the integrity stream reports
@@ -2006,7 +2007,7 @@ export async function main(
     // Backstop: sweep for an idle, completed subagent whose event was missed.
     subagentWatchTimer = setInterval(() => {
       for (const c of sessions.list()) {
-        if (c.parentId === undefined) continue; // top-level, not a subagent
+        if (c.kind !== "subagent" || c.parentId === undefined) continue; // sessions are never ended here
         if (notified.has(c.id as SessionId)) continue;
         if (c.bridge?.queueState().running) continue; // still working
         void reportCompletion(c.id as SessionId, c.parentId as SessionId);

@@ -8,6 +8,8 @@ import { SubagentLimitError, type SubagentManager, type SubagentStatus } from ".
 import { foldTurnsWithTools } from "../agent/subagentTranscript.js";
 import { PRIORITY_INTERRUPT } from "../bridge.js";
 import type { SubagentCreator } from "./routerSubagents.js";
+import type { SpawnChildArgs } from "./manager.js";
+import type { ConversationKind } from "./visibility.js";
 
 /** The minimal child conversation shape the manager reasons about, a subset of SessionManager's
  *  Conversation. */
@@ -15,6 +17,7 @@ export interface SubagentConversation {
   id: string;
   title?: string;
   parentId?: string;
+  kind?: ConversationKind;
   status?: string;
   bridge?: {
     queueState(): { running: boolean; queued?: number };
@@ -26,7 +29,7 @@ export interface SubagentConversation {
 export interface SubagentSessions {
   get(id: SessionId): SubagentConversation | undefined;
   list(): SubagentConversation[];
-  spawnChild(parentId: SessionId, childThreadId: string, args: { prompt: string; title?: string; model?: string }): Promise<{ id: string; title?: string }>;
+  spawnChild(parentId: SessionId, childThreadId: string, args: SpawnChildArgs): Promise<{ id: string; title?: string }>;
   prompt(id: SessionId, text: string, model?: string, priority?: number, interrupt?: unknown, images?: unknown, files?: unknown, source?: string): Promise<void>;
 }
 
@@ -85,7 +88,8 @@ export function createSubagentManager(
   /** Resolve a child that belongs to `parentId` (scoping), else undefined. */
   const ownChild = (parentId: string, subagentId: string): SubagentConversation | undefined => {
     const c = sessions.get(subagentId as SessionId);
-    return c && c.parentId === parentId ? c : undefined;
+    // A session belongs to its person, not the parent agent.
+    return c && c.parentId === parentId && c.kind === "subagent" ? c : undefined;
   };
 
   // In-flight spawns, so a parallel burst cannot overshoot: unnamed until the router mints an id.
@@ -109,11 +113,14 @@ export function createSubagentManager(
   return {
     async spawn(parentId, args) {
       // Checked before the router mints a row, so a refusal leaves nothing behind.
+      const session = args.kind === "session";
+      // Sessions are depth 0, so they may delegate too.
       let depth = 0;
-      for (let c = sessions.get(parentId); c?.parentId && depth <= limits.maxDepth; depth++) {
+      for (let c = sessions.get(parentId), hops = 0; c?.parentId && hops < 32; hops++) {
+        if (c.kind !== "session") depth++;
         c = sessions.get(c.parentId as SessionId);
       }
-      if (depth >= limits.maxDepth) {
+      if (!session && depth >= limits.maxDepth) {
         throw new SubagentLimitError(
           `Not spawned: subagents nest at most ${limits.maxDepth} level(s) deep, and you are already a ` +
             `subagent. Do this work yourself in this turn.`,
@@ -139,7 +146,7 @@ export function createSubagentManager(
       try {
         // The router mints the id, before any event.
         childThreadId = createChild
-          ? (await createChild(parentId, { title: args.title, model: args.model })).id
+          ? (await createChild(parentId, { title: args.title, model: args.model, kind: args.kind })).id
           : randomUUID();
         bump(parentId, -1);
         pending.set(childThreadId, parentId);
@@ -154,7 +161,7 @@ export function createSubagentManager(
     async list(parentId) {
       return sessions
         .list()
-        .filter((c) => c.parentId === parentId)
+        .filter((c) => c.parentId === parentId && c.kind === "subagent")
         .map((c) => ({ id: c.id, title: c.title, status: subagentStatusOf(c) }));
     },
     async check(parentId, subagentId) {

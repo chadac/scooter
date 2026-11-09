@@ -5,6 +5,9 @@
 
 export type Visibility = "shared" | "private";
 
+/** A child's kind: agent-spawned "subagent" or person-driven "session". */
+export type ConversationKind = "subagent" | "session";
+
 export const VISIBILITIES: readonly Visibility[] = ["shared", "private"];
 
 export function isVisibility(v: unknown): v is Visibility {

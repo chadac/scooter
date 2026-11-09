@@ -7,7 +7,7 @@
  */
 
 import { memo, useEffect, useState, type DragEvent, type ReactNode } from "react";
-import { Bot, Check, ChevronRight, CornerDownRight, FolderPlus, Hourglass, InfinityIcon, Lock, MoreHorizontal, Plus, Star } from "lucide-react";
+import { Bot, Check, ChevronRight, Code2, CornerDownRight, FolderPlus, Hourglass, InfinityIcon, Lock, MoreHorizontal, Plus, Star } from "lucide-react";
 import { DropdownMenu, Popover } from "radix-ui";
 
 import { FolderGlyph, IconPicker } from "./FolderGlyph.js";
@@ -151,6 +151,7 @@ const SessionRow = memo(function SessionRow({
       data-starred={s.starred ? "true" : undefined}
       data-private={s.visibility === "private" ? "true" : undefined}
       data-subagent={depth > 0 ? "true" : undefined}
+      data-session-kind={s.kind}
       draggable={depth === 0}
       onDragStart={(e) => e.dataTransfer.setData(CONV_MIME, s.id)}
       className={
@@ -175,6 +176,16 @@ const SessionRow = memo(function SessionRow({
         <span data-testid="session-title" className="flex min-w-0 items-center">
           <SessionLabel session={s} mode={labelMode} />
         </span>
+        {s.kind === "session" && (
+          <span
+            data-testid="session-vscode"
+            className="ms-1.5 text-xs text-muted-foreground"
+            title="A VS Code chat in this conversation's sandbox"
+            aria-label="VS Code"
+          >
+            <Code2 className="size-3" aria-hidden />
+          </span>
+        )}
         {s.visibility === "private" && (
           <span
             data-testid="session-private"

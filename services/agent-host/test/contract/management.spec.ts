@@ -1981,3 +1981,58 @@ describe("hook settings", () => {
     expect((await call(api, "PATCH", "/user-hooks/finish-or-ask", { enabled: false }, alice)).status).toBe(501);
   });
 });
+
+describe("sessions routes (children a pod service such as VS Code drives)", () => {
+  const setup = (spawn = vi.fn(async () => ({ id: "s-new", title: "Session" }))) => {
+    const sessions = fakeSessions();
+    const subagents = { spawn } as unknown as import("../../src/agent/subagentTools.js").SubagentManager;
+    const api = createManagementApi({
+      sessions, store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }), subagents,
+      models: { default: "grok", available: ["grok", "opus"] },
+    });
+    return { api, sessions, spawn };
+  };
+
+  it("POST creates an idle session of the conversation", async () => {
+    const { api, spawn } = setup();
+    const r = await call(api, "POST", "/conversations/c1/sessions", { title: "VS Code", model: "opus" });
+    expect(r).toEqual({ status: 201, json: { id: "s-new", title: "Session" } });
+    expect(spawn).toHaveBeenCalledWith("c1", { kind: "session", title: "VS Code", model: "opus" });
+  });
+
+  it("rejects an unknown model and an unknown parent without spawning", async () => {
+    const { api, spawn } = setup();
+    expect((await call(api, "POST", "/conversations/c1/sessions", { model: "nope" })).status).toBe(400);
+    expect((await call(api, "POST", "/conversations/zz/sessions", {})).status).toBe(404);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("refuses a session under a subagent", async () => {
+    const { api, sessions, spawn } = setup();
+    await sessions.start("sub", undefined, undefined);
+    Object.assign(sessions.get("sub")!, { parentId: "c1" });
+    expect((await call(api, "POST", "/conversations/sub/sessions", {})).status).toBe(400);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("a spawn limit is a 429", async () => {
+    const { SubagentLimitError } = await import("../../src/agent/subagentTools.js");
+    const { api } = setup(vi.fn(async () => { throw new SubagentLimitError("full"); }));
+    expect((await call(api, "POST", "/conversations/c1/sessions", {})).status).toBe(429);
+  });
+
+  it("GET lists only the conversation's sessions, oldest first", async () => {
+    const { api, sessions } = setup();
+    for (const [id, over] of [
+      ["s2", { parentId: "c1", kind: "session", createdAt: 3 }],
+      ["sub", { parentId: "c1", createdAt: 1 }],
+      ["s1", { parentId: "c1", kind: "session", createdAt: 2 }],
+      ["other", { parentId: "c9", kind: "session", createdAt: 1 }],
+    ] as const) {
+      await sessions.start(id, undefined, undefined);
+      Object.assign(sessions.get(id)!, over);
+    }
+    const r = await call(api, "GET", "/conversations/c1/sessions");
+    expect((r.json as { sessions: { id: string }[] }).sessions.map((s) => s.id)).toEqual(["s1", "s2"]);
+  });
+});

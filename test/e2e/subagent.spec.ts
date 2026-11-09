@@ -6,7 +6,7 @@
  * `spawn_subagent` MCP tool exactly as goose does, so the parent/child pair is real.
  */
 
-import { test, expect, assertMatchesServer } from "./fixtures.js";
+import { test, expect, assertMatchesServer, shot } from "./fixtures.js";
 import { fastOnly } from "./target.js";
 
 /** The sidebar row for a subagent: nested rows mark themselves data-subagent. */
@@ -89,5 +89,34 @@ fastOnly("the ~subagent directive is a fake-agent test hook")("subagent conversa
     await page.locator(`[data-testid="session-item"][data-conversation-id="${parentId}"]`).click();
     await expect(page.locator(SUBAGENT_ROW)).toHaveCount(1, { timeout: 20_000 });
     await assertMatchesServer(page, request, baseURL, "after an unrelated conversation upserts");
+  });
+
+  test("a session a pod service creates nests under its parent with a VS Code marker", async ({
+    chat,
+    page,
+    request,
+    baseURL,
+  }) => {
+    await chat.open();
+    await chat.completeTurn("hello");
+    const parentId = await page.locator(TOP_LEVEL_ROW).getAttribute("data-conversation-id");
+    const base = baseURL ?? "http://localhost:5173";
+
+    const res = await request.post(`${base}/conversations/${parentId}/sessions`, { data: { title: "Refactor the router" } });
+    expect(res.status()).toBe(201);
+    const { id } = (await res.json()) as { id: string };
+
+    const row = page.locator(`[data-testid="session-item"][data-conversation-id="${id}"]`);
+    await expect(row).toHaveAttribute("data-subagent", "true", { timeout: 30_000 });
+    await expect(row).toHaveAttribute("data-session-kind", "session");
+    await expect(row.locator('[data-testid="session-vscode"]')).toBeVisible();
+    await shot(page, "vscode session row");
+    await page.emulateMedia({ colorScheme: "dark" });
+    await page.waitForTimeout(1_000);
+    await shot(page, "vscode session row dark");
+    await page.emulateMedia({ colorScheme: "light" });
+
+    const listed = await request.get(`${base}/conversations/${parentId}/sessions`);
+    expect(((await listed.json()) as { sessions: { id: string }[] }).sessions.map((s) => s.id)).toEqual([id]);
   });
 });

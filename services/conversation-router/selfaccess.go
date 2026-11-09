@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"regexp"
-	"strings"
 	"sync"
 	"time"
 
@@ -20,29 +19,46 @@ import (
 // selfRoutes is the whole surface a sandbox may reach; anything else is 404. Tool-permission
 // answers are deliberately absent: anything in the pod holds the token, so it must not be able
 // to approve its own requests.
-var selfRoutes = []struct {
-	method string
-	re     *regexp.Regexp
-}{
-	{http.MethodGet, regexp.MustCompile(`^/conversations/([^/]+)/events$`)},
+var selfRoutes = []selfRouteDef{
+	{method: http.MethodGet, re: regexp.MustCompile(`^/conversations/([^/]+)/events$`)},
 	// The replay+live stream; /events alone replays and never carries live events to a viewer.
-	{http.MethodGet, regexp.MustCompile(`^/conversations/([^/]+)/events\.integrity$`)},
-	{http.MethodGet, regexp.MustCompile(`^/conversations/([^/]+)/history$`)},
-	{http.MethodPost, regexp.MustCompile(`^/conversations/([^/]+)/messages$`)},
-	{http.MethodPost, regexp.MustCompile(`^/conversations/([^/]+)/cancel$`)},
+	{method: http.MethodGet, re: regexp.MustCompile(`^/conversations/([^/]+)/events\.integrity$`)},
+	{method: http.MethodGet, re: regexp.MustCompile(`^/conversations/([^/]+)/history$`)},
+	{method: http.MethodPost, re: regexp.MustCompile(`^/conversations/([^/]+)/messages$`), limit: limitMessages},
+	{method: http.MethodPost, re: regexp.MustCompile(`^/conversations/([^/]+)/cancel$`)},
+	// Sessions: children a pod service, such as VS Code, drives.
+	{method: http.MethodPost, re: regexp.MustCompile(`^/conversations/([^/]+)/sessions$`), limit: limitSessions},
+	{method: http.MethodGet, re: regexp.MustCompile(`^/conversations/([^/]+)/sessions$`)},
+	// Sessions only: a pod must not stop its own conversation.
+	{method: http.MethodPost, re: regexp.MustCompile(`^/conversations/([^/]+)/suspend$`), sessionOnly: true},
 }
 
-// selfRoute returns the conversation id an allowed self-access request targets.
-func selfRoute(method, path string) (convID string, isMessage, ok bool) {
+type selfLimit int
+
+const (
+	limitNone selfLimit = iota
+	limitMessages
+	limitSessions
+)
+
+type selfRouteDef struct {
+	method      string
+	re          *regexp.Regexp
+	limit       selfLimit
+	sessionOnly bool
+}
+
+// selfRoute returns the matching allowed route and its conversation id.
+func selfRoute(method, path string) (convID string, route selfRouteDef, ok bool) {
 	for _, r := range selfRoutes {
 		if r.method != method {
 			continue
 		}
 		if m := r.re.FindStringSubmatch(path); m != nil {
-			return m[1], strings.HasSuffix(path, "/messages"), true
+			return m[1], r, true
 		}
 	}
-	return "", false, false
+	return "", selfRouteDef{}, false
 }
 
 // sandboxIDFromUsername matches `sandbox-<id>` only within namespace.
@@ -64,20 +80,22 @@ type selfAccess struct {
 	ownerHeaders []string
 	// Per-conversation cap on POST /messages, so the agent cannot drive itself in a tight loop.
 	messagesPerMinute int
+	// Per-conversation cap on POST /sessions; floods clutter the sidebar.
+	sessionsPerMinute int
 	now               func() time.Time
 
 	mu   sync.Mutex
-	sent map[string][]time.Time // conversation id -> recent message times
+	sent map[string][]time.Time // limit + conversation id -> recent request times
 }
 
 // selfReviewTTL bounds how long a TokenReview verdict is reused.
 const selfReviewTTL = svcauth.CacheTTL
 
-func newSelfAccess(review reviewTokenFunc, namespace string, lookup conversationLookup, identity identityConfig, messagesPerMinute int) *selfAccess {
+func newSelfAccess(review reviewTokenFunc, namespace string, lookup conversationLookup, identity identityConfig, messagesPerMinute, sessionsPerMinute int) *selfAccess {
 	strip := []string{identity.userHeader, identity.albIdentityHeader, "x-auth-email", "x-amzn-oidc-data", "x-amzn-oidc-accesstoken", userAssertionHeader}
 	s := &selfAccess{
 		verifier: svcauth.NewVerifier(review), namespace: namespace, lookup: lookup,
-		stripHeaders: strip, messagesPerMinute: messagesPerMinute, now: time.Now,
+		stripHeaders: strip, messagesPerMinute: messagesPerMinute, sessionsPerMinute: sessionsPerMinute, now: time.Now,
 		ownerHeaders: []string{identity.userHeader, identity.albIdentityHeader},
 		sent:         map[string][]time.Time{},
 	}
@@ -96,7 +114,7 @@ func (s *selfAccess) wrap(next http.Handler) http.Handler {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		convID, isMessage, ok := selfRoute(r.Method, r.URL.Path)
+		convID, route, ok := selfRoute(r.Method, r.URL.Path)
 		if !ok {
 			http.Error(w, "not available to sandboxes", http.StatusNotFound)
 			return
@@ -130,9 +148,14 @@ func (s *selfAccess) wrap(next http.Handler) http.Handler {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		if isMessage && !s.allowMessage(convID) {
+		if route.sessionOnly && (row.ParentID == nil || row.Kind == nil || *row.Kind != KindSession) {
+			log.Warn("sandbox may only end a session", convAttr(convID), slog.String("sandbox", sandboxID))
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		if !s.allow(route.limit, convID) {
 			w.Header().Set("Retry-After", "60")
-			http.Error(w, "too many messages from the sandbox", http.StatusTooManyRequests)
+			http.Error(w, "too many requests from the sandbox", http.StatusTooManyRequests)
 			return
 		}
 		r.Header.Del("authorization") // the pod's token is for this router only
@@ -146,8 +169,17 @@ func (s *selfAccess) wrap(next http.Handler) http.Handler {
 	})
 }
 
-func (s *selfAccess) allowMessage(convID string) bool {
-	if s.messagesPerMinute <= 0 {
+// allow applies the route's per-minute cap; <= 0 is unlimited.
+func (s *selfAccess) allow(limit selfLimit, convID string) bool {
+	var perMinute int
+	switch limit {
+	case limitMessages:
+		perMinute = s.messagesPerMinute
+	case limitSessions:
+		perMinute = s.sessionsPerMinute
+		convID = "sessions:" + convID
+	}
+	if perMinute <= 0 {
 		return true
 	}
 	now := s.now()
@@ -159,7 +191,7 @@ func (s *selfAccess) allowMessage(convID string) bool {
 			recent = append(recent, t)
 		}
 	}
-	if len(recent) >= s.messagesPerMinute {
+	if len(recent) >= perMinute {
 		s.sent[convID] = recent
 		return false
 	}

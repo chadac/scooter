@@ -29,6 +29,7 @@ import type { WebServiceRegistry } from "../proxy/webServiceProxy.js";
 import type { IdentityStore } from "../auth/identityStore.js";
 import type { AssetStore } from "../session/assetStore.js";
 import type { AuthorStore } from "../session/authorStore.js";
+import { SubagentLimitError, type SubagentManager } from "../agent/subagentTools.js";
 import { targetError, type ConversationOwnerLookup, type SchedulerClient } from "../agent/schedulerTools.js";
 import { mountContribApi, type ContribApiDeps } from "./contribApi.js";
 import { UserSkillError, type UserSkill, type UserSkillStore } from "../session/userSkillStore.js";
@@ -118,6 +119,8 @@ function view(c: Conversation, now = Date.now()) {
     owner: c.owner,
     // The spawning conversation when this is a subagent; undefined means top-level.
     parentId: c.parentId,
+    // "session" when a person drives this child.
+    kind: c.kind,
     // Set by a user rename; the agent's <title> does not override it.
     userTitled: c.userTitled ?? false,
     starred: c.starred ?? false,
@@ -193,6 +196,8 @@ export interface ManagementDeps {
   sandboxOrigins?: SandboxOrigins;
   /** Who wrote each conversation's text, served to the broker; absent omits `authors`, which it reads as tainted. */
   authorStore?: AuthorStore;
+  /** Spawns sessions within subagent limits; absent, sessions routes 501. */
+  subagents?: SubagentManager;
   /** Identity store for the email-to-user reverse lookup; absent means the lookup route reports no match. */
   identityStore?: IdentityStore;
   /** Uploaded-image store behind GET /conversations/:id/assets/:assetId; absent means images are off. */
@@ -781,6 +786,48 @@ export function createManagementApi(deps: ManagementDeps): Router {
     });
     await conv.bridge?.cancel(undefined, true);
     return { status: 202, json: { ok: true } };
+  });
+
+  // Idle children a pod service, such as VS Code, drives.
+  r.post("/conversations/:id/sessions", async (ctx) => {
+    if (!deps.subagents) return { status: 501, json: { error: "sessions unavailable" } };
+    const body = await ctx.body<{ title?: unknown; model?: unknown }>();
+    if (body.title !== undefined && typeof body.title !== "string") {
+      return { status: 400, json: { error: "title must be a string" } };
+    }
+    if (body.model !== undefined && typeof body.model !== "string") {
+      return { status: 400, json: { error: "model must be a string" } };
+    }
+    if (body.model && body.model !== models.default && !models.available.includes(body.model)) {
+      return { status: 400, json: { error: `unknown model: ${body.model}` } };
+    }
+    const { conv, error } = mutableFor(ctx.params.id, ctx.user);
+    if (error === 404) return { status: 404, json: { error: "not found" } };
+    if (error === 403) return { status: 403, json: { error: "not your conversation" } };
+    if (conv!.parentId) return { status: 400, json: { error: "a session's parent must be a top-level conversation" } };
+    try {
+      const child = await deps.subagents.spawn(conv!.id as SessionId, {
+        kind: "session",
+        ...(body.title ? { title: body.title } : {}),
+        ...(body.model ? { model: body.model } : {}),
+      });
+      stateHub.nudge(conv!.id);
+      return { status: 201, json: { id: child.id, title: child.title } };
+    } catch (e) {
+      if (e instanceof SubagentLimitError) {
+        return { status: 429, json: { error: "too many running children; retry after one finishes" } };
+      }
+      throw e;
+    }
+  });
+
+  r.get("/conversations/:id/sessions", async (ctx) => {
+    if (!sessions.get(ctx.params.id)) return { status: 404, json: { error: "not found" } };
+    const children = sessions
+      .list()
+      .filter((c) => c.parentId === ctx.params.id && c.kind === "session")
+      .sort((a, b) => a.createdAt - b.createdAt);
+    return { json: { sessions: children.map((c) => ({ id: c.id, title: c.title, status: c.status })) } };
   });
 
   r.get("/conversations/:id/history", async (ctx) => {

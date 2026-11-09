@@ -103,6 +103,7 @@ class ConversationJobs(Base):
 class Conversations(Base):
     __tablename__ = 'conversations'
     __table_args__ = (
+        CheckConstraint("kind = ANY (ARRAY['subagent'::text, 'session'::text])", name='conversations_kind_check'),
         CheckConstraint("model_set_by = ANY (ARRAY['user'::text, 'agent'::text])", name='conversations_model_set_by_check'),
         CheckConstraint("visibility = 'shared'::text OR owner IS NOT NULL", name='conversations_private_has_owner'),
         CheckConstraint("visibility = ANY (ARRAY['shared'::text, 'private'::text])", name='conversations_visibility_check'),
@@ -124,6 +125,7 @@ class Conversations(Base):
     model_set_by: Mapped[Optional[str]] = mapped_column(Text)
     owner: Mapped[Optional[str]] = mapped_column(Text)
     parent_id: Mapped[Optional[str]] = mapped_column(Text)
+    kind: Mapped[Optional[str]] = mapped_column(Text)
     user_titled: Mapped[Optional[bool]] = mapped_column(Boolean)
     starred: Mapped[Optional[bool]] = mapped_column(Boolean)
     pending_queue: Mapped[Optional[dict]] = mapped_column(JSONB)

@@ -33,6 +33,8 @@ export interface Session {
   serverCreated?: boolean;
   /** The spawning conversation when this is a subagent, server-sourced. */
   parentId?: string;
+  /** A child's kind, server-sourced. */
+  kind?: "subagent" | "session";
   /** The conversation's sandbox lifecycle state, server-sourced and live via the /conversations/events stream. */
   status?: "running" | "suspended" | "failed" | "ended";
   /** The user renamed this conversation, so the server title is authoritative and the agent's title never overrides it. */
@@ -63,6 +65,7 @@ export type ServerConversation = {
   owner?: string;
   status?: Session["status"];
   parentId?: string;
+  kind?: "subagent" | "session";
   userTitled?: boolean;
   visibility?: "shared" | "private";
   runStartedAt?: number;
@@ -161,7 +164,8 @@ const sameSession = (a: Session, b: Session): boolean => {
     a.lastReplyAt !== b.lastReplyAt ||
     a.awaitingInputAt !== b.awaitingInputAt ||
     a.lastSeenAt !== b.lastSeenAt ||
-    a.parentId !== b.parentId
+    a.parentId !== b.parentId ||
+    a.kind !== b.kind
   ) return false;
   const srcA = a.sources ?? [], srcB = b.sources ?? [];
   if (srcA.length !== srcB.length || srcA.some((v, i) => v !== srcB[i])) return false;
@@ -501,6 +505,7 @@ export const sessionStore = {
         owner: c.owner ?? existing?.owner,
         status: c.status ?? existing?.status,
         parentId: c.parentId ?? existing?.parentId,
+        kind: c.kind ?? existing?.kind,
         // Every server row is a whole row, so an absent runStartedAt means the turn ended.
         runStartedAt: c.runStartedAt,
         lastReplyAt: c.lastReplyAt ?? existing?.lastReplyAt,

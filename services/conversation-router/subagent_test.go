@@ -106,6 +106,27 @@ func TestSubagentModelOverrideWins(t *testing.T) {
 	}
 }
 
+func TestSubagentCarriesSessionKind(t *testing.T) {
+	c := &fakeCreator{}
+	p := &fakeParents{rows: map[string]*ConversationRow{"parent-1": aParent("parent-1")}}
+
+	if w := postSubagent(t, c, p, "parent-1", `{}`, map[string]string{"x-auth-user": "alice"}, nil); w.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d", w.Code)
+	}
+	if c.calls[0].spec["kind"] != KindSubagent {
+		t.Errorf("an unspecified kind is a subagent: %+v", c.calls[0].spec)
+	}
+	if w := postSubagent(t, c, p, "parent-1", `{"kind":"session"}`, map[string]string{"x-auth-user": "alice"}, nil); w.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d", w.Code)
+	}
+	if c.calls[1].spec["kind"] != KindSession {
+		t.Errorf("kind must reach the row: %+v", c.calls[1].spec)
+	}
+	if w := postSubagent(t, c, p, "parent-1", `{"kind":"root"}`, map[string]string{"x-auth-user": "alice"}, nil); w.Code != http.StatusBadRequest {
+		t.Errorf("unknown kind: want 400, got %d", w.Code)
+	}
+}
+
 // A stranger must not mint someone else's conversation.
 func TestSubagentRefusesAStrangerAndDoesNotLeakExistence(t *testing.T) {
 	c := &fakeCreator{}

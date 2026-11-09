@@ -1,6 +1,7 @@
 /** Subagent creation through the conversation router, the one creator. */
 
 import { formatError, logger } from "../log.js";
+import type { ConversationKind } from "./visibility.js";
 
 const log = logger("routerSubagents");
 
@@ -15,7 +16,7 @@ export interface CreatedSubagent {
 /** Rejects rather than let a caller mint its own id. */
 export type SubagentCreator = (
   parentId: string,
-  args: { title?: string; model?: string },
+  args: { title?: string; model?: string; kind?: ConversationKind },
 ) => Promise<CreatedSubagent>;
 
 export interface RouterSubagentsConfig {
@@ -54,6 +55,7 @@ export function createRouterSubagentCreator(config: RouterSubagentsConfig): Suba
     const body = JSON.stringify({
       ...(args.title ? { title: args.title } : {}),
       ...(args.model ? { model: args.model } : {}),
+      ...(args.kind ? { kind: args.kind } : {}),
     });
     const signal = AbortSignal.timeout(timeoutMs);
     let res: Response;

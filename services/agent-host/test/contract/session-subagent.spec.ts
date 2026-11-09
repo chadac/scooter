@@ -236,3 +236,37 @@ describe("a subagent never owns a sandbox (the 2026-10-19 subagent storm)", () =
     expect(sessions.get("gc1")?.sandbox).toEqual(root.sandbox);
   });
 });
+
+describe("sessions (kind: session)", () => {
+  it("a session starts idle: no first prompt, kind and parent set, parent's sandbox shared", async () => {
+    const prompts: string[] = [];
+    const bf = fakeBridgeFactory();
+    const factory = (args: { conversationId: string }) => {
+      const b = bf.factory(args);
+      return { ...b, prompt: async (p: { text: string }) => void prompts.push(p.text) } as typeof b;
+    };
+    const provisioner = fakeProvisioner();
+    const sessions = createSessionManager({ provisioner, store: inMemoryStore(), bridgeFactory: factory });
+    const parent = await sessions.start("p", undefined, "alice");
+
+    const ses = await sessions.spawnChild(parent.id, "s1", { kind: "session" });
+
+    expect(prompts).toEqual([]);
+    expect(ses).toMatchObject({ kind: "session", parentId: parent.id, owner: "alice", title: "Session" });
+    expect(ses.sandbox).toEqual(parent.sandbox);
+    expect(provisioner.create).toHaveBeenCalledOnce();
+  });
+
+  it("a session's finished run is never reported to its parent", async () => {
+    const bf = fakeBridgeFactory();
+    const sessions = createSessionManager({ provisioner: fakeProvisioner(), store: inMemoryStore(), bridgeFactory: bf.factory });
+    const parent = await sessions.start("p", undefined, "alice");
+    await sessions.spawnChild(parent.id, "s1", { kind: "session" });
+    const fired: string[] = [];
+    sessions.onSubagentComplete((id) => fired.push(id));
+
+    bf.finish("s1");
+
+    expect(fired).toEqual([]);
+  });
+});

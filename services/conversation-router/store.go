@@ -35,12 +35,14 @@ type ConversationRow struct {
 	AwaitingInputAt *int64
 	// "shared" or "private"; NOT NULL in the schema, and "" (a test row) reads as shared.
 	Visibility string
+	// "session" for a child a person drives; nil otherwise.
+	Kind *string
 }
 
 // conversationColumns is the one projection list, shared by the SELECTs and the write path's RETURNING so they cannot drift.
 const conversationColumns = `id, thread_id, title, created_at, last_activity_at,
                              model, owner, parent_id, user_titled, phase, sandbox_ref,
-                             run_started_at, last_reply_at, visibility`
+                             run_started_at, last_reply_at, visibility, kind`
 
 // scannable is satisfied by both pgx.Row and pgx.Rows, so one scan helper serves every read.
 type scannable interface {
@@ -50,7 +52,7 @@ type scannable interface {
 func scanConversation(s scannable, c *ConversationRow) error {
 	return s.Scan(&c.ID, &c.ThreadID, &c.Title, &c.CreatedAt, &c.LastActivityAt,
 		&c.Model, &c.Owner, &c.ParentID, &c.UserTitled, &c.Phase, &c.SandboxRef,
-		&c.RunStartedAt, &c.LastReplyAt, &c.Visibility)
+		&c.RunStartedAt, &c.LastReplyAt, &c.Visibility, &c.Kind)
 }
 
 // Store is a read-only handle on the agent_host database, nil when no DSN is configured.

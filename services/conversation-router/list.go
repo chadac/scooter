@@ -44,6 +44,8 @@ type listRow struct {
 	AwaitingInputAt *int64 `json:"awaitingInputAt,omitempty"`
 	// "shared" or "private"; the sidebar shows a lock for private.
 	Visibility string `json:"visibility"`
+	// "subagent" or "session"; absent for a top-level conversation.
+	Kind *string `json:"kind,omitempty"`
 }
 
 // assembleList applies the visibility filter and enriches with links, preserving the order of metas that Store.Conversations establishes.
@@ -94,6 +96,7 @@ func makeListRow(m ConversationRow, ls []Link, now int64) listRow {
 		Owner:          m.Owner,
 		Visibility:     visibilityOf(m.Visibility),
 		ParentID:       m.ParentID,
+		Kind:           m.Kind,
 		UserTitled:     deref(m.UserTitled),
 		// The UI list ignores sandbox; the owner pod's GET /conversations/:id carries the live detail.
 		Sandbox:         sandboxProjection{Name: derefStr(m.SandboxRef), Namespace: ""},

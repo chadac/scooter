@@ -51,6 +51,8 @@ CREATE TABLE "conversations" (
   "model_set_by"     text NULL CHECK ("model_set_by" IN ('user', 'agent')),
   "owner"            text NULL,
   "parent_id"        text NULL,
+  -- A child's kind; NULL for a top-level conversation.
+  "kind"             text NULL CHECK ("kind" IN ('subagent', 'session')),
   "user_titled"      boolean NULL,
   -- Owner's star: agent-host's delete guard, derived by the router.
   "starred"          boolean NULL,

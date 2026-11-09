@@ -21,6 +21,7 @@ function child(id: string, parentId: string | undefined, running: boolean, ended
   return {
     id,
     parentId,
+    ...(parentId ? { kind: "subagent" as const } : {}),
     title: `child ${id}`,
     status: ended ? "ended" : undefined,
     bridge: {
@@ -156,6 +157,7 @@ describe("spawn limits (the 2026-10-19 subagent storm)", () => {
     ({
       id,
       parentId,
+      kind: "subagent",
       status: "running",
       bridge: q === "unwired" ? undefined : { queueState: () => ({ running: q.running ?? false, queued: q.queued ?? 0 }), cancel: vi.fn() },
     }) as SubagentConversation;
@@ -218,5 +220,61 @@ describe("spawn limits (the 2026-10-19 subagent storm)", () => {
     const results = await Promise.allSettled(Array.from({ length: 8 }, () => mgr.spawn("root" as SessionId, { prompt: "x" })));
     expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(2);
     expect(sessions.spawnChild).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("sessions (children a person drives, e.g. VS Code chats)", () => {
+  const top = (id: string) => ({ id, status: "running" }) as SubagentConversation;
+  const kid = (id: string, parentId: string, kind: "subagent" | "session" = "subagent", running = false) =>
+    ({
+      id,
+      parentId,
+      kind,
+      title: id,
+      status: "running",
+      bridge: { queueState: () => ({ running, queued: 0 }), cancel: vi.fn() },
+    }) as SubagentConversation;
+
+  const mgrOver = (convs: SubagentConversation[], limits = { maxDepth: 1, maxRunningPerParent: 2, maxRunningPerHost: 9 }) => {
+    const byId = new Map(convs.map((c) => [c.id, c]));
+    const sessions: SubagentSessions = {
+      get: (id) => byId.get(id),
+      list: () => [...byId.values()],
+      spawnChild: vi.fn(async (_p, threadId, args) => ({ id: threadId, title: args.title })),
+      prompt: vi.fn(async () => {}),
+    };
+    const createChild = vi.fn(async () => ({ id: "minted" }));
+    const store: SubagentStore = { async *readEvents() {} };
+    return { sessions, createChild, mgr: createSubagentManager(sessions, store, createChild, limits) };
+  };
+
+  it("creates a session with no prompt and asks the router for kind session", async () => {
+    const { mgr, sessions, createChild } = mgrOver([top("root")]);
+    await expect(mgr.spawn("root" as SessionId, { kind: "session", title: "VS Code" })).resolves.toEqual({ id: "minted", title: "VS Code" });
+    expect(createChild).toHaveBeenCalledWith("root", { title: "VS Code", model: undefined, kind: "session" });
+    expect(sessions.spawnChild).toHaveBeenCalledWith("root", "minted", { kind: "session", title: "VS Code" });
+  });
+
+  it("a session is depth 0, so it may spawn subagents at the default depth", async () => {
+    const { mgr } = mgrOver([top("root"), kid("ses", "root", "session")]);
+    await expect(mgr.spawn("ses" as SessionId, { prompt: "x" })).resolves.toBeDefined();
+  });
+
+  it("a session's subagent still cannot nest further", async () => {
+    const { mgr } = mgrOver([top("root"), kid("ses", "root", "session"), kid("sub", "ses")]);
+    await expect(mgr.spawn("sub" as SessionId, { prompt: "x" })).rejects.toThrow(/nest at most 1/);
+  });
+
+  it("a busy session counts against the per-parent cap", async () => {
+    const { mgr } = mgrOver([top("root"), kid("ses", "root", "session", true), kid("sub", "root", undefined, true)]);
+    await expect(mgr.spawn("root" as SessionId, { prompt: "x" })).rejects.toThrow(/2 running subagents/);
+  });
+
+  it("the parent agent's tools neither list nor reach its sessions", async () => {
+    const { mgr } = mgrOver([top("root"), kid("ses", "root", "session", true), kid("sub", "root")]);
+    expect((await mgr.list("root" as SessionId)).map((s) => s.id)).toEqual(["sub"]);
+    expect(await mgr.check("root" as SessionId, "ses")).toBeUndefined();
+    expect(await mgr.cancel("root" as SessionId, "ses")).toEqual({ outcome: "unknown" });
+    expect(await mgr.send("root" as SessionId, "ses", "hi")).toEqual({ outcome: "unknown" });
   });
 });

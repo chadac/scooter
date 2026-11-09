@@ -60,6 +60,15 @@ describe("createRouterSubagentCreator", () => {
     expect(JSON.parse(String(calls[0].init.body))).toEqual({ title: "Review", model: "model-cheap" });
   });
 
+  it("asks for kind session when creating a session", async () => {
+    const { calls, impl } = fetchStub(201, { id: "x" });
+    const create = createRouterSubagentCreator({ url: "http://agent-host:8080", fetchImpl: impl });
+
+    await create("parent-1", { kind: "session" });
+
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ kind: "session" });
+  });
+
   it("sends NO owner and no id — the router infers both, so neither is spoofable from here", async () => {
     const { calls, impl } = fetchStub(201, { id: "x" });
     const create = createRouterSubagentCreator({ url: "http://agent-host:8080", fetchImpl: impl });
