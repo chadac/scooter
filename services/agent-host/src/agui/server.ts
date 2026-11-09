@@ -234,6 +234,8 @@ function toBaseEvent(event: AguiEvent): BaseEvent {
 export function createAguiServer(): AguiServer {
   const encoder = new EventEncoder();
   const connections = new Map<SessionId, Set<ServerResponse>>();
+  // Every open response, so close() can end router-held streams.
+  const inFlight = new Set<ServerResponse>();
 
   let promptHandler:
     | ((sessionId: SessionId, input: RunAgentInput) => Promise<void>)
@@ -603,6 +605,8 @@ export function createAguiServer(): AguiServer {
     listen(port) {
       return new Promise((resolve) => {
         server = createServer((req, res) => {
+          inFlight.add(res);
+          res.on("close", () => inFlight.delete(res));
           handle(req, res).catch((err) => {
             // Last-resort catch for a route that throws: log the real error and answer with
             // a generic JSON envelope, never the raw error string.
@@ -645,8 +649,15 @@ export function createAguiServer(): AguiServer {
     },
     close() {
       return new Promise((resolve) => {
-        for (const set of connections.values()) for (const res of set) res.end();
         connections.clear();
+        // End streams cleanly so proxies don't log an upstream reset.
+        for (const res of inFlight) {
+          if (!res.headersSent || res.writableFinished) continue;
+          // Keep-alive would hold the socket, and so server.close(), open.
+          const socket = res.socket;
+          res.once("finish", () => socket?.end());
+          res.end();
+        }
         server?.close(() => resolve());
       });
     },
