@@ -76,6 +76,8 @@ in
       # The UI row: the GitLab chip, icon and card.
       ui = {
         source = { label = "GitLab"; icon = ./icon.svg; color = "#FC6D26"; linkProvider = true; };
+        # An MR reads "!12 <title>" and an issue "#12 <title>" in the Linked panel and the sidebar.
+        linkView.entry = "ui/LinkView.tsx";
         settingsTabs = lib.mkIf config.userAuth.enable [{
           label = "GitLab";
           order = 56;
