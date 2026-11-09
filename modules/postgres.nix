@@ -12,6 +12,8 @@
 let
   cfg = config.scooter;
   pcfg = cfg.postgres;
+  # A Postgres memory setting, e.g. "256MB".
+  pgMemory = lib.types.strMatching "[0-9]+(kB|MB|GB|TB)";
   ns = cfg.namespace;
 
   inCluster = pcfg.external == null;
@@ -267,6 +269,30 @@ in
         Postgres `max_connections` for the in-cluster server (ignored when `external` is set).
         Every service replica holds its own connection pools, so a rolling deploy briefly
         doubles the count; the stock default of 100 runs out and turns are lost.
+      '';
+    };
+    sharedBuffers = mkOption {
+      type = pgMemory;
+      default = "256MB";
+      description = ''
+        Postgres `shared_buffers` for the in-cluster server (ignored when `external` is set).
+        Sized for the default 1Gi container limit; raise it along with the limit.
+      '';
+    };
+    effectiveCacheSize = mkOption {
+      type = pgMemory;
+      default = "768MB";
+      description = ''
+        Postgres `effective_cache_size` for the in-cluster server (ignored when `external` is set).
+        The planner's estimate of memory available for caching; keep it under the container limit.
+      '';
+    };
+    workMem = mkOption {
+      type = pgMemory;
+      default = "16MB";
+      description = ''
+        Postgres `work_mem` for the in-cluster server (ignored when `external` is set).
+        Applies to each sort or hash, so concurrent queries can use several times this.
       '';
     };
     storage = mkOption {
@@ -536,10 +562,9 @@ in
                     # Per-query stats, for finding the expensive ones.
                     "-c" "shared_preload_libraries=pg_stat_statements"
                     "-c" "pg_stat_statements.track=all"
-                    # Memory sized to the 1Gi limit below.
-                    "-c" "shared_buffers=256MB"
-                    "-c" "effective_cache_size=768MB"
-                    "-c" "work_mem=16MB"
+                    "-c" "shared_buffers=${pcfg.sharedBuffers}"
+                    "-c" "effective_cache_size=${pcfg.effectiveCacheSize}"
+                    "-c" "work_mem=${pcfg.workMem}"
                   ];
                   resources = lib.mkDefault {
                     requests = { cpu = "100m"; memory = "512Mi"; };
