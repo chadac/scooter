@@ -102,15 +102,7 @@ def mcp_call(thread: str, tool: str, arguments: dict) -> tuple[int, str]:
         return 502, json.dumps(reply["error"])
     result = reply["result"]
     text = "\n".join(b.get("text", "") for b in result.get("content") or [])
-    error = bool(result.get("isError"))
-    # The broker serializes ToolResult as JSON text, so its flag is in the body.
-    try:
-        body = json.loads(text)
-    except ValueError:
-        body = None
-    if isinstance(body, dict) and "is_error" in body:
-        error, text = error or bool(body["is_error"]), str(body.get("text", ""))
-    return 200, json.dumps({"error": error, "text": text})
+    return 200, json.dumps({"error": bool(result.get("isError")), "text": text})
 
 def thread_ok(thread: str) -> bool:
     return re.fullmatch(r"[A-Za-z0-9-]+", thread) is not None

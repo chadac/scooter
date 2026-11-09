@@ -17,7 +17,7 @@ from fastapi import FastAPI, HTTPException
 from fastmcp import FastMCP
 
 from broker.mcp.routes import create_mcp_app
-from scooter_broker_lib.mcp import ToolContext, ToolContextDep, gate
+from scooter_broker_lib.mcp import ToolContext, ToolContextDep, ToolResult, gate
 from scooter_broker_lib.transports.mcp_tools import McpTools
 from scooter_broker_lib.types import Identity, Provider
 
@@ -43,6 +43,16 @@ def _build_provider(*, attached: bool) -> Provider:
     async def probe_gated(ctx: ToolContext = ToolContextDep) -> str:
         """Only offered when the gate opens."""
         return "gated tool ran"
+
+    @mcp.tool
+    async def probe_refuses() -> ToolResult:
+        """Refuse, the way a contrib reports a failed call."""
+        return ToolResult.error("refused: not allowed here")
+
+    @mcp.tool
+    async def probe_succeeds() -> ToolResult:
+        """Succeed with a ToolResult."""
+        return ToolResult.ok("done")
 
     return Provider(name="probe", transports=[McpTools(server=mcp, upstream="https://example.test")])
 
@@ -132,6 +142,9 @@ class _Mcp:
         assert "error" not in payload, f"{method} failed: {payload['error']}"
         return payload["result"]
 
+    async def call_result(self, name: str, arguments: dict | None = None) -> dict:
+        return await self._result("tools/call", {"name": name, "arguments": arguments or {}})
+
     async def tool_names(self) -> set[str]:
         return {t["name"] for t in (await self._result("tools/list"))["tools"]}
 
@@ -184,6 +197,27 @@ async def test_the_context_is_established_per_call_and_does_not_leak():
         second = await mcp.call("probe_conversation")
     assert f"conversation={CONV}" in first
     assert f"conversation={CONV}" in second
+
+
+# --- a ToolResult reaches the client as the protocol result ---------------------
+
+async def test_an_error_ToolResult_sets_isError_with_plain_text():
+    """Clients read `isError`, not a flag inside the text."""
+    async with _Mcp(_app(_build_provider(attached=True), authenticate=_ok_auth)) as mcp:
+        result = await mcp.call_result("probe_refuses")
+    assert result.get("isError") is True
+    assert result["content"] == [{"type": "text", "text": "refused: not allowed here"}]
+    assert not result.get("structuredContent")
+
+
+async def test_an_ok_ToolResult_is_plain_text_and_not_an_error():
+    async with _Mcp(_app(_build_provider(attached=True), authenticate=_ok_auth)) as mcp:
+        result = await mcp.call_result("probe_succeeds")
+        listed = (await mcp._result("tools/list"))["tools"]
+    assert not result.get("isError")
+    assert result["content"] == [{"type": "text", "text": "done"}]
+    # No output schema, so clients do not demand structured content.
+    assert all("outputSchema" not in t for t in listed if t["name"] == "probe_succeeds")
 
 
 # --- the attachment gate ----------------------------------------------------------

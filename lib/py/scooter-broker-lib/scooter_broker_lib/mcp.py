@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from fastmcp.dependencies import Depends
+from fastmcp.tools import ToolResult as FastMCPToolResult
+from mcp.types import TextContent
 
 if TYPE_CHECKING:  # avoids a runtime import cycle with .types
     import httpx
@@ -33,20 +35,20 @@ logger = logging.getLogger(__name__)
 # What a tool returns
 # ---------------------------------------------------------------------------
 
-@dataclass(frozen=True)
-class ToolResult:
-    """A tool's outcome: one text block plus the `is_error` flag that tells the model the call failed."""
+class ToolResult(FastMCPToolResult):
+    """A tool outcome: text, flagged `isError` when the call failed."""
 
-    text: str
-    is_error: bool = False
+    @property
+    def text(self) -> str:
+        return "".join(b.text for b in self.content if isinstance(b, TextContent))
 
     @staticmethod
     def ok(text: str) -> "ToolResult":
-        return ToolResult(text=text)
+        return ToolResult(content=[TextContent(type="text", text=text)])
 
     @staticmethod
     def error(text: str) -> "ToolResult":
-        return ToolResult(text=text, is_error=True)
+        return ToolResult(content=[TextContent(type="text", text=text)], is_error=True)
 
     @staticmethod
     def from_upstream(
