@@ -22,6 +22,15 @@
     registryPrefix = "";
     pullPolicy = "IfNotPresent";
 
+    # "imageless" realizes each root on the node from a Nix release.
+    imageSource = "registry";
+    imageless = {
+      runtimeClass = "imageless";
+      # Nodes map the issuer to a catalog URL, the cache to a substituter.
+      issuer = "scooter";
+      cache = "default";
+    };
+
     # The dummy agent lets this example render without cloud config.
     fakeAgent = true;
 

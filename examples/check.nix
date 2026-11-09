@@ -1833,7 +1833,7 @@ let
 
   # imageless: every wired pod gets its RuntimeClass and release.
   imagelessEval = evalPlatform {
-    module = { imports = [ ./kubenix-config.nix ]; scooter.imageSource = "imageless"; scooter.sandboxRuntimeClass = "crun"; };
+    module = { imports = [ ./kubenix-config.nix ]; scooter.imageSource = nixpkgsLib.mkForce "imageless"; scooter.sandboxRuntimeClass = "crun"; };
   };
   ilRes = imagelessEval.config.kubernetes.resources;
   ilTmpl = d: ilRes.deployments.${d}.spec.template;
