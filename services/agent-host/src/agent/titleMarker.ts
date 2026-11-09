@@ -8,10 +8,14 @@
 
 const OPEN = "<title>";
 const CLOSE = "</title>";
+/** Longer or multi-line: prose mentioning the tag. */
+const MAX_TITLE = 200;
 
 export interface TitleExtractor {
   /** Feed a text delta, returning the text to display and, exactly once, the extracted title. */
   push(delta: string): { text: string; title?: string };
+  /** Release held-back text; `abandoned` if <title> never closed. */
+  flush(): { text: string; abandoned: boolean };
 }
 
 export function createTitleExtractor(): TitleExtractor {
@@ -31,6 +35,15 @@ export function createTitleExtractor(): TitleExtractor {
     return 0;
   };
 
+  /** Not a marker: return `<title>` and its tail as text. */
+  const abandon = (): string => {
+    const text = OPEN + titleBuf;
+    inTitle = false;
+    titleBuf = "";
+    return text;
+  };
+  const implausible = (s: string): boolean => s.length > MAX_TITLE || s.includes("\n");
+
   return {
     push(delta: string): { text: string; title?: string } {
       let out = "";
@@ -47,6 +60,14 @@ export function createTitleExtractor(): TitleExtractor {
             titleBuf += buf.slice(0, buf.length - hold);
             pending = buf.slice(buf.length - hold);
             buf = "";
+            if (implausible(titleBuf)) {
+              out += abandon() + pending;
+              pending = "";
+            }
+          } else if (implausible(titleBuf + buf.slice(0, close))) {
+            titleBuf += buf.slice(0, close + CLOSE.length);
+            buf = buf.slice(close + CLOSE.length);
+            out += abandon();
           } else {
             titleBuf += buf.slice(0, close);
             buf = buf.slice(close + CLOSE.length);
@@ -60,8 +81,12 @@ export function createTitleExtractor(): TitleExtractor {
           continue;
         }
 
-        const open = buf.indexOf(OPEN);
-        if (open === -1) {
+        // One title per conversation; later tags are just text.
+        const open = reported ? -1 : buf.indexOf(OPEN);
+        if (open === -1 && reported) {
+          out += buf;
+          buf = "";
+        } else if (open === -1) {
           // No opening tag, so emit everything except a possible partial OPEN tail.
           const hold = partialTagSuffix(buf, OPEN);
           out += buf.slice(0, buf.length - hold);
@@ -75,6 +100,13 @@ export function createTitleExtractor(): TitleExtractor {
       }
 
       return title !== undefined ? { text: out, title } : { text: out };
+    },
+
+    flush(): { text: string; abandoned: boolean } {
+      const abandoned = inTitle;
+      const text = (inTitle ? abandon() : "") + pending;
+      pending = "";
+      return { text, abandoned };
     },
   };
 }
