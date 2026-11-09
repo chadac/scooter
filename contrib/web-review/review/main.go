@@ -2,6 +2,7 @@
 //
 //	scooter-review proxy   the review-app unit: the dev server behind a rewriting proxy, and the notes API
 //	scooter-review shell   the review unit: the chat beside the app
+//	scooter-review dev     the webservice-review-dev unit: webReview.target.run
 //	review …               the agent's CLI (this binary under another name)
 package main
 
@@ -28,7 +29,12 @@ func main() {
 			serveProxy(site)
 			return
 		case "shell":
-			serve(site.ShellPort, newShell(site), nil)
+			serve(site.ShellPort, newShell(site))
+			return
+		case "dev":
+			if err := execDev(site); err != nil {
+				log.Fatal(err)
+			}
 			return
 		case "cli":
 			args = args[1:]
@@ -45,12 +51,10 @@ func serveProxy(site Site) {
 	if err != nil {
 		log.Fatalf("notes: %v", err)
 	}
-	app := newApp(site, store)
-	app.current() // starts a --run dev server without waiting for a visit
-	serve(site.AppPort, app, app.stopDev)
+	serve(site.AppPort, newApp(site, store))
 }
 
-func serve(port int, h http.Handler, onStop func()) {
+func serve(port int, h http.Handler) {
 	srv := &http.Server{Handler: h, ReadHeaderTimeout: 30 * time.Second}
 	ln, err := net.Listen("tcp", ":"+strconv.Itoa(port))
 	if err != nil {
@@ -60,9 +64,6 @@ func serve(port int, h http.Handler, onStop func()) {
 	defer stop()
 	go func() {
 		<-ctx.Done()
-		if onStop != nil {
-			onStop()
-		}
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutdown)
@@ -71,4 +72,20 @@ func serve(port int, h http.Handler, onStop func()) {
 	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
+}
+
+// execDev runs the target's dev server, told its base path.
+func execDev(site Site) error {
+	t := site.Target
+	if t == nil || t.Run == "" {
+		return fmt.Errorf("no webReview.target.run")
+	}
+	env := os.Environ()
+	for k, v := range t.Env {
+		env = append(env, k+"="+v)
+	}
+	for k, v := range site.devEnv(t) {
+		env = append(env, k+"="+v)
+	}
+	return syscall.Exec("/bin/sh", []string{"sh", "-c", "exec " + t.Run}, env)
 }

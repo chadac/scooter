@@ -76,6 +76,7 @@ func TestInjectGoesFirstInHead(t *testing.T) {
 // fixture: the review-app proxy before a fake dev server.
 type fixture struct {
 	site  Site
+	store *Store
 	app   *App
 	front *httptest.Server
 	dev   *httptest.Server
@@ -108,18 +109,19 @@ func newFixture(t *testing.T, dev http.Handler) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.store = store
 	f.app = newApp(f.site, store)
 	f.app.runCmd = func(string, ...string) ([]byte, error) { return nil, nil }
-	f.front = httptest.NewServer(f.app)
+	f.front = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { f.app.ServeHTTP(w, r) }))
 	t.Cleanup(f.front.Close)
 	return f
 }
 
 func (f *fixture) target(t *testing.T) {
 	port, _ := strconv.Atoi(strings.TrimPrefix(f.dev.URL, "http://127.0.0.1:"))
-	if err := writeTarget(f.site, Target{Port: port, Cwd: "/workspace/app"}); err != nil {
-		t.Fatal(err)
-	}
+	f.site.Target = &Target{Port: port, Cwd: "/workspace/app"}
+	f.app = newApp(f.site, f.store)
+	f.app.runCmd = func(string, ...string) ([]byte, error) { return nil, nil }
 }
 
 func (f *fixture) get(t *testing.T, path string, hdr map[string]string) (*http.Response, string) {

@@ -3,7 +3,7 @@
 // path unchanged, WebSockets included), and a conversation that records the
 // messages the review service posts.
 //
-//   startStack({ bin, vendorDir, stateDir }) -> { origin, messages, appDir, stop() }
+//   startStack({ bin, vendorDir, stateDir }) -> { origin, messages, appDir, stopDev(), stop() }
 
 import { spawn } from "node:child_process";
 import { cpSync, mkdirSync, writeFileSync } from "node:fs";
@@ -79,6 +79,9 @@ export async function startStack({ bin, vendorDir, stateDir, python = "python3",
     up.on("error", () => socket.destroy());
   });
   const frontPort = await listen(front);
+  // webReview.target, as a rebuild renders it.
+  const targetPath = join(stateDir, "..", "target.json");
+  writeFileSync(targetPath, JSON.stringify({ port: devPort, cwd: "/workspace/acme-ops" }));
   const origin = `http://127.0.0.1:${frontPort}`;
 
   const env = {
@@ -87,6 +90,7 @@ export async function startStack({ bin, vendorDir, stateDir, python = "python3",
     REVIEW_SHELL_PORT: String(shellPort),
     REVIEW_APP_PORT: String(appPort),
     REVIEW_STATE_DIR: stateDir,
+    REVIEW_TARGET: targetPath,
     REVIEW_VENDOR_DIR: vendorDir,
     CONVERSATION_ID: "conv-review",
     CONVERSATION_URL: `${origin}/c/conv-review`,
@@ -103,7 +107,7 @@ export async function startStack({ bin, vendorDir, stateDir, python = "python3",
   // A copy, so tests can edit the app's files.
   const appDir = join(dirname(stateDir), "app");
   cpSync(exampleDir, appDir, { recursive: true });
-  run(python, [join(appDir, "serve.py"), "--port", String(devPort), "--base", "/review-app/"]);
+  const dev = run(python, [join(appDir, "serve.py"), "--port", String(devPort), "--base", "/review-app/"]);
   run(bin, ["proxy"]);
   run(bin, ["shell"]);
   await waitFor(`http://127.0.0.1:${devPort}/review-app/`);
@@ -120,6 +124,7 @@ export async function startStack({ bin, vendorDir, stateDir, python = "python3",
 
   return {
     origin, messages, appDir, devPort, appPort, shellPort, env, cli,
+    stopDev: () => dev.kill("SIGTERM"),
     async stop() {
       for (const p of procs) p.kill("SIGTERM");
       await Promise.all([conv, front].map((s) => new Promise((ok) => { s.closeAllConnections?.(); s.close(ok); })));

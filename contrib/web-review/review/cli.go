@@ -20,8 +20,12 @@ const usage = `review: the web app review service, from the agent's side.
 
   review target <port>                    review a dev server already on <port>
   review target --run CMD --port N [--cwd DIR]
-                                          run CMD as the dev server (restarted with the service)
-  review target --clear                   stop reviewing
+                                          run CMD as the dev server (started with the service)
+  review target --unit NAME --port N      review the app systemd unit NAME serves (started with the service)
+  review target --clear                   stop reviewing, and turn Review off
+
+target writes /etc/scooter/modules/web-review-target.nix (webReview.target),
+runs scooter-rebuild switch and starts Review.
   review status                           target, open pages and the URL
   review list [--all]                     open notes (--all: resolved too)
   review reply <id> <text>                answer on the note's thread
@@ -52,8 +56,8 @@ func (c *client) do(method, path string, body any, out any) (int, error) {
 	req.Header.Set("Content-Type", "application/json")
 	res, err := c.http.Do(req)
 	if err != nil {
-		if os.Getenv("REVIEW_ENABLED") != "1" {
-			return 0, errors.New(enableHint)
+		if c.site.Target == nil {
+			return 0, errors.New("no app to review yet: review target <port> (see: review help)")
 		}
 		return 0, errors.New("the review service isn't running: scooter-service start review")
 	}
@@ -158,58 +162,64 @@ func runCLI(site Site, args []string) error {
 	return fmt.Errorf("unknown command %q (see: review help)", cmd)
 }
 
-const enableHint = `Review is off. To list and start it, add to a module in /etc/scooter/modules/:
-  webServices.review.enable = true;
-then run: scooter-rebuild switch && scooter-service start review
-`
-
 func cliTarget(site Site, args []string) error {
 	fs := flag.NewFlagSet("target", flag.ContinueOnError)
 	run := fs.String("run", "", "dev server command")
+	unit := fs.String("unit", "", "a systemd unit that serves the app")
 	port := fs.Int("port", 0, "dev server port")
 	cwd := fs.String("cwd", "", "dev server directory")
 	clear := fs.Bool("clear", false, "stop reviewing")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	path := filepath.Join(firstNonEmpty(env("REVIEW_MODULES_DIR"), "/etc/scooter/modules"), targetModule)
 	if *clear {
-		if err := os.Remove(site.ConfigPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		fmt.Println("review target cleared")
-		return nil
+		return command("scooter-rebuild", "switch")
 	}
 	if fs.NArg() == 1 && *port == 0 {
 		*port, _ = strconv.Atoi(fs.Arg(0))
 	}
-	if *port <= 0 || *port == site.AppPort || *port == site.ShellPort {
-		return errors.New("usage: review target <port> | review target --run CMD --port N [--cwd DIR]")
+	if *port <= 0 || *port == site.AppPort || *port == site.ShellPort || (*run != "" && *unit != "") {
+		return errors.New("usage: review target <port> | --run CMD --port N [--cwd DIR] | --unit NAME --port N")
 	}
-	t := Target{Port: *port, Run: *run}
+	t := Target{Port: *port, Run: *run, Unit: *unit}
+	if t.Unit != "" && !strings.Contains(t.Unit, ".") {
+		t.Unit += ".service"
+	}
+	if *run != "" || *cwd != "" {
+		t.Cwd, _ = filepath.Abs(firstNonEmpty(*cwd, "."))
+	}
 	if *run != "" {
-		dir := *cwd
-		if dir == "" {
-			dir, _ = os.Getwd()
-		}
-		t.Cwd, _ = filepath.Abs(dir)
 		// systemd's PATH lacks the caller's tools.
 		t.Env = map[string]string{"PATH": os.Getenv("PATH")}
-	} else if *cwd != "" {
-		t.Cwd, _ = filepath.Abs(*cwd)
 	}
-	if err := writeTarget(site, t); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	if os.Getenv("REVIEW_ENABLED") != "1" {
-		fmt.Printf("saved; app base path: REVIEW_BASE=%s/\n%s", site.AppBase(), enableHint)
-		return nil
+	if err := os.WriteFile(path, []byte(renderModule(t)), 0o644); err != nil {
+		return err
 	}
-	out, err := exec.Command("scooter-service", "start", "review").CombinedOutput()
-	os.Stdout.Write(out)
-	if err != nil {
+	fmt.Println("wrote " + path)
+	if err := command("scooter-rebuild", "switch"); err != nil {
+		return err
+	}
+	// Web service units aren't restarted by a switch.
+	if err := command("scooter-service", "restart", "review"); err != nil {
 		return err
 	}
 	fmt.Printf("app base path: REVIEW_BASE=%s/\n", site.AppBase())
+	return nil
+}
+
+func command(name string, args ...string) error {
+	c := exec.Command(name, args...)
+	c.Stdout, c.Stderr = os.Stdout, os.Stderr
+	if err := c.Run(); err != nil {
+		return fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
+	}
 	return nil
 }
 

@@ -23,33 +23,34 @@ to know it, the same way it would behind any reverse proxy: assets, links and th
 router all resolve against it. `review status` prints it as `REVIEW_BASE` (for
 example `/review-app/`).
 
-Either let the service run the dev server (it then survives a suspend and resume,
-and gets `REVIEW_BASE`, `REVIEW_PUBLIC_URL` and `PORT` in its environment):
+Review is off until it has an app. `review target` does everything in one step: it
+writes `/etc/scooter/modules/web-review-target.nix` (`webReview.target`), runs
+`scooter-rebuild switch`, which turns Review on and lists it in the user's Services
+panel, and (re)starts Review. Prefer a way that starts the app with Review, so it
+comes back by itself after the sandbox suspends or restarts:
 
-```bash
-review target --run 'npm run dev -- --port 5173 --base "$REVIEW_BASE"' --cwd /workspace/my-app --port 5173
-```
+- Let Review run the dev server. It runs as the unit `webservice-review-dev` with
+  `REVIEW_BASE`, `REVIEW_PUBLIC_URL` and `PORT` in its environment, and your `PATH`:
 
-or point it at a dev server you started yourself with that base path:
+  ```bash
+  review target --run 'npm run dev -- --port 5173 --base "$REVIEW_BASE"' --cwd /workspace/my-app --port 5173
+  ```
 
-```bash
-review target 5173
-```
+- Or point it at a systemd unit you declared yourself (see the `scooter-env`
+  skill), which Review then starts and waits for:
 
-Review is off until you turn it on. The first `review target` saves the app and
-says so; then enable it (see the `scooter-env` skill) by adding to a module in
-`/etc/scooter/modules/`:
+  ```bash
+  review target --unit my-app --port 5173
+  ```
 
-```nix
-webServices.review.enable = true;
-```
+- Or point it at a port something else serves:
 
-and run `scooter-rebuild switch && scooter-service start review`. Review is then
-listed in the user's Services panel, and later `review target` calls start it
-directly.
+  ```bash
+  review target 5173
+  ```
 
-Once Review runs, `review target` prints the URL. Give it to the user as a
-markdown link.
+`review target` prints the URL. Give it to the user as a markdown link. Run it
+again to change the app; `review target --clear` turns Review off.
 
 Framework settings for the base path:
 
@@ -65,7 +66,8 @@ cookies and absolute `http://localhost:<port>` URLs in pages, scripts and styles
 an app that leaks one still works. Don't give the user a bare port.
 
 If the page says "Waiting for the dev server", the target isn't answering. With
-`--run`, `journalctl -u webservice-review-dev` has the dev server's output.
+`--run`, `journalctl -u webservice-review-dev` has the dev server's output; with
+`--unit`, that unit's journal.
 
 ## 2. Notes
 
@@ -100,7 +102,7 @@ an edit landed. With no page open it falls back to a headless browser
 ## Commands
 
 ```
-review target <port> | --run CMD --port N [--cwd DIR] | --clear
+review target <port> | --run CMD --port N [--cwd DIR] | --unit NAME --port N | --clear
 review status | list [--all] | show <id> | snap [--route /path]
 review reply <id> "…" | resolve <id> | reopen <id>
 ```

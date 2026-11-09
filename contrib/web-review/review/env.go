@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -49,14 +50,12 @@ type Site struct {
 	TokenPath string
 	Chromium  string
 	VendorDir string
+	Target    *Target // from REVIEW_TARGET, rendered at rebuild time
 }
 
 func (s Site) ShellBase() string { return s.Prefix + "/review" }
 func (s Site) AppBase() string   { return s.Prefix + "/review-app" }
-func (s Site) ConfigPath() string {
-	return filepath.Join(s.StateDir, "config.json")
-}
-func (s Site) ShotsDir() string { return filepath.Join(s.StateDir, "shots") }
+func (s Site) ShotsDir() string  { return filepath.Join(s.StateDir, "shots") }
 
 func loadSite() Site {
 	s := Site{
@@ -71,6 +70,13 @@ func loadSite() Site {
 		ConvURL:   env("CONVERSATION_URL"),
 		Chromium:  env("REVIEW_CHROMIUM"),
 		VendorDir: env("REVIEW_VENDOR_DIR"),
+	}
+	if p := env("REVIEW_TARGET"); p != "" {
+		t, err := readTarget(p)
+		if err != nil {
+			log.Printf("REVIEW_TARGET: %v", err)
+		}
+		s.Target = t
 	}
 	if _, set := os.LookupEnv("SCOOTER_SERVICE_PREFIX"); !set {
 		// Without a services origin, services live under /c/<id>/.
@@ -96,12 +102,27 @@ func loadSite() Site {
 	return s
 }
 
-// Target is the app under review, saved by `review target`.
+// Target is the app under review: webReview.target, set by `review target`.
 type Target struct {
 	Port int               `json:"port"`
-	Run  string            `json:"run,omitempty"`
+	Run  string            `json:"run,omitempty"` // the dev server, run as devUnit
 	Cwd  string            `json:"cwd,omitempty"`
+	Unit string            `json:"unit,omitempty"` // a unit already serving Port
 	Env  map[string]string `json:"env,omitempty"`
+}
+
+// devUnit runs Target.Run.
+const devUnit = "webservice-review-dev"
+
+// LogUnit is the unit whose journal explains a dead dev server.
+func (t *Target) LogUnit() string {
+	switch {
+	case t.Run != "":
+		return devUnit
+	case t.Unit != "":
+		return t.Unit
+	}
+	return ""
 }
 
 func readTarget(path string) (*Target, error) {
@@ -117,17 +138,21 @@ func readTarget(path string) (*Target, error) {
 		return nil, err
 	}
 	if t.Port <= 0 {
-		return nil, errors.New("config.json: no port")
+		return nil, errors.New(path + ": no port")
 	}
 	return &t, nil
 }
 
-// writeTarget saves the app to review; used by `review target`.
-func writeTarget(site Site, t Target) error {
-	if err := os.MkdirAll(site.StateDir, 0o755); err != nil {
-		return err
+// devEnv tells the dev server where the browser will see it.
+func (s Site) devEnv(t *Target) map[string]string {
+	e := map[string]string{
+		"PORT":        strconv.Itoa(t.Port),
+		"REVIEW_BASE": s.AppBase() + "/",
 	}
-	return writeJSON(site.ConfigPath(), t)
+	if s.Public != nil {
+		e["REVIEW_PUBLIC_URL"] = s.Public.String() + s.AppBase() + "/"
+	}
+	return e
 }
 
 // writeJSON replaces a file atomically.

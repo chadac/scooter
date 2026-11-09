@@ -141,7 +141,7 @@ func (a *App) api(w http.ResponseWriter, r *http.Request, rest string) {
 		writeJSONResponse(w, http.StatusOK, a.store.Snapshot())
 	case route == "GET status":
 		writeJSONResponse(w, http.StatusOK, map[string]any{
-			"target": a.current(), "appBase": a.site.AppBase(), "shellBase": a.site.ShellBase(),
+			"target": a.site.Target, "appBase": a.site.AppBase(), "shellBase": a.site.ShellBase(),
 			"pages": a.hub.Count("overlay"), "stateDir": a.site.StateDir,
 		})
 	case route == "GET events":
@@ -204,7 +204,7 @@ func (a *App) addNote(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	a.wake(noteMessage(n, a.site.ShotsDir(), a.current()))
+	a.wake(noteMessage(n, a.site.ShotsDir(), a.site.Target))
 	writeJSONResponse(w, http.StatusCreated, n)
 }
 

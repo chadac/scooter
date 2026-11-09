@@ -7,17 +7,14 @@ import (
 	"fmt"
 	"html"
 	"io"
-	"log"
 	"mime"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -27,9 +24,6 @@ var overlayJS []byte
 // maxRewrite: larger bodies stream through unrewritten.
 const maxRewrite = 2 << 20
 
-// devUnit runs the `review target --run` dev server.
-const devUnit = "webservice-review-dev"
-
 // App is review-app: the dev server's proxy plus the notes API.
 type App struct {
 	site  Site
@@ -37,14 +31,8 @@ type App struct {
 	hub   *Hub
 	waker *Waker
 	snaps *Snaps
-
-	mu      sync.Mutex
-	target  *Target
-	seen    string // config.json as last read, to notice edits
-	loaded  bool
-	proxy   *httputil.ReverseProxy
-	rw      *Rewriter
-	devSpec string // the dev command line last started
+	proxy *httputil.ReverseProxy // nil without a target
+	rw    *Rewriter
 
 	runCmd func(name string, args ...string) ([]byte, error)
 }
@@ -60,82 +48,12 @@ func newApp(site Site, store *Store) *App {
 			return exec.Command(name, args...).CombinedOutput()
 		},
 	}
-	store.onChange = func(st State) { a.hub.Publish("notes", st) }
-	return a
-}
-
-// current reloads config.json on change, restarting the dev server.
-func (a *App) current() *Target {
-	raw, _ := os.ReadFile(a.site.ConfigPath())
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.loaded && string(raw) == a.seen {
-		return a.target
-	}
-	a.loaded, a.seen = true, string(raw)
-	t, err := readTarget(a.site.ConfigPath())
-	if err != nil {
-		log.Printf("config: %v", err)
-	}
-	a.target = t
-	a.proxy, a.rw = nil, nil
-	if t != nil {
+	if t := site.Target; t != nil {
 		a.proxy = a.newProxy(t)
 		a.rw = newRewriter(t.Port)
 	}
-	a.ensureDevLocked(t)
-	return t
-}
-
-func (a *App) ensureDevLocked(t *Target) {
-	spec := ""
-	if t != nil && t.Run != "" {
-		spec = fmt.Sprintf("%s\x00%s\x00%d\x00%v", t.Run, t.Cwd, t.Port, t.Env)
-	}
-	if spec == a.devSpec {
-		return
-	}
-	if a.devSpec != "" || spec != "" {
-		_, _ = a.runCmd("systemctl", "stop", devUnit)
-	}
-	a.devSpec = spec
-	if spec == "" {
-		return
-	}
-	args := []string{"--unit=" + devUnit, "--collect", "--quiet", "--property=KillMode=mixed"}
-	if t.Cwd != "" {
-		args = append(args, "--working-directory="+t.Cwd)
-	}
-	for k, v := range a.devEnv(t) {
-		args = append(args, "--setenv="+k+"="+v)
-	}
-	args = append(args, "/bin/sh", "-c", "exec "+t.Run)
-	if out, err := a.runCmd("systemd-run", args...); err != nil {
-		log.Printf("start dev server: %v: %s", err, out)
-	}
-}
-
-// devEnv tells the dev server where the browser will see it.
-func (a *App) devEnv(t *Target) map[string]string {
-	e := map[string]string{}
-	for k, v := range t.Env {
-		e[k] = v
-	}
-	e["PORT"] = strconv.Itoa(t.Port)
-	e["REVIEW_BASE"] = a.site.AppBase() + "/"
-	if a.site.Public != nil {
-		e["REVIEW_PUBLIC_URL"] = a.site.Public.String() + a.site.AppBase() + "/"
-	}
-	return e
-}
-
-func (a *App) stopDev() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.devSpec != "" {
-		_, _ = a.runCmd("systemctl", "stop", devUnit)
-		a.devSpec = ""
-	}
+	store.onChange = func(st State) { a.hub.Publish("notes", st) }
+	return a
 }
 
 // public is the browser's origin for this request.
@@ -195,9 +113,7 @@ func (a *App) modify(resp *http.Response) error {
 		return nil
 	}
 	pub, _ := resp.Request.Context().Value(ctxKey{}).(*url.URL)
-	a.mu.Lock()
 	rw := a.rw
-	a.mu.Unlock()
 	if rw == nil {
 		return nil
 	}
@@ -282,14 +198,14 @@ func (a *App) overlayTag() string {
 }
 
 func (a *App) upstreamDown(w http.ResponseWriter, r *http.Request, err error) {
-	t := a.current()
+	t := a.site.Target
 	if !isDocument(r) || t == nil {
 		http.Error(w, "dev server unreachable: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	logs := ""
-	if t.Run != "" {
-		out, _ := a.runCmd("journalctl", "-u", devUnit, "-n", "15", "--no-pager", "--no-hostname", "-o", "cat")
+	logs, unit := "", t.LogUnit()
+	if unit != "" {
+		out, _ := a.runCmd("journalctl", "-u", unit, "-n", "15", "--no-pager", "--no-hostname", "-o", "cat")
 		logs = string(out)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -297,14 +213,14 @@ func (a *App) upstreamDown(w http.ResponseWriter, r *http.Request, err error) {
 	fmt.Fprintf(w, waitingPage, "Waiting for the dev server",
 		fmt.Sprintf("<p>Nothing answers on port <code>%d</code> in the sandbox yet (%s). This page retries on its own.</p>",
 			t.Port, html.EscapeString(err.Error()))+
-			ifLogs(logs))
+			ifLogs(unit, logs))
 }
 
-func ifLogs(s string) string {
+func ifLogs(unit, s string) string {
 	if strings.TrimSpace(s) == "" {
 		return ""
 	}
-	return "<p>Last lines of <code>" + devUnit + "</code>:</p><pre>" + html.EscapeString(s) + "</pre>"
+	return "<p>Last lines of <code>" + html.EscapeString(unit) + "</code>:</p><pre>" + html.EscapeString(s) + "</pre>"
 }
 
 func (a *App) noTarget(w http.ResponseWriter, r *http.Request) {
@@ -331,15 +247,11 @@ func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.api(w, r, rest)
 		return
 	}
-	t := a.current()
-	a.mu.Lock()
-	p := a.proxy
-	a.mu.Unlock()
-	if t == nil || p == nil {
+	if a.proxy == nil {
 		a.noTarget(w, r)
 		return
 	}
-	p.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, a.public(r))))
+	a.proxy.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, a.public(r))))
 }
 
 // apiPath: browsers use <base>/__review/, the CLI bare /__review/.

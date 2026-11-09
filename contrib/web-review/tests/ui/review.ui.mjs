@@ -38,7 +38,6 @@ async function until(fn, ms = 8000) {
 const root = mkdtempSync(join(tmpdir(), "review-ui-"));
 const stateDir = join(root, "state");
 const stack = await startStack({ bin, vendorDir, stateDir });
-writeFileSync(join(stateDir, "config.json"), JSON.stringify({ port: stack.devPort, cwd: "/workspace/acme-ops" }));
 
 const browser = await chromium.launch({ executablePath: process.env.PW_CHROME });
 const scheme = process.env.COLOR_SCHEME || "light";
@@ -257,9 +256,10 @@ try {
   if (shots && existsSync(out)) writeFileSync(join(shots, `07-snap-${scheme}.png`), readFileSync(out));
 
   // --- the dev server goes away ---------------------------------------------------
-  writeFileSync(join(stateDir, "config.json"), JSON.stringify({ port: 1 }));
-  const down = await fetch(`${stack.origin}/review-app/`, { headers: { "sec-fetch-dest": "iframe" } });
-  check("a dead dev server gets a retrying page, not a connection error", down.status === 502 && (await down.text()).includes("Waiting for the dev server"));
+  stack.stopDev();
+  const down = await until(() => fetch(`${stack.origin}/review-app/`, { headers: { "sec-fetch-dest": "iframe" } })
+    .then((r) => (r.status === 502 ? r : undefined)));
+  check("a dead dev server gets a retrying page, not a connection error", down?.status === 502 && (await down.text()).includes("Waiting for the dev server"));
 
   check("no page errors", errors.length === 0, errors.join("; "));
 } catch (err) {
