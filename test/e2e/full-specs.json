@@ -4,6 +4,7 @@
   "chat-search-filter.spec.ts",
   "client-server-identity.spec.ts",
   "cluster-stories.spec.ts",
+  "cold-sandbox.spec.ts",
   "component-coverage.spec.ts",
   "concurrency-divergence.spec.ts",
   "contrib-api-relay.spec.ts",

@@ -362,14 +362,27 @@ function floorTagOf(config: { fakeSandbox?: boolean }): "claude-code" | "goose" 
   return process.env.GOOSE_PROVIDER === "claude-code" && !config.fakeSandbox ? "claude-code" : "goose";
 }
 
-/** No-op provisioner for local UI testing (no cluster). */
-function createNoopProvisioner(): SandboxProvisioner {
+/** Owners whose fake sandbox starts slowly when FAKE_SANDBOX_COLD_MS is set (e2e). */
+export const COLD_POD_OWNER_PREFIX = "cold-pod-";
+
+/** No-op provisioner for local UI testing (no cluster); `coldMs` says how long a
+ *  conversation's sandbox takes to come up, 0 for at once. */
+export function createNoopProvisioner(coldMs: (threadId: string) => number = () => 0): SandboxProvisioner {
+  const startUp = async (threadId: string) => {
+    const ms = coldMs(threadId);
+    if (ms > 0) await new Promise((r) => setTimeout(r, ms));
+  };
   return {
-    async create(id) {
+    refFor(id) {
+      return { name: `fake-${id}`, namespace: "local" };
+    },
+    async create(id, threadId) {
+      await startUp(threadId ?? id);
       return { name: `fake-${id}`, namespace: "local" };
     },
     async suspend() {},
-    async resume(ref) {
+    async resume(ref, threadId) {
+      if (threadId) await startUp(threadId);
       return ref;
     },
     async destroy() {},
@@ -606,7 +619,14 @@ export async function main(
         sizePresetsJson: process.env.SANDBOX_SIZES_JSON || undefined,
         defaultSizeName: process.env.SANDBOX_DEFAULT_SIZE_NAME || undefined,
       });
-  const provisioner = k8sProvisioner ?? createNoopProvisioner();
+  // Bound once the session manager exists; the cold-pod hold keys on the owner.
+  let ownerOf: (threadId: string) => string | undefined = () => undefined;
+  const coldPodMs = Number(process.env.FAKE_SANDBOX_COLD_MS) || 0;
+  const provisioner =
+    k8sProvisioner ??
+    createNoopProvisioner((threadId) =>
+      coldPodMs > 0 && ownerOf(threadId)?.startsWith(COLD_POD_OWNER_PREFIX) ? coldPodMs : 0,
+    );
   // A noop provisioner creates no sandbox and every turn hangs, so say which one was
   // selected at boot.
   hostLog.info("sandbox provisioner selected", {
@@ -934,6 +954,7 @@ export async function main(
       return false;
     },
   });
+  ownerOf = (threadId) => sessions.get(threadId as SessionId)?.owner;
   /** The broker's key for a conversation; subagents share their root's. */
   const keyOf = (id: string): string => {
     const name = sessions.get(id as SessionId)?.sandbox.name;

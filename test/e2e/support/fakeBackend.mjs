@@ -144,6 +144,8 @@ const spawnAgentHost = (name, port, statePath, mirrorPath) =>
     // Force the fake sandbox (noop provisioner, no k8s) rather than letting agent-host infer it
     // from the environment.
     FAKE_SANDBOX: "1",
+    // Sandboxes of cold-pod-* owners take this long to come up (cold-sandbox.spec.ts).
+    FAKE_SANDBOX_COLD_MS: "8000",
     LOCAL_STATE_PATH: statePath,
     // Production's two-store topology (mirroredConversationStore only exists with MIRROR_STATE_PATH).
     MIRROR_STATE_PATH: mirrorPath,

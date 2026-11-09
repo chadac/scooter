@@ -8,7 +8,7 @@ stories read and disturb the overlay pool: GET /overlay/<thread>, GET /pool, POS
 /canary/<thread>, POST /warm-store/scale/<n>. POST /pooler/restart rolls the PgBouncer pooler and GET /db/connections lists
 the server's client sessions. POST /locked-folder and DELETE /locked-folder/<id>
 manage a user's locked folder as the broker, the only way to make one. POST /k8s/<thread>
-calls a broker k8s tool from that conversation's sandbox; GET /k8s/pod/<thread>,
+calls a broker k8s tool from that conversation's sandbox; GET /pod-ready/<thread> reports whether its sandbox pod is Ready. GET /k8s/pod/<thread>,
 /k8s/mark/<thread>, /k8s/configmap/<name> and /k8s/broker-can/<verb>/<resource> read back
 what it did. Stdlib only, shells out to
 kubectl on PATH.
@@ -243,6 +243,17 @@ class Hook(BaseHTTPRequestHandler):
                 },
                 "pv": None if pv is None else pv_view(pv),
             })
+
+        if self.path.startswith("/pod-ready/"):
+            # "True" or "False" from the pod's Ready condition, or "absent" with no pod.
+            thread = self.path.removeprefix("/pod-ready/")
+            if not thread_ok(thread):
+                return self._reply(400, "bad conversation id")
+            r = sh("kubectl", "-n", NS, "get", "pod", sandbox_of(thread), "--ignore-not-found",
+                   "-o", "jsonpath={.status.conditions[?(@.type=='Ready')].status}")
+            if r.returncode != 0:
+                return self._reply(500, r.stderr)
+            return self._reply(200, r.stdout.strip() or "absent")
 
         if self.path.startswith("/k8s/pod/"):
             thread = self.path.removeprefix("/k8s/pod/")
