@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createPvcAssetStore, AssetError, type AssetStore } from "../../src/session/assetStore.js";
+import { createPvcAssetStore, AssetError, withStaging, type AssetStore } from "../../src/session/assetStore.js";
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3, 4]); // the PNG magic plus junk
 
@@ -44,6 +44,24 @@ describe("PVC AssetStore", () => {
       name: "AssetError",
       reason: "too-large",
     });
+  });
+
+  it("stores a video under its own, larger cap and reads it back as video", async () => {
+    store = createPvcAssetStore({ root, maxBytes: 1024, videoMaxBytes: 4096 });
+    const clip = Buffer.alloc(2048, 7);
+    const { assetId } = await store.put("c1", { data: clip, mimeType: "video/mp4" });
+    expect(assetId).toMatch(/\.mp4$/);
+    expect((await store.read("c1", assetId))?.mimeType).toBe("video/mp4");
+    await expect(store.put("c1", { data: clip, mimeType: "image/png" })).rejects.toMatchObject({ reason: "too-large" });
+    await expect(store.put("c1", { data: Buffer.alloc(5000), mimeType: "video/webm" })).rejects.toMatchObject({
+      reason: "too-large",
+    });
+  });
+
+  it("staging takes only images, since it backs inline image blocks", () => {
+    const staged = withStaging(store);
+    expect(staged.stage("c1", { data: PNG, mimeType: "video/webm" })).toEqual({ rejected: "unsupported-type" });
+    expect(staged.stage("c1", { data: PNG, mimeType: "image/png" })).not.toHaveProperty("rejected");
   });
 
   it("rejects an unsupported MIME type", async () => {

@@ -63,6 +63,20 @@ const SANDBOX_CALLER_HEADER = "x-scooter-caller";
 /** The source given to a sandbox's message that names none. */
 export const SANDBOX_SOURCE = "sandbox";
 
+/** The inclusive [start, end] of a single `bytes=` range within `size`, or null if unsatisfiable. */
+export function parseByteRange(header: string, size: number): [number, number] | null {
+  const m = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!m || (m[1] === "" && m[2] === "") || size === 0) return null;
+  if (m[1] === "") {
+    // A suffix range: the last N bytes.
+    const n = Number(m[2]);
+    return n > 0 ? [Math.max(0, size - n), size - 1] : null;
+  }
+  const start = Number(m[1]);
+  const end = m[2] === "" ? size - 1 : Math.min(Number(m[2]), size - 1);
+  return start <= end ? [start, end] : null;
+}
+
 /** Whether a POST /messages caller may tag its message with this system source. */
 export function isPostableSource(source: unknown): source is string {
   return typeof source === "string" && /^[a-z][a-z0-9_-]{0,31}$/.test(source) && !RESERVED_SOURCES.has(source);
@@ -779,13 +793,24 @@ export function createManagementApi(deps: ManagementDeps): Router {
       res.writeHead(404, { "Content-Type": "application/json" }).end('{"error":"unknown asset"}');
       return;
     }
-    res.writeHead(200, {
-      "Content-Type": asset.mimeType,
-      "Content-Length": String(asset.data.length),
-      // The assetId is content-addressed, so the bytes never change.
-      "Cache-Control": "private, max-age=31536000, immutable",
-    });
-    res.end(asset.data);
+    const size = asset.data.length;
+    // The assetId is content-addressed, so the bytes never change.
+    const headers = { "Content-Type": asset.mimeType, "Accept-Ranges": "bytes", "Cache-Control": "private, max-age=31536000, immutable" };
+    const header = ctx.req.headers.range;
+    if (header === undefined) {
+      res.writeHead(200, { ...headers, "Content-Length": String(size) }).end(asset.data);
+      return;
+    }
+    // Video players seek with Range requests; Safari will not play without them.
+    const range = parseByteRange(header, size);
+    if (!range) {
+      res.writeHead(416, { ...headers, "Content-Range": `bytes */${size}` }).end();
+      return;
+    }
+    const [start, end] = range;
+    res
+      .writeHead(206, { ...headers, "Content-Length": String(end - start + 1), "Content-Range": `bytes ${start}-${end}/${size}` })
+      .end(asset.data.subarray(start, end + 1));
   });
 
   r.get("/conversations/:id/tail", async (ctx) => {

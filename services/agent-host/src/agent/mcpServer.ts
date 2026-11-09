@@ -43,6 +43,7 @@ import {
   type SandboxResourceToolsWiring,
 } from "./resourceTools.js";
 import { handleViewImage, IMAGE_MAX_BYTES, type ImageToolsWiring } from "./imageTools.js";
+import { handleShowVideo, type VideoToolsWiring } from "./videoTools.js";
 import { bearerFrom, mintConvToken, verifyConvToken } from "../auth/convToken.js";
 import { logger } from "../log.js";
 
@@ -155,6 +156,7 @@ export async function buildServer(
   titles?: TitleToolsWiring,
   images?: ImageToolsWiring,
   conversation?: ConversationToolsWiring,
+  videos?: VideoToolsWiring,
 ): Promise<McpServer> {
   const server = new McpServer({ name: "scooter-env", version: "1.0.0" });
   if (titles) {
@@ -496,6 +498,20 @@ export async function buildServer(
       async (args) => handleViewImage(images, conversationId, args),
     );
   }
+  if (videos) {
+    server.registerTool(
+      "show_video",
+      {
+        title: "Show the user a video from your sandbox",
+        description:
+          "Play a video file from YOUR sandbox (a screen recording, a rendered animation) inline in the chat for the " +
+          `user. You cannot watch it yourself. Supports .mp4, .m4v and .webm up to ${Math.floor(videos.maxBytes / 1024 / 1024)} MB; ` +
+          "use H.264 or VP9 so every browser can play it.",
+        inputSchema: { path: z.string().describe("Path to the video in the sandbox; relative paths resolve under /workspace.") },
+      },
+      async (args) => handleShowVideo(videos, conversationId, args),
+    );
+  }
   if (scheduler) {
     // The agent manages its own scheduled tasks, scoped to this conversation's owner.
     registerSchedulerTools(server, scheduler, conversationId);
@@ -550,6 +566,8 @@ export function createMcpEndpoint(deps: {
   images?: ImageToolsWiring;
   /** When provided, exposes conversation_status and make_conversation_private. */
   conversation?: ConversationToolsWiring;
+  /** When provided, exposes show_video. */
+  videos?: VideoToolsWiring;
 }): McpEndpoint {
   const path = deps.path ?? "/mcp";
   const secret = deps.convTokenSecret ?? "";
@@ -584,7 +602,7 @@ export function createMcpEndpoint(deps: {
       }
       // Stateless transport with no session id.
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-      const server = await buildServer(conv, deps.agentTools, deps.jobs, deps.models, deps.resources, deps.scheduler, deps.subagents, deps.titles, deps.images, deps.conversation);
+      const server = await buildServer(conv, deps.agentTools, deps.jobs, deps.models, deps.resources, deps.scheduler, deps.subagents, deps.titles, deps.images, deps.conversation, deps.videos);
       await server.connect(transport);
       await transport.handleRequest(req, res, body);
     },

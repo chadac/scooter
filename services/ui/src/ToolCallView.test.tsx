@@ -123,6 +123,22 @@ describe("ToolCallView", () => {
     expect(html).not.toContain("[Image: source: x]");
   });
 
+  it("plays a show_video result inline while the card is collapsed", () => {
+    const url = "/conversations/c1/assets/abc.mp4";
+    const ref = JSON.stringify({ type: "video", mimeType: "video/mp4", assetId: "abc.mp4", url });
+    const html = renderToStaticMarkup(
+      createElement(ToolCallView, part({
+        toolName: "mcp__scooter-env__show_video",
+        args: { path: "/workspace/demo.mp4" },
+        result: [{ type: "text", text: ref }, { type: "text", text: "Showing /workspace/demo.mp4" }],
+      })),
+    );
+    expect(html).toContain('data-slot="media-video"');
+    expect(html).toContain(`src="${url}"`);
+    expect(html).toContain('type="video/mp4"');
+    expect(html).not.toContain("Showing /workspace/demo.mp4");
+  });
+
   it("shows a running spinner on a shell card while the turn is in flight and no result yet", () => {
     // Status is always complete, so the spinner comes from our run state (result undefined plus isRunning).
     const html = renderWithRun(

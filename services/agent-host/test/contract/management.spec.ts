@@ -8,7 +8,7 @@ import { describe, it, expect, vi } from "vitest";
 import { PassThrough } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import { createManagementApi, SANDBOX_SOURCE, raiseApprovalInterrupt, fetchPendingApprovals, fetchPendingApprovalsByKeys, approvalAgentMessage } from "../../src/api/management.js";
+import { createManagementApi, SANDBOX_SOURCE, raiseApprovalInterrupt, fetchPendingApprovals, fetchPendingApprovalsByKeys, approvalAgentMessage, parseByteRange } from "../../src/api/management.js";
 import { UserSkillError, type UserSkillStore } from "../../src/session/userSkillStore.js";
 import { createMemoryUserHookSettingsStore, type UserHookSettingsStore } from "../../src/hooks/userHookSettingsStore.js";
 import type { HookDef } from "../../src/hooks/types.js";
@@ -141,11 +141,12 @@ async function callRaw(
   api: ReturnType<typeof createManagementApi>,
   method: string,
   path: string,
+  reqHeaders: Record<string, string> = {},
 ): Promise<{ status: number; headers: Record<string, string>; body: Buffer }> {
   const req = new PassThrough() as unknown as IncomingMessage;
   (req as { method?: string }).method = method;
   (req as { url?: string }).url = path;
-  (req as { headers?: Record<string, string> }).headers = {};
+  (req as { headers?: Record<string, string> }).headers = reqHeaders;
   let status = 200;
   let headers: Record<string, string> = {};
   const parts: Buffer[] = [];
@@ -721,6 +722,34 @@ describe("management API", () => {
     expect(status).toBe(200);
     expect(headers["Content-Type"]).toBe("image/png");
     expect(body.equals(Buffer.from([1, 2, 3, 4]))).toBe(true);
+  });
+
+  it("GET assets serves a byte range so a video can seek", async () => {
+    const api = createManagementApi({
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }), assets: fakeAssets(),
+    });
+    const full = await callRaw(api, "GET", "/conversations/c1/assets/img1.png");
+    expect(full.headers["Accept-Ranges"]).toBe("bytes");
+    const part = await callRaw(api, "GET", "/conversations/c1/assets/img1.png", { range: "bytes=1-2" });
+    expect(part.status).toBe(206);
+    expect(part.headers["Content-Range"]).toBe("bytes 1-2/4");
+    expect(part.headers["Content-Length"]).toBe("2");
+    expect(part.body.equals(Buffer.from([2, 3]))).toBe(true);
+    const bad = await callRaw(api, "GET", "/conversations/c1/assets/img1.png", { range: "bytes=9-" });
+    expect(bad.status).toBe(416);
+    expect(bad.headers["Content-Range"]).toBe("bytes */4");
+  });
+
+  it("parseByteRange handles open, suffix, clamped and unsatisfiable ranges", () => {
+    expect(parseByteRange("bytes=0-", 10)).toEqual([0, 9]);
+    expect(parseByteRange("bytes=-3", 10)).toEqual([7, 9]);
+    expect(parseByteRange("bytes=-30", 10)).toEqual([0, 9]);
+    expect(parseByteRange("bytes=5-99", 10)).toEqual([5, 9]);
+    expect(parseByteRange("bytes=10-", 10)).toBeNull();
+    expect(parseByteRange("bytes=4-2", 10)).toBeNull();
+    expect(parseByteRange("bytes=0-1,4-5", 10)).toBeNull();
+    expect(parseByteRange("bytes=-", 10)).toBeNull();
+    expect(parseByteRange("items=0-1", 10)).toBeNull();
   });
 
   it("GET assets 404s an unknown asset", async () => {

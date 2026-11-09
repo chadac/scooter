@@ -154,6 +154,32 @@ export const MediaStrip: FC<{ images: GalleryEntry[]; className?: string }> = ({
   );
 };
 
+/** An inline video player; videos stay out of the image lightbox. */
+export const MediaVideo: FC<{ src: string; mimeType?: string; className?: string }> = ({ src, mimeType, className }) => {
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    return (
+      <span
+        data-slot="media-video-failed"
+        className={cn("bg-muted text-muted-foreground inline-flex items-center rounded-lg px-3 py-2 text-xs", className)}
+      >
+        Video unavailable
+      </span>
+    );
+  }
+  return (
+    <video
+      data-slot="media-video"
+      controls
+      playsInline
+      preload="metadata"
+      className={cn("border-border/50 bg-muted/30 my-2 block max-h-96 w-auto max-w-full rounded-lg border", className)}
+    >
+      <source src={src} type={mimeType} onError={() => setFailed(true)} />
+    </video>
+  );
+};
+
 /** The lightbox; mount once (it is driven by useGallery). */
 export const MediaGallery: FC = () => {
   const { items, index, open, close, step } = useGallery();

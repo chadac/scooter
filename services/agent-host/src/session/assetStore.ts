@@ -1,10 +1,10 @@
 /**
- * AssetStore: durable storage for a conversation's uploaded images. Images arrive base64
+ * AssetStore: durable storage for a conversation's images and videos. Images arrive base64
  * from an entrypoint (UI upload, Slack); the bytes are stored once and everything
  * downstream (the event log, the AG-UI stream, the ACP prompt reference) carries only a
  * small `assetId`, so the log stays compact and checksum-stable. The bridge reads the
  * bytes back at the ACP boundary and the UI fetches them via
- * GET /conversations/:id/assets/:assetId. A size cap and an image MIME allow-list are
+ * GET /conversations/:id/assets/:assetId. Per-kind size caps and a MIME allow-list are
  * enforced on put().
  */
 
@@ -15,11 +15,50 @@ import { createHash } from "node:crypto";
 
 import type { SessionId } from "../types.js";
 
-/** Image MIME types accepted on put(). */
+/** Image MIME types: the only assets a model prompt may carry. */
 export const ALLOWED_IMAGE_MIME = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+/** Video MIME types the chat can play inline. */
+export const ALLOWED_VIDEO_MIME = new Set(["video/mp4", "video/webm"]);
+
+/** Every MIME type the store accepts by default. */
+export const ALLOWED_ASSET_MIME = new Set([...ALLOWED_IMAGE_MIME, ...ALLOWED_VIDEO_MIME]);
 
 /** Default per-image byte cap (~5MB), deployment-configurable via ASSET_MAX_BYTES. */
 export const DEFAULT_ASSET_MAX_BYTES = 5 * 1024 * 1024;
+
+/** Default per-video byte cap (~25MB), deployment-configurable via ASSET_VIDEO_MAX_BYTES. */
+export const DEFAULT_VIDEO_MAX_BYTES = 25 * 1024 * 1024;
+
+/** Byte caps by kind of asset. */
+export interface AssetCaps {
+  /** Per-image cap; default DEFAULT_ASSET_MAX_BYTES. */
+  maxBytes?: number;
+  /** Per-video cap; default DEFAULT_VIDEO_MAX_BYTES. */
+  videoMaxBytes?: number;
+}
+
+/** The byte cap that applies to an asset of `mimeType`. */
+export function capFor(mimeType: string, caps: AssetCaps): number {
+  return ALLOWED_VIDEO_MIME.has(mimeType)
+    ? (caps.videoMaxBytes ?? DEFAULT_VIDEO_MAX_BYTES)
+    : (caps.maxBytes ?? DEFAULT_ASSET_MAX_BYTES);
+}
+
+const MIME_EXT: Record<string, string> = {
+  "image/png": "png",
+  "image/jpeg": "jpg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "video/mp4": "mp4",
+  "video/webm": "webm",
+};
+
+/** The MIME type an assetId's extension names, or octet-stream. */
+export function mimeForAssetId(assetId: string): string {
+  const ext = assetId.split(".").pop() ?? "";
+  return Object.entries(MIME_EXT).find(([, e]) => e === ext)?.[0] ?? "application/octet-stream";
+}
 
 export interface StoredAsset {
   assetId: string;
@@ -37,7 +76,7 @@ export interface AssetBytes {
 export type AssetReject = "too-large" | "unsupported-type" | "empty";
 
 export interface AssetStore {
-  /** Store image bytes for a conversation and return a reference; throws AssetError when over the
+  /** Store asset bytes for a conversation and return a reference; throws AssetError when over the
    *  size cap, an unsupported MIME, or empty. */
   put(conversationId: SessionId, bytes: AssetBytes): Promise<StoredAsset>;
   /** Read an asset's bytes back, or null if unknown. */
@@ -55,18 +94,16 @@ export class AssetError extends Error {
   }
 }
 
-export interface PvcAssetStoreOpts {
+export interface PvcAssetStoreOpts extends AssetCaps {
   /** Root dir (the conversation-state PVC, the same as the fileStore root). */
   root: string;
-  /** Per-image byte cap; default DEFAULT_ASSET_MAX_BYTES. */
-  maxBytes?: number;
-  /** Allowed MIME types; default ALLOWED_IMAGE_MIME. */
+  /** Allowed MIME types; default ALLOWED_ASSET_MIME. */
   allowedMime?: Set<string>;
 }
 
 /** File extension for a stored blob, from its MIME. */
 export function extFor(mime: string): string {
-  return ({ "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" })[mime] ?? "bin";
+  return MIME_EXT[mime] ?? "bin";
 }
 
 /** The content-addressed assetId both stores mint for these bytes (sha256 prefix + ext), so a
@@ -76,8 +113,7 @@ export function assetIdFor(data: Buffer, mimeType: string): string {
 }
 
 export function createPvcAssetStore(opts: PvcAssetStoreOpts): AssetStore {
-  const maxBytes = opts.maxBytes ?? DEFAULT_ASSET_MAX_BYTES;
-  const allowed = opts.allowedMime ?? ALLOWED_IMAGE_MIME;
+  const allowed = opts.allowedMime ?? ALLOWED_ASSET_MIME;
   const dir = (id: SessionId) => join(opts.root, id, "assets");
   // assetId encodes the ext, so no index is needed.
   const fileFor = (id: SessionId, assetId: string) => join(dir(id), assetId);
@@ -91,10 +127,11 @@ export function createPvcAssetStore(opts: PvcAssetStoreOpts): AssetStore {
     async put(conversationId, { data, mimeType }) {
       if (!data || data.length === 0) throw new AssetError("empty", "empty asset");
       if (!allowed.has(mimeType)) {
-        throw new AssetError("unsupported-type", `unsupported image type: ${mimeType}`);
+        throw new AssetError("unsupported-type", `unsupported asset type: ${mimeType}`);
       }
+      const maxBytes = capFor(mimeType, opts);
       if (data.length > maxBytes) {
-        throw new AssetError("too-large", `image is ${data.length} bytes (max ${maxBytes})`);
+        throw new AssetError("too-large", `asset is ${data.length} bytes (max ${maxBytes})`);
       }
       // Content-addressed id, so identical uploads dedupe.
       const assetId = assetIdFor(data, mimeType);
@@ -109,11 +146,7 @@ export function createPvcAssetStore(opts: PvcAssetStoreOpts): AssetStore {
       const path = fileFor(conversationId, assetId);
       if (!existsSync(path)) return null;
       const data = await readFile(path);
-      const mimeType =
-        ({ png: "image/png", jpg: "image/jpeg", gif: "image/gif", webp: "image/webp" } as Record<string, string>)[
-          assetId.split(".").pop() ?? ""
-        ] ?? "application/octet-stream";
-      return { data, mimeType };
+      return { data, mimeType: mimeForAssetId(assetId) };
     },
 
     async clear(conversationId) {
@@ -134,7 +167,7 @@ export interface StagingAssetStore extends AssetStore {
 export interface StagingOpts {
   /** Per-asset byte cap; default DEFAULT_ASSET_MAX_BYTES. Match the wrapped store's cap. */
   maxBytes?: number;
-  /** Allowed MIME types; default ALLOWED_IMAGE_MIME. Match the wrapped store's list. */
+  /** Allowed MIME types; default ALLOWED_IMAGE_MIME, since stage() backs inline image blocks. */
   allowedMime?: Set<string>;
 }
 

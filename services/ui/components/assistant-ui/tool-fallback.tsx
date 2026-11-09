@@ -21,7 +21,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-import { MediaStrip } from "@/components/assistant-ui/media-gallery";
+import { MediaStrip, MediaVideo } from "@/components/assistant-ui/media-gallery";
 import { splitResultImages } from "@/src/mediaRefs";
 
 const ANIMATION_DURATION = 200;
@@ -260,7 +260,7 @@ function ToolFallbackResult({
 }) {
   if (result === undefined) return null;
   // Images the agent-host stored out of the result render inline; the rest stays text.
-  const { images, omitted, rest } = splitResultImages(result, ASSET_BASE_URL);
+  const { images, videos, omitted, rest } = splitResultImages(result, ASSET_BASE_URL);
 
   return (
     <div
@@ -272,6 +272,7 @@ function ToolFallbackResult({
         Result:
       </p>
       {showImages && <MediaStrip images={images.map((i) => ({ src: i.src, alt: "" }))} className="mt-1" />}
+      {showImages && videos.map((v) => <MediaVideo key={v.src} src={v.src} mimeType={v.mimeType} />)}
       {omitted.length > 0 && (
         <p data-slot="tool-fallback-result-omitted" className="text-muted-foreground mt-1 text-xs italic">
           {omitted.length === 1 ? "1 image" : `${omitted.length} images`} not shown ({[...new Set(omitted)].join(", ")})
@@ -339,10 +340,10 @@ const ToolFallbackImpl: ToolCallMessagePartComponent & {
   const isCancelled =
     effectiveStatus?.type === "incomplete" && effectiveStatus.reason === "cancelled";
 
-  // A finished result's images show under the header even while the card is collapsed (the
+  // A finished result's images and videos show under the header even while the card is collapsed (the
   // default), so a screenshot the agent viewed is visible without opening the tool call.
   const showsResult = !isCancelled && !forceRunning;
-  const images = showsResult ? splitResultImages(result, ASSET_BASE_URL).images : [];
+  const { images, videos } = showsResult ? splitResultImages(result, ASSET_BASE_URL) : { images: [], videos: [] };
 
   return (
     <ToolFallbackRoot>
@@ -351,6 +352,9 @@ const ToolFallbackImpl: ToolCallMessagePartComponent & {
         images={images.map((i) => ({ src: i.src, alt: "" }))}
         className="aui-tool-fallback-images mb-1"
       />
+      {videos.map((v) => (
+        <MediaVideo key={v.src} src={v.src} mimeType={v.mimeType} className="aui-tool-fallback-video mt-0 mb-1" />
+      ))}
       <ToolFallbackContent>
         <ToolFallbackError status={effectiveStatus} />
         <ToolFallbackArgs

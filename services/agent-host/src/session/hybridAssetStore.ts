@@ -17,28 +17,25 @@ import { createPgPool } from "../db/pgPool.js";
 import { logger } from "../log.js";
 import type { SessionId } from "../types.js";
 import type { AssetStore, AssetBytes, StoredAsset, AssetReject } from "./assetStore.js";
-import { AssetError, ALLOWED_IMAGE_MIME, DEFAULT_ASSET_MAX_BYTES, extFor } from "./assetStore.js";
+import { AssetError, ALLOWED_ASSET_MIME, capFor, extFor, type AssetCaps } from "./assetStore.js";
 
 const log = logger("hybridAssetStore");
 const { conversationAssets } = agent_host;
 
 
-export interface HybridAssetStoreOpts {
+export interface HybridAssetStoreOpts extends AssetCaps {
   /** Postgres connection string. */
   dsn: string;
   /** Override the database handle (tests). */
   db?: NodePgDatabase;
   /** Root dir for asset bytes (a dedicated PVC, e.g. /var/lib/agent-assets). */
   bytesRoot: string;
-  /** Per-image byte cap; default DEFAULT_ASSET_MAX_BYTES. */
-  maxBytes?: number;
-  /** Allowed MIME types; default ALLOWED_IMAGE_MIME. */
+  /** Allowed MIME types; default ALLOWED_ASSET_MIME. */
   allowedMime?: Set<string>;
 }
 
 export function createHybridAssetStore(opts: HybridAssetStoreOpts): AssetStore {
-  const maxBytes = opts.maxBytes ?? DEFAULT_ASSET_MAX_BYTES;
-  const allowed = opts.allowedMime ?? ALLOWED_IMAGE_MIME;
+  const allowed = opts.allowedMime ?? ALLOWED_ASSET_MIME;
   const ownPool = opts.db ? undefined : createPgPool("assetStore", { connectionString: opts.dsn, max: 2 });
   const db: NodePgDatabase = opts.db ?? drizzle(ownPool!);
 
@@ -55,10 +52,11 @@ export function createHybridAssetStore(opts: HybridAssetStoreOpts): AssetStore {
     async put(conversationId, { data, mimeType }) {
       if (!data || data.length === 0) throw new AssetError("empty", "empty asset");
       if (!allowed.has(mimeType)) {
-        throw new AssetError("unsupported-type", `unsupported image type: ${mimeType}`);
+        throw new AssetError("unsupported-type", `unsupported asset type: ${mimeType}`);
       }
+      const maxBytes = capFor(mimeType, opts);
       if (data.length > maxBytes) {
-        throw new AssetError("too-large", `image is ${data.length} bytes (max ${maxBytes})`);
+        throw new AssetError("too-large", `asset is ${data.length} bytes (max ${maxBytes})`);
       }
 
       // Content-addressed id, so identical uploads dedupe across conversations.

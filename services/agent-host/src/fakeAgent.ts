@@ -297,6 +297,28 @@ class FakeAgent implements Agent {
       return { stopReason: "end_turn" };
     }
 
+    // A "~video" message is a test directive: a show_video result pointing at an asset
+    // the e2e spec serves itself, since the fake stack has no sandbox to read from.
+    if (userText.startsWith("~video")) {
+      const toolCallId = this.nextToolCallId();
+      const path = "/workspace/demo.webm";
+      await u({ sessionUpdate: "tool_call", toolCallId, title: "show_video", kind: "other", status: "pending", rawInput: { path } } as never);
+      await sleep(150);
+      const url = "/conversations/fake/assets/fake-demo.webm";
+      const ref = JSON.stringify({ type: "video", mimeType: "video/webm", assetId: "fake-demo.webm", url });
+      await u({
+        sessionUpdate: "tool_call_update",
+        toolCallId,
+        status: "completed",
+        content: [
+          { type: "content", content: { type: "text", text: ref } },
+          { type: "content", content: { type: "text", text: `Showing ${path} to the user as an inline video.` } },
+        ],
+      } as never);
+      await u({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Here's the recording." } });
+      return { stopReason: "end_turn" };
+    }
+
     // A "~subagent <title>" message is a test directive: spawn a real subagent via the
     // scooter-env MCP tool, whose child sleeps because the host end()s it as soon as its run completes.
     if (userText.startsWith("~subagent")) {

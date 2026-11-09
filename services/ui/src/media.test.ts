@@ -54,6 +54,39 @@ describe("splitResultImages", () => {
   });
 });
 
+describe("splitResultImages: show_video refs", () => {
+  const VIDEO = "/conversations/c1/assets/ccc.mp4";
+  const REF = JSON.stringify({ type: "video", mimeType: "video/mp4", assetId: "ccc.mp4", url: VIDEO });
+
+  it("takes a video ref text block out and leaves the caption", () => {
+    const r = splitResultImages([{ type: "text", text: REF }, { type: "text", text: "Showing a.mp4" }], "/base");
+    expect(r.videos).toEqual([{ src: "/base" + VIDEO, mimeType: "video/mp4" }]);
+    expect(r.images).toEqual([]);
+    expect(r.rest).toBe("Showing a.mp4");
+  });
+
+  it("finds the ref when a provider joined the text blocks into one string", () => {
+    const r = splitResultImages(`${REF}\nShowing a.mp4`);
+    expect(r.videos.map((v) => v.src)).toEqual([VIDEO]);
+    expect(r.rest).toBe("Showing a.mp4");
+  });
+
+  it("unwraps goose's ACP {type:'content'} wrapper", () => {
+    const r = splitResultImages({ content: [{ type: "content", content: { type: "text", text: REF } }] });
+    expect(r.videos).toHaveLength(1);
+    expect(r.rest).toBeUndefined();
+  });
+
+  it("never plays a url outside the assets route, and leaves lookalike text alone", () => {
+    const evil = JSON.stringify({ type: "video", url: "https://evil.example/x.mp4" });
+    for (const text of [evil, '{"type":"video", broken', '{"type":"videos","url":"x"}']) {
+      const r = splitResultImages([{ type: "text", text }]);
+      expect(r.videos).toEqual([]);
+      expect(r.rest).toEqual([{ type: "text", text }]);
+    }
+  });
+});
+
 describe("attachAssistantImages", () => {
   const imgs = (id: string) => (id === "a1" ? [{ assetId: "aaa.png", mimeType: "image/png", url: URL1 }] : undefined);
 

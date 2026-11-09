@@ -52,7 +52,7 @@ import { createPgMetaStore } from "./session/metaStore.js";
 import { createPgAwaitingInputStore } from "./session/awaitingInputStore.js";
 import { changesAwaiting, createAwaitingInputSync } from "./session/awaitingInputSync.js";
 import { createAwaitingInputNotifier, parseAwaitingInputNotify } from "./session/awaitingInputNotify.js";
-import { createPvcAssetStore, withStaging } from "./session/assetStore.js";
+import { ALLOWED_IMAGE_MIME, capFor, createPvcAssetStore, withStaging } from "./session/assetStore.js";
 import { createHybridAssetStore } from "./session/hybridAssetStore.js";
 import {
   createSessionBridge,
@@ -99,6 +99,7 @@ import { conversationTree, createMemoryAuthorStore, createPgAuthorStore, isOwnTe
 import { mintConvToken } from "./auth/convToken.js";
 import { createMcpEndpoint, resolveConversation } from "./agent/mcpServer.js";
 import { readSandboxFileBase64, IMAGE_MAX_BYTES, type ImageToolsWiring } from "./agent/imageTools.js";
+import type { VideoToolsWiring } from "./agent/videoTools.js";
 import type { ConversationToolsWiring } from "./agent/conversationTools.js";
 import { createBrokerMcpProxy } from "./agent/brokerMcpProxy.js";
 import { createSandboxMcpProxy } from "./agent/sandboxMcpProxy.js";
@@ -786,13 +787,16 @@ export async function main(
   // Image/media assets: metadata in Postgres and bytes on the assets PVC (ASSETS_PATH, else
   // LOCAL_STATE_PATH), or PVC-only without a DSN.
   const assetsPath = process.env.ASSETS_PATH ?? config.localStatePath;
-  const assetMaxBytes = Number(process.env.ASSET_MAX_BYTES) || undefined;
+  const assetCaps = {
+    maxBytes: Number(process.env.ASSET_MAX_BYTES) || undefined,
+    videoMaxBytes: Number(process.env.ASSET_VIDEO_MAX_BYTES) || undefined,
+  };
   // withStaging lets the bridge reference an agent-produced image before its write lands.
   const assets = withStaging(
     agentHostResourceDsn()
-      ? createHybridAssetStore({ dsn: agentHostResourceDsn(), db: agentHostDb, bytesRoot: assetsPath, maxBytes: assetMaxBytes })
-      : createPvcAssetStore({ root: assetsPath, maxBytes: assetMaxBytes }),
-    { maxBytes: assetMaxBytes },
+      ? createHybridAssetStore({ dsn: agentHostResourceDsn(), db: agentHostDb, bytesRoot: assetsPath, ...assetCaps })
+      : createPvcAssetStore({ root: assetsPath, ...assetCaps }),
+    { maxBytes: assetCaps.maxBytes },
   );
   hostLog.info("asset store", {
     backend: agentHostResourceDsn() ? "hybrid (pg+pvc)" : "pvc-only",
@@ -1389,6 +1393,9 @@ export async function main(
   const convTokenSecret = process.env.CONV_TOKEN_SECRET ?? "";
   const brokerTokenPath = process.env.BROKER_TOKEN_PATH ?? "/var/run/secrets/broker/token";
   const imageToolsWiring: ImageToolsWiring | undefined = config.fakeSandbox ? undefined : { client: sandboxClientFor };
+  const videoToolsWiring: VideoToolsWiring | undefined = config.fakeSandbox
+    ? undefined
+    : { client: sandboxClientFor, assets, maxBytes: capFor("video/mp4", assetCaps) };
   const mcpEndpoint =
     agentToolsWiring !== undefined ||
     jobManager !== undefined ||
@@ -1415,6 +1422,7 @@ export async function main(
           titles: titleToolsWiring,
           images: imageToolsWiring,
           conversation: conversationToolsWiring,
+          videos: videoToolsWiring,
         })
       : undefined;
 
@@ -1513,6 +1521,11 @@ export async function main(
     // oversize or unsupported image rather than failing the turn.
     const promptImages: Array<{ assetId: string; mimeType: string }> = [];
     for (const img of input.images ?? []) {
+      // The store also holds videos, which a model prompt cannot carry.
+      if (!ALLOWED_IMAGE_MIME.has(img.mimeType)) {
+        hostLog.warn("dropped a non-image attachment", { conversation_id: sessionId, mime_type: img.mimeType });
+        continue;
+      }
       try {
         const stored = await assets.put(sessionId, { data: Buffer.from(img.data, "base64"), mimeType: img.mimeType });
         promptImages.push({ assetId: stored.assetId, mimeType: stored.mimeType });
