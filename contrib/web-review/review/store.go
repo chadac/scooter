@@ -65,14 +65,15 @@ type Note struct {
 	Shot     string   `json:"shot,omitempty"`
 	// Why the shot may be incomplete (cross-origin images, WebGL, …).
 	ShotWarning string    `json:"shotWarning,omitempty"`
-	Held        bool      `json:"held,omitempty"`
 	Resolved    bool      `json:"resolved,omitempty"`
 	Created     time.Time `json:"created"`
+	// The note is unread while the agent's last change is newer than ReadAt.
+	AgentAt *time.Time `json:"agentAt,omitempty"`
+	ReadAt  *time.Time `json:"readAt,omitempty"`
 }
 
 type State struct {
 	NextNum int    `json:"nextNum"`
-	Hold    bool   `json:"hold"`
 	Notes   []Note `json:"notes"`
 }
 
@@ -144,14 +145,13 @@ func (s *Store) mutate(f func(*State) error) error {
 	return err
 }
 
-// Add stores a note, held while the review is on hold.
+// Add stores a note.
 func (s *Store) Add(n Note, comment string, shot []byte) (Note, error) {
 	err := s.mutate(func(st *State) error {
 		n.ID = newID()
 		n.Num = st.NextNum
 		st.NextNum++
 		n.Created = s.now().UTC()
-		n.Held = st.Hold
 		n.Resolved = false
 		n.Thread = []Msg{{By: "user", Text: comment, At: n.Created}}
 		n.Shot = ""
@@ -208,7 +208,11 @@ func (s *Store) Reply(id string, by, text string) (Note, error) {
 		if err != nil {
 			return err
 		}
-		n.Thread = append(n.Thread, Msg{By: by, Text: text, At: s.now().UTC()})
+		now := s.now().UTC()
+		n.Thread = append(n.Thread, Msg{By: by, Text: text, At: now})
+		if by == "agent" {
+			n.AgentAt = &now
+		}
 		// A user's reply reopens the thread.
 		if by == "user" {
 			n.Resolved = false
@@ -219,7 +223,7 @@ func (s *Store) Reply(id string, by, text string) (Note, error) {
 	return out, err
 }
 
-func (s *Store) Resolve(id string, resolved bool) (Note, error) {
+func (s *Store) Resolve(id string, by string, resolved bool) (Note, error) {
 	var out Note
 	err := s.mutate(func(st *State) error {
 		n, err := find(st, id)
@@ -227,6 +231,26 @@ func (s *Store) Resolve(id string, resolved bool) (Note, error) {
 			return err
 		}
 		n.Resolved = resolved
+		if by == "agent" {
+			now := s.now().UTC()
+			n.AgentAt = &now
+		}
+		out = *n
+		return nil
+	})
+	return out, err
+}
+
+// MarkRead records that the user has seen the note's thread.
+func (s *Store) MarkRead(id string) (Note, error) {
+	var out Note
+	err := s.mutate(func(st *State) error {
+		n, err := find(st, id)
+		if err != nil {
+			return err
+		}
+		now := s.now().UTC()
+		n.ReadAt = &now
 		out = *n
 		return nil
 	})
@@ -246,25 +270,6 @@ func (s *Store) Delete(id string) error {
 		st.Notes = slices.Delete(st.Notes, i, i+1)
 		return nil
 	})
-}
-
-func (s *Store) SetHold(hold bool) error {
-	return s.mutate(func(st *State) error { st.Hold = hold; return nil })
-}
-
-// Release un-holds every held note and returns them, oldest first.
-func (s *Store) Release() ([]Note, error) {
-	var out []Note
-	err := s.mutate(func(st *State) error {
-		for i := range st.Notes {
-			if st.Notes[i].Held {
-				st.Notes[i].Held = false
-				out = append(out, st.Notes[i])
-			}
-		}
-		return nil
-	})
-	return out, err
 }
 
 // SaveSnap stores a live-page capture and returns its path.

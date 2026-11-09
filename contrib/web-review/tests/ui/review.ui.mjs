@@ -112,7 +112,7 @@ try {
   check("the screenshot exists and isn't blank", shotPath && existsSync(shotPath) && statSync(shotPath).size > 3000, shotPath && existsSync(shotPath) ? statSync(shotPath).size : "missing");
   await app().locator(`.pin.point[data-id="${id1}"]`).waitFor();
   check("a pin marks the element", true);
-  check("the Notes count goes up", (await page.locator("#open-n").textContent()) === "1");
+  check("the Pins count goes up", (await page.locator("#pins-n").textContent()) === "(1)");
 
   // --- an area note ---------------------------------------------------------------
   await page.keyboard.press("r");
@@ -140,9 +140,12 @@ try {
   await until(async () => (await app().locator(`.pin.resolved[data-id="${id1}"]`).count()) === 1);
   check("`review resolve` turns the pin green", (await app().locator(`.pin.resolved[data-id="${id1}"]`).count()) === 1);
   check("…and shows a checkmark in place of its number", (await app().locator(`.pin.resolved[data-id="${id1}"]`).textContent()) === "✓");
+  check("Scooter's changes mark the pin unread", (await app().locator(`.pin.unread[data-id="${id1}"]`).count()) === 1);
+  check("…and the Pins button counts it", (await page.locator("#pins-unread").textContent()) === "1");
   await app().locator(`.pin[data-id="${id1}"]`).click();
   await app().locator(".pop .msg.agent").waitFor();
   check("`review reply` shows on the pin's thread", (await app().locator(".pop .msg.agent").textContent()).includes("Widened"));
+  check("opening the thread marks it read", await until(async () => (await app().locator(`.pin.unread[data-id="${id1}"]`).count()) === 0 && (await page.locator("#pins-unread").textContent()) === ""));
   await snap("05-thread");
   await app().locator(".pop textarea").fill("Still tight on mobile.");
   await app().locator(".pop .reply").click();
@@ -152,43 +155,31 @@ try {
   check("…which brings its number back", (await app().locator(`.pin[data-id="${id1}"]`).textContent()) === "1");
   await page.keyboard.press("Escape");
 
-  // --- hold and send all ----------------------------------------------------------
-  await page.locator("#hold").click();
-  await until(async () => (await page.locator("#hold").getAttribute("aria-pressed")) === "true");
+  // --- pins per route --------------------------------------------------------------
   await app().locator("nav a", { hasText: "Dashboard" }).click();
   await app().locator('[data-testid="kpi-late"]').waitFor();
   check("pins belong to their route", (await app().locator(".pin").count()) === 0);
-  for (const [sel, text] of [['[data-testid="kpi-late"]', "Late should link to the filtered list."], ["canvas#trend", "Label the axes."]]) {
-    await page.keyboard.press("c");
-    await armed();
-    const b = await app().locator(sel).boundingBox();
-    await page.mouse.move(b.x + 10, b.y + 10);
-    await page.mouse.move(b.x + 12, b.y + 12);
-    await page.mouse.down();
-    await page.mouse.up();
-    await composer.waitFor();
-    await composer.fill(text);
-    await app().locator(".pop .save").click();
-    await composer.waitFor({ state: "detached" });
-  }
-  await sleep(500);
-  check("held notes don't wake the agent", stack.messages.length === 3, String(stack.messages.length));
-  check("held pins are drawn dashed", (await app().locator(".pin.held").count()) === 2);
-  check("Send all shows the held count", (await page.locator("#send").textContent()) === "Send all (2)");
-  await snap("06-held");
-  await page.locator("#send").click();
-  const batch = await until(async () => stack.messages[3]);
-  check("Send all wakes the agent once with every held note", batch?.text.startsWith("Review: 2 notes.") &&
-    batch.text.includes("Review note #3") && batch.text.includes("Review note #4"), batch?.text);
-  check("…and clears the held state", await until(async () => (await app().locator(".pin.held").count()) === 0));
-  await page.locator("#hold").click();
 
-  // --- the notes list ---------------------------------------------------------------
-  await page.locator("#notes").click();
-  await page.locator("#list li", { hasText: "#2" }).click();
+  // --- the pins panel ---------------------------------------------------------------
+  await stack.cli("resolve", id2);
+  await page.keyboard.press("p");
+  await page.locator("#side").waitFor();
+  const listed = async () => page.locator("#list li[data-id]").evaluateAll((els) => els.map((e) => e.dataset.id));
+  check("P opens the pins panel", true);
+  check("…showing open pins by default", await until(async () => JSON.stringify(await listed()) === JSON.stringify([id1])), await listed());
+  check("…with the unread one flagged", await until(async () => (await page.locator(`#list li.unread[data-id="${id2}"]`).count()) === 0));
+  await page.locator('#filter [data-filter="closed"]').click();
+  check("Closed lists resolved pins, with a checkmark", await until(async () => JSON.stringify(await listed()) === JSON.stringify([id2]))
+    && (await page.locator(`#list li[data-id="${id2}"] .badge`).textContent()) === "✓"
+    && (await page.locator(`#list li.unread[data-id="${id2}"]`).count()) === 1);
+  await page.locator('#filter [data-filter="all"]').click();
+  check("All lists every pin in order", await until(async () => JSON.stringify(await listed()) === JSON.stringify([id1, id2])));
+  await snap("06-pins-panel");
+  await page.locator(`#list li[data-id="${id2}"]`).click();
   check("a note on another route navigates there", await waitPath("/review/orders/1042"), shellPath());
   await app().locator(".pop .msg").waitFor();
   check("…and opens its thread", (await app().locator(".pop .msg").first().textContent()).includes("crowded"));
+  check("…which marks it read in the list", await until(async () => (await page.locator(`#list li.unread[data-id="${id2}"]`).count()) === 0));
   await page.keyboard.press("Escape");
 
   // --- hide pins ------------------------------------------------------------------

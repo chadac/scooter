@@ -86,7 +86,6 @@ Screenshot: /workspace/.scooter/review/shots/4.png
 - `review reply 4 "Gave the totals their own row."` puts your answer on the pin.
 - `review resolve 4` turns the pin green. The user can reopen it or reply, which
   wakes you again.
-- With **Hold notes** on, the user sends several at once: one message, `Review: n notes.`
 
 `review list` shows the open notes and their threads (`--all` adds resolved ones).
 

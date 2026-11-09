@@ -59,13 +59,12 @@
     .pin.point { width: 22px; height: 22px; margin: -11px 0 0 -11px; border-radius: 50% 50% 50% 0; background: #db2777; color: #fff; display: grid; place-items: center; font-size: 11px; font-weight: 700; box-shadow: 0 2px 6px rgb(0 0 0 / .3); border: 2px solid #fff; }
     .pin.area { border: 2px solid #db2777; background: rgb(219 39 119 / .06); border-radius: 4px; pointer-events: none; }
     .pin.area .num { pointer-events: auto; position: absolute; top: -11px; left: -11px; width: 22px; height: 22px; border-radius: 50%; background: #db2777; color: #fff; display: grid; place-items: center; font-size: 11px; font-weight: 700; border: 2px solid #fff; }
-    .pin.held, .pin.held .num { background-color: #a16207; outline: 2px dashed #a16207; outline-offset: 2px; }
-    .pin.area.held { background: rgb(161 98 7 / .06); border-color: #a16207; }
     .pin.resolved, .pin.resolved .num { background-color: #15803d; }
     .pin.area.resolved { background: none; border-color: rgb(21 128 61 / .5); border-style: dashed; }
     .pin.point.just-resolved, .pin.just-resolved .num { animation: review-pop .45s ease-out var(--since, 0s); }
     @keyframes review-pop { 0% { transform: scale(.6); } 60% { transform: scale(1.25); } 100% { transform: scale(1); } }
     .pin.detached { opacity: .55; }
+    .pin.point.unread::after, .pin.unread .num::after { content: ""; position: absolute; top: -4px; right: -4px; width: 8px; height: 8px; border-radius: 50%; background: #2563eb; border: 2px solid #fff; }
     .pop { position: fixed; width: 320px; pointer-events: auto; background: Canvas; color: CanvasText; color-scheme: light dark; border: 1px solid #d4d4d8; border-radius: 10px; box-shadow: 0 12px 32px rgb(0 0 0 / .25); padding: 10px; display: grid; gap: 8px; }
     .pop textarea { width: 100%; min-height: 70px; resize: vertical; padding: 6px 8px; border: 1px solid #d4d4d8; border-radius: 6px; background: Canvas; color: CanvasText; }
     .pop .row { display: flex; gap: 6px; align-items: center; }
@@ -414,6 +413,8 @@
   let state = { notes: [] }, hidePins = false;
   // When each note turned resolved here, so only that change animates.
   const resolvedAt = new Map();
+  // Scooter changed the note since the user last opened it.
+  const isUnread = (n) => !!n.agentAt && (!n.readAt || Date.parse(n.agentAt) > Date.parse(n.readAt));
   let loaded = false;
   function anchorRect(n) {
     let el = null;
@@ -434,7 +435,7 @@
       const pin = document.createElement("div");
       const since = performance.now() - (resolvedAt.get(n.id) ?? -1e9);
       const just = since < 450;
-      pin.className = `pin ${n.kind}${n.held ? " held" : ""}${n.resolved ? " resolved" : ""}${just ? " just-resolved" : ""}${detached ? " detached" : ""}`;
+      pin.className = `pin ${n.kind}${n.resolved ? " resolved" : ""}${just ? " just-resolved" : ""}${isUnread(n) ? " unread" : ""}${detached ? " detached" : ""}`;
       const label = n.resolved ? "✓" : String(n.num);
       pin.dataset.id = n.id;
       pin.title = (detached ? "(element not found) " : "") + (n.resolved ? "Resolved: " : "") + (n.thread[0]?.text ?? "");
@@ -474,7 +475,8 @@
     pop = document.createElement("div");
     pop.className = "pop";
     pop.dataset.thread = String(id);
-    const status = n.resolved ? "resolved" : n.held ? "held, not sent yet" : "open";
+    if (isUnread(n)) api(`notes/${id}/read`, {}).catch(() => {});
+    const status = n.resolved ? "resolved" : "open";
     pop.innerHTML = `
       <div class="row"><b class="grow">#${n.num} · ${n.kind}</b><span class="meta">${status}</span></div>
       <div class="thread"></div>
@@ -593,7 +595,7 @@
     if (t && t.closest && t.closest("input, textarea, select, [contenteditable]")) return;
     const key = e.key.toLowerCase();
     if (key === "escape" && mode) { setMode(null); hl.hidden = true; return; }
-    if (key === "c" || key === "r" || key === "h") tell({ type: "review:key", key });
+    if (key === "c" || key === "r" || key === "h" || key === "p") tell({ type: "review:key", key });
   }, true);
 
   const titleObs = new MutationObserver(() => tell({ type: "review:route", route: route(), title: document.title }));

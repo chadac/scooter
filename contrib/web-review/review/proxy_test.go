@@ -337,28 +337,29 @@ func TestNotesWakeTheConversation(t *testing.T) {
 	}
 }
 
-func TestHeldNotesSendAsOneMessage(t *testing.T) {
+func TestAgentChangesAreUnreadUntilRead(t *testing.T) {
 	f := newFixture(t, http.NotFoundHandler())
-	api := f.front.URL + "/__review/" // the CLI's unprefixed path
-	post(t, api+"hold", map[string]bool{"hold": true})
-	for _, c := range []string{"one", "two"} {
-		post(t, api+"notes", map[string]any{"kind": "point", "route": "/", "comment": c, "anchor": map[string]string{"selector": "h1"}})
+	api := f.front.URL + "/__review/"
+	_, n := post(t, api+"notes", map[string]any{"kind": "point", "route": "/", "comment": "hi", "anchor": map[string]string{"selector": "h1"}})
+	id, _ := n["id"].(string)
+	unread := func() bool {
+		got, _ := f.app.store.Get(id)
+		return got.AgentAt != nil && (got.ReadAt == nil || got.AgentAt.After(*got.ReadAt))
 	}
-	select {
-	case text := <-f.woke:
-		t.Fatalf("a held note woke the agent: %s", text)
-	case <-time.After(200 * time.Millisecond):
+	if unread() {
+		t.Error("a new note is unread")
 	}
-	_, out := post(t, api+"send", map[string]any{})
-	if out["sent"] != float64(2) {
-		t.Fatalf("send: %v", out)
+	post(t, api+"notes/"+id+"/reply", map[string]any{"text": "done", "by": "agent"})
+	if !unread() {
+		t.Error("an agent reply isn't unread")
 	}
-	text := waitWake(t, f)
-	if !strings.HasPrefix(text, "Review: 2 notes.") || !strings.Contains(text, "> one") || !strings.Contains(text, "> two") {
-		t.Errorf("batch: %s", text)
+	post(t, api+"notes/"+id+"/read", map[string]any{})
+	if unread() {
+		t.Error("still unread after read")
 	}
-	if st := f.app.store.Snapshot(); st.Notes[0].Held || st.Notes[1].Held || !st.Hold {
-		t.Errorf("state: %+v", st)
+	post(t, api+"notes/"+id+"/resolve", map[string]any{"resolved": true, "by": "agent"})
+	if !unread() {
+		t.Error("an agent resolve isn't unread")
 	}
 }
 

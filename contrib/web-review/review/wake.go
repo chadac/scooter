@@ -87,27 +87,12 @@ func sourceLine(t *Target) string {
 	return fmt.Sprintf("Dev server :%d.\n", t.Port)
 }
 
-func hints(ids ...string) string {
-	id := "<id>"
-	if len(ids) == 1 {
-		id = ids[0]
-	}
+func hints(id string) string {
 	return fmt.Sprintf("`review reply %s \"…\"` · `review resolve %s` · `review snap` for the live page", id, id)
 }
 
 func noteMessage(n Note, shotsDir string, t *Target) string {
 	return describe(n, shotsDir) + sourceLine(t) + hints(n.ID)
-}
-
-func batchMessage(notes []Note, shotsDir string, t *Target) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "Review: %d notes.\n\n", len(notes))
-	ids := make([]string, len(notes))
-	for i, n := range notes {
-		ids[i] = n.ID
-		b.WriteString(describe(n, shotsDir) + "\n")
-	}
-	return b.String() + sourceLine(t) + hints(ids...)
 }
 
 func replyMessage(n Note, text string) string {

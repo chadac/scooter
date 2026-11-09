@@ -14,10 +14,10 @@
 <style>
   :root {
     color-scheme: light dark; --rail: 28px; --line: #d4d4d8; --muted: #71717a; --bg: #fafafa;
-    --ink: #18181b; --accent: #db2777; --held: #a16207; --ok: #15803d;
+    --ink: #18181b; --accent: #db2777; --ok: #15803d; --unread: #2563eb;
   }
   @media (prefers-color-scheme: dark) {
-    :root { --line: #3f3f46; --muted: #a1a1aa; --bg: #18181b; --ink: #f4f4f5; --accent: #f472b6; --held: #facc15; --ok: #4ade80; }
+    :root { --line: #3f3f46; --muted: #a1a1aa; --bg: #18181b; --ink: #f4f4f5; --accent: #f472b6; --ok: #4ade80; --unread: #60a5fa; }
   }
   html, body { margin: 0; height: 100%; overflow: hidden; font: 12px system-ui, sans-serif; background: var(--bg); color: var(--ink); }
   #layout { display: flex; height: 100%; }
@@ -51,27 +51,36 @@
   #bar kbd { font: 10px ui-monospace, monospace; color: var(--muted); border: 1px solid var(--line); border-radius: 3px; padding: 0 3px; }
   #bar .sep { width: 1px; align-self: stretch; background: var(--line); margin: 2px 4px; }
   #route { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-family: ui-monospace, monospace; padding-left: 8px; }
-  #send { color: var(--held) !important; border-color: var(--held) !important; }
-  #send[hidden] { display: none; }
 
-  #panel {
-    position: absolute; top: calc(100% + 4px); right: 8px; width: 360px; max-height: 60vh; overflow: auto; z-index: 10;
-    background: Canvas; border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgb(0 0 0 / .18);
-  }
-  #panel[hidden] { display: none; }
-  #panel h3 { margin: 0; padding: 8px 12px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; }
-  #panel ol { list-style: none; margin: 0; padding: 0; }
-  #panel li { padding: 8px 12px; border-bottom: 1px solid var(--line); cursor: pointer; display: grid; gap: 2px; }
-  #panel li:hover { background: color-mix(in srgb, var(--muted) 10%, transparent); }
-  #panel li .meta { color: var(--muted); font-size: 11px; display: flex; gap: 6px; }
-  #panel li .text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #panel li.resolved .text { text-decoration: line-through; color: var(--muted); }
-  #panel .empty { padding: 16px 12px; color: var(--muted); }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); display: inline-block; align-self: center; }
-  .held .dot { background: var(--held); }
-  .resolved .dot { background: none; width: auto; height: auto; color: var(--ok); font-weight: 700; line-height: 1; }
-  .resolved .dot::before { content: "✓"; }
-  #app { flex: 1; min-height: 0; }
+  #pins-n:empty, #pins-unread:empty { display: none; }
+  #pins-unread { background: var(--unread); color: #fff; border-radius: 999px; padding: 0 5px; font-size: 10px; font-weight: 700; }
+  #body { flex: 1; min-height: 0; display: flex; }
+  #app { flex: 1; min-width: 0; }
+
+  #side { flex: none; width: 320px; display: flex; flex-direction: column; border-left: 1px solid var(--line); background: var(--bg); }
+  #side[hidden] { display: none; }
+  #side header { display: flex; align-items: center; gap: 6px; padding: 6px 8px 6px 12px; border-bottom: 1px solid var(--line); }
+  #side header b { flex: 1; }
+  #side header button { all: unset; cursor: pointer; color: var(--muted); padding: 2px 6px; border-radius: 4px; }
+  #side header button:hover { background: color-mix(in srgb, var(--muted) 15%, transparent); color: var(--ink); }
+  #filter { display: flex; margin: 8px 12px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+  #filter button { all: unset; flex: 1; text-align: center; padding: 4px 0; cursor: pointer; color: var(--muted); }
+  #filter button + button { border-left: 1px solid var(--line); }
+  #filter button[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); font-weight: 600; }
+  #list { list-style: none; margin: 0; padding: 0; overflow: auto; flex: 1; }
+  #list li { padding: 8px 12px; border-top: 1px solid var(--line); cursor: pointer; display: grid; grid-template-columns: 22px 1fr; gap: 2px 8px; }
+  #list li:hover { background: color-mix(in srgb, var(--muted) 10%, transparent); }
+  #list li.here { box-shadow: inset 2px 0 var(--accent); }
+  #list .badge { grid-row: span 3; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-size: 10px; font-weight: 700; color: #fff; background: var(--accent); position: relative; }
+  #list .resolved .badge { background: var(--ok); }
+  #list .unread .badge::after { content: ""; position: absolute; top: -2px; right: -2px; width: 8px; height: 8px; border-radius: 50%; background: var(--unread); border: 2px solid var(--bg); }
+  #list .meta { color: var(--muted); font-size: 11px; display: flex; gap: 6px; min-width: 0; }
+  #list .meta .route { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, monospace; }
+  #list .text { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  #list .resolved .text { color: var(--muted); }
+  #list .last { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #list .unread .text, #list .unread .last { font-weight: 600; color: var(--ink); }
+  #list .empty { display: block; padding: 16px 12px; color: var(--muted); border: 0; cursor: default; }
 </style>
 </head>
 <body>
@@ -87,18 +96,23 @@
       <button id="point" type="button" aria-pressed="false" title="Comment on an element (C)">◎ Point <kbd>C</kbd></button>
       <button id="area" type="button" aria-pressed="false" title="Comment on an area (R)">▭ Area <kbd>R</kbd></button>
       <span class="sep"></span>
-      <button id="hold" type="button" aria-pressed="false" title="Keep new notes as drafts until you send them">Hold notes</button>
-      <button id="send" type="button" hidden><span>Send all (<span id="held-n">0</span>)</span></button>
       <span id="route" title="The app's route"></span>
       <button id="hide" type="button" aria-pressed="false" title="Hide pins (H)">Hide pins</button>
-      <button id="notes" type="button" aria-expanded="false" aria-controls="panel"><span>Notes (<span id="open-n">0</span>)</span></button>
       <button id="reload" type="button" title="Reload the app">⟳</button>
-      <div id="panel" hidden>
-        <h3><span>Notes</span><label><input id="show-resolved" type="checkbox"> resolved</label></h3>
-        <ol id="list"></ol>
-      </div>
+      <button id="pins" type="button" aria-pressed="false" aria-controls="side" title="All pins (P)">Pins <span id="pins-n"></span><span id="pins-unread" title="Unread"></span></button>
     </div>
-    <div id="app"><iframe id="frame" title="App under review" allow="clipboard-read; clipboard-write; fullscreen"></iframe></div>
+    <div id="body">
+      <div id="app"><iframe id="frame" title="App under review" allow="clipboard-read; clipboard-write; fullscreen"></iframe></div>
+      <aside id="side" aria-label="All pins" hidden>
+        <header><b>Pins</b><button id="side-close" type="button" aria-label="Close" title="Close (P)">✕</button></header>
+        <div id="filter" role="group" aria-label="Show">
+          <button type="button" data-filter="open" aria-pressed="true">Open <span></span></button>
+          <button type="button" data-filter="closed" aria-pressed="false">Closed <span></span></button>
+          <button type="button" data-filter="all" aria-pressed="false">All <span></span></button>
+        </div>
+        <ol id="list"></ol>
+      </aside>
+    </div>
   </div>
 </div>
 <script>
@@ -178,7 +192,7 @@ frame.addEventListener("load", () => {
 const post = (msg) => frame.contentWindow && frame.contentWindow.postMessage(msg, location.origin);
 
 // --- review state -----------------------------------------------------------------
-let mode = null, hide = false, state = { notes: [], hold: false }, currentRoute = "/";
+let mode = null, hide = false, state = { notes: [] }, currentRoute = "/";
 
 function setMode(m) {
   mode = mode === m ? null : m;
@@ -197,30 +211,29 @@ $("point").addEventListener("click", () => setMode("point"));
 $("area").addEventListener("click", () => setMode("area"));
 $("hide").addEventListener("click", () => setHide(!hide));
 $("reload").addEventListener("click", () => frame.contentWindow.location.reload());
-$("hold").addEventListener("click", async () => {
-  const hold = !state.hold;
-  const held = state.notes.filter((n) => n.held).length;
-  if (!hold && held && confirm(`Send the ${held} held note${held > 1 ? "s" : ""} to Scooter now?`)) await api("send", {});
-  await api("hold", { hold });
-});
-$("send").addEventListener("click", () => api("send", {}));
-$("notes").addEventListener("click", () => {
-  const open = $("panel").hidden;
-  $("panel").hidden = !open;
-  $("notes").ariaExpanded = String(open);
-});
-$("show-resolved").addEventListener("change", renderList);
-document.addEventListener("click", (e) => {
-  if (!$("panel").hidden && !e.target.closest("#panel, #notes")) {
-    $("panel").hidden = true;
-    $("notes").ariaExpanded = "false";
-  }
-});
+const KEY_SIDE = "scooter.review.pinsOpen", KEY_FILTER = "scooter.review.pinsFilter";
+let filter = localStorage.getItem(KEY_FILTER) || "open";
+function setSide(open) {
+  $("side").hidden = !open;
+  $("pins").ariaPressed = String(open);
+  localStorage.setItem(KEY_SIDE, open ? "1" : "0");
+}
+setSide(localStorage.getItem(KEY_SIDE) === "1");
+$("pins").addEventListener("click", () => setSide($("side").hidden));
+$("side-close").addEventListener("click", () => setSide(false));
+for (const b of document.querySelectorAll("#filter button")) {
+  b.addEventListener("click", () => {
+    filter = b.dataset.filter;
+    localStorage.setItem(KEY_FILTER, filter);
+    renderList();
+  });
+}
 
 function onKey(key) {
   if (key === "c") setMode("point");
   else if (key === "r") setMode("area");
   else if (key === "h") setHide(!hide);
+  else if (key === "p") setSide($("side").hidden);
   else if (key === "escape" && mode) setMode(mode);
 }
 document.addEventListener("keydown", (e) => {
@@ -239,28 +252,42 @@ async function api(path, body) {
 }
 
 const pathOf = (route) => route.split(/[?#]/)[0];
+// Scooter changed the note since the user last opened it.
+const isUnread = (n) => !!n.agentAt && (!n.readAt || Date.parse(n.agentAt) > Date.parse(n.readAt));
 function renderList() {
   const notes = state.notes;
   const open = notes.filter((n) => !n.resolved);
-  const held = notes.filter((n) => n.held);
-  $("open-n").textContent = open.length;
-  $("held-n").textContent = held.length;
-  $("send").hidden = held.length === 0;
-  $("hold").ariaPressed = String(state.hold);
-  const shown = $("show-resolved").checked ? notes : open;
+  const unread = notes.filter(isUnread).length;
+  const counts = { open: open.length, closed: notes.length - open.length, all: notes.length };
+  $("pins-n").textContent = open.length ? `(${open.length})` : "";
+  $("pins-unread").textContent = unread || "";
+  for (const b of document.querySelectorAll("#filter button")) {
+    b.ariaPressed = String(b.dataset.filter === filter);
+    b.querySelector("span").textContent = counts[b.dataset.filter];
+  }
+  const shown = notes.filter((n) => filter === "all" || (filter === "open") !== !!n.resolved);
   const list = $("list");
   list.replaceChildren();
-  if (!shown.length) list.innerHTML = '<li class="empty">No notes yet. Press <kbd>C</kbd> or <kbd>R</kbd> and click the app.</li>';
-  for (const n of [...shown].reverse()) {
+  if (!shown.length) {
+    list.innerHTML = notes.length ? `<li class="empty">No ${filter} pins.</li>`
+      : '<li class="empty">No pins yet. Press <kbd>C</kbd> or <kbd>R</kbd> and click the app.</li>';
+  }
+  for (const n of shown) {
     const li = document.createElement("li");
-    li.className = n.resolved ? "resolved" : n.held ? "held" : "";
     const here = pathOf(n.route) === pathOf(currentRoute);
-    li.innerHTML = `<div class="meta"><span class="dot"></span><b>#${n.num}</b><span>${n.kind}</span><span></span><span></span></div><div class="text"></div>`;
-    li.querySelector(".meta span:nth-of-type(3)").textContent = here ? "this page" : n.route;
-    li.querySelector(".meta span:nth-of-type(4)").textContent = n.resolved ? "resolved" : n.held ? "held" : `${n.thread.length} msg`;
+    li.className = [n.resolved && "resolved", isUnread(n) && "unread", here && "here"].filter(Boolean).join(" ");
+    li.dataset.id = n.id;
+    li.innerHTML = `<span class="badge"></span><div class="meta"><b></b><span></span><span class="route"></span></div><div class="text"></div><div class="last"></div>`;
+    li.querySelector(".badge").textContent = n.resolved ? "✓" : n.num;
+    li.querySelector(".meta b").textContent = `#${n.num}`;
+    li.querySelector(".meta span").textContent = n.kind;
+    li.querySelector(".route").textContent = here ? "this page" : n.route;
     li.querySelector(".text").textContent = n.thread[0]?.text ?? "";
+    const last = n.thread.length > 1 ? n.thread[n.thread.length - 1] : null;
+    if (last) li.querySelector(".last").textContent = `${last.by === "agent" ? "Scooter" : "You"}: ${last.text}`;
+    else li.querySelector(".last").remove();
+    li.title = isUnread(n) ? "Unread: Scooter updated this note" : "";
     li.addEventListener("click", () => {
-      $("panel").hidden = true;
       if (hide) setHide(false);
       post({ type: "review:open", id: n.id, route: n.route });
     });

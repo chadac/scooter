@@ -116,8 +116,6 @@ func runCLI(site Site, args []string) error {
 			state := "open"
 			if n.Resolved {
 				state = "resolved"
-			} else if n.Held {
-				state = "held"
 			}
 			fmt.Printf("[%s] %s", state, describe(n, site.ShotsDir()))
 			for _, m := range n.Thread[min(1, len(n.Thread)):] {

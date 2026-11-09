@@ -159,24 +159,6 @@ func (a *App) api(w http.ResponseWriter, r *http.Request, rest string) {
 			return
 		}
 		writeJSONResponse(w, http.StatusOK, map[string]bool{"ok": true})
-	case route == "POST hold":
-		var body struct{ Hold bool }
-		if err := decode(r, &body); err != nil {
-			fail(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		_ = a.store.SetHold(body.Hold)
-		writeJSONResponse(w, http.StatusOK, map[string]bool{"hold": body.Hold})
-	case route == "POST send":
-		notes, err := a.store.Release()
-		if err == nil && len(notes) > 0 {
-			err = a.waker.Send(batchMessage(notes, a.site.ShotsDir(), a.current()))
-		}
-		if err != nil {
-			fail(w, http.StatusBadGateway, err.Error())
-			return
-		}
-		writeJSONResponse(w, http.StatusOK, map[string]int{"sent": len(notes)})
 	case route == "POST snap":
 		a.snap(w, r)
 	case route == "POST snaps" && len(parts) == 2:
@@ -211,9 +193,7 @@ func (a *App) addNote(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if !n.Held {
-		a.wake(noteMessage(n, a.site.ShotsDir(), a.current()))
-	}
+	a.wake(noteMessage(n, a.site.ShotsDir(), a.current()))
 	writeJSONResponse(w, http.StatusCreated, n)
 }
 
@@ -239,18 +219,20 @@ func (a *App) noteAction(w http.ResponseWriter, r *http.Request, id, action stri
 			return
 		}
 		n, err = a.store.Reply(id, body.By, body.Text)
-		if err == nil && body.By == "user" && !n.Held {
+		if err == nil && body.By == "user" {
 			a.wake(replyMessage(n, body.Text))
 		}
 	case "resolve":
 		var before Note
 		before, err = a.store.Get(id)
 		if err == nil {
-			n, err = a.store.Resolve(id, body.Resolved)
+			n, err = a.store.Resolve(id, body.By, body.Resolved)
 		}
 		if err == nil && body.By == "user" && before.Resolved && !body.Resolved {
 			a.wake(reopenMessage(n))
 		}
+	case "read":
+		n, err = a.store.MarkRead(id)
 	default:
 		fail(w, http.StatusNotFound, "no such action")
 		return
