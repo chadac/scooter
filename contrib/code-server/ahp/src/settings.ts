@@ -5,6 +5,10 @@ import { dirname } from "node:path";
 export const REQUIRED_SETTINGS: Record<string, unknown> = {
   // Agent Host sessions without a GitHub sign-in: the Scooter agent advertises no GitHub resource.
   "chat.agentHost.allowSignedOutWhenUsable": true,
+  // New chats default to the Scooter agent host instead of a local Copilot session.
+  "chat.editor.localAgent.enabled": false,
+  // The chat view picks its agent on creation; keep it closed until Scooter has registered.
+  "workbench.secondarySideBar.defaultVisibility": "hidden",
 };
 
 /**
