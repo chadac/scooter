@@ -377,6 +377,7 @@
             "k3d-ci-deps" "k3d-image-refs" "platform-manifests-ghcr"
             "platform-manifests-k3d" "platform-manifests-k3d-backfill"
             "agent-host-image-claude" "remote-agent" "remote-agent-image"
+            "imageless-catalog" "imageless-image-refs" "imageless-publish"
           ];
         in
         {
