@@ -23,6 +23,24 @@ async function conversationIds(request: import("@playwright/test").APIRequestCon
   return res.ok() ? ((await res.json()) as Array<{ id: string }>).map((r) => r.id) : [];
 }
 
+/** The main app's saved list once its open conversation's turn has ended and been seen. */
+async function settledSessions(page: import("@playwright/test").Page): Promise<string> {
+  let saved = "";
+  // lastReplyAt and lastSeenAt are saved after the reply shows.
+  await expect
+    .poll(async () => {
+      saved = await page.evaluate((k) => localStorage.getItem(k) ?? "", SESSIONS_KEY);
+      const st = JSON.parse(saved || "{}") as {
+        currentId?: string;
+        sessions?: Array<{ id: string; runStartedAt?: number; lastReplyAt?: number; lastSeenAt?: number }>;
+      };
+      const cur = st.sessions?.find((s) => s.id === st.currentId);
+      return cur !== undefined && cur.runStartedAt === undefined && cur.lastReplyAt !== undefined && cur.lastSeenAt === cur.lastReplyAt;
+    }, { timeout: 20_000 })
+    .toBe(true);
+  return saved;
+}
+
 // fastOnly: raising an approval and answering can-approve need the fast stack's open routes.
 fastOnly("raises an approval through the open approvals route and fakes can-approve")("conversation subpage /chat/<id>", () => {
   test.beforeEach(() => test.setTimeout(120_000));
@@ -62,8 +80,7 @@ fastOnly("raises an approval through the open approvals route and fakes can-appr
 
     await chat.open();
     await chat.sendTurn("main app conversation");
-    const saved = await page.evaluate((k) => localStorage.getItem(k), SESSIONS_KEY);
-    expect(saved).toBeTruthy();
+    const saved = await settledSessions(page);
 
     // The subpage shares localStorage with the app (same origin), and must not write to it.
     await page.goto(`/chat/${id}`);
