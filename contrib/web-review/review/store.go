@@ -66,8 +66,8 @@ type Note struct {
 	// Why the shot may be incomplete (cross-origin images, WebGL, …).
 	ShotWarning string `json:"shotWarning,omitempty"`
 	Resolved    bool   `json:"resolved,omitempty"`
-	// Cleared hides the pin on its page; it stays in the Pins list.
-	Cleared bool      `json:"cleared,omitempty"`
+	// Hidden hides the pin on its page; it stays in the Pins list.
+	Hidden  bool      `json:"hidden,omitempty"`
 	Created time.Time `json:"created"`
 	// The note is unread while the agent's last change is newer than ReadAt.
 	AgentAt *time.Time `json:"agentAt,omitempty"`
@@ -259,8 +259,8 @@ func (s *Store) MarkRead(id string) (Note, error) {
 	return out, err
 }
 
-// SetCleared hides or shows the given notes' pins.
-func (s *Store) SetCleared(ids []string, cleared bool) error {
+// SetHidden hides or shows the given notes' pins.
+func (s *Store) SetHidden(ids []string, hidden bool) error {
 	return s.mutate(func(st *State) error {
 		notes := make([]*Note, len(ids))
 		for i, id := range ids {
@@ -271,7 +271,7 @@ func (s *Store) SetCleared(ids []string, cleared bool) error {
 			notes[i] = n
 		}
 		for _, n := range notes {
-			n.Cleared = cleared
+			n.Hidden = hidden
 		}
 		return nil
 	})

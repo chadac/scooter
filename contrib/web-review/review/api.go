@@ -159,20 +159,20 @@ func (a *App) api(w http.ResponseWriter, r *http.Request, rest string) {
 			return
 		}
 		writeJSONResponse(w, http.StatusOK, map[string]bool{"ok": true})
-	case route == "POST clear":
+	case route == "POST hide":
 		var body struct {
-			IDs     []string `json:"ids"`
-			Cleared bool     `json:"cleared"`
+			IDs    []string `json:"ids"`
+			Hidden bool     `json:"hidden"`
 		}
 		if err := decode(r, &body); err != nil {
 			fail(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if err := a.store.SetCleared(body.IDs, body.Cleared); err != nil {
+		if err := a.store.SetHidden(body.IDs, body.Hidden); err != nil {
 			fail(w, http.StatusNotFound, err.Error())
 			return
 		}
-		writeJSONResponse(w, http.StatusOK, map[string]int{"cleared": len(body.IDs)})
+		writeJSONResponse(w, http.StatusOK, map[string]int{"hidden": len(body.IDs)})
 	case route == "POST snap":
 		a.snap(w, r)
 	case route == "POST snaps" && len(parts) == 2:

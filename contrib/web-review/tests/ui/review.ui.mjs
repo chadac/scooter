@@ -191,17 +191,33 @@ try {
   check("…which marks it read in the list", await until(async () => (await page.locator(`#list li.unread[data-id="${id2}"]`).count()) === 0));
   await page.keyboard.press("Escape");
 
-  // --- hide pins ------------------------------------------------------------------
-  await page.locator("#hide").click();
-  check("Hide pins hides them", await until(async () => (await app().locator(".pin").count()) === 0));
-  await page.locator("#hide").click();
+  // --- show pins ------------------------------------------------------------------
+  check("Show pins is on by default", (await page.locator("#show").getAttribute("aria-pressed")) === "true");
+  await page.locator("#show").click();
+  check("turning off Show pins hides them", await until(async () => (await app().locator(".pin").count()) === 0));
+  await page.locator("#show").click();
 
-  // --- clear pins -----------------------------------------------------------------
+  // --- hide pins ------------------------------------------------------------------
   await until(async () => (await app().locator(".pin").count()) === 2);
-  await page.locator("#clear").click();
-  check("Clear pins hides this page's pins", await until(async () => (await app().locator(".pin").count()) === 0));
-  check("…keeps them in the Pins list, marked cleared", await until(async () => (await page.locator("#list li.cleared").count()) === 2));
-  check("…and has nothing left to clear", await page.locator("#clear").isDisabled());
+  // Redraws recreate pins, so a click can land on a replaced one.
+  await until(async () => {
+    await app().locator(`.pin[data-id="${id1}"]`).click();
+    return (await app().locator(".pop .hide").count()) === 1;
+  });
+  await app().locator(".pop .hide").click();
+  check("a pin's Hide hides just that pin", await until(async () =>
+    (await app().locator(".pin").count()) === 1 && (await page.locator(`#list li.hidden-pin[data-id="${id1}"]`).count()) === 1));
+  const elsewhere = await app().locator("body").evaluate(async () => {
+    const res = await fetch(location.pathname.split("/").slice(0, 2).join("/") + "/__review/notes", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "point", route: "/settings", comment: "On another page.", anchor: { selector: "h1" } }) });
+    return (await res.json()).id;
+  });
+  await page.locator(`#list li[data-id="${elsewhere}"]`).waitFor();
+  await page.locator("#hide-all").click();
+  check("Hide all pins hides this page's pins", await until(async () => (await app().locator(".pin").count()) === 0));
+  check("…and other pages' pins too", await until(async () => (await page.locator(`#list li.hidden-pin[data-id="${elsewhere}"]`).count()) === 1));
+  check("…keeps them in the Pins list, marked hidden", await until(async () => (await page.locator("#list li.hidden-pin").count()) === 3));
+  check("…and has nothing left to hide", await page.locator("#hide-all").isDisabled());
   const nMessages = stack.messages.length;
   await page.keyboard.press("c");
   await armed();
@@ -211,15 +227,15 @@ try {
   await page.mouse.down();
   await page.mouse.up();
   await composer.waitFor();
-  await composer.fill("Fresh feedback after clearing.");
+  await composer.fill("Fresh feedback after hiding all.");
   await app().locator(".pop .save").click();
   await until(async () => stack.messages.length > nMessages);
-  check("a new note after clearing still shows its pin", await until(async () => (await app().locator(".pin").count()) === 1));
+  check("a new note after hiding all still shows its pin", await until(async () => (await app().locator(".pin").count()) === 1));
   await page.locator(`#list li[data-id="${id2}"]`).click();
-  check("opening a cleared note from the list brings its pin back", await until(async () =>
-    (await app().locator(`.pin[data-id="${id2}"]`).count()) === 1 && (await page.locator(`#list li.cleared[data-id="${id2}"]`).count()) === 0));
+  check("opening a hidden note from the list brings its pin back", await until(async () =>
+    (await app().locator(`.pin[data-id="${id2}"]`).count()) === 1 && (await page.locator(`#list li.hidden-pin[data-id="${id2}"]`).count()) === 0));
   await page.keyboard.press("Escape");
-  await snap("08-cleared");
+  await snap("08-hidden");
 
   // --- hot reload -------------------------------------------------------------------
   const assets = join(stack.appDir, "static", "assets");

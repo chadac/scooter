@@ -433,7 +433,7 @@
     if (hidePins) return;
     const here = pathOf(route());
     for (const n of state.notes) {
-      if (n.cleared || pathOf(n.route) !== here) continue;
+      if (n.hidden || pathOf(n.route) !== here) continue;
       const { r, detached } = anchorRect(n);
       const pin = document.createElement("div");
       const since = performance.now() - (resolvedAt.get(n.id) ?? -1e9);
@@ -486,6 +486,7 @@
       <textarea class="short" placeholder="Reply…"></textarea>
       <div class="row">
         <button type="button" class="del" title="Delete this note">Delete</button>
+        <button type="button" class="hide" title="Hide this pin; the Pins list keeps it">Hide</button>
         <span class="grow"></span>
         <button type="button" class="res">${n.resolved ? "Reopen" : "Resolve"}</button>
         <button type="button" class="primary reply">Reply</button>
@@ -517,6 +518,7 @@
     };
     pop.querySelector(".reply").onclick = reply;
     pop.querySelector(".res").onclick = () => api(`notes/${id}/resolve`, { resolved: !n.resolved }).then(closePopover);
+    pop.querySelector(".hide").onclick = () => api("hide", { ids: [id], hidden: true }).then(closePopover);
     pop.querySelector(".del").onclick = () => api(`notes/${id}`, undefined, "DELETE").then(closePopover);
     ta.addEventListener("keydown", (e) => {
       if (e.key === "Escape") closePopover();

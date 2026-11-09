@@ -363,7 +363,7 @@ func TestAgentChangesAreUnreadUntilRead(t *testing.T) {
 	}
 }
 
-func TestClearHidesPinsAndCanBeUndone(t *testing.T) {
+func TestHidePinsAndShowThemAgain(t *testing.T) {
 	f := newFixture(t, http.NotFoundHandler())
 	api := f.front.URL + "/__review/"
 	var ids []string
@@ -372,16 +372,16 @@ func TestClearHidesPinsAndCanBeUndone(t *testing.T) {
 		id, _ := n["id"].(string)
 		ids = append(ids, id)
 	}
-	cleared := func(id string) bool { n, _ := f.app.store.Get(id); return n.Cleared }
-	post(t, api+"clear", map[string]any{"ids": ids, "cleared": true})
-	if !cleared(ids[0]) || !cleared(ids[1]) {
-		t.Error("clear didn't hide both pins")
+	hidden := func(id string) bool { n, _ := f.app.store.Get(id); return n.Hidden }
+	post(t, api+"hide", map[string]any{"ids": ids, "hidden": true})
+	if !hidden(ids[0]) || !hidden(ids[1]) {
+		t.Error("hide didn't hide both pins")
 	}
-	post(t, api+"clear", map[string]any{"ids": ids[:1], "cleared": false})
-	if cleared(ids[0]) || !cleared(ids[1]) {
+	post(t, api+"hide", map[string]any{"ids": ids[:1], "hidden": false})
+	if hidden(ids[0]) || !hidden(ids[1]) {
 		t.Error("showing one pin again changed the wrong notes")
 	}
-	if res, _ := post(t, api+"clear", map[string]any{"ids": []string{"nope"}, "cleared": true}); res.StatusCode != http.StatusNotFound {
+	if res, _ := post(t, api+"hide", map[string]any{"ids": []string{"nope"}, "hidden": true}); res.StatusCode != http.StatusNotFound {
 		t.Errorf("unknown id: got %d, want 404", res.StatusCode)
 	}
 }
