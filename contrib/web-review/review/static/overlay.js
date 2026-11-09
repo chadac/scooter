@@ -50,6 +50,9 @@
   sheet.replaceSync(`
     :host { all: initial; }
     * { box-sizing: border-box; font: 13px/1.4 system-ui, sans-serif; }
+    /* Only text worth copying is selectable; never the hover outline or pins. */
+    * { user-select: none; -webkit-user-select: none; }
+    textarea, .pop .thread { user-select: text; -webkit-user-select: text; }
     .catcher { position: fixed; inset: 0; pointer-events: auto; cursor: crosshair; }
     .catcher[hidden] { display: none; }
     .hl { position: fixed; border: 2px solid #db2777; background: rgb(219 39 119 / .08); border-radius: 3px; pointer-events: none; }
@@ -569,6 +572,7 @@
     const m = e.data;
     if (m.type === "review:mode") setMode(m.mode, true);
     else if (m.type === "review:hide") { hidePins = !!m.hide; draw(); }
+    else if (m.type === "review:escape") closePopover();
     else if (m.type === "review:open") {
       const go = () => {
         const pin = pinsEl.querySelector(`[data-id="${m.id}"]`);
@@ -594,6 +598,7 @@
     const t = e.target;
     if (t && t.closest && t.closest("input, textarea, select, [contenteditable]")) return;
     const key = e.key.toLowerCase();
+    if (key === "escape" && pop) { closePopover(); return; }
     if (key === "escape" && mode) { setMode(null); hl.hidden = true; return; }
     if (key === "c" || key === "r" || key === "h" || key === "p") tell({ type: "review:key", key });
   }, true);

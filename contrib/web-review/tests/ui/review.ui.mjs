@@ -131,6 +131,15 @@ try {
   const id2 = /\[([0-9a-f-]{36})\]/.exec(second?.text ?? "")?.[1];
   check("each note gets its own id", !!id2 && id2 !== id1, [id1, id2]);
   await app().locator(`.pin.area[data-id="${id2}"]`).waitFor();
+  check("dragging an area selects no text", (await app().locator("body").evaluate(() => getSelection().toString())) === "");
+  const pinSelect = await app().locator(`.pin.point[data-id="${id1}"]`).evaluate((el) => getComputedStyle(el).userSelect);
+  const tagSelect = await app().locator(".hl .tag").evaluate((el) => getComputedStyle(el).userSelect);
+  check("pins and the hover label can't be selected", pinSelect === "none" && tagSelect === "none", [pinSelect, tagSelect]);
+  await app().locator(`.pin.point[data-id="${id1}"]`).dblclick();
+  check("…even by double-clicking a pin", (await app().locator("body").evaluate(() => getSelection().toString())) === "");
+  await app().locator(".pop").waitFor();
+  await page.keyboard.press("Escape");
+  check("Escape closes the thread", await until(async () => (await app().locator(".pop").count()) === 0));
   await snap("04-pins");
 
   // --- the agent answers ----------------------------------------------------------

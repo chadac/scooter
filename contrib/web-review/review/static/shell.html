@@ -38,7 +38,7 @@
   #layout.dragging iframe { pointer-events: none; }
   #missing { padding: 16px; color: var(--muted); }
 
-  #bar {
+  #bar { user-select: none;
     flex: none; display: flex; align-items: center; gap: 4px; padding: 4px 8px; min-height: 30px;
     border-bottom: 1px solid var(--line); position: relative;
   }
@@ -234,7 +234,7 @@ function onKey(key) {
   else if (key === "r") setMode("area");
   else if (key === "h") setHide(!hide);
   else if (key === "p") setSide($("side").hidden);
-  else if (key === "escape" && mode) setMode(mode);
+  else if (key === "escape") mode ? setMode(mode) : post({ type: "review:escape" });
 }
 document.addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey || e.target.closest("input, textarea, select, [contenteditable]")) return;
