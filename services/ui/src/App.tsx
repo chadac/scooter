@@ -11,6 +11,7 @@ import { RuntimeProvider, useConversationInterrupts } from "./RuntimeProvider.js
 import { Sidebar } from "./Sidebar.js";
 import { RightPanel } from "./RightPanel.js";
 import { ApprovalDetail } from "./InterruptPanel.js";
+import { SyncingIndicator } from "./RunStatusBar.js";
 import { ThreadErrorBoundary } from "./ThreadErrorBoundary.js";
 import { UserBadge } from "./UserBadge.js";
 import { ThemePicker } from "./ThemePicker.js";
@@ -47,6 +48,7 @@ export function ConversationArea() {
   if (starting) return <StartingPodLanding />;
   return (
     <>
+      <SyncingIndicator />
       <GuardedThread />
       <ApprovalDetail />
     </>

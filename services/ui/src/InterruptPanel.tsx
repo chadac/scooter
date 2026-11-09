@@ -312,7 +312,7 @@ function InterruptView({
  * e2e specs select by, and renders nothing when no interrupt is pending.
  */
 export function InterruptList() {
-  const { interrupts: pending, conversationId, baseUrl } = useConversationInterrupts();
+  const { interrupts: pending, conversationId, baseUrl, syncing } = useConversationInterrupts();
   const { submitting, answer } = useAnswer();
   const focused = useFocusedApproval();
 
@@ -335,7 +335,7 @@ export function InterruptList() {
             <InterruptView
               intr={intr}
               view="brief"
-              busy={submitting === intr.id}
+              busy={submitting === intr.id || syncing}
               answer={answer}
               conversationId={conversationId}
               baseUrl={baseUrl}
@@ -363,7 +363,7 @@ export function InterruptList() {
  * draft. Mounted wherever the conversation area is, so it also prunes stale focus and drafts.
  */
 export function ApprovalDetail() {
-  const { interrupts: pending, conversationId, baseUrl } = useConversationInterrupts();
+  const { interrupts: pending, conversationId, baseUrl, syncing } = useConversationInterrupts();
   const { submitting, answer } = useAnswer();
   const focused = useFocusedApproval();
   const ids = pending.map((p) => p.id).join("\n");
@@ -428,7 +428,7 @@ export function ApprovalDetail() {
             key={intr.id}
             intr={intr}
             view="detail"
-            busy={submitting === intr.id}
+            busy={submitting === intr.id || syncing}
             answer={answer}
             conversationId={conversationId}
             baseUrl={baseUrl}
