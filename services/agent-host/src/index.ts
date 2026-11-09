@@ -95,7 +95,7 @@ import type { HookDef, HookRunner } from "./hooks/types.js";
 import { createPgFolderReader } from "./hooks/folderReader.js";
 import { createPgUserHookSettingsStore } from "./hooks/userHookSettingsStore.js";
 import { createMemoryIdentityRegistry, createPgIdentityRegistry } from "./session/identityRegistry.js";
-import { conversationTree, createMemoryAuthorStore, createPgAuthorStore, isOwnText, type Author } from "./session/authorStore.js";
+import { conversationTree, createMemoryAuthorStore, createPgAuthorStore, isOwnText, steeringAuthor, type Author } from "./session/authorStore.js";
 import { mintConvToken } from "./auth/convToken.js";
 import { createMcpEndpoint, resolveConversation } from "./agent/mcpServer.js";
 import { readSandboxFileBase64, IMAGE_MAX_BYTES, type ImageToolsWiring } from "./agent/imageTools.js";
@@ -1335,8 +1335,6 @@ export async function main(
     currentVisibility: async (id) =>
       (await store.readAccess?.(id as SessionId))?.visibility ?? sessions.get(id as SessionId)?.visibility ?? "shared",
     makePrivate: async (id) => {
-      // Others may have reached the sandbox while it was shared.
-      await authorStore.record(id, { kind: "unknown" });
       await sessions.setVisibility(id as SessionId, "private");
     },
     resources: resourceToolsWiring?.currentResources,
@@ -1598,6 +1596,11 @@ export async function main(
         ? ""
         : ((entry.payload as { optionId?: string } | undefined)?.optionId ?? "");
     const result = entry.status === "cancelled" ? undefined : interruptResult(entry.payload);
+    // Answer text steers the agent; an option choice doesn't.
+    if (result) {
+      const author = steeringAuthor(approver && { anonymous: false, id: approver.id }, sessions.get(sessionId)?.owner);
+      if (author) await authorStore.record(sessionId, author);
+    }
 
     // `approver` is the human who answered, which an approval interrupt's onAnswer relays to
     // the broker for authorization.
@@ -1835,6 +1838,11 @@ export async function main(
         registry: webServices,
         wake: createWake({ sessions, provisioner, registry: webServices }),
         resolveUser,
+        // Viewers of a shared conversation reach its sandbox here.
+        recordVisitor: async (id, user) => {
+          const author = steeringAuthor(user, sessions.get(id as SessionId)?.owner);
+          if (author) await authorStore.record(id, author);
+        },
         sandboxDomain: sandboxOrigins?.domain,
         sandboxScheme: sandboxOrigins?.scheme,
         publicHost: (() => {

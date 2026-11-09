@@ -143,7 +143,9 @@ function setup(initial: Partial<Conversation> = {}, opts: { readAccessFails?: bo
     server: { subscribeSSE: vi.fn(async () => {}) } as unknown as AguiServer,
     answerInterrupt: async () => ({ ok: true }),
     accessCheck,
+    serviceCaller: async (req) => req.headers[SERVICE_HEADER] === "1",
     authorStore: opts.authorStore,
+    writeSandboxFile: async (_id, f) => `${f.dir}/${f.name}`,
   });
   return { api, sessions, convs };
 }
@@ -294,27 +296,45 @@ describe("conversation authors", () => {
     expect(bad.json.authors).toBeUndefined();
   });
 
-  it("records a service message as unknown on a shared conversation only", async () => {
-    const shared = createMemoryAuthorStore();
-    await call(setup({}, { authorStore: shared }).api, "POST", "/conversations/c1/messages", { text: "hi" }, "bob");
-    expect(await shared.listTree("c1")).toEqual([{ kind: "unknown", author: "", user: null }]);
-
-    const priv = createMemoryAuthorStore();
-    await call(setup({ visibility: "private" }, { authorStore: priv }).api, "POST", "/conversations/c1/messages", { text: "hi" }, "alice");
-    expect(await priv.listTree("c1")).toEqual([]);
-  });
-
-  it("records a shared conversation going private as unknown", async () => {
+  it("records another user's interrupt as theirs, and the owner's as nothing", async () => {
     const authorStore = createMemoryAuthorStore();
     const { api } = setup({}, { authorStore });
-    expect((await call(api, "PATCH", "/conversations/c1/visibility", { visibility: "private" }, "alice")).status).toBe(200);
+    expect((await call(api, "POST", "/conversations/c1/messages", { text: "hi" }, "alice")).status).toBe(202);
+    expect(await authorStore.listTree("c1")).toEqual([]);
+    expect((await call(api, "POST", "/conversations/c1/messages", { text: "hi" }, "bob")).status).toBe(202);
+    expect(await authorStore.listTree("c1")).toEqual([{ kind: "user", author: "bob", user: "bob" }]);
+  });
+
+  it("records nothing for a platform service's message, and unknown for an anonymous one", async () => {
+    const authorStore = createMemoryAuthorStore();
+    const { api } = setup({}, { authorStore });
+    await call(api, "POST", "/conversations/c1/messages", { text: "hi", source: "kanban" }, undefined, { [SERVICE_HEADER]: "1" });
+    expect(await authorStore.listTree("c1")).toEqual([]);
+    await call(api, "POST", "/conversations/c1/messages", { text: "hi" });
     expect(await authorStore.listTree("c1")).toEqual([{ kind: "unknown", author: "", user: null }]);
   });
 
-  it("refuses the flip when the author write fails", async () => {
+  it("refuses an interrupt whose author can't be recorded", async () => {
     const failing = { ...createMemoryAuthorStore(), record: async () => { throw new Error("db down"); } };
     const { api, sessions } = setup({}, { authorStore: failing });
-    await expect(call(api, "PATCH", "/conversations/c1/visibility", { visibility: "private" }, "alice")).rejects.toThrow("db down");
-    expect(sessions.setVisibility).not.toHaveBeenCalled();
+    await expect(call(api, "POST", "/conversations/c1/messages", { text: "hi" }, "bob")).rejects.toThrow("db down");
+    expect(sessions.enqueueByThread).not.toHaveBeenCalled();
+  });
+
+  it("records another user writing a sandbox file, but not a platform service", async () => {
+    const authorStore = createMemoryAuthorStore();
+    const { api } = setup({}, { authorStore });
+    const file = { dir: "/workspace/out", name: "a.txt", data: "YWJj" };
+    expect((await call(api, "POST", "/conversations/c1/files", file, undefined, { [SERVICE_HEADER]: "1" })).status).toBe(201);
+    expect(await authorStore.listTree("c1")).toEqual([]);
+    expect((await call(api, "POST", "/conversations/c1/files", file, "bob")).status).toBe(201);
+    expect(await authorStore.listTree("c1")).toEqual([{ kind: "user", author: "bob", user: "bob" }]);
+  });
+
+  it("leaves a shared conversation going private untainted", async () => {
+    const authorStore = createMemoryAuthorStore();
+    const { api } = setup({}, { authorStore });
+    expect((await call(api, "PATCH", "/conversations/c1/visibility", { visibility: "private" }, "alice")).status).toBe(200);
+    expect(await authorStore.listTree("c1")).toEqual([]);
   });
 });

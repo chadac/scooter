@@ -99,6 +99,8 @@ export interface WebServiceProxyDeps {
   resolveUser: (req: IncomingMessage) => UserContext | Promise<UserContext>;
   /** The visibility check; absent means no check (tests and fake mode). */
   accessCheck?: AccessCheck;
+  /** Records the caller as steering; a rejection refuses the request. */
+  recordVisitor?: (conversationId: string, user: UserContext | undefined) => Promise<void>;
   /** Parent domain of the per-conversation service hosts (SANDBOX_DOMAIN). When set, services are
    *  served only on their conversation's own host, at /<service>/, and never on the main host. */
   sandboxDomain?: string;
@@ -387,6 +389,25 @@ export function createWebServiceProxy(deps: WebServiceProxyDeps): WebServiceProx
 
   const matches = (pathname: string): boolean => parseProxyPath(pathname) !== null;
 
+  // Only a caller's first request per conversation writes a row.
+  const visitors = new Set<string>();
+  /** False when the visitor went unrecorded, so the request stops. */
+  async function recordVisit(req: IncomingMessage, conversationId: string): Promise<boolean> {
+    if (!deps.recordVisitor) return true;
+    const user = await userFor(req);
+    const key = `${conversationId}\0${user && !user.anonymous ? user.id : ""}`;
+    if (visitors.has(key)) return true;
+    try {
+      await deps.recordVisitor(conversationId, user);
+    } catch (err) {
+      log.errorWith("could not record a web-service visitor; refusing", err, { conversation_id: conversationId });
+      return false;
+    }
+    if (visitors.size >= USER_CACHE_MAX) visitors.clear();
+    visitors.add(key);
+    return true;
+  }
+
   // Proxy traffic marks the conversation active so the idle-suspend sweep does not pull
   // the pod out from under a live session, throttled per conversation so a chatty
   // WebSocket does not hammer the store.
@@ -603,6 +624,10 @@ export function createWebServiceProxy(deps: WebServiceProxyDeps): WebServiceProx
       return;
     }
 
+    if (!(await recordVisit(req, r.conversationId))) {
+      res.writeHead(503, { "content-type": "text/plain; charset=utf-8" }).end("unavailable\n");
+      return;
+    }
     // Live web-service traffic counts as activity.
     touch(r.conversationId);
 
@@ -668,6 +693,11 @@ export function createWebServiceProxy(deps: WebServiceProxyDeps): WebServiceProx
       return;
     }
 
+    if (!(await recordVisit(req, r.conversationId))) {
+      socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
     // Touch on connect and again on data (throttled) so ongoing use keeps the pod
     // alive while an open-but-silent socket holds it for only one window.
     touch(r.conversationId);
@@ -753,6 +783,7 @@ export function createWebServiceProxy(deps: WebServiceProxyDeps): WebServiceProx
     const r = await resolve(`/c/${encodeURIComponent(conversationId)}/${encodeURIComponent(service)}/`, label).catch(() => null);
     if (!r) return json(404, { reason: "not-routable" }), true;
     if (!r.ok) return json(r.kind === "asleep" ? 503 : 404, { reason: r.kind === "asleep" ? "asleep" : "not-found" }), true;
+    if (!(await recordVisit(req, r.conversationId))) return json(503, { reason: "unavailable" }), true;
 
     touch(r.conversationId);
     const user = await userFor(req);

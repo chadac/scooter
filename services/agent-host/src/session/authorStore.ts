@@ -36,6 +36,12 @@ export interface AuthorStore {
 export const isOwnText = (author: Author, owner: string | undefined): boolean =>
   author.kind === "user" && owner !== undefined && author.id === owner;
 
+/** A steering caller's author; undefined for the conversation's owner. */
+export function steeringAuthor(caller: { anonymous: boolean; id: string } | undefined, owner: string | undefined): Author | undefined {
+  const author: Author = caller && !caller.anonymous ? { kind: "user", id: caller.id } : { kind: "unknown" };
+  return isOwnText(author, owner) ? undefined : author;
+}
+
 const authorKey = (a: Author): string => (a.kind === "unknown" ? "" : a.id);
 
 export function createPgAuthorStore(config: { dsn?: string; db?: NodePgDatabase; now?: () => number }): AuthorStore {

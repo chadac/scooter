@@ -28,8 +28,8 @@ import type { AguiServer } from "../agui/server.js";
 import type { WebServiceRegistry } from "../proxy/webServiceProxy.js";
 import type { IdentityStore } from "../auth/identityStore.js";
 import type { AssetStore } from "../session/assetStore.js";
-import type { AuthorStore } from "../session/authorStore.js";
 import { SubagentLimitError, type SubagentManager } from "../agent/subagentTools.js";
+import { steeringAuthor, type AuthorStore } from "../session/authorStore.js";
 import { targetError, type ConversationOwnerLookup, type SchedulerClient } from "../agent/schedulerTools.js";
 import { mountContribApi, type ContribApiDeps } from "./contribApi.js";
 import { UserSkillError, type UserSkill, type UserSkillStore } from "../session/userSkillStore.js";
@@ -648,6 +648,15 @@ export function createManagementApi(deps: ManagementDeps): Router {
     return { status: 204, json: null };
   });
 
+  /** Records a non-owner reaching in; throws when it can't. */
+  const recordSteering = async (id: string, req: IncomingMessage, user: { anonymous: boolean; id: string }) => {
+    // A platform service's notice is not anyone steering it.
+    if (user.anonymous && deps.serviceCaller && (await deps.serviceCaller(req).catch(() => false))) return;
+    if (!sessions.get(id)) await sessions.ensureReadable(id);
+    const author = steeringAuthor(user, sessions.get(id)?.owner);
+    if (author) await deps.authorStore?.record(id, author);
+  };
+
   // The write boundary: only the owner, an anonymous single-user caller, or anyone for an
   // unowned conversation may mutate, the same inclusion rule as the "mine" view filter.
   const mutableFor = (id: string, user: { anonymous: boolean; id: string }) => {
@@ -679,10 +688,6 @@ export function createManagementApi(deps: ManagementDeps): Router {
     const current = (await store.readAccess?.(conv.id))?.visibility ?? conv.visibility ?? "shared";
     if (body.visibility === "shared" && current === "private" && body.confirm !== true) {
       return { status: 409, json: { error: "making a private conversation shared needs confirm: true" } };
-    }
-    // Others may have reached the sandbox while it was shared.
-    if (body.visibility === "private" && current === "shared") {
-      await deps.authorStore?.record(conv.id, { kind: "unknown" });
     }
     await sessions.setVisibility(conv.id, body.visibility);
     return { json: view(sessions.get(conv.id)!) };
@@ -764,10 +769,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
     // A sandbox's message always carries a non-human source.
     const fromSandbox = ctx.req.headers[SANDBOX_CALLER_HEADER] === "sandbox";
     const source = body.source || (fromSandbox ? SANDBOX_SOURCE : undefined);
-    // Anyone who can see a shared conversation can reach its services, so the text is nobody's.
-    if (sessions.get(ctx.params.id)?.visibility !== "private") {
-      await deps.authorStore?.record(ctx.params.id, { kind: "unknown" });
-    }
+    await recordSteering(ctx.params.id, ctx.req, ctx.user);
     await sessions.enqueueByThread(ctx.params.id, body.text, source, PRIORITY_INTERRUPT);
     return { status: 202, json: { ok: true } };
   });
@@ -1243,6 +1245,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
       return { status: 400, json: { error: "dir, name and data required" } };
     }
     if (!isWorkspacePath(body.dir)) return { status: 400, json: { error: "dir must be under /workspace" } };
+    await recordSteering(id, ctx.req, ctx.user);
     const path = await deps.writeSandboxFile(id, { dir: body.dir, name: body.name, data: body.data });
     return { status: 201, json: { path } };
   });

@@ -7,7 +7,7 @@ import { describe, it, expect } from "vitest";
 
 import { drizzle } from "drizzle-orm/node-postgres";
 
-import { conversationTree, createMemoryAuthorStore, createPgAuthorStore, isOwnText } from "../../src/session/authorStore.js";
+import { conversationTree, createMemoryAuthorStore, createPgAuthorStore, isOwnText, steeringAuthor } from "../../src/session/authorStore.js";
 import type { SessionId } from "../../src/types.js";
 
 type Call = { sql: string; params: unknown[] };
@@ -92,5 +92,14 @@ describe("isOwnText", () => {
     expect(isOwnText({ kind: "user", id: "alice" }, undefined)).toBe(false);
     expect(isOwnText({ kind: "identity", id: "i-1" }, "alice")).toBe(false);
     expect(isOwnText({ kind: "unknown" }, "alice")).toBe(false);
+  });
+});
+
+describe("steeringAuthor", () => {
+  it("is nothing for the owner, the user for anyone else, and unknown when nobody signed in", () => {
+    expect(steeringAuthor({ anonymous: false, id: "alice" }, "alice")).toBeUndefined();
+    expect(steeringAuthor({ anonymous: false, id: "bob" }, "alice")).toEqual({ kind: "user", id: "bob" });
+    expect(steeringAuthor({ anonymous: true, id: "anonymous" }, "alice")).toEqual({ kind: "unknown" });
+    expect(steeringAuthor(undefined, "alice")).toEqual({ kind: "unknown" });
   });
 });

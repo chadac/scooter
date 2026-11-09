@@ -17,6 +17,7 @@ import {
   type PodTarget,
   type WebServiceDescriptor,
   type WebServiceProxy,
+  type WebServiceProxyDeps,
   type WebServiceRegistry,
 } from "../../src/proxy/webServiceProxy.js";
 import { createAccessCheck } from "../../src/session/access.js";
@@ -170,6 +171,7 @@ describe("web-service proxy", () => {
       /** The caller the resolver reports, or a throwing resolver via `resolveUser`. */
       user?: { id: string; email?: string; anonymous: boolean };
       resolveUser?: () => never;
+      recordVisitor?: WebServiceProxyDeps["recordVisitor"];
     } = {},
   ): WebServiceProxy {
     const resolvePodTarget = async () => ({
@@ -186,6 +188,7 @@ describe("web-service proxy", () => {
       registry,
       publicHost: "scooter.example.com",
       resolveUser: opts.resolveUser ?? (() => opts.user ?? ANON),
+      recordVisitor: opts.recordVisitor,
     });
   }
 
@@ -372,7 +375,7 @@ describe("web-service proxy", () => {
     const target = (q: string, headers: Record<string, string> = {}) =>
       proxyGet(sandboxProxyAs(fakeRegistry(svc.port)), `/internal/web-services/target?${q}`, { headers });
 
-    function sandboxProxyAs(registry: WebServiceRegistry, opts: { user?: { id: string; email?: string; anonymous: boolean }; touched?: string[]; podDown?: boolean; sandboxDomain?: string; conv?: { status?: string; parentId?: string } } = {}) {
+    function sandboxProxyAs(registry: WebServiceRegistry, opts: { user?: { id: string; email?: string; anonymous: boolean }; touched?: string[]; podDown?: boolean; sandboxDomain?: string; conv?: { status?: string; parentId?: string }; recordVisitor?: WebServiceProxyDeps["recordVisitor"] } = {}) {
       return createWebServiceProxy({
         sessions: { get: () => ({ id: ID, threadId: ID, ...opts.conv }), touchById: (id: string) => opts.touched?.push(id) } as never,
         resolvePodTarget: (async () => {
@@ -383,6 +386,7 @@ describe("web-service proxy", () => {
         publicHost: "scooter.example.com",
         resolveUser: () => opts.user ?? ANON,
         sandboxDomain: opts.sandboxDomain ?? "scooter.example.com",
+        recordVisitor: opts.recordVisitor,
       });
     }
 
@@ -398,6 +402,18 @@ describe("web-service proxy", () => {
       expect(t.ttlMs).toBeGreaterThan(0);
       // Asking for the target is the router's sign of live traffic.
       expect(touched).toContain(ID);
+    });
+
+    it("target: records the caller as a visitor, and refuses when that fails", async () => {
+      const seen: string[] = [];
+      const proxy = sandboxProxyAs(fakeRegistry(svc.port), { user: { id: "bob", anonymous: false }, recordVisitor: async (id, user) => void seen.push(`${id}:${user?.id}`) });
+      expect((await proxyGet(proxy, `/internal/web-services/target?conversation=${ID}&service=marimo&label=5a515e73`)).status).toBe(200);
+      expect(seen).toEqual([`${ID}:bob`]);
+
+      const failing = sandboxProxyAs(fakeRegistry(svc.port), { user: { id: "bob", anonymous: false }, recordVisitor: async () => { throw new Error("db down"); } });
+      const { status, body } = await proxyGet(failing, `/internal/web-services/target?conversation=${ID}&service=marimo&label=5a515e73`);
+      expect(status).toBe(503);
+      expect(JSON.parse(body).podIP).toBeUndefined();
     });
 
     it("target: anonymous callers carry no user", async () => {
@@ -691,6 +707,28 @@ describe("web-service proxy", () => {
     const { statusLine, echoed } = await proxyUpgrade(proxy, "/c/conv-1/marimo/ws", "ping");
     expect(statusLine).toContain("101");
     expect(echoed).toContain("ping");
+  });
+
+  it("records a caller as a visitor once, on HTTP and WebSocket alike", async () => {
+    const seen: string[] = [];
+    const recordVisitor = async (id: string, user: { id: string } | undefined) => void seen.push(`${id}:${user?.id}`);
+    const proxy = makeProxy(fakeRegistry(svc.port), undefined, undefined, { owner: "alice", user: BOB, recordVisitor });
+    await proxyGet(proxy, "/c/conv-1/marimo/a.js");
+    await proxyGet(proxy, "/c/conv-1/marimo/b.js");
+    expect(seen).toEqual(["conv-1:bob"]);
+
+    const ws = makeProxy(fakeRegistry(svc.port), undefined, undefined, { owner: "alice", user: BOB, recordVisitor });
+    expect((await proxyUpgrade(ws, "/c/conv-1/marimo/ws", "ping")).statusLine).toContain("101");
+    expect(seen).toEqual(["conv-1:bob", "conv-1:bob"]);
+  });
+
+  it("refuses a visitor it cannot record, before reaching the pod", async () => {
+    const recordVisitor = async () => { throw new Error("db down"); };
+    const proxy = makeProxy(fakeRegistry(svc.port), undefined, undefined, { owner: "alice", user: BOB, recordVisitor });
+    const got = await proxyGet(proxy, "/c/conv-1/marimo/app");
+    expect(got.status).toBe(503);
+    expect(got.ident).toBeNull();
+    expect((await proxyUpgrade(proxy, "/c/conv-1/marimo/ws", "ping")).statusLine).toContain("503");
   });
 
   it("resolves a repeat caller's identity once, not per request", async () => {
