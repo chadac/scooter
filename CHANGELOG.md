@@ -4,6 +4,78 @@ Each release's section becomes its GitHub Release notes. Images keep their
 content tags and also gain `vX.Y.Z`; the flake is published to
 [FlakeHub](https://flakehub.com/flake/chadac-me/scooter).
 
+## v1.3.0
+
+### Features
+
+- **Kubernetes tools.** The new `contrib/k8s` gives agents `k8s_*` tools for
+  one or more clusters. Reads answer at once; writes, exec and Secret reads wait
+  for a human's approval in the conversation. The broker holds the credentials,
+  so the sandbox gets no kubeconfig. (#1210)
+- **Kubernetes writes can run as an impersonated user**, with the conversation
+  and approver as audit extras, so the broker's ServiceAccount can stay on
+  `view`. (#1225)
+- **Math in chat.** The opt-in `contrib/math` renders TeX with KaTeX: `$$…$$`
+  and `\(…\)` inline, `$$` blocks, `\[…\]` and `math` fences as display math. A
+  single `$` stays literal. It is built on a new `ui.markdownSyntax` seam that
+  lets a contrib add remark plugins. (#1220, #1223)
+- **Linked PRs, MRs and issues show their number.** GitHub links read
+  `#12 <title>`, GitLab MRs `!12`. Contribs draw their own links through a new
+  `ui.linkView`. (#1236, #1244)
+- **Conversations start without waiting for the sandbox.** The first prompt,
+  uploads and the conversation itself no longer wait for a cold sandbox pod.
+  (#1230, #1232, #1243)
+- **Kanban boards load faster and update live.** Each lane loads its 50 most
+  recently active cards in one read, and more as it scrolls; changes are pushed
+  to open boards instead of polled. A board's cards are read in one join, and
+  each request shares one database session. (#1208, #1221, #1251)
+- **Edit board saves in one go.** Stages and tags are edited as a draft and
+  saved in one request; leaving with unsaved edits asks first. (#1213, #1214)
+- **Contribs can push changes to a user's open tabs**, instead of polling.
+  (#1212)
+- **Broker providers can read conversations and their folders** from the
+  `agent_host` database directly. (#1224)
+- **`scooter.agent.command` runs a custom ACP agent** in place of goose, and
+  `E2E_AGENT_BIN` swaps the fake backend's agent in e2e tests. (#1235, #1231)
+- **Faster agent-host and database reads.** A conversation is hydrated with
+  single-row reads, hot paths stop reading whole event logs, unchanged users
+  aren't rewritten on every request, `resource_links` is indexed by
+  conversation, and `db-migrate` checks a copied table by its keys. (#1226,
+  #1238, #1240, #1242, #1241)
+- **Kanban setup is documented**, with a troubleshooting table. (#1237)
+- **CI:** a PR labelled `e2e-target` runs only its new e2e-full tests (#1228);
+  the merge queue fails fast on the first red required job (#1216); more jobs
+  run on the faster onprem runners (#1219, #1222, #1227).
+
+### Bug fixes
+
+- **Interrupted turns resume.** A turn cut off by a lost agent container gets a
+  follow-up prompt to continue (#1215), a brief BYOC socket drop no longer fails
+  in-flight runs (#1218), and the startup resume scan backs off while Postgres
+  is unavailable instead of skipping conversations (#1211).
+- **Approval cards whose request is gone are dropped** instead of showing admin
+  wording. (#1209)
+- **Every CI re-run's result reaches the agent**, including a re-run that turns
+  green. (#1229)
+- **Refused or failed broker tool calls are reported as MCP errors**, not
+  successes. (#1234)
+- **Postgres is sized to its 1Gi limit**, and PgBouncer runs on the Postgres
+  node so pooled queries don't cross sites twice. (#1239, #1249)
+- **A kanban board reopens its card's chat on reload** from `?thread=`. (#1250)
+- **The header's sandbox status pill is gone**; the Sandbox tab shows the same
+  state. (#1247)
+- **The VS Code web service no longer crash-loops**: code-server runs on
+  nixpkgs' node. (#1253)
+- **uv in the sandbox no longer copies a project into the Nix store.** uv-nix is
+  bumped to 0.13.7-nix.4. (#1252)
+- **agent-host shuts down cleanly**, ending open SSE streams instead of cutting
+  them. (#1256)
+- **The fast stack reports a fake sandbox as ready** instead of "starting"
+  forever. (#1233)
+- **Flaky tests fixed:** kanban e2e boards are cleaned up (#1246), the second
+  e2e dev server has its own Vite cache (#1248), and scheduler tests wait on
+  run state instead of sleeping (#1255).
+
 ## v1.2.0
 
 ### Features
