@@ -32,7 +32,7 @@
       },
       "code-server": {
         "attr": "code-server",
-        "drv": "/nix/store/zkvx7wh6vmpyn7jl8jkyncr06s2yx7fx-code-server-4.141.0.drv",
+        "drv": "/nix/store/62h511zsdbqzax8h7s9xdn1i5s9b11qc-code-server-4.141.0.drv",
         "output": "out",
         "bins": [
           "code-server"
@@ -138,7 +138,7 @@
       },
       "code-server": {
         "attr": "code-server",
-        "drv": "/nix/store/s5c8vcgbjlnmys6pmln9p27h5dj0k2mb-code-server-4.141.0.drv",
+        "drv": "/nix/store/r12hjnbszli7mcd4dxqxh7iyyc1rfs1y-code-server-4.141.0.drv",
         "output": "out",
         "bins": [
           "code-server"
@@ -281,7 +281,7 @@
       },
       "code-server": {
         "attr": "code-server",
-        "drv": "/nix/store/bpxayhmvzdc8xqid0p8ibyf5h293qa1n-code-server-4.141.0.drv",
+        "drv": "/nix/store/pkqy8rgqf53362dkxb6sb8n11wi2n883-code-server-4.141.0.drv",
         "output": "out",
         "bins": [
           "code-server"

@@ -1,10 +1,12 @@
 # code-server from coder's prebuilt release tarball, patched for NixOS. Replaces nixpkgs'
 # source build: the agent-host bridge (--agent-host-bridge-port) needs VS Code >= 1.141,
 # ahead of nixpkgs, and a prebuilt tarball materialises in seconds on first use.
-{ lib, stdenv, fetchurl, autoPatchelfHook, makeWrapper, krb5, libsecret, ... }:
+{ lib, stdenv, fetchurl, autoPatchelfHook, makeWrapper, krb5, libsecret, nodejs_24, ... }:
 
 let
   version = "4.141.0"; # bundles VS Code 1.141.0
+  # Matches the release's bundled node; installPhase checks the addon ABI.
+  nodejs = nodejs_24;
   srcs = {
     x86_64-linux = fetchurl {
       url = "https://github.com/coder/code-server/releases/download/v${version}/code-server-${version}-linux-amd64.tar.gz";
@@ -46,10 +48,29 @@ stdenv.mkDerivation {
     runHook preInstall
     mkdir -p $out/libexec/code-server $out/bin
     cp -r . $out/libexec/code-server
-    # The release launcher only resolves its own root, using coreutils; call the bundled node directly.
+  '' + lib.optionalString stdenv.hostPlatform.isLinux ''
+    # autoPatchelf corrupts the bundled node, so use nixpkgs' node.
+    abi() { "$@" -p process.versions.modules; }
+    bundled=$(abi "$(< $NIX_CC/nix-support/dynamic-linker)" --library-path ${lib.getLib stdenv.cc.cc}/lib ./lib/node)
+    ours=$(abi ${lib.getExe nodejs})
+    if [ "$bundled" != "$ours" ]; then
+      echo "bundled node has addon ABI $bundled but ${nodejs.name} has $ours; bump nodejs" >&2
+      exit 1
+    fi
+    ln -sf ${lib.getExe nodejs} $out/libexec/code-server/lib/node
+  '' + ''
+    # The release launcher only resolves its own root, using coreutils; call lib/node directly.
     makeWrapper $out/libexec/code-server/lib/node $out/bin/code-server \
       --add-flags $out/libexec/code-server
     runHook postInstall
+  '';
+
+  # Fails the build, not the sandbox, if node is broken.
+  doInstallCheck = true;
+  installCheckPhase = ''
+    runHook preInstallCheck
+    HOME=$TMPDIR $out/bin/code-server --version
+    runHook postInstallCheck
   '';
 
   meta = {
