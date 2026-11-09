@@ -50,6 +50,8 @@ export function createFileConversationStore(root: string): ConversationStore {
   // on first touch; onAppend subscribers receive each checksummed event once it is durably written.
   const checksums = new Map<SessionId, string>();
   const seeded = new Set<SessionId>();
+  // Lines per log; a line's position is its seq.
+  const counts = new Map<SessionId, number>();
   const appendListeners = new Set<(id: SessionId, c: ChecksummedEvent) => void>();
   // Observers notified when a durable append fails, so a lost turn leaves a trace.
   const appendErrorListeners = new Set<(id: SessionId, error: unknown) => void>();
@@ -57,10 +59,13 @@ export function createFileConversationStore(root: string): ConversationStore {
   const seedChecksum = async (id: SessionId): Promise<string> => {
     if (seeded.has(id)) return checksums.get(id) ?? EMPTY_CHECKSUM;
     let acc = EMPTY_CHECKSUM;
+    let n = 0;
     try {
       const data = await readFile(logPath(id), "utf8");
       for (const line of data.split("\n")) {
-        if (line.trim()) acc = chainNext(acc, JSON.parse(line) as AguiEvent);
+        if (!line.trim()) continue;
+        acc = chainNext(acc, JSON.parse(line) as AguiEvent);
+        n++;
       }
     } catch (e) {
       // ENOENT means no log yet; any parse or I/O error mis-seeds the integrity chain, so log it
@@ -73,6 +78,7 @@ export function createFileConversationStore(root: string): ConversationStore {
     }
     if (!seeded.has(id)) {
       checksums.set(id, acc);
+      counts.set(id, n);
       seeded.add(id);
     }
     return checksums.get(id)!;
@@ -93,7 +99,9 @@ export function createFileConversationStore(root: string): ConversationStore {
             // Fold this event in (write order) and notify live subscribers.
             const checksum = chainNext(prevChecksum, event);
             checksums.set(id, checksum);
-            for (const cb of appendListeners) cb(id, { event, prevChecksum, checksum });
+            const seq = (counts.get(id) ?? 0) + 1;
+            counts.set(id, seq);
+            for (const cb of appendListeners) cb(id, { event, prevChecksum, checksum, seq });
           } catch (error) {
             // Surface the lost turn and notify observers, then rethrow for an awaiting caller.
             log.errorWith("durable append FAILED (turn lost)", error, { conversation_id: id });
@@ -196,11 +204,28 @@ export function createFileConversationStore(root: string): ConversationStore {
 
     async *readEventsWithChecksum(id): AsyncIterable<ChecksummedEvent> {
       let prev = EMPTY_CHECKSUM;
+      let seq = 0;
       for await (const event of this.readEvents(id)) {
         const checksum = chainNext(prev, event);
-        yield { event, prevChecksum: prev, checksum };
+        yield { event, prevChecksum: prev, checksum, seq: ++seq };
         prev = checksum;
       }
+    },
+
+    async readEventsAfter(id, afterSeq, limit) {
+      let anchor: string | undefined;
+      const events: ChecksummedEvent[] = [];
+      let more = false;
+      for await (const c of this.readEventsWithChecksum!(id)) {
+        if (c.seq! === afterSeq) anchor = c.checksum;
+        if (c.seq! <= afterSeq) continue;
+        if (events.length === limit) {
+          more = true;
+          break;
+        }
+        events.push(c);
+      }
+      return { anchor, events, more };
     },
 
     // Atomically rewrite the whole event log on the per-id write chain and re-seed the rolling
@@ -217,6 +242,7 @@ export function createFileConversationStore(root: string): ConversationStore {
           let acc = EMPTY_CHECKSUM;
           for (const e of events) acc = chainNext(acc, e);
           checksums.set(id, acc);
+          counts.set(id, events.length);
           seeded.add(id);
         });
       writeChains.set(id, next.catch(() => {}));

@@ -63,6 +63,27 @@ const SANDBOX_CALLER_HEADER = "x-scooter-caller";
 /** The source given to a sandbox's message that names none. */
 export const SANDBOX_SOURCE = "sandbox";
 
+/** Longest gap a resume sends before resetting instead. */
+export const RESUME_MAX_EVENTS = 2000;
+
+/** The integrity request's resume cursor, if well-formed. */
+export function resumeCursor(query: URLSearchParams): { afterSeq: number; checksum: string } | undefined {
+  const afterSeq = Number(query.get("afterSeq"));
+  const checksum = query.get("checksum") ?? "";
+  if (!Number.isInteger(afterSeq) || afterSeq < 1 || !/^[0-9a-f]{64}$/.test(checksum)) return undefined;
+  return { afterSeq, checksum };
+}
+
+/** Whether `events` follow `anchor` with no gap: consecutive seqs, each chaining on the last. */
+export function chainsFrom(anchor: { seq: number; checksum: string }, events: ChecksummedEvent[]): boolean {
+  let at = anchor;
+  for (const c of events) {
+    if (c.seq !== at.seq + 1 || c.prevChecksum !== at.checksum) return false;
+    at = { seq: c.seq, checksum: c.checksum };
+  }
+  return true;
+}
+
 /** The inclusive [start, end] of a single `bytes=` range within `size`, or null if unsatisfiable. */
 export function parseByteRange(header: string, size: number): [number, number] | null {
   const m = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
@@ -902,13 +923,19 @@ export function createManagementApi(deps: ManagementDeps): Router {
     // Subscribe to live appends before replaying, buffering until replay is done and
     // deduping by checksum.
     const seen = new Set<string>();
+    // Reported on `synced` as the client's resume cursor.
+    let head: { seq: number; checksum: string } | undefined;
+    const note = (c: ChecksummedEvent) => {
+      seen.add(c.checksum);
+      if (c.seq !== undefined && (!head || c.seq > head.seq)) head = { seq: c.seq, checksum: c.checksum };
+    };
     let live = false;
     const buffer: ChecksummedEvent[] = [];
     const unsub = store.onAppend?.((evId, c) => {
       if (evId !== id) return;
       if (!live) buffer.push(c);
       else if (!seen.has(c.checksum)) {
-        seen.add(c.checksum);
+        note(c);
         send({ kind: "event", ...c });
       }
     });
@@ -917,17 +944,33 @@ export function createManagementApi(deps: ManagementDeps): Router {
     // mid-write lands in the replay or the pre-live buffer rather than neither.
     await store.flush?.(id);
 
-    // Called through `store` because these methods use `this`.
-    const replay = store.readEventsWithChecksum
-      ? (i: SessionId) => store.readEventsWithChecksum!(i)
+    const cursor = resumeCursor(ctx.query);
+    const resumed = cursor && store.readEventsAfter
+      ? await store.readEventsAfter(id, cursor.afterSeq, RESUME_MAX_EVENTS)
       : undefined;
-    if (replay) {
+    if (
+      cursor &&
+      resumed &&
+      resumed.anchor === cursor.checksum &&
+      !resumed.more &&
+      chainsFrom({ seq: cursor.afterSeq, checksum: cursor.checksum }, resumed.events)
+    ) {
+      // Cursor matches the log and the slice is gapless: send only what follows.
+      send({ kind: "resume" });
+      head = { seq: cursor.afterSeq, checksum: cursor.checksum };
+      for (const c of resumed.events) {
+        note(c);
+        send({ kind: "event", ...c });
+      }
+    } else if (store.readEventsWithChecksum) {
+      // The client must drop its cached fold.
+      if (cursor) send({ kind: "reset" });
       // History goes as one snapshot rather than N events, since the client's applier
       // rebuilds and clones the message list per event; events carrying no message state
       // still replay individually.
       const history: AguiEvent[] = [];
-      for await (const c of replay(id)) {
-        seen.add(c.checksum);
+      for await (const c of store.readEventsWithChecksum(id)) {
+        note(c);
         history.push(c.event);
       }
       // Only the trailing window is painted up front; older history pages in on scroll.
@@ -954,13 +997,13 @@ export function createManagementApi(deps: ManagementDeps): Router {
     // Flush anything that arrived during replay, then go live.
     for (const c of buffer) {
       if (!seen.has(c.checksum)) {
-        seen.add(c.checksum);
+        note(c);
         send({ kind: "event", ...c });
       }
     }
     live = true;
     // Mark the end of the initial replay so the client knows it is caught up.
-    send({ kind: "synced" });
+    send({ kind: "synced", ...(head ? { seq: head.seq, checksum: head.checksum } : {}) });
     // State topics share this connection; browsers cap HTTP/1.1 connections per host.
     const unsubState = stateHub.subscribe(id, (f) => {
       if (f.kind === "topic") send(f);

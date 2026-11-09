@@ -122,6 +122,11 @@ function fakeDb(): {
           const hit = starts[Number(values[2] ?? 0)];
           return { rows: hit ? [[hit.seq]] : [], rowCount: hit ? 1 : 0 };
         }
+        // resume: rows from the cursor seq on, params [conv, afterSeq, limit].
+        if (/>=/.test(text) && /^SELECT\s+"?SEQ"?/i.test(head)) {
+          const page = mine.filter((r) => (r.seq as number) >= Number(values[1])).slice(0, Number(values[2]));
+          return { rows: page.map((r) => [r.seq, r.event, r.checksum, r.prev_checksum]), rowCount: page.length };
+        }
         // tail step 2: the window from a boundary seq.
         if (/>=/.test(text)) {
           const from = Number(values[1]);
@@ -610,5 +615,55 @@ describe("trimToBoundary", () => {
   it("returns [] when NOTHING in the window can open — better than a broken prefix", async () => {
     const { trimToBoundary } = await import("../../src/session/eventStore.js");
     expect(trimToBoundary([ev("TOOL_CALL_RESULT"), ev("TEXT_MESSAGE_CONTENT")])).toEqual([]);
+  });
+});
+
+describe("eventStore — resuming after a cursor", () => {
+  it("returns the anchor checksum and only the events after it", async () => {
+    const { db } = fakeDb();
+    const s = store(db);
+    for (const e of [...run(1), ...run(2)]) await s.appendEvent(CONV, e);
+    const all: ChecksummedEvent[] = [];
+    for await (const c of s.readEventsWithChecksum(CONV)) all.push(c);
+
+    const r = await s.readEventsAfter(CONV, 4, 100);
+
+    expect(r.anchor).toBe(all[3].checksum);
+    expect(r.events.map((c) => c.seq)).toEqual([5, 6, 7, 8]);
+    expect(r.events).toEqual(all.slice(4));
+    expect(r.more).toBe(false);
+  });
+
+  it("flags a gap longer than the limit", async () => {
+    const { db } = fakeDb();
+    const s = store(db);
+    for (const e of [...run(1), ...run(2)]) await s.appendEvent(CONV, e);
+
+    const r = await s.readEventsAfter(CONV, 2, 3);
+
+    expect(r.events.map((c) => c.seq)).toEqual([3, 4, 5]);
+    expect(r.more).toBe(true);
+  });
+
+  it("has no anchor for a cursor past the head", async () => {
+    const { db } = fakeDb();
+    const s = store(db);
+    for (const e of run(1)) await s.appendEvent(CONV, e);
+
+    const r = await s.readEventsAfter(CONV, 9, 100);
+
+    expect(r.anchor).toBeUndefined();
+    expect(r.events).toEqual([]);
+  });
+
+  it("onAppend carries the seq the row was written at", async () => {
+    const { db } = fakeDb();
+    const s = store(db);
+    const seqs: Array<number | undefined> = [];
+    s.onAppend((_, c) => seqs.push(c.seq));
+
+    for (const e of run(1)) await s.appendEvent(CONV, e);
+
+    expect(seqs).toEqual([1, 2, 3, 4]);
   });
 });

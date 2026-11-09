@@ -68,6 +68,17 @@ export interface ChecksummedEvent {
   event: AguiEvent;
   prevChecksum: string;
   checksum: string;
+  /** 1-based position in the log; absent from stores that cannot say. */
+  seq?: number;
+}
+
+/** Events after a resume cursor, plus the cursor's stored checksum. */
+export interface EventsAfter {
+  /** Checksum through `afterSeq`; undefined past the log's end. */
+  anchor: string | undefined;
+  events: ChecksummedEvent[];
+  /** More than `limit` events follow, so `events` is partial. */
+  more: boolean;
 }
 
 /** A provisioned Sandbox; `fresh` means it was newly made, so /workspace is empty;
@@ -210,6 +221,8 @@ export interface ConversationStore {
     beforeSeq: number,
     limit: number,
   ): Promise<{ events: AguiEvent[]; firstSeq: number; done: boolean }>;
+  /** Up to `limit` events after `afterSeq`; optional. */
+  readEventsAfter?(id: SessionId, afterSeq: number, limit: number): Promise<EventsAfter>;
   /** Subscribe to events as they are durably appended, each carrying its rolling checksum, and get
    *  back an unsubscribe fn; optional. */
   onAppend?(cb: (id: SessionId, event: ChecksummedEvent) => void): () => void;

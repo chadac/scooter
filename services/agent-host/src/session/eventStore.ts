@@ -12,7 +12,7 @@ import { chainNext, EMPTY_CHECKSUM } from "../agui/integrity.js";
 import { formatError, logger } from "../log.js";
 import { createPgPool } from "../db/pgPool.js";
 import type { AguiEvent } from "../bridge.js";
-import type { ChecksummedEvent } from "./manager.js";
+import type { ChecksummedEvent, EventsAfter } from "./manager.js";
 import type { SessionId } from "../types.js";
 
 const log = logger("eventStore");
@@ -90,6 +90,9 @@ export interface PgEventStore {
     beforeSeq: number,
     limit: number,
   ): Promise<{ events: AguiEvent[]; firstSeq: number; done: boolean }>;
+
+  /** Up to `limit` events after `afterSeq`, plus its stored checksum. */
+  readEventsAfter(id: SessionId, afterSeq: number, limit: number): Promise<EventsAfter>;
 
   /** Live durable appends, fired in-process only after the row is committed; returns an
    *  unsubscribe. */
@@ -216,7 +219,7 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
                 // Our own write, committed on an attempt whose reply was lost.
                 heads.set(id, { seq, checksum });
                 refusals.delete(id);
-                for (const cb of appendListeners) cb(id, { event, prevChecksum, checksum });
+                for (const cb of appendListeners) cb(id, { event, prevChecksum, checksum, seq });
                 return;
               }
               if (existing[0]) {
@@ -233,7 +236,7 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
             // Clear the refusal count on a committed append so a later reassignment logs its first
             // refusal immediately.
             refusals.delete(id);
-            for (const cb of appendListeners) cb(id, { event, prevChecksum, checksum });
+            for (const cb of appendListeners) cb(id, { event, prevChecksum, checksum, seq });
           } catch (error) {
             // Surface the lost turn, then rethrow for any caller that did await.
             log.errorWith("durable append FAILED (turn lost)", error, { conversation_id: id });
@@ -272,7 +275,7 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
           .orderBy(asc(conversationEvents.seq))
           .limit(READ_PAGE_ROWS);
         for (const r of rows) {
-          yield { event: r.event as AguiEvent, checksum: r.checksum, prevChecksum: r.prevChecksum };
+          yield { event: r.event as AguiEvent, checksum: r.checksum, prevChecksum: r.prevChecksum, seq: Number(r.seq) };
         }
         if (rows.length < READ_PAGE_ROWS) return;
         after = Number(rows[rows.length - 1].seq);
@@ -342,6 +345,26 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
       const events = rows.map((r) => r.event as AguiEvent);
       const firstSeq = rows[0] ? Number(rows[0].seq) : beforeSeq;
       return { events, firstSeq, done: rows.length < limit || firstSeq <= 1 };
+    },
+
+    async readEventsAfter(id, afterSeq, limit) {
+      // The anchor row plus limit+1, so overflow is detectable.
+      const rows = await db
+        .select({
+          seq: conversationEvents.seq,
+          event: conversationEvents.event,
+          checksum: conversationEvents.checksum,
+          prevChecksum: conversationEvents.prevChecksum,
+        })
+        .from(conversationEvents)
+        .where(and(eq(conversationEvents.conversationId, id), gte(conversationEvents.seq, afterSeq)))
+        .orderBy(asc(conversationEvents.seq))
+        .limit(Math.max(0, limit) + 2);
+      const anchor = rows[0] && Number(rows[0].seq) === afterSeq ? rows[0].checksum : undefined;
+      const after = rows
+        .filter((r) => Number(r.seq) > afterSeq)
+        .map((r) => ({ event: r.event as AguiEvent, checksum: r.checksum, prevChecksum: r.prevChecksum, seq: Number(r.seq) }));
+      return { anchor, events: after.slice(0, limit), more: after.length > limit };
     },
 
     onAppend(cb) {
@@ -429,6 +452,7 @@ export function withPgEvents<T extends object>(base: T, events: PgEventStore): T
     readEventsTailByCount: events.readEventsTailByCount.bind(events),
     readRunMarkers: events.readRunMarkers.bind(events),
     readEventsBefore: events.readEventsBefore.bind(events),
+    readEventsAfter: events.readEventsAfter.bind(events),
     onAppend: events.onAppend.bind(events),
     onAppendError: events.onAppendError.bind(events),
     // removeConversation is deliberately not overridden: the base store drops the on-volume assets
