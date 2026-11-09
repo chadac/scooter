@@ -13,7 +13,7 @@ let
   emptyDirs = img: map (d: { name = volName d; emptyDir = { }; }) img.imageless.writableDirs;
   dirMounts = img: map (d: { name = volName d; mountPath = d; }) img.imageless.writableDirs;
 
-  # Lists, or attrs keyed by name as kubenix also takes them.
+  # kubenix takes lists or attrs keyed by name.
   values = x: if builtins.isList x then x else builtins.attrValues x;
   append = x: extra: if builtins.isList x then x ++ extra
     else x // lib.listToAttrs (map (e: lib.nameValuePair e.name e) extra);
@@ -24,7 +24,7 @@ let
       ctrs = template.spec.containers;
       ctr = if builtins.isList ctrs then lib.findFirst (c: c.name == container) null ctrs else ctrs.${container};
       paths = map (m: m.mountPath) (values (ctr.volumeMounts or [ ]));
-      # The root is read-only, so a missing mountpoint fails at create.
+      # A read-only root has no missing mountpoints to create.
       missing = lib.filter
         (p: !(builtins.elem p img.imageless.mountPoints) && !(lib.any (d: under d p) img.imageless.writableDirs))
         paths;
@@ -58,13 +58,21 @@ in
     description = "image -> container -> pod template -> the template, wired for an imageless image.";
   };
 
+  options.scooter.imageless.sandboxPod = lib.mkOption {
+    type = lib.types.raw;
+    readOnly = true;
+    internal = true;
+    default = {
+      annotations = sandbox.pod.annotations // { "imageless.run/containers-v1" = "sandbox"; };
+      inherit (sandbox.pod) runtimeClassName;
+      writableDirs = dirMounts sandbox;
+    };
+    description = "The sandbox pod's imageless wiring, for the provisioner and the warm Job.";
+  };
+
   config = lib.mkIf (sandbox.source == "imageless") {
     scooter.sandboxPod = {
-      # The warm Job builds its own pod, without this wiring.
-      annotations = if cfg.warmStore.enable
-        then throw "scooter.warmStore does not support scooter.images.agent-sandbox-os.source = \"imageless\" yet."
-        else sandbox.pod.annotations // { "imageless.run/containers-v1" = "sandbox"; };
-      inherit (sandbox.pod) runtimeClassName;
+      inherit (cfg.imageless.sandboxPod) annotations runtimeClassName;
       extraVolumes = emptyDirs sandbox;
       extraVolumeMounts = dirMounts sandbox;
     };

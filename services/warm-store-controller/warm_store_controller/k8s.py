@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from kubernetes import client, config
@@ -83,6 +83,7 @@ class ControllerK8s:
     :param overlay_storage: size of each warm PVC.
     :param runtime_class: RuntimeClass for the warm Job, matching the sandboxes.
     :param user_namespace: run the warm Job in its own user namespace, matching the sandboxes.
+    :param imageless_pod: the sandbox's imageless annotations, runtimeClassName and writableDirs.
     """
 
     namespace: str
@@ -92,6 +93,7 @@ class ControllerK8s:
     overlay_storage: str = "20Gi"
     runtime_class: str = ""
     user_namespace: bool = False
+    imageless_pod: dict = field(default_factory=dict)
 
     # --- observe -------------------------------------------------------------------
     def list_pvs(self) -> list[dict]:
@@ -353,6 +355,9 @@ class ControllerK8s:
             env=[client.V1EnvVar(name="GOLDEN_EXPR", value=self.warm_golden_expr)],
             volume_mounts=[client.V1VolumeMount(name="scooter-rw", mount_path=UPPER)],
         )
+        imageless = self.imageless_pod
+        # The read-only imageless root needs its writable dirs as emptyDirs.
+        rw = imageless.get("writableDirs", [])
         sandbox = client.V1Container(
             name="sandbox",
             image=self.warm_job_image,
@@ -367,7 +372,7 @@ class ControllerK8s:
                 client.V1VolumeMount(name="scooter-rw", mount_path=UPPER),
                 client.V1VolumeMount(name="run", mount_path="/run"),
                 client.V1VolumeMount(name="tmp", mount_path="/tmp"),
-            ],
+            ] + [client.V1VolumeMount(name=d["name"], mount_path=d["mountPath"]) for d in rw],
         )
         return client.V1Job(
             metadata=client.V1ObjectMeta(
@@ -379,10 +384,13 @@ class ControllerK8s:
                 active_deadline_seconds=1800,
                 ttl_seconds_after_finished=300,
                 template=client.V1PodTemplateSpec(
-                    metadata=client.V1ObjectMeta(labels={"app": "warm-store-seed"}),
+                    metadata=client.V1ObjectMeta(
+                        labels={"app": "warm-store-seed"},
+                        annotations=imageless.get("annotations") or None,
+                    ),
                     spec=client.V1PodSpec(
                         restart_policy="OnFailure",
-                        runtime_class_name=self.runtime_class or None,
+                        runtime_class_name=imageless.get("runtimeClassName") or self.runtime_class or None,
                         # Pod root and its SYS_ADMIN then apply only inside the pod's user namespace.
                         host_users=False if self.user_namespace else None,
                         # The PV is provisioned where this pod lands.
@@ -396,7 +404,7 @@ class ControllerK8s:
                             ),
                             client.V1Volume(name="run", empty_dir=client.V1EmptyDirVolumeSource(medium="Memory")),
                             client.V1Volume(name="tmp", empty_dir=client.V1EmptyDirVolumeSource(medium="Memory")),
-                        ],
+                        ] + [client.V1Volume(name=d["name"], empty_dir=client.V1EmptyDirVolumeSource()) for d in rw],
                     ),
                 ),
             ),

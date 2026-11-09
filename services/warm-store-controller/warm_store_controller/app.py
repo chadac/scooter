@@ -37,6 +37,7 @@ def run(cfg: Config, stop: threading.Event) -> None:
         overlay_storage=cfg.overlay_storage,
         runtime_class=cfg.runtime_class,
         user_namespace=cfg.user_namespace,
+        imageless_pod=cfg.imageless_pod,
     )
     upkeep = UpkeepConfig(
         current_tag=cfg.current_image_tag,

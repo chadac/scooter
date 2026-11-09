@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 
@@ -48,6 +49,7 @@ class Config:
     overlay_storage: str = "20Gi"
     runtime_class: str = ""
     user_namespace: bool = False
+    imageless_pod: dict = field(default_factory=dict)
     reconcile_interval: float = 10.0
     lease_seconds: int = 30
     lease_name: str = "warm-store-controller-leader"
@@ -84,6 +86,7 @@ class Config:
             overlay_storage=env("WARM_STORE_STORAGE", "20Gi"),
             runtime_class=env("SANDBOX_RUNTIME_CLASS", ""),
             user_namespace=env("SANDBOX_USER_NAMESPACE", "") == "1",
+            imageless_pod=json.loads(env("SANDBOX_IMAGELESS_POD", "") or "{}"),
             reconcile_interval=float(env("RECONCILE_INTERVAL_SECONDS", "10")),
             lease_seconds=int(env("LEASE_DURATION_SECONDS", "30")),
             lease_name=env("LEASE_NAME", "warm-store-controller-leader"),

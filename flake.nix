@@ -604,7 +604,7 @@
               paths = map (img: img.imageless.release) (builtins.attrValues imagelessImages);
             };
 
-            # Everything the publish job needs: each rootfs (cached on build) and placeholder.
+            # Each rootfs and placeholder, for publish-imageless.yml.
             imageless-publish = pkgs.runCommand "scooter-imageless-publish" { } ''
               mkdir -p $out
               ln -s ${pkgs.writeText "imageless-push.json" (builtins.toJSON (lib.mapAttrsToList (_: img: {

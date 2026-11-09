@@ -1,7 +1,6 @@
 { pkgs, lib }:
 
-# An image's copyToRoot and OCI config as an imageless rootfs and release process.
-# The rootfs is a read-only store path, so every mountpoint must already exist in it.
+# An image's root and config, as imageless rootfs and process.
 
 { name
 , copyToRoot ? [ ]

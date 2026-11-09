@@ -181,7 +181,7 @@ let
     exec ${toplevel}/init "$@"
   '';
 
-  # Under imageless the root is read-only: these get emptyDirs, seeded at boot.
+  # Writable emptyDirs over the read-only imageless root, seeded at boot.
   imagelessWritable = [ "/etc" "/var" "/bin" "/usr" "/root" "/home" "/srv" "/opt" "/mnt" "/nix/var" ];
 
   imagelessSeed = pkgs.runCommand "sandbox-os-imageless-seed" { } ''

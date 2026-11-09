@@ -262,6 +262,9 @@ in
                 # The warm Job's systemd pod needs the same runtimeClass as the per-conversation sandboxes.
                 ++ lib.optional (cfg.sandboxRuntimeClass != null)
                   { name = "SANDBOX_RUNTIME_CLASS"; value = cfg.sandboxRuntimeClass; }
+                # The warm Job boots the sandbox, so shares its wiring.
+                ++ lib.optional (cfg.images.agent-sandbox-os.source == "imageless")
+                  { name = "SANDBOX_IMAGELESS_POD"; value = builtins.toJSON cfg.imageless.sandboxPod; }
                 # The warm Job boots the same image, so it gets the same user-namespace posture.
                 ++ lib.optional cfg.sandboxUserNamespace
                   { name = "SANDBOX_USER_NAMESPACE"; value = "1"; }

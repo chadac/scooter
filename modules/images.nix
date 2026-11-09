@@ -129,7 +129,7 @@ let
         image = mkOption {
           type = types.nullOr types.str;
           readOnly = true;
-          # Same repo, own tag: an image-keyed rollout or warm store still sees a change.
+          # A tag per release, so image-keyed logic sees each change.
           default =
             if config.imageless.reference == null then null
             else "${config.ref.image}:imageless-${builtins.substring 0 12 (lib.last (lib.splitString ":" config.imageless.reference))}";
@@ -144,7 +144,7 @@ let
             if config.imageless.built == null then null
             else cfg.config.n2c.buildImage {
               name = "${name}-imageless";
-              # The OCI config the kubelet reads (stop signal, user), over a near-empty layer.
+              # The real config (stop signal, env) over a near-empty layer.
               inherit (config.package.imagelessSource) config;
               copyToRoot = cfg.config.buildPkgs.writeTextDir "etc/imageless-placeholder" ''
                 This image's root is realized by the node from ${config.imageless.reference}.
