@@ -67,6 +67,16 @@ let
           echo "[$db.$table] has no primary key — refusing to copy (a re-run could not tell copied rows apart)" >&2
           return 1
         fi
+        # Check by keys alone, so a re-run streams no rows.
+        copied="$(psql -d "$from" -v ON_ERROR_STOP=1 -c "\\copy (SELECT $pk FROM public.\"$table\") TO STDOUT" \
+          | psql -d "$db" -v ON_ERROR_STOP=1 -qtA \
+              -c "CREATE TEMP TABLE _keys AS SELECT $pk FROM public.\"$table\" WITH NO DATA" \
+              -c "\\copy _keys ($pk) FROM PSTDIN" \
+              -c "SELECT EXISTS (SELECT 1 FROM public.\"$table\" JOIN _keys USING ($pk))")" || return 1
+        if [ "$copied" = t ]; then
+          echo "[$db.$table] already copied from $from — skipping"
+          return 0
+        fi
         psql -d "$from" -v ON_ERROR_STOP=1 -c "\\copy (SELECT $cols FROM public.\"$table\") TO STDOUT" \
           | psql -d "$db" -v ON_ERROR_STOP=1 -q \
               -c "CREATE TEMP TABLE _src AS SELECT $cols FROM public.\"$table\" WITH NO DATA" \
