@@ -31,7 +31,7 @@ export interface UserRecord {
   id: string;
   email?: string;
   name?: string;
-  /** ISO timestamp this user was last seen (updated_at). */
+  /** ISO timestamp this user was last seen (updated_at), to within an hour. */
   updatedAt?: string;
 }
 
@@ -87,6 +87,9 @@ export function withIdentityStore(
 
 // --- Postgres-backed store -------------------------------------------------
 
+/** Max age of updated_at before an unchanged sighting refreshes it. */
+const LAST_SEEN_RESOLUTION_MS = 60 * 60 * 1000;
+
 export interface PgIdentityStoreConfig {
   /** Postgres connection string. */
   dsn: string;
@@ -101,6 +104,8 @@ export function createPgIdentityStore(config: PgIdentityStoreConfig): IdentitySt
   // The hardened pool (db/pgPool.ts) never hands a stale idle connection to a query.
   const pool = createPgPool("identityStore", { connectionString: config.dsn, max: 2 });
   const db = drizzle(pool);
+  // Last write per id, so repeat sightings skip the database.
+  const written = new Map<string, { email: string | null; name: string | null; at: number }>();
 
   return {
     async get(id) {
@@ -123,19 +128,26 @@ export function createPgIdentityStore(config: PgIdentityStoreConfig): IdentitySt
         // Store the normalized email so one mailbox is one value whatever form a provider
         // handed us; blank becomes null.
         const email = rec.email ? normalizeEmail(rec.email) || null : null;
+        const name = rec.name ?? null;
+        const now = Date.now();
+        const last = written.get(id);
+        if (last && last.email === email && last.name === name && now - last.at < LAST_SEEN_RESOLUTION_MS) return;
         // COALESCE(excluded, existing) so a later sighting without an email/name keeps
         // the value already learned.
+        const nextEmail = sql`coalesce(excluded.email, ${userIdentity.email})`;
+        const nextName = sql`coalesce(excluded.name, ${userIdentity.name})`;
         await db
           .insert(userIdentity)
-          .values({ id, email, name: rec.name ?? null, updatedAt: sql`now()` })
+          .values({ id, email, name, updatedAt: sql`now()` })
           .onConflictDoUpdate({
             target: userIdentity.id,
-            set: {
-              email: sql`coalesce(excluded.email, ${userIdentity.email})`,
-              name: sql`coalesce(excluded.name, ${userIdentity.name})`,
-              updatedAt: sql`now()`,
-            },
+            set: { email: nextEmail, name: nextName, updatedAt: sql`now()` },
+            // Rewrite an unchanged row only to refresh stale last-seen.
+            setWhere: sql`${userIdentity.email} IS DISTINCT FROM ${nextEmail}
+              OR ${userIdentity.name} IS DISTINCT FROM ${nextName}
+              OR ${userIdentity.updatedAt} < now() - ${`${LAST_SEEN_RESOLUTION_MS} milliseconds`}::interval`,
           });
+        written.set(id, { email, name, at: now });
       } catch (e) {
         log.error("put failed (mapping not learned)", { user_id: id, error: formatError(e) });
       }
