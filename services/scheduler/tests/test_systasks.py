@@ -156,6 +156,14 @@ async def _only_run(store, task_id):
     return run
 
 
+async def _appears(path):
+    """Wait until a run's script creates `path`, so it is live."""
+    async def poll():
+        while not path.exists():
+            await asyncio.sleep(0.01)
+    await asyncio.wait_for(poll(), 10)
+
+
 async def test_a_run_gets_the_contract_env_and_nothing_else(tmp_path, monkeypatch):
     monkeypatch.setenv("DB_PASSWORD", "hunter2")
     out = tmp_path / "env.txt"
@@ -261,10 +269,11 @@ async def test_the_concurrency_cap_holds_across_tasks(tmp_path):
 
 
 async def test_shutdown_kills_live_runs_and_records_them_failed(tmp_path):
-    cmd = _script(tmp_path, "forever", "sleep 30\n")
+    started = tmp_path / "started"
+    cmd = _script(tmp_path, "forever", f"touch {started}\nsleep 30\n")
     store, runner, rows = await _setup(tmp_path, _spec("forever", command=cmd))
     runner.launch(rows["forever"])
-    await asyncio.sleep(0.5)
+    await _appears(started)
     await asyncio.wait_for(runner.shutdown(), 5)
     run = await _only_run(store, "forever")
     assert run.status == "failed" and "shut down" in run.error
@@ -297,18 +306,17 @@ async def test_spawn_reports_need_the_live_runs_own_token(tmp_path):
 
 
 async def test_the_tick_launches_system_tasks_without_waiting_on_them(tmp_path):
-    cmd = _script(tmp_path, "nap", "sleep 2\n")
+    started, release = tmp_path / "started", tmp_path / "release"
+    cmd = _script(tmp_path, "nap", f"touch {started}\nwhile [ ! -e {release} ]; do sleep 0.05; done\n")
     store, runner, _ = await _setup(tmp_path, _spec("nap", command=cmd))
     stop = asyncio.Event()
 
-    async def one_tick():
-        loop = asyncio.create_task(appmod._scheduler_loop(store, create_metrics(enabled=False), stop, runner))
-        await asyncio.sleep(0.3)
-        stop.set()
-        await asyncio.wait_for(loop, 1)  # returns while the 2s run is still going
-
-    await one_tick()
+    loop = asyncio.create_task(appmod._scheduler_loop(store, create_metrics(enabled=False), stop, runner))
+    await _appears(started)
+    stop.set()
+    await asyncio.wait_for(loop, 10)  # returns while the run waits for release
     assert (await _only_run(store, "nap")).status == "running"
+    release.touch()
     await runner.wait_idle()
     assert (await _only_run(store, "nap")).status == "succeeded"
     await store.dispose()
