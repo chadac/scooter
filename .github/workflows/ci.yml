@@ -131,9 +131,9 @@ jobs:
 
       # Building .#agentHost under nix resolves @scooter/schema through the nix
       # symlink, which the workspace-resolving `just typecheck` cannot exercise.
-      - name: agent-host + byoc-controller + generated Drizzle schema + sandbox VS Code pieces (nix)
+      - name: agent-host + byoc-controller + generated Drizzle schema + sandbox VS Code and web review pieces (nix)
         if: matrix.shard == 'repo'
-        run: nix build .#scooter-schema-js .#scooter-svcauth-js .#agentHost .#byoc-controller .#scooter-vscode-ahp .#code-server-bin --print-build-logs
+        run: nix build .#scooter-schema-js .#scooter-svcauth-js .#agentHost .#byoc-controller .#scooter-vscode-ahp .#code-server-bin .#scooter-review --print-build-logs
 
       # Merge queue: a red required job cancels the run; see the action.
       - name: fail fast (merge queue)

@@ -136,6 +136,15 @@
         ],
         "name": "awscli2-2.36.31"
       },
+      "chromium": {
+        "attr": "chromium",
+        "drv": "/nix/store/mwh92namz9lpir1lz94xcfvg5na5a18b-chromium-157.0.8103.38.drv",
+        "output": "out",
+        "bins": [
+          "chromium"
+        ],
+        "name": "chromium-157.0.8103.38"
+      },
       "code-server": {
         "attr": "code-server",
         "drv": "/nix/store/r12hjnbszli7mcd4dxqxh7iyyc1rfs1y-code-server-4.141.0.drv",
@@ -278,6 +287,15 @@
           "aws_completer"
         ],
         "name": "awscli2-2.36.31"
+      },
+      "chromium": {
+        "attr": "chromium",
+        "drv": "/nix/store/ggx2892ksvw4ympnvhhkamdsyz137nca-chromium-157.0.8103.38.drv",
+        "output": "out",
+        "bins": [
+          "chromium"
+        ],
+        "name": "chromium-157.0.8103.38"
       },
       "code-server": {
         "attr": "code-server",

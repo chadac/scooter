@@ -432,6 +432,8 @@
 
             # nix build .#forge-shim  ->  the sandbox's local forge proxy shim (runs go test)
             forge-shim = p.scooter-forge-shim;
+            # nix build .#scooter-review -> contrib/web-review's proxy, shell and CLI (runs go test)
+            scooter-review = p.scooter-review;
             # One warm-store benchmark round, for the `bench` CI job.
             bench-warm-store = p.scooter-bench-warm-store;
 

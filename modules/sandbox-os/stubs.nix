@@ -56,5 +56,7 @@
   crun = pkgs.crun;
   k3d = pkgs.k3d;
   kubectl = { package = pkgs.kubectl; output = "out"; };
+  # contrib/web-review's headless screenshots, when no review page is open.
+  chromium = pkgs.chromium;
 }
 

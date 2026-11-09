@@ -39,6 +39,7 @@
     skills.enable = true;
     slack.enable = true;
     ssh.enable = true;
+    web-review.enable = true;
     # echo ships nowhere; CI builds it via withModules.
   };
 }

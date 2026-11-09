@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<base href="@BASE@">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self'">
+<title>Acme Ops</title>
+<link rel="stylesheet" href="assets/styles.css">
+<script type="module" src="assets/app.js"></script>
+</head>
+<body>
+<div class="layout">
+  <nav class="sidebar" aria-label="Main">
+    <a class="brand" href="./" data-link>Acme Ops</a>
+    <a href="./" data-link data-nav="/">Dashboard</a>
+    <a href="orders" data-link data-nav="/orders">Orders</a>
+    <a href="customers" data-link data-nav="/customers">Customers</a>
+    <a href="settings" data-link data-nav="/settings">Settings</a>
+  </nav>
+  <main id="view" tabindex="-1"></main>
+</div>
+</body>
+</html>
