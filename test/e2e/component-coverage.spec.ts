@@ -199,7 +199,6 @@ test.describe("right panel: tabs + sandbox surface", () => {
     await expect(page.locator(panel.sandboxPanel)).toBeVisible({ timeout: 20_000 });
     // A turn ran, so the sandbox is up: never stuck on "starting".
     await expect(page.locator(panel.sandboxState)).toHaveAttribute("data-state", "running", { timeout: 60_000 });
-    await expect(page.locator('[data-testid="header-sandbox-status"]')).toHaveText("sandbox running");
     assertConsistent(await snapshot(page), "sandbox panel shown");
   });
 });

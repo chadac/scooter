@@ -121,15 +121,7 @@ export function useSandboxStatus() {
   };
 }
 
-export const LABEL: Record<SandboxState, string> = {
-  running: "Running",
-  suspended: "Suspended",
-  ended: "Ended",
-  starting: "Starting…",
-  unknown: "Checking…",
-};
-
-export const DOT: Record<SandboxState, string> = {
+const DOT: Record<SandboxState, string> = {
   running: "bg-success",
   suspended: "bg-warning",
   ended: "bg-muted-foreground/40",

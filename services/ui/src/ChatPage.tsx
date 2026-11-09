@@ -13,7 +13,7 @@ import { useEffect, useSyncExternalStore } from "react";
 import { ExternalLink } from "lucide-react";
 
 import { RuntimeProvider, useConversationInterrupts } from "./RuntimeProvider.js";
-import { ConversationArea, SandboxStatusPill } from "./App.js";
+import { ConversationArea } from "./App.js";
 import { HeaderConversationTitle } from "./HeaderConversationTitle.js";
 import { InterruptList } from "./InterruptPanel.js";
 import { ThemePicker } from "./ThemePicker.js";
@@ -109,11 +109,6 @@ export function ChatPage({ conversationId }: { conversationId: string }) {
             {ready && <HeaderConversationTitle />}
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            {ready && (
-              <span className="hidden sm:flex">
-                <SandboxStatusPill />
-              </span>
-            )}
             <ThemePicker />
             {/* _top: inside a host's iframe this leaves the host page for the full app. */}
             <a

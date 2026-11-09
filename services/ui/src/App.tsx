@@ -25,7 +25,7 @@ import { chatPath } from "./chatRoute.js";
 import { HeaderConversationTitle } from "./HeaderConversationTitle.js";
 import { mobileNav, useDrawer } from "./mobileNav.js";
 import { StartingPodLanding } from "./DeadPodLanding.js";
-import { useSandboxStatus, LABEL as SANDBOX_LABEL, DOT as SANDBOX_DOT } from "./SandboxPanel.js";
+import { useSandboxStatus } from "./SandboxPanel.js";
 import { Thread } from "@/components/assistant-ui/thread";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -50,22 +50,6 @@ export function ConversationArea() {
       <GuardedThread />
       <ApprovalDetail />
     </>
-  );
-}
-
-/** Header sandbox pill mirroring the Session tab's status. */
-export function SandboxStatusPill() {
-  const { state, hasConversation } = useSandboxStatus();
-  if (!hasConversation) return null;
-  return (
-    <div
-      data-testid="header-sandbox-status"
-      className="flex h-6 items-center gap-1.5 rounded-md border bg-card px-2 text-xs text-muted-foreground"
-      title={`Sandbox: ${SANDBOX_LABEL[state]}`}
-    >
-      <span className={cn("h-1.5 w-1.5 rounded-full", SANDBOX_DOT[state])} />
-      <span>sandbox {SANDBOX_LABEL[state].toLowerCase().replace("…", "")}</span>
-    </div>
   );
 }
 
@@ -172,10 +156,6 @@ export function App() {
             {chat && <HeaderConversationTitle actions />}
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            {/* Live pod status, desktop-only. */}
-            <span className="hidden desk:flex">
-              <SandboxStatusPill />
-            </span>
             {/* Mobile-only right-panel toggle, hidden at desk+. */}
             {chat && (
               <Button
