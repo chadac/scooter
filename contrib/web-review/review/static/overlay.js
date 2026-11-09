@@ -500,21 +500,22 @@
       d.append(m.text);
       thread.append(d);
     }
-    if (n.shot) {
-      const s = document.createElement("div");
-      s.className = "shot";
-      s.innerHTML = `<img alt="Screenshot">`;
-      s.firstChild.src = API + "shots/" + encodeURIComponent(n.shot);
-      thread.append(s);
-    }
     root.append(pop);
     const pin = pinsEl.querySelector(`[data-id="${id}"]`);
     place(pop, pin ? pin.getBoundingClientRect() : { left: 40, top: 40, width: 0, height: 0 });
     const ta = pop.querySelector("textarea");
     const reply = async () => {
-      if (!ta.value.trim()) return;
-      await api(`notes/${id}/reply`, { text: ta.value.trim() });
+      const text = ta.value.trim();
+      if (!text) return;
+      // Clear first: the reply's own update redraws the thread mid-request.
       ta.value = "";
+      try {
+        await api(`notes/${id}/reply`, { text });
+      } catch (err) {
+        const box = pop && pop.dataset.thread === id && pop.querySelector("textarea");
+        if (box && !box.value) box.value = text;
+        throw err;
+      }
     };
     pop.querySelector(".reply").onclick = reply;
     pop.querySelector(".res").onclick = () => api(`notes/${id}/resolve`, { resolved: !n.resolved }).then(closePopover);

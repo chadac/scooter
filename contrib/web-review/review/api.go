@@ -137,9 +137,6 @@ func (a *App) api(w http.ResponseWriter, r *http.Request, rest string) {
 	case route == "GET vendor" && len(parts) == 2 && a.site.VendorDir != "":
 		w.Header().Set("Cache-Control", "max-age=86400")
 		http.ServeFile(w, r, filepath.Join(a.site.VendorDir, filepath.Base(parts[1])))
-	case route == "GET shots" && len(parts) == 2:
-		w.Header().Set("Cache-Control", "no-cache")
-		http.ServeFile(w, r, filepath.Join(a.site.ShotsDir(), filepath.Base(parts[1])))
 	case route == "GET notes":
 		writeJSONResponse(w, http.StatusOK, a.store.Snapshot())
 	case route == "GET status":
