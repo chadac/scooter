@@ -1,5 +1,5 @@
-# Resolves enabled contribs' `ui.panel`, `ui.markdownFences`, `ui.markdownSyntax` and
-# `ui.views` into the manifest's `panels` and `markdownSyntax` (by contrib),
+# Resolves enabled contribs' `ui.panel`, `ui.linkView`, `ui.markdownFences`, `ui.markdownSyntax`
+# and `ui.views` into the manifest's `panels`, `linkViews` and `markdownSyntax` (by contrib),
 # `markdownFences` (by language) and `views` (by id), and throws on a declaration the
 # UI could not load. Lib-only, so examples/check.nix can drive it with fixtures.
 { lib }:
@@ -25,6 +25,11 @@ let
       inherit (p) label order;
       entry = checkEntry where name c p.entry;
     };
+
+  linkViewOf = name: c: {
+    contrib = name;
+    entry = checkEntry "contribs.${name}.ui.linkView" name c c.ui.linkView.entry;
+  };
 
   syntaxOf = name: c: {
     contrib = name;
@@ -74,6 +79,7 @@ in
       throw ("contribs' ui.views: ${lib.concatStringsSep "; " (lib.mapAttrsToList
         (id: cs: "/${id} is claimed by contribs ${lib.concatStringsSep " and " cs}") viewClashes)}")
     else lib.listToAttrs (map (p: lib.nameValuePair p.id p.value) viewRows);
+  linkViews = lib.mapAttrs linkViewOf (lib.filterAttrs (_: c: c.ui.linkView != null) withUi);
   markdownSyntax = lib.mapAttrs syntaxOf (lib.filterAttrs (_: c: c.ui.markdownSyntax != null) withUi);
   panels = lib.mapAttrs panelOf (lib.filterAttrs (_: c: c.ui.panel != null) withUi);
   markdownFences =

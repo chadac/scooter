@@ -73,11 +73,11 @@ let
     else lib.attrNames publicPathOwners;
 
   # Keyed as conversation-ui.nix resolves them.
-  inherit (resolveConversationUi contribs) panels markdownFences markdownSyntax views;
+  inherit (resolveConversationUi contribs) panels linkViews markdownFences markdownSyntax views;
 
   # The presentation half of each contrib's approval gate, not gated on `ui.enable` because a contrib may raise approvals while contributing no icon.
   approvals = lib.mapAttrs
     (_: c: { inherit (c.approvals) gatedOption blockedTitle blockedHint; })
     (lib.filterAttrs (_: c: c.approvals != null) contribs);
 in
-{ inherit sources toolCards toolTitles linkProviders approvals settingsTabs interruptRenderers panels markdownFences markdownSyntax views brokerPublicPaths; }
+{ inherit sources toolCards toolTitles linkProviders approvals settingsTabs interruptRenderers panels linkViews markdownFences markdownSyntax views brokerPublicPaths; }

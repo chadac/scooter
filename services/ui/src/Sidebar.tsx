@@ -31,11 +31,13 @@ import {
   filteredSessions,
   nestSubagents,
   sessionLabel,
+  linkForProvider,
   linkProviders,
   turnDot,
   type LabelMode,
   type TurnDot,
 } from "./sessions.js";
+import { LinkText } from "./LinkText.js";
 import { LinkedResources } from "./LinkedResources.js";
 import { mobileNav, useDrawer } from "./mobileNav.js";
 import { SourceBadge, sourceLabel, TitleBadge } from "./sourceIcon.js";
@@ -112,6 +114,12 @@ function InfoTip({ text }: { text: string }) {
   );
 }
 
+/** A row's label: the provider's link, drawn by its contrib's view, else the title. */
+function SessionLabel({ session: s, mode }: { session: import("./sessions.js").Session; mode: LabelMode }) {
+  const link = mode !== "title" ? linkForProvider(s, mode) : undefined;
+  return link ? <LinkText link={link} /> : <>{sessionLabel(s, mode)}</>;
+}
+
 /** One conversation row: select only. Star / rename / delete live beside the title in the
  *  header (HeaderConversationTitle), away from the tap target that switches conversations.
  *  memo()'d so a stream merge, which reuses an unchanged Session object, does not re-render it. */
@@ -164,7 +172,9 @@ const SessionRow = memo(function SessionRow({
         title={s.title}
       >
         {depth > 0 && <CornerDownRight className="me-1 size-3.5 shrink-0 text-muted-foreground" aria-hidden />}
-        <span data-testid="session-title">{sessionLabel(s, labelMode)}</span>
+        <span data-testid="session-title" className="flex min-w-0 items-center">
+          <SessionLabel session={s} mode={labelMode} />
+        </span>
         {s.visibility === "private" && (
           <span
             data-testid="session-private"

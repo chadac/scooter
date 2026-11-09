@@ -103,6 +103,24 @@ export interface MarkdownFenceProps {
   body: string;
 }
 
+/** One linked resource, as a contrib's link view receives it. */
+export interface ContribLink {
+  source: string;
+  /** e.g. "pull_request", "merge_request", "issue". */
+  resourceType: string;
+  url?: string;
+  title?: string;
+}
+
+/**
+ * What a contrib's link view (its `ui.linkView` entry) receives: one link whose `source`
+ * is that contrib. It renders the link's text, inline; the app draws the icon and the
+ * `<a>` around it and gives it a shrinkable flex row, so a `truncate` span ellipsizes.
+ */
+export interface LinkViewProps {
+  link: ContribLink;
+}
+
 /** Props of a `ui.markdownSyntax` element component. */
 export interface MarkdownSyntaxElementProps {
   children?: ReactNode;

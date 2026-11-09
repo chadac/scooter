@@ -16,6 +16,7 @@ import type {
   ContribManifest,
   ContribMarkdownFence,
   ContribMarkdownSyntax,
+  ContribLinkView,
   ContribView,
   ContribPanel,
   ContribSettingsTab,
@@ -41,6 +42,7 @@ const EMPTY: ContribManifest = {
   panels: {},
   markdownFences: {},
   markdownSyntax: {},
+  linkViews: {},
   views: {},
 };
 
@@ -124,6 +126,13 @@ function asMarkdownSyntax(contrib: string, v: unknown): ContribMarkdownSyntax | 
   return { entry: r.entry };
 }
 
+/** A link view row, keyed by its own contrib, with its entry in that contrib's ui/. */
+function asLinkView(contrib: string, v: unknown): ContribLinkView | undefined {
+  const r = asRecord(v);
+  if (!isStr(r.entry) || !r.entry.startsWith(`${contrib}/ui/`)) return undefined;
+  return { entry: r.entry };
+}
+
 /** A view row; the id is a slug and the entry sits in its contrib's ui/. */
 const VIEW_ID = /^[a-z][a-z0-9-]{0,39}$/;
 function asView(id: string, v: unknown): ContribView | undefined {
@@ -158,6 +167,7 @@ function parse(doc: unknown): ContribManifest {
     panels: rows(d.panels, (v, contrib) => asPanel(contrib, v)),
     markdownFences: rows(d.markdownFences, (v, lang) => asMarkdownFence(lang, v)),
     markdownSyntax: rows(d.markdownSyntax, (v, contrib) => asMarkdownSyntax(contrib, v)),
+    linkViews: rows(d.linkViews, (v, contrib) => asLinkView(contrib, v)),
     views: rows(d.views, (v, id) => asView(id, v)),
     // A link provider whose source row failed validation would be a chip with no
     // icon, so it is dropped too.
@@ -233,6 +243,11 @@ export function contribMarkdownFences(): Record<string, ContribMarkdownFence> {
 /** Contrib markdown syntax modules, by contrib name. */
 export function contribMarkdownSyntax(): Record<string, ContribMarkdownSyntax> {
   return manifest.markdownSyntax;
+}
+
+/** Contrib link views, by contrib name (LinkText.tsx). */
+export function contribLinkViews(): Record<string, ContribLinkView> {
+  return manifest.linkViews;
 }
 
 /** Contrib alternate views, by view id. */

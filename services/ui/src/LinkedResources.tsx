@@ -10,6 +10,7 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 
 import type { ConversationLink } from "./client.js";
 import { useSessions } from "./sessions.js";
+import { LinkText } from "./LinkText.js";
 import { SourceBadge } from "./sourceIcon.js";
 import { Button } from "@/components/ui/button";
 
@@ -55,12 +56,12 @@ export function LinkedResourcesPanel({ links }: { links: ConversationLink[] }) {
                   title={linkLabel(l)}
                 >
                   <SourceBadge source={l.source} />
-                  <span className="truncate">{linkLabel(l)}</span>
+                  <LinkText link={l} />
                 </a>
               ) : (
                 <span className="flex items-center gap-2 px-2 py-1" title={linkLabel(l)}>
                   <SourceBadge source={l.source} />
-                  <span className="truncate">{linkLabel(l)}</span>
+                  <LinkText link={l} />
                 </span>
               )}
             </li>

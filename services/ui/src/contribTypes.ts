@@ -90,6 +90,12 @@ export interface ContribMarkdownFence {
 }
 
 
+/** A contrib's `ui.linkView` row: the component drawing its own links. */
+export interface ContribLinkView {
+  /** `<contrib>/ui/<file>.tsx`, the key into the lazy module table (contribTabs.tsx). */
+  entry: string;
+}
+
 /** A contrib's `ui.markdownSyntax` row. */
 export interface ContribMarkdownSyntax {
   /** `<contrib>/ui/<file>.tsx`, the key into the lazy module table (contribTabs.tsx). */
@@ -131,6 +137,8 @@ export interface ContribManifest {
   markdownFences: Record<string, ContribMarkdownFence>;
   /** Markdown syntax rows, by contrib name. */
   markdownSyntax: Record<string, ContribMarkdownSyntax>;
+  /** Link views by contrib name, drawing links whose `source` is that name. */
+  linkViews: Record<string, ContribLinkView>;
   /** Contrib alternate views, keyed by view id. */
   views: Record<string, ContribView>;
 }

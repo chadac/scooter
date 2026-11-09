@@ -684,8 +684,18 @@ ui = {
 };
 ```
 
+A contrib can also draw its own linked resources, for instance a PR as `#12 feat: …`.
+`ui.linkView.entry` names a component in its `ui/` that takes `LinkViewProps` from
+`@/src/contrib/sdk` and renders the text of one link whose `source` is this contrib.
+The app keeps the icon and the link around it, and shows the plain title while the
+module loads, if it fails, or for a contrib without one:
+
+```nix
+ui.linkView.entry = "ui/LinkView.tsx";
+```
+
 `enable` defaults to true as soon as `source`, `tools`, `settingsTabs`,
-`interruptRenderers`, `panel`, `markdownFences`, `markdownSyntax` or `views` is set, so a declared row cannot
+`interruptRenderers`, `panel`, `linkView`, `markdownFences`, `markdownSyntax` or `views` is set, so a declared row cannot
 silently render nothing.
 
 #### Settings tabs (`ui.settingsTabs`)

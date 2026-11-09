@@ -212,6 +212,20 @@ let
     };
   };
 
+  # How this contrib draws its own linked resources (a PR row in the Linked panel).
+  linkViewModule = {
+    options.entry = mkOption {
+      type = types.str;
+      example = "ui/LinkView.tsx";
+      description = ''
+        The view's module, relative to this contrib's directory and inside its `ui/`. Its
+        default export is a React component taking `LinkViewProps` from @/src/contrib/sdk,
+        drawing the text of one link whose `source` is this contrib. Same import rules as a
+        settings tab's `entry`.
+      '';
+    };
+  };
+
   markdownSyntaxModule = {
     options.entry = mkOption {
       type = types.str;
@@ -333,6 +347,20 @@ let
         description = "This contrib's section in the right-hand panel's Session tab. Checked by contrib/conversation-ui.nix.";
       };
 
+      linkView = mkOption {
+        type = types.nullOr (types.submodule linkViewModule);
+        default = null;
+        example = literalExpression ''
+          { entry = "ui/LinkView.tsx"; }
+        '';
+        description = ''
+          Draws the text of this contrib's linked resources (its number, its title, any
+          styling), in the Linked panel and in sidebar rows set to show this provider. The
+          app keeps the icon and the link; without a view, a link shows its title. Checked
+          by contrib/conversation-ui.nix.
+        '';
+      };
+
       markdownSyntax = mkOption {
         type = types.nullOr (types.submodule markdownSyntaxModule);
         default = null;
@@ -377,7 +405,7 @@ let
 
     config.enable = lib.mkDefault
       (config.source != null || config.tools != { } || config.settingsTabs != [ ] || config.interruptRenderers != { }
-        || config.panel != null || config.markdownFences != { } || config.markdownSyntax != null || config.views != { });
+        || config.panel != null || config.linkView != null || config.markdownFences != { } || config.markdownSyntax != null || config.views != { });
   };
 
   # One recurring task this contrib ships, built by mkScooterTask (contrib/tasks.nix)
