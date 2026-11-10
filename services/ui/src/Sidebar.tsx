@@ -27,7 +27,6 @@ import {
 } from "./folders.js";
 import {
   sessionStore,
-  useCurrentUser,
   useSessions,
   filteredSessions,
   nestSubagents,
@@ -44,8 +43,6 @@ import { mobileNav, useDrawer } from "./mobileNav.js";
 import { SourceBadge, sourceLabel, TitleBadge } from "./sourceIcon.js";
 import { reloadInto } from "./appUpdate.js";
 import { ChildIcon } from "./ChildIcon.js";
-import { canStartSession } from "./family.js";
-import { startSession } from "./sessionActions.js";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -141,7 +138,6 @@ const SessionRow = memo(function SessionRow({
   active: boolean;
   labelMode: LabelMode;
 }) {
-  const user = useCurrentUser();
   const dot = turnDot(s);
 
   return (
@@ -175,7 +171,11 @@ const SessionRow = memo(function SessionRow({
         variant="ghost"
         size="sm"
         onClick={() => reloadInto(s.serverId) || sessionStore.switchTo(s.id)}
-        className={cn("min-w-0 flex-1 justify-start truncate", active && "font-medium")}
+        // The row owns the hover highlight; never stack a second.
+        className={cn(
+          "min-w-0 flex-1 justify-start truncate hover:bg-transparent dark:hover:bg-transparent",
+          active && "font-medium",
+        )}
         title={s.title}
       >
         {depth > 0 && <CornerDownRight className="me-1 size-3.5 shrink-0 text-muted-foreground" aria-hidden />}
@@ -219,19 +219,6 @@ const SessionRow = memo(function SessionRow({
         </span>
       )}
 
-      {depth === 0 && canStartSession(s, user) && (
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          data-testid="session-new-child"
-          aria-label={`New session in ${s.title}`}
-          title="New session in this sandbox"
-          onClick={() => void startSession(s).then((err) => err && window.alert(`Couldn't start a session: ${err}`))}
-          className="shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 focus-visible:opacity-100 max-md:opacity-100"
-        >
-          <Plus aria-hidden />
-        </Button>
-      )}
     </div>
   );
 });

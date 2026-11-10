@@ -140,14 +140,13 @@ fastOnly("the ~subagent directive is a fake-agent test hook")("subagent conversa
     expect(((await listed.json()) as { sessions: { id: string }[] }).sessions.map((s) => s.id)).toEqual([id]);
   });
 
-  test("the sidebar's + starts a web session that nests under its parent and opens", async ({ chat, page }) => {
+  test("the Chats panel's New session starts a web session that nests under its parent and opens", async ({ chat, page }) => {
     await chat.open();
     await chat.completeTurn("hello");
     const parent = page.locator(TOP_LEVEL_ROW).first();
     const parentId = await parent.getAttribute("data-conversation-id");
 
-    await parent.hover();
-    await parent.locator('[data-testid="session-new-child"]').click();
+    await page.locator('[data-testid="chats-new-session"]').click();
 
     const row = page.locator(`${SUBAGENT_ROW}[data-session-kind="session"]`);
     await expect(row).toHaveCount(1, { timeout: 30_000 });
@@ -161,10 +160,10 @@ fastOnly("the ~subagent directive is a fake-agent test hook")("subagent conversa
     const chats = page.locator('[data-testid="chat-row"]');
     await expect(chats).toHaveCount(2);
     await expect(page.locator('[data-testid="chat-row"][data-current="true"]')).toHaveAttribute("data-kind", "session");
-    await shot(page, "web session from the sidebar");
+    await shot(page, "web session from the chats panel");
     await page.emulateMedia({ colorScheme: "dark" });
     await page.waitForTimeout(500);
-    await shot(page, "web session from the sidebar dark");
+    await shot(page, "web session from the chats panel dark");
     await page.emulateMedia({ colorScheme: "light" });
   });
 
