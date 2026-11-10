@@ -2136,6 +2136,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         if (persisted !== undefined && persisted > entry.lastActivityAt) entry.lastActivityAt = persisted;
         if (now - entry.lastActivityAt < idleMs) continue;
         if (hasLiveDescendant(entry.id)) continue; // keep the shared pod up
+        const seenActivity = entry.lastActivityAt;
         // A running or queued run is not idle, however long ago lastActivityAt was bumped at the
         // prompt boundary.
         const qs = entry.bridge?.queueState();
@@ -2155,6 +2156,8 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           }
           if (jobRunning) continue;
         }
+        // Activity during the awaits above means it is not idle.
+        if (entry.status !== "running" || entry.lastActivityAt !== seenActivity || busy(entry)) continue;
         try {
           await this.suspend(entry.id);
           suspended.push(entry.id);

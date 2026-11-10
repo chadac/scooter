@@ -1334,8 +1334,11 @@ export async function main(
         restartSandbox: (id: string) => sessions.restartSandbox!(id as SessionId),
         stopSandbox: (id: string) => sessions.stopSandbox!(id as SessionId),
         waitForSandbox: async (id: string, timeoutMs: number) => {
-          const sb = sessions.get(id as SessionId)?.sandbox;
+          const conv = sessions.get(id as SessionId);
+          const sb = conv?.sandbox;
           if (!sb) return "this conversation has no sandbox";
+          // Only revive() resumes it; don't poll for a pod.
+          if (conv.status === "suspended") return "this conversation is suspended, so its sandbox is stopped; it restarts with the next message";
           return waitForSandboxPod(sb, { timeoutMs, ensureRunning: healingResume(id as SessionId, sb) });
         },
       }

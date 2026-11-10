@@ -2,6 +2,7 @@ import type { SandboxProvisioner, SessionManager } from "./manager.js";
 import type { ConversationRegistry } from "./conversationRegistry.js";
 import type { SandboxRef, SessionId } from "../types.js";
 import { logger } from "../log.js";
+import { ResumeRefusedError } from "../exec/k8sExec.js";
 
 const log = logger("resume-guard");
 
@@ -12,7 +13,7 @@ const log = logger("resume-guard");
  * - Suspended: only revive() may resume, since it also claims the row.
  * - Unreadable row: resume anyway.
  *
- * The refusal carries code 404 so pollForReadyPod fails at once.
+ * Refusals are ResumeRefusedErrors, so polling stops without an error log.
  */
 export function resumeUnlessEnded(
   sessions: Pick<SessionManager, "isEnded" | "get">,
@@ -22,7 +23,7 @@ export function resumeUnlessEnded(
   registry?: Pick<ConversationRegistry, "get">,
 ): () => Promise<void> {
   const refuse = (why: string) =>
-    Object.assign(new Error(`conversation ${id} ${why}; not resuming its sandbox`), { code: 404 });
+    new ResumeRefusedError(`conversation ${id} ${why}; not resuming its sandbox`);
   return async () => {
     if (sessions.isEnded?.(id)) throw refuse("was ended on this pod");
     if (registry) {

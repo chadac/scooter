@@ -209,6 +209,28 @@ describe("SessionManager", () => {
     expect(await sessions.sweepIdle(60_000, idleAt)).toContain(conv.id);
   });
 
+  it("sweepIdle does NOT suspend a conversation that a prompt touched during the job probe", async () => {
+    // A job-completion turn can start while the probe runs.
+    const provisioner = fakeProvisioner();
+    let id: SessionId | undefined;
+    const sessions = createSessionManager({
+      provisioner,
+      store: inMemoryStore(),
+      hasRunningBackgroundJob: async () => {
+        await new Promise((r) => setTimeout(r, 5));
+        sessions.touchById(id!);
+        return false;
+      },
+    });
+    const conv = await sessions.start("thread-1");
+    id = conv.id;
+    const idleAt = sessions.get(conv.id)!.lastActivityAt + 61_000;
+
+    expect(await sessions.sweepIdle(60_000, idleAt)).not.toContain(conv.id);
+    expect(sessions.get(conv.id)?.status).toBe("running");
+    expect(provisioner.suspend).not.toHaveBeenCalled();
+  });
+
   it("sweepIdle suspends normally when the job check is absent or fails (fail-open)", async () => {
     // The job check is best-effort, so a missing or throwing hook must never pin a pod up.
     const provisioner = fakeProvisioner();

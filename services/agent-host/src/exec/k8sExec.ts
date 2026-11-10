@@ -23,6 +23,14 @@ const SANDBOX_LABEL = "agents.x-k8s.io/sandbox-name";
 
 const DEFAULT_CONTAINER = "sandbox";
 
+/** Thrown when ensureRunning declines on purpose, e.g. a suspended conversation. */
+export class ResumeRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ResumeRefusedError";
+  }
+}
+
 /** Collects a Writable's chunks into a string. */
 function sink(): { stream: Writable; text: () => string } {
   const chunks: Buffer[] = [];
@@ -180,6 +188,11 @@ export async function pollForReadyPod(ref: SandboxRef, deps: ResolveReadyPodDeps
       try {
         await deps.ensureRunning();
       } catch (err) {
+        // Expected refusal: stop polling and report why.
+        if (err instanceof ResumeRefusedError) {
+          log.info("resume-on-missing-pod refused", { namespace: ref.namespace, pod_name: ref.name, reason: err.message });
+          throw err;
+        }
         log.errorWith("resume-on-missing-pod failed", err, {
           namespace: ref.namespace,
           pod_name: ref.name,

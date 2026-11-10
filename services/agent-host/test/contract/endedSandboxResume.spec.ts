@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { createSessionManager, type SandboxProvisioner, type SandboxRef } from "../../src/session/manager.js";
 import { createFileConversationStore } from "../../src/session/fileStore.js";
 import { resumeUnlessEnded } from "../../src/session/resumeGuard.js";
-import { pollForReadyPod } from "../../src/exec/k8sExec.js";
+import { pollForReadyPod, ResumeRefusedError } from "../../src/exec/k8sExec.js";
 import type { AguiEvent } from "../../src/bridge.js";
 import type { ConversationRegistry } from "../../src/session/conversationRegistry.js";
 
@@ -55,7 +55,7 @@ describe("resume-on-missing-pod after end()", () => {
       await sessions.end(conv.id);
 
       expect(sessions.isEnded?.(conv.id)).toBe(true);
-      await expect(ensure()).rejects.toMatchObject({ code: 404 });
+      await expect(ensure()).rejects.toBeInstanceOf(ResumeRefusedError);
       expect(provisioner.resume).not.toHaveBeenCalled();
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -84,7 +84,7 @@ describe("resume-on-missing-pod after end()", () => {
       await sessions.suspend(conv.id);
 
       // Only revive() may bring it back, since it also claims the row.
-      await expect(ensure()).rejects.toMatchObject({ code: 404 });
+      await expect(ensure()).rejects.toBeInstanceOf(ResumeRefusedError);
       expect(provisioner.resume).not.toHaveBeenCalled();
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -106,10 +106,38 @@ describe("resume-on-missing-pod after end()", () => {
           sleep,
           deadlineMs: 90_000,
         }),
-      ).rejects.toThrow(/is gone/);
+      ).rejects.toThrow(/was ended/);
       expect(sleep).not.toHaveBeenCalled();
       expect(provisioner.resume).not.toHaveBeenCalled();
     } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("an exec polling for a suspended conversation's pod fails fast with the reason, logged below error", async () => {
+    const root = mkdtempSync(join(tmpdir(), "suspended-poll-"));
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { provisioner, sessions } = harness(root);
+      const conv = await sessions.start("thread-suspended-2");
+      await sessions.suspend(conv.id);
+
+      const sleep = vi.fn(async () => {});
+      const err = await pollForReadyPod(conv.sandbox, {
+        listCandidates: async () => [],
+        ensureRunning: resumeUnlessEnded(sessions, provisioner, conv.id, conv.sandbox),
+        sleep,
+        deadlineMs: 90_000,
+      }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ResumeRefusedError);
+      expect((err as Error).message).toMatch(/is suspended/);
+      expect(sleep).not.toHaveBeenCalled();
+      expect(provisioner.resume).not.toHaveBeenCalled();
+      // The expected refusal logs at info, not to console.error.
+      const lines = errors.mock.calls.map((c) => String(c[0]));
+      expect(lines.filter((l) => l.includes("resume-on-missing-pod failed"))).toEqual([]);
+    } finally {
+      errors.mockRestore();
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -149,7 +177,7 @@ describe("resume-on-missing-pod after end() on ANOTHER replica", () => {
 
       rows.delete(conv.id); // replica A's end()
       expect(sessions.isEnded?.(conv.id)).toBe(false);
-      await expect(ensure()).rejects.toMatchObject({ code: 404 });
+      await expect(ensure()).rejects.toBeInstanceOf(ResumeRefusedError);
       expect(provisioner.resume).not.toHaveBeenCalled();
     } finally {
       rmSync(root, { recursive: true, force: true });
