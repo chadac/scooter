@@ -167,6 +167,36 @@ fastOnly("the ~subagent directive is a fake-agent test hook")("subagent conversa
     await page.emulateMedia({ colorScheme: "light" });
   });
 
+  test("the Chats panel's caret starts a session from context, opening on a forked-from card", async ({ chat, page }) => {
+    await chat.open();
+    await chat.completeTurn("plan the deploy pipeline");
+    const parent = page.locator(TOP_LEVEL_ROW).first();
+    await expect(parent.locator('[data-testid="session-title"]')).not.toHaveText(/new chat/i, { timeout: 30_000 });
+    const parentTitle = (await parent.locator('[data-testid="session-title"]').textContent())?.trim() ?? "";
+
+    await page.locator('[data-testid="chats-new-session-menu"]').click();
+    const fromContext = page.locator('[data-testid="chats-new-session-summary"]');
+    await expect(fromContext).toHaveText("New session from context");
+    await shot(page, "new session caret menu");
+    await fromContext.click();
+
+    const row = page.locator(`${SUBAGENT_ROW}[data-session-kind="session"]`);
+    await expect(row).toHaveAttribute("data-active", "true", { timeout: 30_000 });
+    const card = page.locator('[data-testid="session-seed-card"]');
+    await expect(card).toContainText(`Forked from ${parentTitle}`);
+    await card.locator('[data-testid="session-seed-toggle"]').click();
+    await expect(card.locator('[data-testid="session-seed-body"]')).toContainText("plan the deploy pipeline");
+    await shot(page, "forked from card");
+    await page.emulateMedia({ colorScheme: "dark" });
+    await page.waitForTimeout(500);
+    await shot(page, "forked from card dark");
+    await page.emulateMedia({ colorScheme: "light" });
+
+    // The card's parent title opens the parent.
+    await card.locator('[data-testid="session-seed-parent"]').click();
+    await expect(parent).toHaveAttribute("data-active", "true");
+  });
+
   test("a long parent title truncates instead of running under its subagent count", async ({ chat, page }) => {
     await chat.open();
     await chat.completeTurn("~subagent check every flaky shard in the nightly end to end suite and report back");

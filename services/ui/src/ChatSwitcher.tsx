@@ -3,10 +3,12 @@
  * conversation, its sessions and its subagents) to switch between or start one, in place.
  */
 
-import { ChevronDown, Plus, TriangleAlert } from "lucide-react";
+import { ChevronDown, GitFork, Plus, TriangleAlert } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
 
 import { ChildIcon } from "./ChildIcon.js";
+import type { SessionSeedMode } from "./client.js";
+import { FROM_CONTEXT_LABEL, FROM_CONTEXT_TITLE, menuItem } from "./NewSessionButton.js";
 import { familyActivity, type FamilyMember } from "./family.js";
 import { turnDot, type Session } from "./sessions.js";
 import { cn } from "@/lib/utils";
@@ -29,19 +31,19 @@ export function stepMember(members: FamilyMember[], activeId: string, step: numb
   return members[(((i < 0 ? 0 : i) + step) % members.length + members.length) % members.length].session.id;
 }
 
-const item =
-  "flex cursor-default items-center gap-2 rounded-sm px-2 py-1.5 outline-none select-none " +
-  "data-[highlighted]:bg-accent data-[disabled]:opacity-50";
+const item = menuItem;
 
 export interface ChatSwitcherProps {
   members: FamilyMember[];
   activeId: string;
   onSelect: (id: string) => void;
   /** Absent when no session can start, e.g. while the sandbox is suspended. */
-  onNew?: () => void;
+  onNew?: (seed: SessionSeedMode) => void;
+  /** Whether "New session from context" is offered. */
+  summary?: boolean;
 }
 
-export function ChatSwitcher({ members, activeId, onSelect, onNew }: ChatSwitcherProps) {
+export function ChatSwitcher({ members, activeId, onSelect, onNew, summary = false }: ChatSwitcherProps) {
   const active = members.find((m) => m.session.id === activeId)?.session;
   const { running, awaiting } = familyActivity(members);
   return (
@@ -109,13 +111,25 @@ export function ChatSwitcher({ members, activeId, onSelect, onNew }: ChatSwitche
           <DropdownMenu.Item
             data-testid="chat-switcher-new"
             disabled={!onNew}
-            onSelect={() => onNew?.()}
+            onSelect={() => onNew?.("blank")}
             className={item}
             title={onNew ? "Alt+N" : "Resume this conversation to start a session"}
           >
             <Plus className="size-3.5" aria-hidden />
             New session
           </DropdownMenu.Item>
+          {summary && (
+            <DropdownMenu.Item
+              data-testid="chat-switcher-new-summary"
+              disabled={!onNew}
+              onSelect={() => onNew?.("summary")}
+              className={item}
+              title={onNew ? FROM_CONTEXT_TITLE : "Resume this conversation to start a session"}
+            >
+              <GitFork className="size-3.5" aria-hidden />
+              {FROM_CONTEXT_LABEL}
+            </DropdownMenu.Item>
+          )}
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>

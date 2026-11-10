@@ -172,3 +172,9 @@ function hash32(s: string): number {
   }
   return h >>> 0;
 }
+
+/** The summary model if the catalog offers it. */
+export function summaryModelFrom(cat: ModelCatalog, raw: string | undefined): string | undefined {
+  const id = raw?.trim();
+  return id && isOffered(cat, id) ? id : undefined;
+}

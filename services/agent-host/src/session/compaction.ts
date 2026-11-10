@@ -13,7 +13,7 @@ import { summarizeConversation, type SummaryTurn } from "@scooter/claude-sdk-pro
 
 import type { AguiEvent } from "../bridge.js";
 import type { ConversationStore } from "./manager.js";
-import { foldTurns } from "../agent/transcript.js";
+import { expandSeeds, summaryTurns } from "./seed.js";
 import { splitByRuns, runCount } from "./eventWindow.js";
 
 /** Fraction of the most-recent runs to keep verbatim (the rest is summarized). */
@@ -64,15 +64,8 @@ export async function compactConversation(
   const { older, recent } = splitByRuns(events, keptRuns);
   if (older.length === 0) return null; // nothing older than the kept tail
 
-  // foldTurns emits `tool` turns too; the summarizer only knows user|assistant, so a tool turn
-  // folds in as an assistant-side turn and a platform event as a user-side one.
-  const oldTurns: SummaryTurn[] = foldTurns(older).map((t) =>
-    t.role === "tool"
-      ? { role: "assistant", text: t.text }
-      : t.role === "system"
-        ? { role: "user", text: `[System] ${t.text}` }
-        : { role: t.role, text: t.text },
-  );
+  // A seeded session's recap is part of what gets summarized.
+  const oldTurns = summaryTurns(expandSeeds(older));
   if (oldTurns.length === 0) return null; // no summarizable content
 
   const summarize =
@@ -98,9 +91,10 @@ export async function compactConversation(
 /**
  * The history a revived session resumes from: everything after the latest
  * COMPACTION_MARKER with the marker replaced by an assistant recap turn, or the full log
- * when there is no marker.
+ * when there is no marker. A session seed becomes a recap turn too.
  */
-export function historyAfterCompaction(events: AguiEvent[]): AguiEvent[] {
+export function historyAfterCompaction(logged: AguiEvent[]): AguiEvent[] {
+  const events = expandSeeds(logged);
   let lastMarker = -1;
   for (let i = 0; i < events.length; i++) {
     if (events[i].type === "COMPACTION_MARKER") lastMarker = i;

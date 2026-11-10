@@ -31,6 +31,7 @@ import { createRemoteAgentUi } from "./acp/remoteAgentOneliner.js";
 import { createPgRemoteAgentStore } from "./acp/remoteAgentStore.js";
 import type { AcpProvider } from "./acp/provider.js";
 import { historyAfterCompaction, compactConversation } from "./session/compaction.js";
+import { fakeSeedSummary } from "./session/seed.js";
 import { createK8sProvisioner, parseVolumeClaims, type K8sProvisioner } from "./session/k8sProvisioner.js";
 import { createWarmStoreReserver } from "./session/warmStore.js";
 import type { SandboxResources } from "./session/resources.js";
@@ -83,9 +84,9 @@ import {
   shadowedNames,
   type Skill,
 } from "./agent/skills.js";
-import { createSdkAcpClient } from "@scooter/claude-sdk-provider";
+import { createSdkAcpClient, summarizeConversation, type SummaryTurn } from "@scooter/claude-sdk-provider";
 import { ensureGooseConfig } from "./agent/gooseConfig.js";
-import { catalogFromEnv, availableIds, contextLimitOf, modelAllowedFor, defaultFor, type ModelCatalog } from "./agent/models.js";
+import { catalogFromEnv, availableIds, contextLimitOf, modelAllowedFor, summaryModelFrom, defaultFor, type ModelCatalog } from "./agent/models.js";
 import { createJobManager, noticeTail, type JobStatus, type JobRegistry } from "./session/jobManager.js";
 import { createPgJobStore } from "./session/jobStore.js";
 import { createPgUserSkillStore } from "./session/userSkillStore.js";
@@ -182,6 +183,8 @@ export interface AgentHostConfig {
    *  from `modelCatalog`. */
   model?: string;
   availableModels: string[];
+  /** Seed summaries' model; unset uses the parent's. */
+  summaryModel?: string;
   /** The full model catalog (ids, hints, default), powering the model MCP tools and GET /models. */
   modelCatalog: ModelCatalog;
   /** Agent display name (the assistant introduces itself as this). */
@@ -273,6 +276,8 @@ export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
     modelCatalog: catalog,
     model: catalog.defaultId,
     availableModels: availableIds(catalog),
+    // Ignored unless offered, falling back to the parent's model.
+    summaryModel: summaryModelFrom(catalog, process.env.AGENT_SUMMARY_MODEL),
     agentName: process.env.AGENT_NAME ?? "Scooter",
     skillsDir: process.env.SKILLS_DIR ?? "/etc/agent-sandbox/skills",
     themesDir: process.env.THEMES_DIR ?? "/etc/scooter/themes",
@@ -1921,6 +1926,17 @@ export async function main(
         ? (id: string) =>
             compactConversation(store, id, {
               model: sessions.get(id as SessionId)?.model ?? config.model ?? "claude-sonnet-4-5",
+              oauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN!,
+              claudeCodePath: process.env.CLAUDE_CODE_COMMAND,
+            })
+        : undefined,
+      // Seeds use compaction's one-off summarizer, on the fast model.
+      summarizeSeed: process.env.GOOSE_BIN === "fake"
+        ? fakeSeedSummary
+        : process.env.CLAUDE_CODE_OAUTH_TOKEN
+        ? (id: string, turns: SummaryTurn[]) =>
+            summarizeConversation(turns, {
+              model: config.summaryModel ?? sessions.get(id as SessionId)?.model ?? config.model ?? "claude-sonnet-4-5",
               oauthToken: process.env.CLAUDE_CODE_OAUTH_TOKEN!,
               claudeCodePath: process.env.CLAUDE_CODE_COMMAND,
             })

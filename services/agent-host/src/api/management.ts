@@ -37,6 +37,9 @@ import { mountContribApi, type ContribApiDeps } from "./contribApi.js";
 import { UserSkillError, type UserSkill, type UserSkillStore } from "../session/userSkillStore.js";
 import type { SandboxResources } from "../session/resources.js";
 import { fitAdvice, fitSummary } from "../session/resourceFit.js";
+import { historyAfterCompaction } from "../session/compaction.js";
+import { buildSummarySeed } from "../session/seed.js";
+import type { SummaryTurn } from "@scooter/claude-sdk-provider";
 import type { SandboxSizePreset } from "../session/resources.js";
 import type { WorkspaceVolume } from "../session/workspaceVolume.js";
 import { PRIORITY_INTERRUPT, userAssertionOf, type AguiEvent, type ApproverIdentity, type SessionBridge } from "../bridge.js";
@@ -242,6 +245,8 @@ export interface ManagementDeps {
   builtinSkillNames?: () => string[];
   /** Summarize older turns and continue on summary+recent; null when too short to compact, throws on summarizer failure. */
   compact?: (conversationId: string) => Promise<{ summarizedTurns: number; keptRuns: number } | null>;
+  /** Summarizes a parent for a seed; absent, summary seeds 501. */
+  summarizeSeed?: (conversationId: string, turns: SummaryTurn[]) => Promise<string>;
   /** The conversation's current sandbox resource requests/limits; wired only on the broker path. */
   sandboxResources?: (conversationId: string) => Promise<SandboxResources | undefined>;
   /** The /workspace claim's size; absent without k8s. */
@@ -506,6 +511,8 @@ export function createManagementApi(deps: ManagementDeps): Router {
       anonymous: ctx.user.anonymous,
       ...(deps.uploadLimits ? { limits: { ...deps.uploadLimits } } : {}),
       ...(deps.defaultLifetimeHours !== undefined ? { retention: { defaultLifetimeHours: deps.defaultLifetimeHours } } : {}),
+      // Seed modes new sessions accept, so the UI hides others.
+      ...(deps.summarizeSeed ? { sessionSeeds: ["summary"] } : {}),
     },
   }));
 
@@ -858,7 +865,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
   // Idle children a pod service, such as VS Code, drives.
   r.post("/conversations/:id/sessions", async (ctx) => {
     if (!deps.subagents) return { status: 501, json: { error: "sessions unavailable" } };
-    const body = await ctx.body<{ title?: unknown; titlePrefix?: unknown; origin?: unknown; model?: unknown }>();
+    const body = await ctx.body<{ title?: unknown; titlePrefix?: unknown; origin?: unknown; model?: unknown; seed?: unknown }>();
     if (body.title !== undefined && typeof body.title !== "string") {
       return { status: 400, json: { error: "title must be a string" } };
     }
@@ -874,6 +881,10 @@ export function createManagementApi(deps: ManagementDeps): Router {
     if (body.model && body.model !== models.default && !models.available.includes(body.model)) {
       return { status: 400, json: { error: `unknown model: ${body.model}` } };
     }
+    const seedMode = body.seed === undefined ? "blank" : (body.seed as { mode?: unknown } | null)?.mode;
+    if (seedMode !== "blank" && seedMode !== "summary") {
+      return { status: 400, json: { error: 'seed.mode must be "blank" or "summary"' } };
+    }
     const { conv, error } = mutableFor(ctx.params.id, ctx.user);
     if (error === 404) return { status: 404, json: { error: "not found" } };
     if (error === 403) return { status: 403, json: { error: "not your conversation" } };
@@ -881,6 +892,20 @@ export function createManagementApi(deps: ManagementDeps): Router {
     if (conv!.status !== "running") return { status: 409, json: { error: "the sandbox is not running; resume the conversation first" } };
     // A prefixed title already names its origin, as VS Code's does.
     const origin = (body.origin ?? body.titlePrefix) as string | undefined;
+    // Summarize first: a failed summary leaves no child.
+    let seed: { text: string; summarizedTurns: number } | null = null;
+    if (seedMode === "summary") {
+      const summarize = deps.summarizeSeed;
+      if (!summarize) return { status: 501, json: { error: "summaries unavailable" } };
+      const events: AguiEvent[] = [];
+      for await (const e of store.readEvents(conv!.id as SessionId)) events.push(e);
+      try {
+        seed = await buildSummarySeed(historyAfterCompaction(events), (turns) => summarize(conv!.id, turns));
+      } catch (e) {
+        return { status: 502, json: { error: `summary failed: ${(e as Error).message}` } };
+      }
+      if (!seed) return { status: 409, json: { error: "the conversation has nothing to summarize yet" } };
+    }
     try {
       const child = await deps.subagents.spawn(conv!.id as SessionId, {
         kind: "session",
@@ -889,8 +914,21 @@ export function createManagementApi(deps: ManagementDeps): Router {
         ...(origin ? { origin } : {}),
         ...(body.model ? { model: body.model } : {}),
       });
+      if (seed) {
+        await store.appendEvent(child.id as SessionId, {
+          type: "SESSION_SEED",
+          mode: "summary",
+          parentId: conv!.id,
+          parentTitle: conv!.title,
+          ...seed,
+          ts: Date.now(),
+        });
+      }
       stateHub.nudge(conv!.id);
-      return { status: 201, json: { id: child.id, title: child.title } };
+      return {
+        status: 201,
+        json: { id: child.id, title: child.title, ...(seed ? { seed: { mode: "summary", chars: seed.text.length } } : {}) },
+      };
     } catch (e) {
       if (e instanceof SubagentLimitError) {
         return { status: 429, json: { error: "too many running children; retry after one finishes" } };

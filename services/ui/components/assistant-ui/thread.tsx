@@ -16,6 +16,7 @@ import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { MediaGallery, MediaImage } from "@/components/assistant-ui/media-gallery";
 import { MessageTimestamp, useTimestampToggle } from "@/components/assistant-ui/message-timestamp";
 import { SystemEventMessage } from "@/components/assistant-ui/system-event-message";
+import { SessionSeedCard } from "@/components/assistant-ui/session-seed-card";
 import {
   ToolGroupContent,
   ToolGroupRoot,
@@ -214,6 +215,8 @@ const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
             isEmpty && "justify-center",
           )}
         >
+          {/* A seeded session opens with where it came from. */}
+          <SessionSeedCard />
           <AuiIf condition={isNewChatView}>
             <Welcome />
           </AuiIf>

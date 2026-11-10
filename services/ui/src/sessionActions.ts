@@ -4,7 +4,7 @@
  * started in this browser), while the server must be addressed by `serverId`.
  */
 
-import { createSession, deleteConversation, renameConversation, setConversationVisibility } from "./client.js";
+import { createSession, deleteConversation, type SessionSeedMode, renameConversation, setConversationVisibility } from "./client.js";
 import { agentHostConfig } from "./config.js";
 import { conversationFor, sessionStore, type Session } from "./sessions.js";
 
@@ -68,10 +68,14 @@ export const clearTaintWarning = (labels: string[]): string =>
   "identity and forge tokens. Anything they write later taints the conversation again.";
 
 /** Start a web session in `root`'s sandbox and select it once listed; returns an error or null. */
-export async function startSession(root: Session, select: (id: string) => void = (id) => sessionStore.requestSelect(id)): Promise<string | null> {
+export async function startSession(
+  root: Session,
+  select: (id: string) => void = (id) => sessionStore.requestSelect(id),
+  seed: SessionSeedMode = "blank",
+): Promise<string | null> {
   const parentId = serverIdOf(root);
   if (parentId === undefined) return "this conversation has not started yet";
-  const res = await createSession(agentHostConfig, parentId);
+  const res = await createSession(agentHostConfig, parentId, seed);
   if ("error" in res) return res.error;
   select(res.id);
   return null;

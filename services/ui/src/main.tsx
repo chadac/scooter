@@ -9,6 +9,7 @@ import { viewStore } from "./view.js";
 import { currentConversation, sessionStore } from "./sessions.js";
 import { loadThemes, loadUserTheme, loadWhoami, saveUserTheme } from "./client.js";
 import { setUploadLimits } from "./fileUpload.js";
+import { setSessionSeeds } from "./sessionSeeds.js";
 import { subscribeConversations } from "./conversationStream.js";
 import { conversationCache } from "./conversationCache.js";
 import { folderStore } from "./folders.js";
@@ -51,6 +52,7 @@ void loadWhoami({ baseUrl: BASE_URL }).then((me) => {
   // The upload caps come from the deployment (scooter.uploads), not the image.
   setUploadLimits(me.limits);
   folderStore.setDefaultLifetime(me.retention?.defaultLifetimeHours);
+  setSessionSeeds(me.sessionSeeds);
 });
 
 // The account's choice wins; this browser's seeds an unset one.

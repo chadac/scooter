@@ -21,6 +21,8 @@ import { serverKeyOf, sessionStore, useCurrentUser, useSessions } from "./sessio
 import { canStartSession, familyOf } from "./family.js";
 import { ChatSwitcher, stepMember } from "./ChatSwitcher.js";
 import { startSession } from "./sessionActions.js";
+import { useSummarySeeds } from "./sessionSeeds.js";
+import type { SessionSeedMode } from "./client.js";
 import { appPathFor, CHAT_QUERY, chatQueryId } from "./chatRoute.js";
 import { SCOOTER_MARK } from "./brandMark.js";
 import { CompactContext, densityStore, useDensity } from "./density.js";
@@ -171,8 +173,8 @@ function useChatSelection(pathId: string) {
 
   const user = useCurrentUser();
   const startNew = canStartSession(root, user) && starting === undefined
-    ? () => {
-        void startSession(root, setStarting).then((err) => err && setError(`Couldn't start a session: ${err}`));
+    ? (seed: SessionSeedMode) => {
+        void startSession(root, setStarting, seed).then((err) => err && setError(`Couldn't start a session: ${err}`));
       }
     : undefined;
 
@@ -193,7 +195,7 @@ function useChatSelection(pathId: string) {
         if (next && next !== activeId) select(next);
         e.preventDefault();
       } else if (e.code === "KeyN" && startNew) {
-        startNew();
+        startNew("blank");
         e.preventDefault();
       }
     };
@@ -208,6 +210,7 @@ export function ChatPage({ conversationId }: { conversationId: string }) {
   const { activeId, members, select, startNew, starting, error } = useChatSelection(conversationId);
   const density = useDensity();
   const compact = density === "compact";
+  const summarySeeds = useSummarySeeds();
 
   return (
     <RuntimeProvider>
@@ -216,7 +219,7 @@ export function ChatPage({ conversationId }: { conversationId: string }) {
           <header className="flex h-10 shrink-0 items-center justify-between gap-2 border-b bg-header px-3 text-sm">
             <div className="flex min-w-0 items-center gap-2">
               <span className="text-[15px] leading-none" aria-hidden>{SCOOTER_MARK}</span>
-              {members.length > 0 && <ChatSwitcher members={members} activeId={activeId} onSelect={select} onNew={startNew} />}
+              {members.length > 0 && <ChatSwitcher members={members} activeId={activeId} onSelect={select} onNew={startNew} summary={summarySeeds} />}
               {starting && (
                 <span data-testid="chat-page-starting" className="shrink-0 text-xs text-muted-foreground">
                   Starting session…

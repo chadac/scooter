@@ -562,6 +562,22 @@ describe("IntegrityAgent", () => {
     agent.dispose();
   });
 
+  it("surfaces a SESSION_SEED as the session's seed, cleared by a fresh replay without one", async () => {
+    const frames = [
+      { kind: "event", event: { type: "SESSION_SEED", mode: "summary", parentId: "p1", parentTitle: "deploy pipeline", text: "the recap", summarizedTurns: 4 } },
+      { kind: "synced" },
+    ];
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: sseFetch(frames) });
+    await foldTo(agent);
+    expect(agent.getSessionSeed()).toEqual({ parentId: "p1", parentTitle: "deploy pipeline", text: "the recap", summarizedTurns: 4 });
+    agent.dispose();
+
+    const blank = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c2", fetchImpl: sseFetch([{ kind: "synced" }]) });
+    await foldTo(blank);
+    expect(blank.getSessionSeed()).toBeNull();
+    blank.dispose();
+  });
+
   it("anchors a live SYSTEM_MESSAGE after a reload to the snapshot's last message, not before everything", async () => {
     // After a reload, history arrives folded into a MESSAGES_SNAPSHOT, so no TEXT_MESSAGE_START
     // flows; a live system message must still land after the newest message.

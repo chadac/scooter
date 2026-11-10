@@ -147,6 +147,8 @@ type AguiEventBase =
   // loadHistory seeds a revived session from the summary plus the events after the
   // latest marker.
   | { type: "COMPACTION_MARKER"; summary: string; summarizedTurns: number; keptRuns: number }
+  // A child's opening parent context; loadHistory makes it a recap.
+  | { type: "SESSION_SEED"; mode: "summary"; parentId: string; parentTitle: string; text: string; summarizedTurns: number }
   // A platform-injected message (webhook, scheduler, background job, broker, nudge)
   // persisted instead of a role:user message so the UI can collapse it; `source`
   // tags the origin.

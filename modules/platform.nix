@@ -1890,6 +1890,9 @@ in
                   # models to list, group by provider and switch between, and gating it on
                   # fakeAgent left the cluster tier unable to test any of that.
                   { name = "AGENT_MODELS_JSON"; value = modelsJson; }
+                ++ lib.optional (fastModelId != null)
+                  # Session-seed summaries run on the catalog's fast model.
+                  { name = "AGENT_SUMMARY_MODEL"; value = fastModelId; }
                 ++ lib.optional cfg.fakeAgent
                   # Run the bundled dummy ACP agent (no model, no cluster) for the cluster e2e.
                   { name = "GOOSE_BIN"; value = "fake"; }

@@ -31,6 +31,7 @@ import {
   type QueuedItem,
   type FoldSnapshot,
   type ResumeEntry,
+  type SessionSeedInfo,
 } from "./integrityAgent.js";
 import { conversationCache } from "./conversationCache.js";
 import { ATTR, record } from "./telemetry.js";
@@ -134,6 +135,8 @@ export interface InterruptContextValue {
   contextFill: number | null;
   /** {used,total} context tokens for the fill-bar tooltip, or null. */
   contextTokens: { used: number; total: number } | null;
+  /** The session's parent context; null for a blank start. */
+  sessionSeed: SessionSeedInfo | null;
   /** True while older history remains to page in. */
   hasOlderHistory: boolean;
   /** Fetch and prepend the next older page, resolving with how many messages were added. */
@@ -170,6 +173,7 @@ export const InterruptContext = createContext<InterruptContextValue>({
   runStartedAt: null,
   contextFill: null,
   contextTokens: null,
+  sessionSeed: null,
   hasOlderHistory: false,
   loadOlderHistory: async () => 0,
   cancel: async () => {},
@@ -362,6 +366,7 @@ function ConversationRuntime({
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
   const [contextFill, setContextFill] = useState<number | null>(null);
   const [contextTokens, setContextTokens] = useState<{ used: number; total: number } | null>(null);
+  const [sessionSeed, setSessionSeed] = useState<SessionSeedInfo | null>(null);
   const [cancelState, setCancelState] = useState<"idle" | "stopping" | "failed">("idle");
   const [runError, setRunError] = useState<string | null>(null);
   const [runRetrying, setRunRetrying] = useState<{ attempt: number; max: number } | null>(null);
@@ -400,6 +405,7 @@ function ConversationRuntime({
       setRunStartedAt(agent.runStartedAtMs());
       setContextFill(agent.contextFill());
       setContextTokens(agent.contextTokens());
+      setSessionSeed(agent.getSessionSeed());
       if (!active) setCancelState("idle"); // an idle run drops the optimistic stopping/failed state
       setInterrupts(agent.getPendingInterrupts());
       const serverQueue = agent.getQueuedMessages();
@@ -547,6 +553,7 @@ function ConversationRuntime({
       runStartedAt,
       contextFill,
       contextTokens,
+      sessionSeed,
       hasOlderHistory: hasOlder,
       loadOlderHistory: loadOlder,
       cancel: doCancel,
@@ -560,7 +567,7 @@ function ConversationRuntime({
       renderTick,
       syncing,
     }),
-    [interrupts, submitResume, conversationId, isRunning, activeTool, runStartedAt, contextFill, contextTokens, hasOlder, loadOlder, doCancel, cancelState, runError, sendError, clearSendError, runRetrying, streamAuthError, renderedQueue, renderTick, syncing],
+    [interrupts, submitResume, conversationId, isRunning, activeTool, runStartedAt, contextFill, contextTokens, sessionSeed, hasOlder, loadOlder, doCancel, cancelState, runError, sendError, clearSendError, runRetrying, streamAuthError, renderedQueue, renderTick, syncing],
   );
 
   return (

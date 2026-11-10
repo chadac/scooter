@@ -2,7 +2,7 @@
 
 import { describe, it, expect, vi, afterEach } from "vitest";
 
-import { loadHistory } from "./client.js";
+import { createSession, loadHistory } from "./client.js";
 
 function mockHistory(events: Array<Record<string, unknown>>) {
   vi.stubGlobal(
@@ -52,5 +52,20 @@ describe("loadHistory (multimodal replay)", () => {
     ]);
     const msgs = await loadHistory({ baseUrl: "" }, "c1");
     expect(msgs).toEqual([{ id: "u1", role: "user", content: "hello" }]);
+  });
+});
+
+describe("createSession", () => {
+  const bodies = () => {
+    const f = vi.fn(async (_url: string, _init: RequestInit) => ({ ok: true, json: async () => ({ id: "s1" }) }));
+    vi.stubGlobal("fetch", f as never);
+    return () => f.mock.calls.map(([, init]) => JSON.parse(String(init.body)) as unknown);
+  };
+
+  it("sends no seed for a blank start and the mode for a summary one", async () => {
+    const sent = bodies();
+    expect(await createSession({ baseUrl: "" }, "p1")).toEqual({ id: "s1" });
+    expect(await createSession({ baseUrl: "" }, "p1", "summary")).toEqual({ id: "s1" });
+    expect(sent()).toEqual([{ origin: "web" }, { origin: "web", seed: { mode: "summary" } }]);
   });
 });

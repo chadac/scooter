@@ -189,10 +189,14 @@ export async function createConversation(
   }
 }
 
+/** A new session starts blank or with a parent summary. */
+export type SessionSeedMode = "blank" | "summary";
+
 /** Start a person-driven session in a conversation's sandbox, returning its id or the error. */
 export async function createSession(
   config: AgentHostConfig,
   parentId: string,
+  seed: SessionSeedMode = "blank",
 ): Promise<{ id: string } | { error: string }> {
   try {
     const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(parentId)}/sessions`, {
@@ -201,7 +205,7 @@ export async function createSession(
         "Content-Type": "application/json",
         ...(config.token ? { Authorization: `Bearer ${config.token}` } : {}),
       },
-      body: JSON.stringify({ origin: "web" }),
+      body: JSON.stringify(seed === "blank" ? { origin: "web" } : { origin: "web", seed: { mode: seed } }),
     });
     const body = (await res.json().catch(() => ({}))) as { id?: string; error?: string };
     if (res.ok && body.id) return { id: body.id };
@@ -538,6 +542,8 @@ export interface Whoami {
   limits?: { maxFileBytes?: number; maxFilesPerMessage?: number };
   /** Unfiled conversations' idle lifetime in hours, 0 forever. */
   retention?: { defaultLifetimeHours?: number };
+  /** Seeded starts new sessions accept; absent means blank only. */
+  sessionSeeds?: SessionSeedMode[];
 }
 
 /** Fetch the caller's identity, falling back to anonymous if unreachable. */

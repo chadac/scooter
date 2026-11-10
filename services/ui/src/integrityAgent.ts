@@ -93,6 +93,16 @@ export interface FoldSnapshot {
   queued: ReadonlyArray<QueuedItem>;
   messageImages: Array<[string, Array<{ assetId: string; mimeType: string; url: string }>]>;
   messageTimes: Array<[string, number]>;
+  // Optional: older cached folds lack it.
+  sessionSeed?: SessionSeedInfo | null;
+}
+
+/** A session's parent context, from its SESSION_SEED event. */
+export interface SessionSeedInfo {
+  parentId: string;
+  parentTitle: string;
+  text: string;
+  summarizedTurns: number;
 }
 
 /** Where a frame sits in the log, when the server says. */
@@ -227,6 +237,24 @@ export class IntegrityAgent extends AbstractAgent {
     if (typeof ev.usedTokens === "number") this.contextUsedTokens = ev.usedTokens;
     if (typeof ev.contextWindow === "number") this.contextWindow = ev.contextWindow;
     return this.contextUsedTokens !== before;
+  }
+
+  // Shown as the "forked from" card.
+  private sessionSeed: SessionSeedInfo | null = null;
+  /** The session's parent context; null for a blank start. */
+  getSessionSeed(): SessionSeedInfo | null {
+    return this.sessionSeed;
+  }
+  private trackSessionSeed(e: BaseEvent): boolean {
+    const ev = e as unknown as { type?: string } & Partial<SessionSeedInfo>;
+    if (ev.type !== "SESSION_SEED" || typeof ev.text !== "string") return false;
+    this.sessionSeed = {
+      parentId: String(ev.parentId ?? ""),
+      parentTitle: String(ev.parentTitle ?? ""),
+      text: ev.text,
+      summarizedTurns: typeof ev.summarizedTurns === "number" ? ev.summarizedTurns : 0,
+    };
+    return true;
   }
 
   // Platform-injected SYSTEM_MESSAGE events, which the @ag-ui applier ignores; each records the real message it followed so RuntimeProvider can splice its chip inline at that position.
@@ -459,6 +487,7 @@ export class IntegrityAgent extends AbstractAgent {
       queued: this.queued,
       messageImages: [...this.messageImages],
       messageTimes: [...this.messageTimes],
+      sessionSeed: this.sessionSeed,
     };
   }
 
@@ -479,6 +508,7 @@ export class IntegrityAgent extends AbstractAgent {
     this.queued = s.queued;
     this.messageImages = new Map(s.messageImages);
     this.messageTimes = new Map(s.messageTimes);
+    this.sessionSeed = s.sessionSeed ?? null;
     this.fromCache = true;
     this.setMessages(s.messages as never);
   }
@@ -775,6 +805,7 @@ export class IntegrityAgent extends AbstractAgent {
             // System messages and their anchor are re-derived from the replayed log too.
             this.systemMessages = [];
             this.lastMessageId = null;
+            this.sessionSeed = null;
             // Unknown until this replay's `synced` reports it.
             this.cursor = undefined;
             // A new fold starts here, so consumers must not compare its length against the previous fold's.
@@ -853,6 +884,7 @@ export class IntegrityAgent extends AbstractAgent {
             changed = this.trackTimes(e) || changed;
             changed = this.trackContext(e) || changed;
             changed = this.trackSystemMessage(e) || changed;
+            changed = this.trackSessionSeed(e) || changed;
             changed = this.trackHistoryCursor(e) || changed;
             if (changed && !this.replaying) this.notifyMessages();
             events$.next(e);

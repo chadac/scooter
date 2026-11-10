@@ -12,6 +12,9 @@ import { memberState } from "./ChatSwitcher.js";
 import { canStartSession, type FamilyMember } from "./family.js";
 import { sessionStore, useCurrentUser, useSessions } from "./sessions.js";
 import { removeSession, startSession } from "./sessionActions.js";
+import { NewSessionButton } from "./NewSessionButton.js";
+import { useSummarySeeds } from "./sessionSeeds.js";
+import type { SessionSeedMode } from "./client.js";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -21,25 +24,36 @@ export interface ChatsPanelViewProps {
   onOpen: (id: string) => void;
   onStop: (id: string) => void;
   /** Absent when no session can start, e.g. while the sandbox is suspended. */
-  onNew?: () => void;
+  onNew?: (seed: SessionSeedMode) => void;
+  /** Whether "New session from context" is offered. */
+  summary?: boolean;
 }
 
 /** Pure view: New session, then the family, current chat marked. */
-export function ChatsPanelView({ members, currentId, onOpen, onStop, onNew }: ChatsPanelViewProps) {
+export function ChatsPanelView({ members, currentId, onOpen, onStop, onNew, summary = false }: ChatsPanelViewProps) {
   return (
     <div className="flex flex-col gap-2">
-      <Button
-        variant="outline"
-        size="xs"
-        className="self-start"
-        data-testid="chats-new-session"
-        disabled={!onNew}
-        title={onNew ? "A new chat over this sandbox's files" : "Resume this conversation to start a session"}
-        onClick={() => onNew?.()}
-      >
-        <Plus aria-hidden />
-        New session
-      </Button>
+      <div className="self-start">
+        <NewSessionButton
+          summary={summary}
+          onNew={onNew}
+          testId="chats-new-session"
+          caretClassName="h-6 w-6 rounded-e-md border border-s-0 border-input bg-background shadow-xs hover:bg-accent dark:bg-input/30"
+        >
+          <Button
+            variant="outline"
+            size="xs"
+            className={cn(summary && "rounded-e-none")}
+            data-testid="chats-new-session"
+            disabled={!onNew}
+            title={onNew ? "A new chat over this sandbox's files" : "Resume this conversation to start a session"}
+            onClick={() => onNew?.("blank")}
+          >
+            <Plus aria-hidden />
+            New session
+          </Button>
+        </NewSessionButton>
+      </div>
       <ul className="flex flex-col gap-0.5" data-testid="chats-list">
         {members.map(({ session: s, depth }) => (
           <li
@@ -86,6 +100,7 @@ export function ChatsPanel({ members }: { members: FamilyMember[] }) {
   const { currentId } = useSessions();
   const user = useCurrentUser();
   const root = members[0]?.session;
+  const summarySeeds = useSummarySeeds();
   const [error, setError] = useState<string>();
   return (
     <>
@@ -98,11 +113,12 @@ export function ChatsPanel({ members }: { members: FamilyMember[] }) {
           const child = members.find((m) => m.session.id === id)?.session;
           if (child) void removeSession(child);
         }}
+        summary={summarySeeds}
         onNew={
           canStartSession(root, user)
-            ? () => {
+            ? (seed) => {
                 setError(undefined);
-                void startSession(root).then((err) => err && setError(`Couldn't start a session: ${err}`));
+                void startSession(root, undefined, seed).then((err) => err && setError(`Couldn't start a session: ${err}`));
               }
             : undefined
         }

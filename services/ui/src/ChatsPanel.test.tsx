@@ -17,9 +17,9 @@ const s = (id: string, over: Partial<Session> = {}): Session => ({
 });
 
 const noop = () => {};
-const view = (members: ReturnType<typeof familyOf>, over: { onNew?: () => void; currentId?: string } = {}) =>
+const view = (members: ReturnType<typeof familyOf>, over: { onNew?: () => void; currentId?: string; summary?: boolean } = {}) =>
   renderToStaticMarkup(
-    createElement(ChatsPanelView, { members, currentId: over.currentId, onOpen: noop, onStop: noop, onNew: over.onNew }),
+    createElement(ChatsPanelView, { members, currentId: over.currentId, onOpen: noop, onStop: noop, onNew: over.onNew, summary: over.summary }),
   );
 
 describe("ChatsPanelView", () => {
@@ -49,5 +49,10 @@ describe("ChatsPanelView", () => {
   it("disables New session when none can start", () => {
     expect(view(family)).toMatch(/disabled=""[^>]*data-testid="chats-new-session"|data-testid="chats-new-session"[^>]*disabled=""/);
     expect(view(family, { onNew: noop })).not.toMatch(/data-testid="chats-new-session"[^>]*disabled/);
+  });
+
+  it("adds the from-context caret only when summaries are offered", () => {
+    expect(view(family, { onNew: noop })).not.toContain('data-testid="chats-new-session-menu"');
+    expect(view(family, { onNew: noop, summary: true })).toContain('data-testid="chats-new-session-menu"');
   });
 });

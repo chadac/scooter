@@ -2183,3 +2183,78 @@ describe("sessions routes (children a pod service such as VS Code drives)", () =
     expect((r.json as { sessions: { id: string }[] }).sessions.map((s) => s.id)).toEqual(["s1", "s2"]);
   });
 });
+
+describe("POST /conversations/:id/sessions with a summary seed", () => {
+  const parentLog: AguiEvent[] = [
+    { type: "TEXT_MESSAGE_START", messageId: "u1", role: "user" },
+    { type: "TEXT_MESSAGE_CONTENT", messageId: "u1", delta: "fix the login redirect" },
+    { type: "TEXT_MESSAGE_END", messageId: "u1" },
+  ];
+  const setup = (opts: { summarize?: (id: string, turns: unknown[]) => Promise<string>; log?: AguiEvent[] } = {}) => {
+    const sessions = fakeSessions();
+    const spawn = vi.fn(async () => ({ id: "s-new", title: "New chat" }));
+    const subagents = { spawn } as unknown as import("../../src/agent/subagentTools.js").SubagentManager;
+    const appended: Array<[string, AguiEvent]> = [];
+    const store = { ...fakeStore(opts.log ?? parentLog), appendEvent: async (id: string, e: AguiEvent) => void appended.push([id, e]) };
+    const api = createManagementApi({
+      sessions, store, server: stubServer, answerInterrupt: async () => ({ ok: true }), subagents,
+      models: { default: "grok", available: ["grok"] },
+      ...(opts.summarize ? { summarizeSeed: opts.summarize } : {}),
+    });
+    return { api, spawn, appended };
+  };
+
+  it("summarizes the parent, then writes the seed as the child's first event", async () => {
+    const summarize = vi.fn(async () => "THE RECAP");
+    const { api, spawn, appended } = setup({ summarize });
+    const r = await call(api, "POST", "/conversations/c1/sessions", { origin: "web", seed: { mode: "summary" } });
+    expect(r).toEqual({ status: 201, json: { id: "s-new", title: "New chat", seed: { mode: "summary", chars: 9 } } });
+    expect(summarize).toHaveBeenCalledWith("c1", [{ role: "user", text: "fix the login redirect" }]);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(appended).toEqual([
+      ["s-new", expect.objectContaining({ type: "SESSION_SEED", mode: "summary", parentId: "c1", text: "THE RECAP", summarizedTurns: 1 })],
+    ]);
+  });
+
+  it("a blank or absent seed spawns without summarizing", async () => {
+    const summarize = vi.fn(async () => "x");
+    const { api, appended } = setup({ summarize });
+    expect((await call(api, "POST", "/conversations/c1/sessions", { seed: { mode: "blank" } })).status).toBe(201);
+    expect((await call(api, "POST", "/conversations/c1/sessions", {})).status).toBe(201);
+    expect(summarize).not.toHaveBeenCalled();
+    expect(appended).toEqual([]);
+  });
+
+  it("rejects an unknown mode without spawning", async () => {
+    const { api, spawn } = setup({ summarize: async () => "x" });
+    expect((await call(api, "POST", "/conversations/c1/sessions", { seed: { mode: "recent" } })).status).toBe(400);
+    expect((await call(api, "POST", "/conversations/c1/sessions", { seed: "summary" })).status).toBe(400);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("is 501 without a summarizer", async () => {
+    const { api, spawn } = setup();
+    expect((await call(api, "POST", "/conversations/c1/sessions", { seed: { mode: "summary" } })).status).toBe(501);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("a failed summary is a 502 and leaves no child", async () => {
+    const { api, spawn, appended } = setup({ summarize: async () => { throw new Error("overloaded"); } });
+    const r = await call(api, "POST", "/conversations/c1/sessions", { seed: { mode: "summary" } });
+    expect(r.status).toBe(502);
+    expect((r.json as { error: string }).error).toContain("overloaded");
+    expect(spawn).not.toHaveBeenCalled();
+    expect(appended).toEqual([]);
+  });
+
+  it("is 409 when the parent has nothing to summarize", async () => {
+    const { api, spawn } = setup({ summarize: async () => "x", log: [] });
+    expect((await call(api, "POST", "/conversations/c1/sessions", { seed: { mode: "summary" } })).status).toBe(409);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("GET /whoami lists the seed modes only when summaries are available", async () => {
+    expect((await call(setup({ summarize: async () => "x" }).api, "GET", "/whoami")).json).toMatchObject({ sessionSeeds: ["summary"] });
+    expect((await call(setup().api, "GET", "/whoami")).json).not.toHaveProperty("sessionSeeds");
+  });
+});
