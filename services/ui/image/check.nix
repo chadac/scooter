@@ -7,8 +7,10 @@
 
 let
   ui = pkgs.runCommand "ui-stub" { } ''
-    mkdir -p $out
+    mkdir -p $out/assets
     echo '<!doctype html><title>scooter-ui-stub</title>' > $out/index.html
+    echo '{"build":"stub"}' > $out/version.json
+    echo 'export {}' > $out/assets/index-stub.js
   '';
   conf = import ./nginx.nix { inherit pkgs ui; };
   id = "5a515e73-860b-49ba-bc3f-6ff8d5fda5ff";
@@ -112,6 +114,20 @@ pkgs.runCommand "ui-nginx-frame-ancestors"
   [ "$got" = 502 ] && echo "ok   /s/ proxied -> $got" || { echo "FAIL /s/ with publicPaths -> $got (want 502)"; fail=1; }
   curl -sf http://127.0.0.1:18081/s/abc/ | grep -q scooter-ui-stub \
     && echo "ok   /s/ unlisted -> SPA" || { echo "FAIL /s/ without publicPaths is still proxied"; fail=1; }
+
+  # Shell revalidates, hashed assets cache forever, missing ones 404.
+  header() { # header <path> <want Cache-Control>
+    local got; got=$(curl -s -D - -o /dev/null "http://127.0.0.1:18082$1" | tr -d '\r' \
+      | sed -n 's/^[Cc]ache-[Cc]ontrol: //p')
+    if [ "$got" = "$2" ]; then echo "ok   $1 -> $got"; else echo "FAIL $1 Cache-Control -> $got (want $2)"; fail=1; fi
+  }
+  header / "no-cache"
+  header /index.html "no-cache"
+  header "/?thread=${id}" "no-cache"
+  header /version.json "no-cache"
+  header /assets/index-stub.js "public, max-age=31536000, immutable"
+  got=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18082/assets/index-gone.js)
+  [ "$got" = 404 ] && echo "ok   missing asset -> 404" || { echo "FAIL missing asset -> $got (want 404)"; fail=1; }
 
   kill $(cat $TMPDIR/sandbox/nginx.pid) $(cat $TMPDIR/shared/nginx.pid) $(cat $TMPDIR/uploads/nginx.pid) $(cat $TMPDIR/paths/nginx.pid) || true
   [ $fail = 0 ] || exit 1

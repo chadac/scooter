@@ -34,6 +34,7 @@ import {
 } from "./integrityAgent.js";
 import { conversationCache } from "./conversationCache.js";
 import { ATTR, record } from "./telemetry.js";
+import { withReloadHold } from "./appUpdate.js";
 
 /** Sentinel prefixing the text part of a spliced-in system message (`${MARKER}${source}\n${text}`), paired with the `sys:` message-id prefix. */
 export const SYSTEM_MSG_MARKER = " scooter-system ";
@@ -270,7 +271,7 @@ function ConversationRuntime({
 
   // The composer send: a resume answers a pending interrupt and an ordinary send goes to agent.send(), with the reply re-entering through the render pump.
   const onNew = useCallback(
-    async (message: AppendMessage) => {
+    withReloadHold(async (message: AppendMessage) => {
       // A resume rides on the append message's `resume` extra.
       const resume = (message as unknown as { resume?: ResumeEntry[] }).resume;
       if (resume && resume.length > 0) {
@@ -325,7 +326,7 @@ function ConversationRuntime({
           throw e;
         }
       }
-    },
+    }),
     [agent, conversationId, submitResume],
   );
 

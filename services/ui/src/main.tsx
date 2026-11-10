@@ -20,6 +20,7 @@ import { loadContribSyntax } from "./contribSyntax.js";
 import { installTitleSync } from "./pageTitle.js";
 import { chatRouteId } from "./chatRoute.js";
 import { ChatPage, chatListStatus } from "./ChatPage.js";
+import { installChunkRecovery, pageBuild, watchForUpdates } from "./appUpdate.js";
 
 // Telemetry is configured at runtime from nginx's /telemetry/config.json, so the first
 // requests of a page load go untraced while that fetch is in flight; the error handlers
@@ -28,6 +29,10 @@ void initTelemetryFromServer();
 installGlobalErrorHandlers();
 
 const BASE_URL = (import.meta.env.VITE_AGENT_HOST_URL ?? "").replace(/\/$/, "");
+
+const build = pageBuild();
+const updates = build ? watchForUpdates({ current: build }) : undefined;
+if (updates) installChunkRecovery(updates.check);
 
 // `/chat/<id>` is the conversation subpage (chatRoute.ts): pinned to that one conversation, with
 // links opening in a new tab so they never navigate a host page's iframe.
@@ -56,6 +61,8 @@ void loadWhoami({ baseUrl: BASE_URL }).then((me) => {
 subscribeConversations({ baseUrl: BASE_URL }, "all", {
   onSnapshot: (list) => {
     sessionStore.mergeFromServer(list);
+    // A UI deploy restarts nginx, so reconnects follow deploys.
+    void updates?.check();
     // A reconnect may have missed folder and contrib frames.
     void folderStore.load();
     contribEvents.emitAll();

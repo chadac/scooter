@@ -31,6 +31,7 @@ import { Thread } from "@/components/assistant-ui/thread";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { SCOOTER_MARK } from "./brandMark.js";
+import { UpdateBanner } from "./UpdateBanner.js";
 
 /** The Thread in an error boundary keyed to the render tick, so a transient runtime crash recovers on the next frame. */
 export function GuardedThread() {
@@ -198,6 +199,7 @@ export function App() {
             </span>
           </div>
         </header>
+        <UpdateBanner />
         {view === "settings" ? (
           <div className="min-h-0 flex-1">
             <SettingsPage />

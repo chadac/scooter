@@ -1,10 +1,40 @@
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
+import { createHash } from "node:crypto";
 import { fileURLToPath, URL } from "node:url";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
+const BUILD_PLACEHOLDER = "__SCOOTER_BUILD__";
+
+/** Stamps the build id src/appUpdate.ts compares into the output. */
+function buildId(): Plugin {
+  return {
+    name: "scooter-build-id",
+    transformIndexHtml: () => [{ tag: "meta", attrs: { name: "scooter-build", content: BUILD_PLACEHOLDER }, injectTo: "head" }],
+    // The dev page and version.json share the placeholder: no update.
+    configureServer(server) {
+      server.middlewares.use("/version.json", (_req, res) => {
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ build: BUILD_PLACEHOLDER }));
+      });
+    },
+    generateBundle: {
+      order: "post",
+      handler(_opts, bundle) {
+        // Emitted names carry content hashes, so they identify the build.
+        const names = Object.keys(bundle).filter((n) => n !== "index.html").sort();
+        const build = createHash("sha256").update(names.join("\n")).digest("hex").slice(0, 16);
+        const html = bundle["index.html"];
+        if (html?.type !== "asset") throw new Error("scooter-build-id: no index.html in the bundle");
+        html.source = String(html.source).replace(BUILD_PLACEHOLDER, build);
+        this.emitFile({ type: "asset", fileName: "version.json", source: JSON.stringify({ build }) });
+      },
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), buildId()],
   // One deps cache per dev server; a shared one races.
   cacheDir: process.env.VITE_CACHE_DIR ?? "node_modules/.vite",
   // Define VITE_TELEMETRY_CONSOLE from the environment so it reaches import.meta.env when passed through playwright's webServer.env.

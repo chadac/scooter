@@ -41,6 +41,7 @@ import { LinkText } from "./LinkText.js";
 import { LinkedResources } from "./LinkedResources.js";
 import { mobileNav, useDrawer } from "./mobileNav.js";
 import { SourceBadge, sourceLabel, TitleBadge } from "./sourceIcon.js";
+import { reloadInto } from "./appUpdate.js";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -168,7 +169,7 @@ const SessionRow = memo(function SessionRow({
       <Button
         variant="ghost"
         size="sm"
-        onClick={() => sessionStore.switchTo(s.id)}
+        onClick={() => reloadInto(s.serverId) || sessionStore.switchTo(s.id)}
         className={cn("min-w-0 flex-1 justify-start truncate", active && "font-medium")}
         title={s.title}
       >

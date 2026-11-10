@@ -88,3 +88,8 @@ export function useRequestDraft<T>(initial: T): [T, (next: T | ((prev: T) => T))
   );
   return [value, update];
 }
+
+/** Whether an approval is open or holds unsent input. */
+export function approvalDraftsHeld(): boolean {
+  return focusedId !== null || drafts.size > 0;
+}

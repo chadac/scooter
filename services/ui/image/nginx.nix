@@ -157,10 +157,17 @@ let
         # Enabled contribs' public broker paths (services.broker.publicPaths).
         ''${BROKER_PUBLIC_LOCATIONS}
 
-        # SPA fallback to index.html for client routes.
+        # A stale chunk must 404, not get index.html.
+        location /assets/ {
+          try_files $uri =404;
+          add_header Cache-Control "public, max-age=31536000, immutable" always;
+        }
+
+        # SPA fallback; no-cache since 1970 store mtimes invite heuristic caching.
         location / {
           try_files $uri $uri/ /index.html;
           add_header Content-Security-Policy "frame-ancestors $ui_frame_ancestors" always;
+          add_header Cache-Control "no-cache" always;
         }
       }
     }
