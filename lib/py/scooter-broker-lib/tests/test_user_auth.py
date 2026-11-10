@@ -36,6 +36,8 @@ class FakeForge:
         self.refuse_refresh = False
         self.revoked: list[str] = []
         self.expires_in = 3600
+        self.external_id = "1"
+        self.profiles = 0
 
     def handler(self, req: httpx.Request) -> httpx.Response:
         form = {k: v[0] for k, v in parse_qs(req.content.decode()).items()}
@@ -53,9 +55,10 @@ class FakeForge:
         })
 
     async def profile(self, token: str) -> Profile:
+        self.profiles += 1
         if token == "bad-pat":
             raise ForgeAuthError("refused")
-        return Profile(login="alice-gh", name="Alice", email="1+alice-gh@users.noreply.github.com")
+        return Profile(login="alice-gh", name="Alice", email="1+alice-gh@users.noreply.github.com", external_id=self.external_id)
 
     async def revoke(self, token: str) -> None:
         self.revoked.append(token)
@@ -219,6 +222,86 @@ async def test_on_linked_hooks_run_and_a_failure_keeps_the_link(auth):
     await auth.link_pat(g("alice"), "pat-token")
     assert seen == [("alice", "pat-token")]
     assert await auth.account("alice") is not None
+
+
+# -- identity links --------------------------------------------------------------
+
+
+class FakeLinks:
+    """The agent-host's identity links, in memory."""
+
+    def __init__(self) -> None:
+        self.linked: dict[tuple[str, str], tuple[str, str]] = {}
+        self.calls = 0
+        self.fail = False
+
+    def _maybe_fail(self) -> None:
+        self.calls += 1
+        if self.fail:
+            raise httpx.ConnectError("agent-host down")
+
+    async def link(self, provider: str, user: str, external_id: str, handle: str) -> None:
+        self._maybe_fail()
+        self.linked[(provider, user)] = (external_id, handle)
+
+    async def unlink(self, provider: str, user: str) -> None:
+        self._maybe_fail()
+        self.linked.pop((provider, user), None)
+
+
+@pytest.fixture
+def links(auth) -> FakeLinks:
+    auth.identity_links = FakeLinks()
+    return auth.identity_links
+
+
+async def test_linking_records_the_account_as_the_user(auth, links):
+    await auth.link_pat(g("alice"), "pat-token")
+    assert links.linked == {("forge", "alice"): ("1", "alice-gh")}
+
+
+async def test_completing_oauth_records_the_account_as_the_user(auth, links):
+    q = await connect(auth)
+    await auth.complete(g("alice"), "good-code", q["state"])
+    assert links.linked == {("forge", "alice"): ("1", "alice-gh")}
+
+
+async def test_unlinking_clears_the_identity_link(auth, links):
+    await auth.link_pat(g("alice"), "pat-token")
+    await auth.unlink(g("alice"))
+    assert links.linked == {}
+    assert await auth.account("alice") is None
+
+
+async def test_an_unlink_the_agent_host_refuses_keeps_the_account(auth, links):
+    await auth.link_pat(g("alice"), "pat-token")
+    links.fail = True
+    with pytest.raises(Exception) as e:
+        await auth.unlink(g("alice"))
+    assert getattr(e.value, "status_code", None) == 502
+    assert await auth.account("alice") is not None
+
+
+async def test_an_account_linked_before_ids_were_kept_is_backfilled_on_use(auth, fake, links):
+    auth.identity_links = None
+    fake.external_id = ""
+    await auth.link_pat(g("alice"), "pat-token")
+    auth.identity_links, fake.external_id, fake.profiles = links, "1", 0
+
+    assert (await auth.credential(g("alice"))).value == "pat-token"
+    assert links.linked == {("forge", "alice"): ("1", "alice-gh")}
+    # The id is stored, and the link written once per replica.
+    await auth.credential(g("alice"))
+    assert fake.profiles == 1 and links.calls == 1
+
+
+async def test_a_failed_link_is_retried_on_the_next_use(auth, links):
+    links.fail = True
+    await auth.link_pat(g("alice"), "pat-token")
+    assert await auth.account("alice") is not None
+    links.fail = False
+    await auth.credential(g("alice"))
+    assert links.linked == {("forge", "alice"): ("1", "alice-gh")}
 
 
 # -- routes --------------------------------------------------------------------

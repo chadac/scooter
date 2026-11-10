@@ -1723,6 +1723,9 @@ in
                       # The broker reads a conversation's owner to pick credentials.
                       ++ lib.optional cfg.broker.enable "system:serviceaccount:${cfg.namespace}:agent-broker"
                     ); }
+                  # The only SA that may link forge accounts to users.
+                  { name = "BROKER_SERVICE_ACCOUNT";
+                    value = lib.optionalString cfg.broker.enable "system:serviceaccount:${cfg.namespace}:agent-broker"; }
                   # Subagent creation goes through the router.
                   { name = "CONVERSATION_ROUTER_URL"; value = "http://agent-host.${cfg.namespace}.svc.cluster.local:8080"; }
                   { name = "CONVERSATION_ROUTER_TOKEN_PATH"; value = "/var/run/secrets/conversation-router/token"; }

@@ -32,11 +32,12 @@ from urllib.parse import urlencode
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import HTMLResponse
-from sqlalchemy import BigInteger, Boolean, String, Text, select
+from sqlalchemy import BigInteger, Boolean, String, Text, select, update
 from sqlalchemy.orm import Mapped, mapped_column
 
 from scooter_lib.logging_config import format_error
 
+from .identity_links import IdentityLinks
 from .store import StoreConfig, open_sessions
 from .types import AuthDependency, Credential, Provider
 from .user import user_grant, user_identity
@@ -56,6 +57,8 @@ class Profile:
     login: str
     name: str
     email: str
+    # The forge's numeric account id, which webhooks name a sender by.
+    external_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -140,6 +143,8 @@ def user_token_table(base: type, tablename: str) -> type:
         login: Mapped[str] = mapped_column(String)
         name: Mapped[str] = mapped_column(String)
         email: Mapped[str] = mapped_column(String)
+        # Null on older rows until the token is next used.
+        external_id: Mapped[str | None] = mapped_column(String, nullable=True)
         access_token: Mapped[str] = mapped_column(Text)      # sealed
         access_expires_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
         refresh_token: Mapped[str | None] = mapped_column(Text, nullable=True)  # sealed
@@ -180,10 +185,14 @@ class UserAuth:
     clock: Callable[[], float] = time.time
     # Called with (grant, access token) after a successful link, e.g. to register an SSH key.
     on_linked: list[Callable[[UserGrant, str], Awaitable[None]]] = field(default_factory=list)
+    # Records linked accounts as their users; None skips that.
+    identity_links: IdentityLinks | None = None
     name: str = "user-auth"
 
     def __post_init__(self) -> None:
         self._engine, self._session = open_sessions(self.config)
+        # Users whose identity link this replica has written.
+        self._identity_linked: set[str] = set()
 
     # -- storage --------------------------------------------------------------
 
@@ -197,6 +206,7 @@ class UserAuth:
             login=profile.login,
             name=profile.name,
             email=profile.email,
+            external_id=profile.external_id or None,
             access_token=await self.box.seal(grant, self._purpose("access"), tokens.access_token),
             access_expires_at=tokens.expires_at,
             refresh_token=(
@@ -218,6 +228,12 @@ class UserAuth:
 
     async def access_token(self, grant: UserGrant) -> str | None:
         """A usable access token for the grant's user, refreshed if about to expire; None when unlinked or broken."""
+        token = await self._open_access(grant)
+        if token is not None and grant.user not in self._identity_linked:
+            await self._link_identity(grant, token)
+        return token
+
+    async def _open_access(self, grant: UserGrant) -> str | None:
         async with self._session() as s:
             row = await s.get(self.table, grant.user)
             if row is None or row.broken:
@@ -265,10 +281,47 @@ class UserAuth:
         account = await self.account(user)
         return account.profile if account and not account.broken else None
 
+    async def _link_identity(self, grant: UserGrant, token: str) -> None:
+        """Record the linked account as the user's; best-effort, retried on next use."""
+        if self.identity_links is None:
+            return
+        try:
+            async with self._session() as s:
+                row = await s.get(self.table, grant.user)
+            if row is None:
+                return
+            external_id, login = row.external_id, row.login
+            if not external_id:
+                profile = await self.forge.profile(token)
+                if not profile.external_id:
+                    return
+                external_id, login = profile.external_id, profile.login
+                async with self._session() as s, s.begin():
+                    await s.execute(
+                        update(self.table)
+                        .where(self.table.user_id == grant.user)
+                        .values(external_id=external_id, login=login)
+                    )
+            await self.identity_links.link(self.forge.name, grant.user, external_id, login)
+        except (ForgeAuthError, httpx.HTTPError) as e:
+            logger.warning(
+                "could not link the account to its user; its messages still taint",
+                extra={"forge": self.forge.name, "user": grant.user, "error": format_error(e)},
+            )
+            return
+        self._identity_linked.add(grant.user)
+
     async def unlink(self, grant: UserGrant) -> None:
+        # Unlinked first, so a failure leaves a retryable account.
+        if self.identity_links is not None:
+            try:
+                await self.identity_links.unlink(self.forge.name, grant.user)
+            except httpx.HTTPError as e:
+                raise HTTPException(status_code=502, detail=f"could not unlink the account: {format_error(e)}") from e
+        self._identity_linked.discard(grant.user)
         token = None
         try:
-            token = await self.access_token(grant)
+            token = await self._open_access(grant)
         except (SecretError, httpx.HTTPError):
             pass
         async with self._session() as s, s.begin():
@@ -283,6 +336,9 @@ class UserAuth:
                 logger.warning("grant revoke failed", extra={"forge": self.forge.name, "error": format_error(e)})
 
     async def _linked(self, grant: UserGrant, token: str) -> None:
+        # A new link may name another account.
+        self._identity_linked.discard(grant.user)
+        await self._link_identity(grant, token)
         for hook in self.on_linked:
             try:
                 await hook(grant, token)

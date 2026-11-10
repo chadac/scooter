@@ -14,6 +14,7 @@ import { createMemoryUserHookSettingsStore, type UserHookSettingsStore } from ".
 import type { HookDef } from "../../src/hooks/types.js";
 import { parseContribUserApi } from "../../src/api/contribApi.js";
 import { shortId } from "../../src/session/manager.js";
+import { createMemoryIdentityRegistry } from "../../src/session/identityRegistry.js";
 import type { Conversation, SessionManager, ConversationStore, ConversationLink } from "../../src/session/manager.js";
 import type { AguiServer } from "../../src/agui/server.js";
 import { PRIORITY_INTERRUPT, type AguiEvent } from "../../src/bridge.js";
@@ -871,6 +872,64 @@ describe("management API", () => {
         throw new Error("tokenreview down");
       });
       expect((await call(api, "POST", "/conversations/c1/links", link, SVC)).status).toBe(403);
+    });
+  });
+
+  describe("identity links", () => {
+    const BROKER = { authorization: "Bearer broker" };
+    const linked = (brokerCaller?: (req: IncomingMessage) => Promise<boolean>) => {
+      const identityRegistry = createMemoryIdentityRegistry();
+      const api = createManagementApi({
+        sessions: fakeSessions(),
+        store: fakeStore([]),
+        server: stubServer,
+        answerInterrupt: async () => ({ ok: true }),
+        authEnforced: true,
+        // A service that may reach conversations is not thereby the broker.
+        serviceCaller: async () => true,
+        brokerCaller,
+        identityRegistry,
+      });
+      return { api, identityRegistry };
+    };
+    const isBroker = async (req: IncomingMessage) => req.headers.authorization === "Bearer broker";
+    const userOf = (reg: ReturnType<typeof createMemoryIdentityRegistry>, externalId: string) =>
+      [...reg.rows.values()].find((r) => r.externalId === externalId)?.scooterUser;
+
+    it("links an account to the user, freeing the user's previous account", async () => {
+      const { api, identityRegistry } = linked(isBroker);
+      await identityRegistry.upsert({ provider: "github", externalId: "7", handle: "octo" });
+      const put = (id: string) =>
+        call(api, "PUT", "/identity-links/github/alice", { externalId: id, handle: `h${id}` }, BROKER);
+      expect((await put("7")).status).toBe(204);
+      expect(userOf(identityRegistry, "7")).toBe("alice");
+      expect((await put("8")).status).toBe(204);
+      expect(userOf(identityRegistry, "7")).toBeUndefined();
+      expect(userOf(identityRegistry, "8")).toBe("alice");
+    });
+
+    it("unlinks the user's account", async () => {
+      const { api, identityRegistry } = linked(isBroker);
+      await call(api, "PUT", "/identity-links/gitlab/alice", { externalId: "5", handle: "al" }, BROKER);
+      expect((await call(api, "DELETE", "/identity-links/gitlab/alice", undefined, BROKER)).status).toBe(204);
+      expect(userOf(identityRegistry, "5")).toBeUndefined();
+    });
+
+    it.each([
+      ["PUT", { externalId: "7", handle: "octo" }],
+      ["DELETE", undefined],
+    ])("%s refuses any caller but the broker", async (method, body) => {
+      const { api, identityRegistry } = linked(isBroker);
+      const res = await call(api, method, "/identity-links/github/alice", body, { authorization: "Bearer svc" });
+      expect(res.status).toBe(403);
+      expect(identityRegistry.rows.size).toBe(0);
+      expect((await call(linked().api, method, "/identity-links/github/alice", body, BROKER)).status).toBe(403);
+    });
+
+    it("rejects an unknown provider or a missing id", async () => {
+      const { api } = linked(isBroker);
+      expect((await call(api, "PUT", "/identity-links/slack/alice", { externalId: "U1", handle: "a" }, BROKER)).status).toBe(400);
+      expect((await call(api, "PUT", "/identity-links/github/alice", { handle: "a" }, BROKER)).status).toBe(400);
     });
   });
 

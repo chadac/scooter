@@ -7,6 +7,7 @@ from scooter_broker_lib.autolink import Link, rule
 from scooter_broker_lib.commit_identity import Person, register_commit_identity
 from scooter_broker_lib.context import BrokerContext
 from scooter_broker_lib.forge import ForgeHosts, load_policy
+from scooter_broker_lib.identity_links import IdentityLinks
 from scooter_broker_lib.registry import register_provider
 from scooter_broker_lib.types import Provider
 from scooter_broker_lib.sources.static_token import StaticTokenSource
@@ -111,7 +112,13 @@ def _user_auth(settings: GitHubSettings, ctx: BrokerContext | None) -> user_auth
         client_id=settings.github_app_client_id,
         client_secret=settings.github_app_client_secret,
     )
-    auth = user_auth.build(ctx.contrib_store_config("github"), ctx.user_secrets, users, settings.github_oauth_redirect_url)
+    auth = user_auth.build(
+        ctx.contrib_store_config("github"),
+        ctx.user_secrets,
+        users,
+        settings.github_oauth_redirect_url,
+        IdentityLinks(settings.agent_host_url) if settings.agent_host_url else None,
+    )
 
     @ssh_keys.on_ssh_key_change
     async def _on_key_change(change: ssh_keys.SshKeyChange) -> None:

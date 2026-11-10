@@ -820,6 +820,11 @@ export async function main(
     expectedServiceAccount: process.env.CONVERSATION_SERVICE_ACCOUNTS ?? process.env.WEBHOOKS_SERVICE_ACCOUNT,
     audience: process.env.WEBHOOKS_TOKEN_AUDIENCE || "agent-host",
   });
+  // Only the broker may link a forge account to a user.
+  const brokerVerifier = createWebhooksCallerVerifier({
+    expectedServiceAccount: process.env.BROKER_SERVICE_ACCOUNT,
+    audience: process.env.WEBHOOKS_TOKEN_AUDIENCE || "agent-host",
+  });
 
   // Bring-your-own-Claude is gated on REMOTE_AGENT_JOIN_SECRET; absent means no route and no
   // remote provider.
@@ -1722,6 +1727,8 @@ export async function main(
       server,
       ownerVerifier,
       serviceCaller: conversationServiceVerifier,
+      brokerCaller: brokerVerifier,
+      identityRegistry,
       webServices,
       // The noop provisioner has no pod, so a running sandbox is ready.
       sandboxReady: config.fakeSandbox ? async () => true : undefined,

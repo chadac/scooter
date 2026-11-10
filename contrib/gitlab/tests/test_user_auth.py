@@ -69,6 +69,7 @@ def test_the_row_model_matches_schema_sql():
 async def test_the_profile_uses_the_noreply_address(users):
     profile = await users.profile("good")
     assert (profile.login, profile.name, profile.email) == ("alice", "Alice", "5-alice@users.noreply.gitlab.com")
+    assert profile.external_id == "5"
 
 
 async def test_a_refused_token_is_a_forge_auth_error(users):

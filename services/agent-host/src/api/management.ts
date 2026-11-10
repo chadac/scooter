@@ -30,6 +30,7 @@ import type { IdentityStore } from "../auth/identityStore.js";
 import type { AssetStore } from "../session/assetStore.js";
 import { SubagentLimitError, type SubagentManager } from "../agent/subagentTools.js";
 import { steeringAuthor, type AuthorStore } from "../session/authorStore.js";
+import type { IdentityRegistry } from "../session/identityRegistry.js";
 import { targetError, type ConversationOwnerLookup, type SchedulerClient } from "../agent/schedulerTools.js";
 import { mountContribApi, type ContribApiDeps } from "./contribApi.js";
 import { UserSkillError, type UserSkill, type UserSkillStore } from "../session/userSkillStore.js";
@@ -198,6 +199,10 @@ export interface ManagementDeps {
   authorStore?: AuthorStore;
   /** Spawns sessions within subagent limits; absent, sessions routes 501. */
   subagents?: SubagentManager;
+  /** Forge accounts and the users who linked them. */
+  identityRegistry?: IdentityRegistry;
+  /** Whether a request is the broker, who alone may link accounts. */
+  brokerCaller?: (req: IncomingMessage) => Promise<boolean>;
   /** Identity store for the email-to-user reverse lookup; absent means the lookup route reports no match. */
   identityStore?: IdentityStore;
   /** Uploaded-image store behind GET /conversations/:id/assets/:assetId; absent means images are off. */
@@ -1201,6 +1206,35 @@ export function createManagementApi(deps: ManagementDeps): Router {
       )
     ).filter((m): m is NonNullable<typeof m> => m !== undefined);
     return { json: { mappings } };
+  });
+
+  // A linked forge account's messages count as its user's own.
+  const fromBroker = async (req: IncomingMessage): Promise<boolean> => {
+    if (!deps.authEnforced) return true;
+    return deps.brokerCaller ? deps.brokerCaller(req).catch(() => false) : false;
+  };
+  const LINKABLE = new Set(["github", "gitlab"]);
+  r.on("PUT", "/identity-links/:provider/:user", async (ctx) => {
+    if (!(await fromBroker(ctx.req))) return { status: 403, json: { error: "only the broker may link accounts" } };
+    if (!deps.identityRegistry) return { status: 503, json: { error: "no identity registry" } };
+    const { provider, user } = ctx.params;
+    const body = await ctx.body<{ externalId?: unknown; handle?: unknown }>();
+    if (!LINKABLE.has(provider) || !user) return { status: 400, json: { error: "unknown provider" } };
+    if (typeof body.externalId !== "string" || !body.externalId || typeof body.handle !== "string") {
+      return { status: 400, json: { error: "externalId and handle required" } };
+    }
+    await deps.identityRegistry.link({ provider, externalId: body.externalId, handle: body.handle }, user);
+    log.info("forge account linked", { provider, user, external_id: body.externalId });
+    return { status: 204, json: null };
+  });
+  r.del("/identity-links/:provider/:user", async (ctx) => {
+    if (!(await fromBroker(ctx.req))) return { status: 403, json: { error: "only the broker may link accounts" } };
+    if (!deps.identityRegistry) return { status: 503, json: { error: "no identity registry" } };
+    const { provider, user } = ctx.params;
+    if (!LINKABLE.has(provider) || !user) return { status: 400, json: { error: "unknown provider" } };
+    await deps.identityRegistry.unlink(provider, user);
+    log.info("forge account unlinked", { provider, user });
+    return { status: 204, json: null };
   });
 
   r.get("/conversations/:id/links", async (ctx) => {

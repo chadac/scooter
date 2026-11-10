@@ -13,6 +13,8 @@ CREATE TABLE "gitlab_user_tokens" (
   "login"              character varying NOT NULL,
   "name"               character varying NOT NULL,
   "email"              character varying NOT NULL,
+  -- The forge's numeric account id; null on older rows.
+  "external_id"        character varying NULL,
   "access_token"       text NOT NULL,
   "access_expires_at"  bigint NULL,
   "refresh_token"      text NULL,

@@ -8,6 +8,7 @@ import httpx
 from sqlalchemy.orm import DeclarativeBase
 
 from scooter_broker_lib.commit_identity import Person
+from scooter_broker_lib.identity_links import IdentityLinks
 from scooter_broker_lib.ssh_keys import SshKeyChange, public_key
 from scooter_broker_lib.store import StoreConfig
 from scooter_broker_lib.types import Credential
@@ -62,6 +63,7 @@ class GitLabUsers:
             login=username,
             name=body.get("name") or username,
             email=noreply_email(self.host, body["id"], username),
+            external_id=str(body["id"]),
         )
 
     async def revoke(self, token: str) -> None:
@@ -123,8 +125,10 @@ class GitLabBot:
         return self._person
 
 
-def build(config: StoreConfig, box: SecretBox, users: GitLabUsers, redirect_uri: str) -> UserAuth:
-    auth = UserAuth(forge=users.forge(redirect_uri), table=GitLabUserToken, config=config, box=box)
+def build(
+    config: StoreConfig, box: SecretBox, users: GitLabUsers, redirect_uri: str, links: IdentityLinks | None = None
+) -> UserAuth:
+    auth = UserAuth(forge=users.forge(redirect_uri), table=GitLabUserToken, config=config, box=box, identity_links=links)
 
     async def register_key(grant: UserGrant, token: str) -> None:
         key = await public_key(grant)

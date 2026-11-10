@@ -55,3 +55,40 @@ describe("memory identity registry", () => {
     expect([...reg.rows.values()].find((r) => r.id === a)?.handle).toBe("alice-renamed");
   });
 });
+
+describe("identity links", () => {
+  it("pg: link frees the user's other account of that provider, then upserts this one as theirs", async () => {
+    const { db, calls } = recordingDb("ident-stored");
+    await createPgIdentityRegistry({ db, now: () => 7 }).link({ provider: "github", externalId: "42", handle: "octo" }, "alice");
+
+    const update = calls.find((c) => /^update "identities"/i.test(c.sql))!;
+    expect(update.sql).toMatch(/set "scooter_user" = \$1/i);
+    expect(update.sql).toMatch(/"provider" = \$\d+ and "identities"\."scooter_user" = \$\d+ and "identities"\."external_id" <> \$\d+/i);
+    expect(update.params).toEqual(expect.arrayContaining(["github", "alice", "42"]));
+    const insert = calls.find((c) => /^insert into "identities"/i.test(c.sql))!;
+    expect(insert.sql).toMatch(/do update set "handle" = excluded\.handle, "scooter_user" = excluded\.scooter_user/i);
+    expect(insert.params).toEqual(expect.arrayContaining(["github", "42", "octo", "alice"]));
+    expect(calls.indexOf(update)).toBeLessThan(calls.indexOf(insert));
+  });
+
+  it("pg: unlink clears only the user's account of that provider", async () => {
+    const { db, calls } = recordingDb("x");
+    await createPgIdentityRegistry({ db, now: () => 7 }).unlink("gitlab", "alice");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].sql).toMatch(/^update "identities" set "scooter_user" = \$1, "updated_at" = \$2 where \("identities"\."provider" = \$3 and "identities"\."scooter_user" = \$4\)/i);
+    expect(calls[0].params).toEqual([null, 7, "gitlab", "alice"]);
+  });
+
+  it("memory: a webhook upsert keeps the link, and relinking moves it", async () => {
+    const reg = createMemoryIdentityRegistry();
+    await reg.link({ provider: "github", externalId: "1", handle: "alice" }, "u-alice");
+    await reg.upsert({ provider: "github", externalId: "1", handle: "alice-renamed" });
+    const userOf = (id: string) => [...reg.rows.values()].find((r) => r.externalId === id)?.scooterUser;
+    expect(userOf("1")).toBe("u-alice");
+    await reg.link({ provider: "github", externalId: "2", handle: "alice2" }, "u-alice");
+    expect(userOf("1")).toBeUndefined();
+    expect(userOf("2")).toBe("u-alice");
+    await reg.unlink("github", "u-alice");
+    expect(userOf("2")).toBeUndefined();
+  });
+});

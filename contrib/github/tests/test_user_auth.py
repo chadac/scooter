@@ -76,6 +76,7 @@ def test_the_noreply_email(host, email):
 async def test_the_profile_uses_the_login_when_there_is_no_name(users):
     profile = await users.profile("good")
     assert (profile.login, profile.name, profile.email) == ("alice-gh", "alice-gh", "42+alice-gh@users.noreply.github.com")
+    assert profile.external_id == "42"
 
 
 async def test_a_refused_token_is_a_forge_auth_error(users):

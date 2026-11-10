@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 import httpx
 
 from scooter_broker_lib.commit_identity import Person
+from scooter_broker_lib.identity_links import IdentityLinks
 from scooter_broker_lib.ssh_keys import SshKeyChange, public_key
 from scooter_broker_lib.store import StoreConfig
 from scooter_broker_lib.types import Credential
@@ -73,7 +74,12 @@ class GitHubUsers:
         resp.raise_for_status()
         body = resp.json()
         login = body["login"]
-        return Profile(login=login, name=body.get("name") or login, email=noreply_email(self.host, body["id"], login))
+        return Profile(
+            login=login,
+            name=body.get("name") or login,
+            email=noreply_email(self.host, body["id"], login),
+            external_id=str(body["id"]),
+        )
 
     async def revoke(self, token: str) -> None:
         async with httpx.AsyncClient(timeout=15, transport=self.transport) as c:
@@ -143,8 +149,10 @@ class GitHubBot:
         return self._person
 
 
-def build(config: StoreConfig, box: SecretBox, users: GitHubUsers, redirect_uri: str) -> UserAuth:
-    auth = UserAuth(forge=users.forge(redirect_uri), table=GitHubUserToken, config=config, box=box)
+def build(
+    config: StoreConfig, box: SecretBox, users: GitHubUsers, redirect_uri: str, links: IdentityLinks | None = None
+) -> UserAuth:
+    auth = UserAuth(forge=users.forge(redirect_uri), table=GitHubUserToken, config=config, box=box, identity_links=links)
 
     async def register_key(grant: UserGrant, token: str) -> None:
         key = await public_key(grant)
