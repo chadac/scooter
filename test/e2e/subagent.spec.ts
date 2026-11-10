@@ -91,6 +91,26 @@ fastOnly("the ~subagent directive is a fake-agent test hook")("subagent conversa
     await assertMatchesServer(page, request, baseURL, "after an unrelated conversation upserts");
   });
 
+  test("the Subagents panel's Stop removes the child without leaving the parent", async ({ chat, page }) => {
+    await chat.open();
+    await chat.completeTurn("~subagent long running job");
+    const row = page.locator('[data-testid="subagent-row"]');
+    const stop = row.locator('[data-testid="subagent-cancel"]');
+    await row.hover();
+    await expect(stop, "a running subagent offers Stop").toBeVisible({ timeout: 60_000 });
+    const parentUrl = page.url();
+
+    await stop.click();
+
+    await expect(row, "the subagent must leave the panel").toHaveCount(0, { timeout: 30_000 });
+    await expect(page.locator(SUBAGENT_ROW), "the subagent must leave the sidebar").toHaveCount(0);
+    expect(page.url(), "Stop must not navigate to the child").toBe(parentUrl);
+    // A reload re-lists from the server, so this proves the delete landed there too.
+    await page.reload();
+    await expect(page.locator('[data-testid="session-item"]').first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator(SUBAGENT_ROW), "the subagent must stay gone after a reload").toHaveCount(0);
+  });
+
   test("a session a pod service creates nests under its parent with a VS Code marker", async ({
     chat,
     page,

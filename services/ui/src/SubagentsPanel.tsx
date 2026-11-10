@@ -1,12 +1,13 @@
 /**
  * Subagents panel: the RightPanel tab on a parent conversation that lists the
  * subagents spawned in this conversation with title, live status, click-to-open
- * and a cancel button. Subagents are full conversations sharing the parent's pod;
+ * and a Stop button that ends and deletes it. Subagents are full conversations sharing the parent's pod;
  * their live status comes from the same session store the sidebar uses.
  */
 
 import { sessionStore, useSessions, serverKeyOf, type Session } from "./sessions.js";
 import { Button } from "@/components/ui/button";
+import { removeSession } from "./sessionActions.js";
 
 /** The subagents of `parentId`, a local store key that is resolved to its server id before matching against each child's server-side `parentId`. */
 export function subagentsOf(sessions: Session[], parentId: string | undefined): Session[] {
@@ -57,12 +58,12 @@ export function SubagentsPanelView({ subagents, onOpen, onCancel }: SubagentsPan
           >
             {s.title}
           </Button>
-          {s.status === "running" && (
+          {s.status !== "ended" && (
             <Button
               variant="ghost"
               size="xs"
               data-testid="subagent-cancel"
-              aria-label={`Cancel ${s.title}`}
+              aria-label={`Stop ${s.title}`}
               onClick={() => onCancel(s.id)}
               className="shrink-0 text-muted-foreground opacity-0 hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
             >
@@ -83,8 +84,11 @@ export function SubagentsPanel() {
     <SubagentsPanelView
       subagents={subagents}
       onOpen={(id) => sessionStore.switchTo(id)}
-      // Cancel switches to the child so its own Stop button drives the run cancel.
-      onCancel={(id) => sessionStore.switchTo(id)}
+      // Stop ends and deletes the child, so it leaves the listing.
+      onCancel={(id) => {
+        const child = subagents.find((s) => s.id === id);
+        if (child) void removeSession(child);
+      }}
     />
   );
 }
