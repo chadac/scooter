@@ -105,6 +105,13 @@ describe("SandboxPanelView", () => {
       expect(html).not.toContain('data-testid="sandbox-resources"');
     }
   });
+
+  it("shows the workspace size, and a resize in flight", () => {
+    const at = (workspace: { requested: string; capacity?: string }) =>
+      renderToStaticMarkup(createElement(SandboxPanelView, { ...base, state: "running", workspace }));
+    expect(at({ requested: "10Gi", capacity: "10Gi" })).toMatch(/data-testid="sandbox-resources-workspace"[^>]*>10Gi</);
+    expect(at({ requested: "20Gi", capacity: "10Gi" })).toContain("10Gi (resizing to 20Gi)");
+  });
 });
 
 describe("SandboxPanelView — rescan services", () => {

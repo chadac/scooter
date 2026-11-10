@@ -9,7 +9,7 @@ let
   defs = config.kubernetes.api.definitions;
   ws = cfg.warmStore;
 
-  claimType = description: types.submodule {
+  claimModule = description: {
     options = {
       # Only what a claim template can carry; Scooter sets the name.
       metadata = {
@@ -21,6 +21,30 @@ let
         default = { };
         inherit description;
       };
+    };
+  };
+  claimType = description: types.submodule (claimModule description);
+
+  # expand_workspace limits; the overlay stays fixed for the warm pool.
+  workspaceGrowth = {
+    options.maxStorage = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "200Gi";
+      description = ''
+        How far the agent may grow its /workspace claim with `expand_workspace`, which resizes
+        the live volume without a restart. `null` leaves the tool off. The claim's
+        StorageClass must set `allowVolumeExpansion: true`, or Kubernetes refuses the resize.
+      '';
+    };
+    options.autoMaxStorage = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "50Gi";
+      description = ''
+        How far the agent may grow /workspace without asking; above it, up to `maxStorage`,
+        the owner approves each request on a card. `null` means `maxStorage`.
+      '';
     };
   };
 
@@ -51,10 +75,10 @@ in
 
   options.scooter.sandbox.volumes = {
     workspace = mkOption {
-      type = claimType ''
+      type = types.submodule [ (claimModule ''
         Spec of the claim mounted at /workspace. Set `storageClassName` when the
         cluster default can't attach to sandbox nodes.
-      '';
+      '') workspaceGrowth ];
       default = { };
       example = { spec.storageClassName = "gp3-crun"; spec.resources.requests.storage = "50Gi"; };
       description = ''

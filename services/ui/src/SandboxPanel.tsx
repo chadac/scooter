@@ -19,6 +19,7 @@ import {
   stopWebService,
   type WebService,
   type SandboxResources,
+  type WorkspaceVolume,
   type SandboxSizePreset,
   type PendingRestart,
 } from "./client.js";
@@ -163,10 +164,18 @@ function formatQuantity(q: SandboxResources["requests"]): string {
   return parts.join(" · ");
 }
 
-/** The sandbox's resource allotment: requests (guaranteed) and limits (ceiling). */
-export function ResourcesSection({ resources }: { resources: SandboxResources }) {
-  const requests = formatQuantity(resources.requests);
-  const limits = formatQuantity(resources.limits);
+/** The /workspace size, e.g. "10Gi (resizing to 20Gi)". */
+function formatWorkspace(w: WorkspaceVolume | null | undefined): string {
+  if (!w) return "";
+  const size = w.capacity ?? w.requested;
+  return w.capacity && w.capacity !== w.requested ? `${size} (resizing to ${w.requested})` : size;
+}
+
+/** Requests (guaranteed), limits (ceiling) and the /workspace size. */
+export function ResourcesSection({ resources, workspace }: { resources: SandboxResources | null | undefined; workspace?: WorkspaceVolume | null }) {
+  const requests = formatQuantity(resources?.requests);
+  const limits = formatQuantity(resources?.limits);
+  const disk = formatWorkspace(workspace);
   return (
     <div data-testid="sandbox-resources">
       <div className="mb-1 text-xs font-medium text-muted-foreground">Resources</div>
@@ -185,6 +194,14 @@ export function ResourcesSection({ resources }: { resources: SandboxResources })
               Limit
             </dt>
             <dd data-testid="sandbox-resources-limits" className="font-mono text-foreground">{limits}</dd>
+          </>
+        )}
+        {disk && (
+          <>
+            <dt className="text-muted-foreground" title="The /workspace volume's size">
+              Workspace
+            </dt>
+            <dd data-testid="sandbox-resources-workspace" className="font-mono text-foreground">{disk}</dd>
           </>
         )}
       </dl>
@@ -342,6 +359,8 @@ export interface SandboxPanelViewProps {
   owner?: string | null;
   /** The sandbox's resource allotment, not shown when null or empty. */
   resources?: SandboxResources | null;
+  /** The /workspace volume's size, not shown when null. */
+  workspace?: WorkspaceVolume | null;
   /** The deployment's named size presets; empty hides the size picker. */
   sizes?: Record<string, SandboxSizePreset>;
   onSelectSize?: (size: string) => void;
@@ -374,6 +393,7 @@ export function SandboxPanelView({
   conversationId,
   owner,
   resources,
+  workspace,
   sizes,
   onSelectSize,
   sizeSaving,
@@ -469,7 +489,7 @@ export function SandboxPanelView({
       ) : null}
 
       {/* Shown regardless of running state, since the size is set even while suspended. */}
-      {hasResources(resources) ? <ResourcesSection resources={resources} /> : null}
+      {hasResources(resources) || workspace ? <ResourcesSection resources={resources} workspace={workspace} /> : null}
 
       {/* Only when the deployment configured presets and a write path is wired. */}
       {sizes && Object.keys(sizes).length > 0 && onSelectSize ? (
@@ -537,6 +557,7 @@ export function SandboxPanel() {
   // Re-fetched when the pod comes up, since the broker applies a pending size on restart.
   const [resources, setResources] = useState<SandboxResources | null>(null);
   const [pendingRestart, setPendingRestart] = useState<PendingRestart | null>(null);
+  const [workspace, setWorkspace] = useState<WorkspaceVolume | null>(null);
   // Bumped after a restart to re-read the info.
   const [infoNonce, setInfoNonce] = useState(0);
   useEffect(() => {
@@ -554,6 +575,7 @@ export function SandboxPanel() {
         if (!alive || !r) return;
         setResources(r.resources);
         setPendingRestart(r.pendingRestart);
+        setWorkspace(r.workspace);
       });
     return () => {
       alive = false;
@@ -646,6 +668,7 @@ export function SandboxPanel() {
       conversationId={s.conversationId}
       owner={owner}
       resources={resources}
+      workspace={workspace}
       sizes={sizes}
       onSelectSize={onSelectSize}
       sizeSaving={sizeSaving}

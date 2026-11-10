@@ -38,6 +38,7 @@ import { UserSkillError, type UserSkill, type UserSkillStore } from "../session/
 import type { SandboxResources } from "../session/resources.js";
 import { fitAdvice, fitSummary } from "../session/resourceFit.js";
 import type { SandboxSizePreset } from "../session/resources.js";
+import type { WorkspaceVolume } from "../session/workspaceVolume.js";
 import { PRIORITY_INTERRUPT, userAssertionOf, type AguiEvent, type ApproverIdentity, type SessionBridge } from "../bridge.js";
 import { formatError, logger } from "../log.js";
 import type { AccessCheck } from "../session/access.js";
@@ -230,6 +231,8 @@ export interface ManagementDeps {
   compact?: (conversationId: string) => Promise<{ summarizedTurns: number; keptRuns: number } | null>;
   /** The conversation's current sandbox resource requests/limits; wired only on the broker path. */
   sandboxResources?: (conversationId: string) => Promise<SandboxResources | undefined>;
+  /** The /workspace claim's size; absent without k8s. */
+  workspaceVolume?: (conversationId: string) => Promise<WorkspaceVolume | undefined>;
   /** The named sandbox size presets and the default preset name; wired only on the broker path. */
   sandboxSizes?: () => Promise<{ sizes: Record<string, SandboxSizePreset>; default: string | null }>;
   /** Record a named size preset for a conversation, rejecting unknown names; absent means the route reports 501. */
@@ -1405,13 +1408,14 @@ export function createManagementApi(deps: ManagementDeps): Router {
   // {resources: null}.
   r.get("/conversations/:id/resources", async (ctx) => {
     const id = await resolveConvId(ctx.params.id);
-    if (!id) return { json: { resources: null, pendingRestart: null } };
+    if (!id) return { json: { resources: null, pendingRestart: null, workspace: null } };
     // What a restart would pick up; best-effort.
-    const [resources, pendingRestart] = await Promise.all([
+    const [resources, pendingRestart, workspace] = await Promise.all([
       deps.sandboxResources ? deps.sandboxResources(id).catch(() => undefined) : undefined,
       sessions.get(id) && sessions.pendingRestart ? sessions.pendingRestart(id as SessionId).catch(() => undefined) : undefined,
+      deps.workspaceVolume ? deps.workspaceVolume(id).catch(() => undefined) : undefined,
     ]);
-    return { json: { resources: resources ?? null, pendingRestart: pendingRestart ?? null } };
+    return { json: { resources: resources ?? null, pendingRestart: pendingRestart ?? null, workspace: workspace ?? null } };
   });
 
   // The named sandbox size presets and the default preset name; an absent getter yields

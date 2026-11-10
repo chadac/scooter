@@ -104,6 +104,14 @@ import {
   type UntaintAnswerDeps,
   type UntaintRequest,
 } from "./session/taint.js";
+import {
+  answerWorkspaceExpand,
+  parseWorkspaceLimits,
+  WORKSPACE_EXPAND_CONTRIB,
+  workspaceExpandMessage,
+  type WorkspaceVolumeClient,
+} from "./session/workspaceVolume.js";
+import type { WorkspaceToolsWiring } from "./agent/workspaceTools.js";
 import { mintConvToken } from "./auth/convToken.js";
 import { createMcpEndpoint, resolveConversation } from "./agent/mcpServer.js";
 import { readSandboxFileBase64, IMAGE_MAX_BYTES, type ImageToolsWiring } from "./agent/imageTools.js";
@@ -1321,6 +1329,45 @@ export async function main(
     setTitle: (id: string, title: string) => sessions.setTitle(id, title, { force: true }),
   };
 
+  // Growing /workspace; off without SANDBOX_WORKSPACE_MAX_STORAGE.
+  const workspaceLimits = k8sProvisioner
+    ? parseWorkspaceLimits(process.env.SANDBOX_WORKSPACE_MAX_STORAGE, process.env.SANDBOX_WORKSPACE_AUTO_MAX_STORAGE)
+    : undefined;
+  const workspaceVolume: WorkspaceVolumeClient | undefined = k8sProvisioner
+    ? {
+        getWorkspace: (id) => k8sProvisioner.getWorkspace(keyOf(id)),
+        growWorkspace: (id, size) => k8sProvisioner.growWorkspace(keyOf(id), size),
+      }
+    : undefined;
+  const workspaceToolsWiring: WorkspaceToolsWiring | undefined =
+    workspaceLimits && workspaceVolume
+      ? {
+          limits: workspaceLimits,
+          volume: workspaceVolume,
+          requestApproval: async (id, req) => {
+            const bridge = sessions.get(id as SessionId)?.bridge;
+            if (!bridge) throw new Error("this conversation has no live run to show the card in");
+            const requestId = `workspace-${randomUUID()}`;
+            bridge.raiseInterrupt({
+              id: requestId,
+              message: workspaceExpandMessage(req, workspaceLimits),
+              options: [
+                { optionId: "approve", name: `Grow to ${req.size}`, kind: "allow_once" },
+                { optionId: "deny", name: "Don't", kind: "reject_once" },
+              ],
+              metadata: { contrib: WORKSPACE_EXPAND_CONTRIB, requestId, workspace: req },
+              onAnswer: (optionId, approver) => {
+                if (optionId === null) return;
+                void answerWorkspace(id, requestId, optionId, approver ?? { id }).catch((e) => {
+                  hostLog.errorWith("workspace growth answer NOT applied", e, { conversation_id: id, request_id: requestId });
+                  untaintDeps.tell(id, `The owner's answer to your workspace request could not be applied: ${e instanceof Error ? e.message : String(e)}`);
+                });
+              },
+            });
+          },
+        }
+      : undefined;
+
   // Sandbox right-sizing tools; absent for a fake sandbox.
   const resourceToolsWiring = k8sProvisioner
     ? {
@@ -1341,6 +1388,7 @@ export async function main(
           if (conv.status === "suspended") return "this conversation is suspended, so its sandbox is stopped; it restarts with the next message";
           return waitForSandboxPod(sb, { timeoutMs, ensureRunning: healingResume(id as SessionId, sb) });
         },
+        workspace: workspaceToolsWiring,
       }
     : undefined;
 
@@ -1401,12 +1449,27 @@ export async function main(
   };
   const answerUntaint = (id: string, requestId: string, optionId: string, approver: ApproverIdentity) =>
     answerUntaintCard(untaintDeps, id, requestId, optionId, approver);
+  const answerWorkspace = (id: string, requestId: string, optionId: string, approver: ApproverIdentity) => {
+    if (!workspaceLimits || !workspaceVolume) return Promise.reject(new Error("growing /workspace is not enabled here"));
+    return answerWorkspaceExpand(
+      {
+        owner: async (cid) => (await rootAccess(cid))?.owner,
+        events: untaintDeps.events,
+        limits: workspaceLimits,
+        volume: workspaceVolume,
+        tell: untaintDeps.tell,
+      },
+      id, requestId, optionId, approver,
+    );
+  };
 
-  /** Untaint cards are answered here; others go to the broker. */
+  /** Untaint and workspace cards are answered here, others by the broker. */
   const resolveApproval = (sessionId: string, contrib: string, requestId: string, optionId: string, approver: ApproverIdentity) =>
     contrib === UNTAINT_CONTRIB
       ? answerUntaint(sessionId, requestId, optionId, approver)
-      : resolveApprovalForBroker(sessionId, contrib, requestId, optionId, approver);
+      : contrib === WORKSPACE_EXPAND_CONTRIB
+        ? answerWorkspace(sessionId, requestId, optionId, approver)
+        : resolveApprovalForBroker(sessionId, contrib, requestId, optionId, approver);
 
   // One HTTP client to the scheduler service, shared by the agent MCP tools and the UI
   // settings proxy, with every call scoped to an owner.
@@ -1817,6 +1880,7 @@ export async function main(
       sandboxResources: k8sProvisioner
         ? (id: string) => k8sProvisioner.getSize(keyOf(id))
         : undefined,
+      workspaceVolume: workspaceVolume?.getWorkspace,
       // The named sandbox size presets and the default, for the UI dropdown and the agent's
       // size discovery.
       sandboxSizes: k8sProvisioner ? () => Promise.resolve(k8sProvisioner.getSizes()) : undefined,
@@ -1873,7 +1937,7 @@ export async function main(
       // Relay the user's answer to the contrib that asked, shared with the revive re-raise.
       resolveApproval,
       canApproveRequest: async (sessionId, contrib, requestId, approver) => {
-        if (contrib === UNTAINT_CONTRIB) {
+        if (contrib === UNTAINT_CONTRIB || contrib === WORKSPACE_EXPAND_CONTRIB) {
           const owner = (await rootAccess(sessionId))?.owner;
           return { canApprove: !!owner && approver.id === owner };
         }

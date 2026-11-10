@@ -381,6 +381,12 @@ export interface SandboxResources {
   limits?: ResourceQuantity;
 }
 
+/** The /workspace size: requested, and what the filesystem has. */
+export interface WorkspaceVolume {
+  requested: string;
+  capacity?: string;
+}
+
 /** Fetch the conversation's sandbox resource allotment, or null when unavailable. */
 export async function loadSandboxResources(
   config: AgentHostConfig,
@@ -398,21 +404,25 @@ export interface PendingRestart {
   template?: string[];
 }
 
-/** Sandbox size and pending restart; nulls on failure. */
+/** Sandbox size, workspace volume and pending restart; nulls on failure. */
 export async function loadSandboxInfo(
   config: AgentHostConfig,
   conversationId: string,
-): Promise<{ resources: SandboxResources | null; pendingRestart: PendingRestart | null }> {
+): Promise<{ resources: SandboxResources | null; pendingRestart: PendingRestart | null; workspace: WorkspaceVolume | null }> {
   try {
     const res = await fetch(
       `${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(conversationId)}/resources`,
       { headers: config.token ? { Authorization: `Bearer ${config.token}` } : undefined },
     );
-    if (!res.ok) return { resources: null, pendingRestart: null };
-    const body = (await res.json()) as { resources?: SandboxResources | null; pendingRestart?: PendingRestart | null };
-    return { resources: body.resources ?? null, pendingRestart: body.pendingRestart ?? null };
+    if (!res.ok) return { resources: null, pendingRestart: null, workspace: null };
+    const body = (await res.json()) as {
+      resources?: SandboxResources | null;
+      pendingRestart?: PendingRestart | null;
+      workspace?: WorkspaceVolume | null;
+    };
+    return { resources: body.resources ?? null, pendingRestart: body.pendingRestart ?? null, workspace: body.workspace ?? null };
   } catch {
-    return { resources: null, pendingRestart: null };
+    return { resources: null, pendingRestart: null, workspace: null };
   }
 }
 

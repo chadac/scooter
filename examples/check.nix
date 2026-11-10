@@ -126,7 +126,7 @@ let
   # must stay off the broker.
   sandboxShapingEnv = [
     "SANDBOX_IMAGE" "SANDBOX_PULL_POLICY" "SANDBOX_RUNTIME_CLASS" "SANDBOX_VOLUME_CLAIMS" "SANDBOX_RESOURCES"
-    "SANDBOX_SIZES_JSON" "SANDBOX_MANIFEST_OVERLAY_CONFIGMAP"
+    "SANDBOX_SIZES_JSON" "SANDBOX_MANIFEST_OVERLAY_CONFIGMAP" "SANDBOX_WORKSPACE_MAX_STORAGE" "SANDBOX_WORKSPACE_AUTO_MAX_STORAGE"
     "SCOOTER_CONFIGMAP" "SCOOTER_CONFIG_FILES_CONFIGMAP" "SCOOTER_TOKEN_AUDIENCES" "SCOOTER_ENV"
   ];
   oneEntrypointProblems =
@@ -846,6 +846,10 @@ let
     scooter.sandbox.volumes.workspace = { spec.storageClassName = "gp3"; metadata.labels.tier = "fast"; };
   });
   legacyClaims = claimsOf (withVolumes { scooter.workspaceStorageClass = "legacy"; });
+  growPlatform = withVolumes { scooter.sandbox.volumes.workspace = { maxStorage = "200Gi"; autoMaxStorage = "50Gi"; }; };
+  growClaims = claimsOf growPlatform;
+  growEnv = growPlatform.config.kubernetes.resources.deployments.agent-host.spec.template.spec.containers.agent-host.env;
+  growVal = name: let m = builtins.filter (e: e.name == name) growEnv; in if m == [ ] then "" else (builtins.head m).value;
   offPool = builtins.tryEval (builtins.deepSeq
     (claimsOf (withVolumes { scooter.sandbox.volumes.overlay.spec.storageClassName = "elsewhere"; })) true);
   volumeProblems =
@@ -859,7 +863,12 @@ let
     ++ (if legacyClaims.workspace.spec.storageClassName or null == "legacy" then [ ]
         else [ "scooter.workspaceStorageClass no longer reaches the workspace claim" ])
     ++ (if !offPool.success then [ ]
-        else [ "an overlay claim class off the warm-store pool rendered instead of failing" ]);
+        else [ "an overlay claim class off the warm-store pool rendered instead of failing" ])
+    ++ (if !(hasName hostEnv "SANDBOX_WORKSPACE_MAX_STORAGE") then [ ]
+        else [ "SANDBOX_WORKSPACE_MAX_STORAGE set by default (expand_workspace must be opt-in)" ])
+    ++ (if growVal "SANDBOX_WORKSPACE_MAX_STORAGE" == "200Gi" && growVal "SANDBOX_WORKSPACE_AUTO_MAX_STORAGE" == "50Gi"
+          && !(setClaims.workspace ? maxStorage) && !(growClaims.workspace ? maxStorage)
+        then [ ] else [ "scooter.sandbox.volumes.workspace.{maxStorage,autoMaxStorage} did not reach the agent-host env alone" ]);
 
   # Sandbox self-access: the router serves the listener, a Service fronts it, and every sandbox
   # gets the token audience and the URL to reach it.

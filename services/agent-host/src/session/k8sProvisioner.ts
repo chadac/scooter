@@ -16,6 +16,8 @@ import {
   CustomObjectsApi,
   setHeaderOptions,
   PatchStrategy,
+  type CoreV1Event,
+  type V1PersistentVolumeClaim,
   type V1Pod,
 } from "@kubernetes/client-node";
 
@@ -27,6 +29,7 @@ import { applyOverlay, deepMerge, parseOverlay } from "./sandboxOverlay.js";
 import { sandboxOrigin, type SandboxOrigins } from "../proxy/sandboxOrigin.js";
 import { cpuToMillicores, memoryToBytes } from "./resourceFit.js";
 import type { ReserveFn } from "./warmStore.js";
+import type { WorkspaceVolume, WorkspaceVolumeClient } from "./workspaceVolume.js";
 import {
   InvalidResourceError,
   type RenderedResources,
@@ -246,7 +249,7 @@ export interface SandboxSizeClient {
   getSizes(): { sizes: Record<string, SandboxSizePreset>; default: string | null };
 }
 
-export type K8sProvisioner = SandboxProvisioner & SandboxSizeClient;
+export type K8sProvisioner = SandboxProvisioner & SandboxSizeClient & WorkspaceVolumeClient;
 
 export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisioner {
   const kc = opts.kubeConfig ?? defaultKubeConfig();
@@ -688,6 +691,21 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
   const desiredSize = async (id: string): Promise<RenderedResources | undefined> =>
     (await readSize(id)) ?? sandboxResources;
 
+  /** agent-sandbox names claims <template>-<sandbox>. */
+  const workspacePvc = (id: string) => `workspace-${sandboxName(id)}`;
+
+  /** The latest resize failure, unless a success followed; best-effort. */
+  const resizeFailure = async (pvc: string): Promise<{ failure?: string }> => {
+    const fieldSelector = `involvedObject.kind=PersistentVolumeClaim,involvedObject.name=${pvc}`;
+    const events = await core.listNamespacedEvent({ namespace: ns, fieldSelector }).then((l) => l.items ?? [], () => []);
+    const when = (e: CoreV1Event) =>
+      new Date(e.series?.lastObservedTime ?? e.lastTimestamp ?? e.eventTime ?? e.metadata?.creationTimestamp ?? 0).getTime();
+    const latest = events
+      .filter((e) => /^(VolumeResizeFailed|VolumeResizeSuccessful|FileSystemResizeSuccessful|FileSystemResizeFailed)$/.test(e.reason ?? ""))
+      .sort((a, b) => when(b) - when(a))[0];
+    return latest?.reason?.endsWith("Failed") ? { failure: (latest.message ?? latest.reason ?? "").trim() } : {};
+  };
+
   return {
     refFor(id: string): SandboxRef {
       return { name: sandboxName(id), namespace: ns };
@@ -939,6 +957,34 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
 
     getSizes(): { sizes: Record<string, SandboxSizePreset>; default: string | null } {
       return { sizes: presets, default: opts.defaultSizeName || null };
+    },
+
+    // --- workspace volume: the claim, not the CR, holds the size ---
+
+    async getWorkspace(id: string): Promise<WorkspaceVolume | undefined> {
+      let pvc: V1PersistentVolumeClaim;
+      try {
+        pvc = await core.readNamespacedPersistentVolumeClaim({ name: workspacePvc(id), namespace: ns });
+      } catch (e) {
+        if ((e as { code?: number })?.code === 404) return undefined;
+        throw e;
+      }
+      const requested = pvc.spec?.resources?.requests?.storage;
+      if (!requested) return undefined;
+      const pending = (pvc.status?.conditions ?? []).find((c) => c.status === "True")?.type;
+      return {
+        requested: String(requested),
+        capacity: pvc.status?.capacity?.storage ? String(pvc.status.capacity.storage) : undefined,
+        ...(pending ? { pending } : {}),
+        ...(await resizeFailure(workspacePvc(id))),
+      };
+    },
+
+    async growWorkspace(id: string, size: string): Promise<void> {
+      await core.patchNamespacedPersistentVolumeClaim(
+        { name: workspacePvc(id), namespace: ns, body: { spec: { resources: { requests: { storage: size } } } } },
+        setHeaderOptions("Content-Type", PatchStrategy.MergePatch),
+      );
     },
   };
 }

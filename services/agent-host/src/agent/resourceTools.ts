@@ -10,6 +10,7 @@ import { validateResources, InvalidResourceError, type SandboxResources } from "
 import type { SandboxSizePreset } from "../session/resources.js";
 import type { PendingRestart, SandboxRestartResult } from "../session/manager.js";
 import { formatError, logger } from "../log.js";
+import { workspaceLine, type WorkspaceToolsWiring } from "./workspaceTools.js";
 
 const log = logger("resourceTools");
 
@@ -27,6 +28,8 @@ export interface SandboxResourceToolsWiring {
   stopSandbox?(conversationId: string): Promise<{ deferred: boolean; pending?: PendingRestart }>;
   /** Waits for a Ready pod; undefined when Ready, else why not. Enables wait_for_sandbox. */
   waitForSandbox?(conversationId: string, timeoutMs: number): Promise<string | undefined>;
+  /** Lets the agent grow /workspace; enables expand_workspace. */
+  workspace?: WorkspaceToolsWiring;
 }
 
 /** The set_sandbox_resources tool input, either a preset name (size) or flat raw resources where an omitted dimension keeps its current value. */
@@ -96,6 +99,14 @@ export async function handleShowSandboxResources(
       log.warn("could not list size presets", { error: formatError(e) });
     }
   }
+  // A failed claim read only drops the workspace line.
+  const ws = deps.workspace;
+  const workspace = ws
+    ? workspaceLine(ws.limits, await ws.volume.getWorkspace(conversationId).catch((e) => {
+        log.warn("could not read the workspace volume", { error: formatError(e) });
+        return undefined;
+      }))
+    : "";
   return {
     content: [
       {
@@ -104,6 +115,7 @@ export async function handleShowSandboxResources(
           "Your sandbox resources:\n" +
           `- requests: ${sideLine(r.requests)}\n` +
           `- limits: ${sideLine(r.limits)}\n` +
+          workspace +
           presetLines +
           "\nChange them with set_sandbox_resources (applies on the next sandbox restart" +
             (deps.restartSandbox ? "; call restart_sandbox to apply it now)." : ")."),

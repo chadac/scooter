@@ -26,6 +26,7 @@ import type { ConversationLink } from "../session/manager.js";
 import { registerWebFetch } from "./agentTools.js";
 import { registerSchedulerTools, type SchedulerToolsWiring } from "./schedulerTools.js";
 import { handleListModels, handleSwitchModel, type ModelToolsWiring } from "./modelTools.js";
+import { handleExpandWorkspace } from "./workspaceTools.js";
 import { handleConversationStatus, handleMakeConversationPrivate, handleRequestUntaint, type ConversationToolsWiring } from "./conversationTools.js";
 import {
   handleSetConversationTitle,
@@ -477,6 +478,26 @@ export async function buildServer(
           inputSchema: {},
         },
         async () => handleStopSandbox(resources, conversationId) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
+      );
+    }
+    if (resources.workspace) {
+      const ws = resources.workspace;
+      server.registerTool(
+        "expand_workspace",
+        {
+          title: "Grow your /workspace volume",
+          description:
+            "Grow YOUR /workspace volume NOW, while the sandbox runs (no restart). Use it before a big clone, " +
+            "build cache or dataset would fill the disk; show_sandbox_resources shows the size and limits. " +
+            "Volumes only grow, never shrink, and the cloud allows one change per volume every 6 hours, so ask " +
+            "for real headroom in one go (e.g. double). Above the deployment's soft limit it puts an approval " +
+            "card in front of the owner instead, and you get a message with the answer.",
+          inputSchema: {
+            size: z.string().describe('The new total size, a k8s quantity like "50Gi"; must exceed the current size.'),
+            reason: z.string().describe("Why you need the space; the owner reads it when approval is needed."),
+          },
+        },
+        async (args) => handleExpandWorkspace(ws, conversationId, args) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
       );
     }
     if (resources.waitForSandbox) {

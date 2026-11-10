@@ -1762,6 +1762,12 @@ in
                   # The sandbox PVCs, built from scooter.sandbox.volumes.
                   { name = "SANDBOX_VOLUME_CLAIMS"; value = builtins.toJSON cfg.sandbox.renderedVolumeClaims; }
                 ]
+                ++ (let wsv = cfg.sandbox.volumes.workspace; in
+                  # expand_workspace's limits; unset leaves the tool off.
+                  lib.optionals (wsv.maxStorage != null) (
+                    [ { name = "SANDBOX_WORKSPACE_MAX_STORAGE"; value = wsv.maxStorage; } ]
+                    ++ lib.optional (wsv.autoMaxStorage != null)
+                      { name = "SANDBOX_WORKSPACE_AUTO_MAX_STORAGE"; value = wsv.autoMaxStorage; }))
                 ++ lib.optional cfg.sandboxUserNamespace
                   { name = "SANDBOX_USER_NAMESPACE"; value = "1"; }
                 ++ lib.optional (cfg.retentionMaxAgeMs > 0)
