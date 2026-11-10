@@ -296,6 +296,10 @@ async def _forward_or_ignore(res_id: str, message: str, sender: Sender | None) -
     """Forward at interrupt priority to the conversation linked to this PR, or do nothing; a PR the agent does not own is not ours to act on."""
     existing = await _resolve_conversation("pull_request", res_id)
     if not existing or is_pending(existing):
+        logger.info(
+            "no linked conversation; not forwarding",
+            extra={**_C, "source": "github", "resource_id": res_id, "pending": bool(existing)},
+        )
         return
     await send_message(existing, message, priority=True, source="github", sender=sender)
 

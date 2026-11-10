@@ -259,7 +259,11 @@ in
                 ];
                 readinessProbe.httpGet = { path = "/health"; port = "http"; };
                 livenessProbe.httpGet = { path = "/health"; port = "http"; };
+                # Keep accepting deliveries until the ingress drops this endpoint.
+                lifecycle.preStop.sleep.seconds = 5;
               };
+              # Covers preStop plus the 10s background-task drain.
+              terminationGracePeriodSeconds = 20;
               volumes = [
                 { name = "data"; emptyDir = { }; }
                 {
