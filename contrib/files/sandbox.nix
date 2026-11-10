@@ -18,8 +18,16 @@ let
   # The frontend (viewer-ui/), built by Vite with every library bundled, as its
   # own store path so that editing server.py does not rebuild it.
   frontend = pkgs.callPackage ./viewer-ui { };
+
+  # Answers review threads, as each wake message hints.
+  cli = pkgs.writeShellScriptBin "scooter-files" ''
+    export SCOOTER_FILES_PORT=${toString cfg.port}
+    exec ${pkgs.python3}/bin/python3 ${viewer}/cli.py "$@"
+  '';
 in
 {
+  environment.systemPackages = [ cli ];
+
   webServices.files = {
     enable = lib.mkDefault true;
     port = lib.mkDefault 7801;

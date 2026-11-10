@@ -381,6 +381,15 @@ class Handler(BaseHTTPRequestHandler):
             body = self.read_body()
             if route == "/api/annotations":
                 return self.add_annotation(body)
+            if route.startswith("/api/annotations/threads/") and route.endswith("/reply"):
+                thread = route[len("/api/annotations/threads/") : -len("/reply")]
+                record = self.store.reply(
+                    thread=thread,
+                    text=str(body.get("text") or ""),
+                    content_of=self.live_content,
+                    by=str(body.get("by") or "agent"),
+                )
+                return self.send_json({"annotation": record.view()}, HTTPStatus.ACCEPTED)
             if route.startswith("/api/annotations/threads/") and route.endswith("/resolve"):
                 thread = route[len("/api/annotations/threads/") : -len("/resolve")]
                 updated = self.store.resolve(thread, bool(body.get("resolved", True)))

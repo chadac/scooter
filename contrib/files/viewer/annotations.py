@@ -295,6 +295,14 @@ class SelfTransport:
             raise TransportError(f"no answer: {exc}", maybe_delivered=True) from exc
 
 
+def reply_hint(thread: str) -> str:
+    """How to answer a thread, so the reply lands beside the line."""
+    return (
+        f'Answer with `scooter-files reply {thread} "…"` (add `--resolve` if that settles it)'
+        f" or `scooter-files resolve {thread}`."
+    )
+
+
 def notify_message(records: list[Record], root: Path) -> str:
     """One message naming each remark's file, line, quote and text."""
     blocks = []
@@ -309,6 +317,8 @@ def notify_message(records: list[Record], root: Path) -> str:
         if record.thread != record.id:
             lines.append(f"In reply to thread {record.thread}.")
         lines.append(f"\n{record.text}")
+        if record.kind == "comment":
+            lines.append(f"\n{reply_hint(record.thread)}")
         blocks.append("\n".join(lines))
     paths = sorted({r.path for r in records})
     tail = "Open the files viewer to see the thread in context (" + ", ".join(
@@ -453,6 +463,29 @@ class Annotations:
             self.queue.append(_Op(kind="put", key=record.id))
             self._save()
         return record
+
+    def reply(self, *, thread: str, text: str, content_of, by: str = "agent") -> Record:
+        """Reply in a thread at its opener's anchor; `content_of` reads a path."""
+        with self._lock:
+            members = sorted(
+                (r for r in self.records.values() if r.thread == thread),
+                key=lambda r: (r.id != thread, r.created_at),
+            )
+        if not members:
+            raise AnnotationError("no such thread")
+        head = members[0]
+        content = content_of(head.path)
+        if content is None:
+            raise AnchorError("the annotated file is not readable")
+        line, state = resolve_anchor(content, head.anchor)
+        quote = head.quote
+        if state == "stale":
+            # Threads sit at their opener, so keep only the line.
+            line, quote = min(line, max(1, len(content.splitlines()))), ""
+        return self.add(
+            content=content, path=head.path, line=line, quote=quote,
+            text=text, thread=thread, by=by,
+        )
 
     def resolve(self, thread: str, resolved: bool) -> int:
         """Resolve or reopen a thread locally, and queue the same for the broker."""

@@ -21,6 +21,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "viewer"))
 
 import annotations as ann  # noqa: E402
+import cli  # noqa: E402
 
 
 # --- fakes ----------------------------------------------------------------------
@@ -474,6 +475,41 @@ def test_a_burst_of_remarks_is_one_message(told):
     assert message.index(":1.") < message.index(":2.") < message.index(":4.")
 
 
+def test_each_comment_says_how_to_reply_and_resolve_its_thread(told):
+    store, clock = told
+    first = store.add(content=DOC, path="doc.md", line=2, quote="bravo", text="one")
+    store.add(content=DOC, path="doc.md", line=2, quote="bravo", text="two", thread=first.id)
+    store.flush()
+    _past_the_delay(clock)
+    store.flush()
+
+    (message,) = store.notifier.sent
+    # Replies hint at their thread, not their own id.
+    assert message.count(f"scooter-files reply {first.id}") == 2
+    assert f"scooter-files resolve {first.id}" in message
+
+
+def test_an_agent_reply_lands_at_the_threads_anchor_and_wakes_no_one(told):
+    store, _ = told
+    first = store.add(content=DOC, path="doc.md", line=2, quote="bravo", text="why?")
+    reply = store.reply(thread=first.id, text="because", content_of=lambda _: DOC)
+    assert (reply.thread, reply.line, reply.quote, reply.by) == (first.id, 2, "bravo", "agent")
+    assert reply.notify == ""
+
+
+def test_an_agent_reply_to_edited_text_keeps_only_the_line(told):
+    store, _ = told
+    first = store.add(content=DOC, path="doc.md", line=2, quote="bravo", text="why?")
+    reply = store.reply(thread=first.id, text="fixed", content_of=lambda _: "alpha\ngone\n")
+    assert (reply.line, reply.quote) == (2, "")
+
+
+def test_a_reply_to_an_unknown_thread_is_refused(told):
+    store, _ = told
+    with pytest.raises(ann.AnnotationError):
+        store.reply(thread="nope", text="x", content_of=lambda _: DOC)
+
+
 def test_a_failed_notify_backs_off_and_never_touches_the_stored_state(told):
     store, clock = told
     record = store.add(content=DOC, path="doc.md", line=2, quote="bravo", text="x")
@@ -880,6 +916,34 @@ def test_resolve_and_retry_are_reachable_over_http(tmp_path: Path):
 
         status, retried = call("POST", f"/api/annotations/{record['id']}/retry", {})
         assert (status, retried["annotation"]["state"]) == (200, "pending")
+
+
+def test_the_cli_replies_and_resolves_through_the_viewer(tmp_path: Path):
+    with viewer(tmp_path) as (call, store):
+        _, created = call(
+            "POST", "/api/annotations", {"path": "doc.md", "line": 2, "quote": "bravo", "text": "x"}
+        )
+        thread = created["annotation"]["thread"]
+        port = call.url.split(":")[2].split("/")[0]
+        env = {"CONVERSATION_ID": "conv-test", "SCOOTER_FILES_PORT": port}
+
+        cli.main(["reply", thread, "done", "--resolve"], env=env)
+
+        _, listed = call("GET", "/api/annotations?path=doc.md")
+        texts = [(a["text"], a["by"], a["resolved"]) for a in listed["annotations"]]
+        assert texts == [("x", "reviewer", True), ("done", "agent", True)]
+
+
+@pytest.mark.parametrize(
+    ("env", "base"),
+    [
+        ({"CONVERSATION_ID": "c1"}, "/c/c1/files"),
+        ({"CONVERSATION_ID": "c1", "SCOOTER_SERVICES_ORIGIN": "https://x"}, "/files"),
+        ({"CONVERSATION_ID": "c1", "SCOOTER_SERVICE_PREFIX": ""}, "/files"),
+    ],
+)
+def test_the_cli_finds_the_viewer_under_the_proxys_prefix(env, base):
+    assert cli.base_url(env) == f"http://127.0.0.1:7801{base}"
 
 
 def test_a_viewer_with_no_store_says_so_rather_than_failing(tmp_path: Path):

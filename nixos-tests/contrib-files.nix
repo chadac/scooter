@@ -131,6 +131,16 @@ pkgs.testers.runNixOSTest {
     # "hello" is line 1 of the fixture, so the anchor resolved against the file.
     assert listed["annotations"][0]["anchor_state"] == "ok", listed
 
+    # 8a. The wake message's hint works as printed.
+    machine.succeed(
+        f"CONVERSATION_ID=conv-files scooter-files reply {posted['thread']} 'fixed' --resolve"
+    )
+    listed = json.loads(machine.succeed(
+        f"curl -fsS 'http://localhost:7801{base}/api/annotations?path=docs/design.md'"
+    ))
+    got = [(a["text"], a["by"], a["resolved"]) for a in listed["annotations"]]
+    assert got == [("why?", "reviewer", True), ("fixed", "agent", True)], listed
+
     # 8b. Question fields come out of the document itself, and an example inside a
     # code fence is syntax being shown rather than a field being asked.
     asked = json.loads(machine.succeed(

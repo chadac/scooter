@@ -72,7 +72,9 @@ Two things worth using in a link, because they land the user where you mean:
 ## Designing with the user
 
 For design work, readers can comment on lines and answer question fields in the
-viewer, and each remark wakes you. See the `scooter-design-review` skill.
+viewer, and each remark wakes you. Answer with `scooter-files reply <thread> "…"`
+and close with `scooter-files resolve <thread>`; see the `scooter-design-review`
+skill.
 
 ## It is read-only, and it is not your own file access
 

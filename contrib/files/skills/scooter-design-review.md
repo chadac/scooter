@@ -1,7 +1,7 @@
 ---
 name: scooter-design-review
 type: knowledge
-version: 1.0.0
+version: 1.1.0
 triggers:
 - design
 - design doc
@@ -99,29 +99,18 @@ Then:
   question is answered, replace its block with the decision and its reason.
   The answer stays on record.
 - **Act on comments** by editing the doc.
-- **Reply in the thread** so the answer sits beside the line it is about (see
-  below). Use chat for a summary of what changed, with the link again.
-- **Resolve threads you've addressed**, so the doc's open count stays honest:
-  `curl -s -X POST "$V/api/annotations/threads/<thread>/resolve" -d '{"resolved": true}'`
-- **Always send `"by": "agent"`** on anything you post. Without it your reply
-  shows as the user's and is announced back to you, costing a turn.
+- **Reply in the thread** so the answer sits beside the line it is about, then
+  **resolve it** if that settles it, so the doc's open count stays honest. Each
+  comment in the wake message ends with the exact commands:
 
-### Replying in a thread
+  ```bash
+  scooter-files reply <thread> "Agreed, switched to exponential backoff." --resolve
+  scooter-files resolve <thread>            # --reopen to undo
+  ```
 
-Post to the viewer with the thread id and the opener's `line` and `quote` from
-`/api/annotations`. The reply shows as "Scooter" and does not wake you:
-
-```bash
-curl -s -X POST "$V/api/annotations" -H 'content-type: application/json' -d "$(jq -n \
-  --arg path docs/design/retry.md --argjson line 12 --arg quote "the quoted text" \
-  --arg thread "<thread>" --arg text "Agreed, switched to exponential backoff." \
-  '{path: $path, line: $line, quote: $quote, thread: $thread, text: $text, by: "agent"}')"
-```
-
-Keep replies short, saying what you changed or why you didn't. A `409` means
-the quoted text is no longer in the file, usually because you just edited it.
-Retry with the line and quote as they read now. Resolve the thread after
-replying if your reply settles it.
+  The reply shows as "Scooter", sits at the thread's line even after you edit
+  the quoted text, and does not wake you. Keep it short: what you changed, or
+  why you didn't. Use chat for a summary of what changed, with the link again.
 
 Start implementing once the open questions are answered and the user agrees.
 If the user wants to skip the doc ("just do it"), do that instead.
