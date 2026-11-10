@@ -4,8 +4,8 @@
  * section, then the caller's further sections. State arrives on the `sandbox` topic.
  */
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { RotateCw } from "lucide-react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { CircleHelp, RotateCw } from "lucide-react";
 
 import {
   resumeConversation,
@@ -23,13 +23,13 @@ import {
   type SandboxSizePreset,
   type PendingRestart,
 } from "./client.js";
-import { agentHostConfig } from "./config.js";
 import { useSessions, currentConversation } from "./sessions.js";
 import { useConversationTopic } from "./conversationState.js";
 import { ServiceRows } from "./ServicesPanel.js";
 import { PanelSection } from "./PanelSection.js";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 const BASE_URL = (import.meta.env.VITE_AGENT_HOST_URL ?? "").replace(/\/$/, "");
 
@@ -255,7 +255,11 @@ export function SizeSection({ sizes, resources, onSelect, saving, error, pending
   const hint = selected ? (sizes[selected]?.hint ?? "") : "";
   return (
     <div data-testid="sandbox-size">
-      <div className="mb-1 text-xs font-medium text-muted-foreground">Size</div>
+      <div className="mb-1 flex items-center gap-1 text-xs font-medium text-muted-foreground">
+        Size
+        {/* An <option> cannot wrap, so the preset's guidance is a tooltip. */}
+        {hint ? <HelpTip text={hint} testId="sandbox-size-hint" /> : null}
+      </div>
       <select
         data-testid="sandbox-size-select"
         className="w-full rounded border border-border bg-background px-2 py-1 text-xs text-foreground disabled:opacity-50"
@@ -275,12 +279,6 @@ export function SizeSection({ sizes, resources, onSelect, saving, error, pending
           </option>
         ))}
       </select>
-      {/* The selected preset's guidance, kept out of the option labels because an <option> cannot wrap. */}
-      {hint ? (
-        <p className="mt-1 text-xs text-muted-foreground" data-testid="sandbox-size-hint">
-          {hint}
-        </p>
-      ) : null}
       {error ? (
         <p className="mt-1 text-xs text-destructive" data-testid="sandbox-size-error">
           {error}
@@ -305,6 +303,24 @@ export function SizeSection({ sizes, resources, onSelect, saving, error, pending
   );
 }
 
+/** A ? icon that shows `text` on hover or focus. */
+function HelpTip({ text, testId }: { text: string; testId: string }) {
+  return (
+    <TooltipProvider delayDuration={150}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button type="button" aria-label={text} data-testid={testId} className="text-muted-foreground hover:text-foreground">
+            <CircleHelp className="h-3 w-3" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="max-w-64">
+          {text}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
 /** The "Update available" banner with a restart button. */
 export function UpdateBanner({
   pending,
@@ -324,28 +340,29 @@ export function UpdateBanner({
   return (
     <div
       data-testid="sandbox-update-banner"
-      className="flex flex-col gap-1.5 rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-2.5"
+      className="flex items-center gap-1.5 rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-1.5"
     >
-      <div className="flex items-center gap-2">
-        <span className="text-sm font-medium">{update ? "Update available" : "Size change pending"}</span>
-        {running && onRestart ? (
-          <Button
-            variant="default"
-            size="xs"
-            data-testid="sandbox-restart"
-            disabled={restarting}
-            onClick={onRestart}
-            className="ml-auto"
-          >
-            {restarting ? "Restarting…" : "Restart sandbox"}
-          </Button>
-        ) : null}
-      </div>
-      <p className="text-[11px] leading-relaxed text-muted-foreground">
-        {running
-          ? `A restart picks up ${what}. /workspace, installed modules and /nix/store builds persist; running processes, background jobs and web services stop.`
-          : `The sandbox picks up ${what} when it next starts.`}
-      </p>
+      <span className="text-sm font-medium">{update ? "Update available" : "Size change pending"}</span>
+      <HelpTip
+        testId="sandbox-update-hint"
+        text={
+          running
+            ? `A restart picks up ${what}. /workspace, installed modules and /nix/store builds persist; running processes, background jobs and web services stop.`
+            : `The sandbox picks up ${what} when it next starts.`
+        }
+      />
+      {running && onRestart ? (
+        <Button
+          variant="default"
+          size="xs"
+          data-testid="sandbox-restart"
+          disabled={restarting}
+          onClick={onRestart}
+          className="ml-auto"
+        >
+          {restarting ? "Restarting…" : "Restart sandbox"}
+        </Button>
+      ) : null}
     </div>
   );
 }
@@ -549,8 +566,15 @@ export function SandboxPanelView({
   );
 }
 
-export function SandboxPanel() {
-  const s = useSandboxStatus();
+export interface SandboxPanelProps {
+  /** The host's sandbox status, so both share one Start state. */
+  status: ReturnType<typeof useSandboxStatus>;
+  /** Further Session-tab sections, rendered after Services. */
+  children?: ReactNode;
+}
+
+/** Loads resources, sizes and pending restarts; wires restart and stop. */
+export function SandboxPanel({ status: s, children }: SandboxPanelProps) {
   const { sessions, currentId } = useSessions();
   const owner = sessions.find((x) => x.id === currentId)?.owner ?? null;
 
@@ -682,6 +706,8 @@ export function SandboxPanel() {
       onStartSandbox={() => void s.startSandbox()}
       onStartService={s.startService}
       onStopService={s.stopService}
-    />
+    >
+      {children}
+    </SandboxPanelView>
   );
 }

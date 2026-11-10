@@ -256,12 +256,12 @@ describe("SandboxPanelView — size picker", () => {
     );
     expect(html).toContain('data-testid="sandbox-size-hint"');
     expect(html).toContain("Builds and test suites.");
-    // Under the select, not inside an option label.
+    // In the tooltip trigger, not inside an option label.
     expect(html).not.toMatch(/<option[^>]*>[^<]*Builds and test suites/);
   });
 
-  it("keeps the hint line out of the way when there is nothing to say", () => {
-    // No hint on the preset, no hints in the deployment, and Custom all render no line.
+  it("shows no hint icon when there is nothing to say", () => {
+    // No hint on the preset, no hints in the deployment, and Custom all render no icon.
     for (const props of [
       { sizes: { ...sizes, medium: { ...sizes.medium, hint: "" } }, resources: { limits: { cpu: "2", memory: "4Gi" } } },
       { sizes, resources: { limits: { cpu: "2", memory: "4Gi" } } },

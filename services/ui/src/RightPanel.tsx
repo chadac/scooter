@@ -12,7 +12,7 @@ import { X } from "lucide-react";
 
 import { mobileNav, useDrawer } from "./mobileNav.js";
 import { InterruptList } from "./InterruptPanel.js";
-import { SandboxPanelView, useSandboxStatus } from "./SandboxPanel.js";
+import { SandboxPanel, useSandboxStatus } from "./SandboxPanel.js";
 import { ChatsPanel } from "./ChatsPanel.js";
 import { canStartSession, familyOf } from "./family.js";
 import { PanelSection } from "./PanelSection.js";
@@ -157,17 +157,7 @@ export function RightPanel() {
       <div className="flex-1 overflow-y-auto px-4 py-3">
         {/* Session stays mounted while hidden, so contrib sections keep their counts. */}
         <div hidden={active !== "session"}>
-          <SandboxPanelView
-            state={sandbox.state}
-            services={sandbox.services}
-            busy={sandbox.busy}
-            conversationId={sandbox.conversationId}
-            onStartSandbox={() => void sandbox.startSandbox()}
-            onStartService={sandbox.startService}
-            onStopService={sandbox.stopService}
-            onRescanServices={sandbox.rescanServices}
-            rescanning={sandbox.rescanning}
-          >
+          <SandboxPanel status={sandbox}>
             {showChats && (
               <PanelSection id="chats" label="Chats" count={family.length - 1}>
                 <ChatsPanel members={family} />
@@ -185,7 +175,7 @@ export function RightPanel() {
                 </div>
               </PanelSection>
             ))}
-          </SandboxPanelView>
+          </SandboxPanel>
         </div>
         {active === "approvals" ? (
           nInterrupts > 0 ? (
