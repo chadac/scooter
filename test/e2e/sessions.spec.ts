@@ -574,6 +574,30 @@ fastOnly("an API-seeded conversation with no run is not served by the multi-pod 
       1,
     );
   });
+
+  test("selecting a conversation keeps the sidebar's scroll position", async ({ chat, page, request, baseURL }) => {
+    // Enough conversations that the list overflows and scrolls.
+    const base = baseURL ?? "http://localhost:5173";
+    for (let i = 0; i < 40; i++) {
+      const r = await request.post(`${base}/conversations`, { data: { title: `Scroll seed ${i}` } });
+      expect(r.ok(), "seeding /conversations failed").toBeTruthy();
+    }
+    await chat.open();
+    const list = page.locator(sidebar.list);
+    const seeds = page.locator(sidebar.item).filter({ hasText: /Scroll seed/ });
+    await expect(seeds).toHaveCount(40, { timeout: 30_000 });
+
+    await list.evaluate((el) => (el.scrollTop = el.scrollHeight));
+    const before = await list.evaluate((el) => el.scrollTop);
+    expect(before, "the list should overflow").toBeGreaterThan(0);
+
+    // The last row, visible only when scrolled down.
+    const target = seeds.last();
+    const title = (await target.locator(sidebar.title).textContent()) ?? "";
+    await target.click();
+    await expect(page.locator(headerTitle)).toHaveText(title);
+    expect(await list.evaluate((el) => el.scrollTop)).toBe(before);
+  });
   },
 );
 

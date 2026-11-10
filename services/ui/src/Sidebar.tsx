@@ -6,7 +6,7 @@
  * new-session.
  */
 
-import { memo, useEffect, useState, type DragEvent, type ReactNode } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
 import { Bot, Check, ChevronRight, Code2, CornerDownRight, FolderPlus, Hourglass, InfinityIcon, Lock, MoreHorizontal, Plus, Star } from "lucide-react";
 import { DropdownMenu, Popover } from "radix-ui";
 
@@ -732,6 +732,9 @@ function NewFolder() {
   );
 }
 
+// List scroll offset, surviving the remount each conversation switch causes.
+let listScrollTop = 0;
+
 // memo()'d: <RuntimeProvider> re-renders on every AG-UI event during an agent turn,
 // and the sidebar reads only sessionStore, so this limits it to store changes.
 export const Sidebar = memo(function Sidebar() {
@@ -753,6 +756,12 @@ export const Sidebar = memo(function Sidebar() {
   useEffect(() => {
     mobileNav.close();
   }, [currentId]);
+
+  // Restore before paint so the list never flashes at top.
+  const listRef = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    if (listRef.current) listRef.current.scrollTop = listScrollTop;
+  }, []);
 
   // Count of non-default filters, shown as a badge on the toggle while the panel is collapsed.
   const activeFilters =
@@ -920,7 +929,12 @@ export const Sidebar = memo(function Sidebar() {
         )}
       </div>
 
-      <nav data-testid="session-list" className="flex-1 overflow-y-auto px-2 pb-2">
+      <nav
+        ref={listRef}
+        data-testid="session-list"
+        onScroll={(e) => (listScrollTop = e.currentTarget.scrollTop)}
+        className="flex-1 overflow-y-auto px-2 pb-2"
+      >
         {rows.length === 0 && (
           <p data-testid="session-empty" className="px-3 py-2 text-sm text-muted-foreground">
             No chats match.
