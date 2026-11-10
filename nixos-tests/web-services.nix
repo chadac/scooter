@@ -38,9 +38,12 @@ pkgs.testers.runNixOSTest {
     boot.kernelParams = [
       "CONVERSATION_ID=5a515e73-860b-49ba-bc3f-6ff8d5fda5ff"
       "SCOOTER_SERVICES_ORIGIN=https://5a515e73.scooter.example.com"
+      "CONVERSATION_URL=https://scooter.example.com/c/5a515e73-860b-49ba-bc3f-6ff8d5fda5ff"
     ];
     webServices.demo = { enable = true; port = 9911; displayName = "Demo"; command = "${demoServer}"; };
     webServices.ssh.enable = true;
+    # "Demo + chat", as marimo's notebook frames marimo.
+    webServices.demo-chat = { enable = true; port = 9913; displayName = "Demo"; chatPage.app = "../demo/"; };
   };
 
   nodes.machine = { lib, ... }: {
@@ -166,6 +169,15 @@ pkgs.testers.runNixOSTest {
     origin.succeed("grep -qx 'SCOOTER_SERVICE_PREFIX=' /run/webservice-demo/conv.env")
     url = origin.succeed("scooter-service start demo | sed -n 's/^url: //p'").strip()
     assert url == "https://5a515e73.scooter.example.com/demo/", url
+
+    # 6b. chatPage builds the chat URL from CONVERSATION_URL and CONVERSATION_ID.
+    origin.succeed("scooter-service start demo-chat")
+    origin.wait_for_open_port(9913)
+    page = origin.succeed("curl -fsS http://localhost:9913/")
+    assert '"chatUrl":"https://scooter.example.com/chat/5a515e73-860b-49ba-bc3f-6ff8d5fda5ff"' in page, page
+    assert '"app":"../demo/"' in page and '"storageKey":"demo-chat"' in page, page
+    assert "window.ChatPage" in page and "<title>Demo</title>" in page, page
+    assert "@CONFIG@" not in page and "@CHAT_PAGE@" not in page, page
 
     # 7. The built-in `ssh` takes any client key over its WebSocket, as root, with a
     #    host key kept on the workspace PVC.

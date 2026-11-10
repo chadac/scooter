@@ -10,33 +10,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Review</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%9B%B4%3C/text%3E%3C/svg%3E">
+@CHAT_PAGE@
 <script id="review-config" type="application/json">@CONFIG@</script>
 <style>
-  :root {
-    color-scheme: light dark; --rail: 28px; --line: #d4d4d8; --muted: #71717a; --bg: #fafafa;
-    --ink: #18181b; --accent: #db2777; --ok: #15803d; --unread: #2563eb;
-  }
+  /* Layout, rail and chat pane come from chat-page.css. */
+  :root { --ink: #18181b; --accent: #db2777; --ok: #15803d; --unread: #2563eb; }
   @media (prefers-color-scheme: dark) {
-    :root { --line: #3f3f46; --muted: #a1a1aa; --bg: #18181b; --ink: #f4f4f5; --accent: #f472b6; --ok: #4ade80; --unread: #60a5fa; }
+    :root { --ink: #f4f4f5; --accent: #f472b6; --ok: #4ade80; --unread: #60a5fa; }
   }
-  html, body { margin: 0; height: 100%; overflow: hidden; font: 12px system-ui, sans-serif; background: var(--bg); color: var(--ink); }
-  #layout { display: flex; height: 100%; }
-  #chat { flex: none; width: var(--chat-width, 420px); min-width: 0; }
-  #layout.collapsed #chat { width: 0; }
-  iframe { display: block; width: 100%; height: 100%; border: 0; background: Canvas; }
-  #rail {
-    flex: none; width: var(--rail); display: flex; flex-direction: column; align-items: center; gap: 6px;
-    padding-top: 8px; border-inline: 1px solid var(--line); cursor: col-resize; user-select: none;
-  }
-  #layout.collapsed #rail { cursor: default; }
-  #rail button, #rail a {
-    all: unset; cursor: pointer; width: 22px; height: 22px; display: grid; place-items: center;
-    border-radius: 4px; color: var(--muted); font-size: 13px;
-  }
-  #rail button:hover, #rail a:hover { background: color-mix(in srgb, var(--muted) 18%, transparent); color: CanvasText; }
-  #main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-  #layout.dragging iframe { pointer-events: none; }
-  #missing { padding: 16px; color: var(--muted); }
+  body { color: var(--ink); }
+  #main { display: flex; flex-direction: column; }
 
   #bar { user-select: none;
     flex: none; display: flex; align-items: center; gap: 4px; padding: 4px 8px; min-height: 30px;
@@ -86,36 +69,28 @@
 </style>
 </head>
 <body>
-<div id="layout">
-  <div id="chat"></div>
-  <div id="rail" title="Drag to resize the chat">
-    <button id="toggle" type="button" aria-label="Hide chat" title="Hide chat">‹</button>
-    <a id="conv" target="_blank" rel="noopener" aria-label="Open in Scooter" title="Open in Scooter">🛴</a>
-    <a id="full" href="@APP_BASE@/" target="_blank" rel="noopener" aria-label="Open the app on its own" title="Open the app on its own">⤢</a>
+<div id="main">
+  <div id="bar" role="toolbar" aria-label="Review">
+    <button id="point" type="button" aria-pressed="false" title="Comment on an element (C)">◎ Point <kbd>C</kbd></button>
+    <button id="area" type="button" aria-pressed="false" title="Comment on an area (R)">▭ Area <kbd>R</kbd></button>
+    <span class="sep"></span>
+    <span id="route" title="The app's route"></span>
+    <button id="show" type="button" aria-pressed="true" title="Show pins (H)">Show pins</button>
+    <button id="hide-all" type="button" title="Hide every pin on every page; new ones still show, and the Pins list keeps them" disabled>Hide all pins</button>
+    <button id="reload" type="button" title="Reload the app">⟳</button>
+    <button id="pins" type="button" aria-pressed="false" aria-controls="side" title="All pins (P)">Pins <span id="pins-n"></span><span id="pins-unread" title="Unread"></span></button>
   </div>
-  <div id="main">
-    <div id="bar" role="toolbar" aria-label="Review">
-      <button id="point" type="button" aria-pressed="false" title="Comment on an element (C)">◎ Point <kbd>C</kbd></button>
-      <button id="area" type="button" aria-pressed="false" title="Comment on an area (R)">▭ Area <kbd>R</kbd></button>
-      <span class="sep"></span>
-      <span id="route" title="The app's route"></span>
-      <button id="show" type="button" aria-pressed="true" title="Show pins (H)">Show pins</button>
-      <button id="hide-all" type="button" title="Hide every pin on every page; new ones still show, and the Pins list keeps them" disabled>Hide all pins</button>
-      <button id="reload" type="button" title="Reload the app">⟳</button>
-      <button id="pins" type="button" aria-pressed="false" aria-controls="side" title="All pins (P)">Pins <span id="pins-n"></span><span id="pins-unread" title="Unread"></span></button>
-    </div>
-    <div id="body">
-      <div id="app"><iframe id="frame" title="App under review" allow="clipboard-read; clipboard-write; fullscreen"></iframe></div>
-      <aside id="side" aria-label="All pins" hidden>
-        <header><b>Pins</b><button id="side-close" type="button" aria-label="Close" title="Close (P)">✕</button></header>
-        <div id="filter" role="group" aria-label="Show">
-          <button type="button" data-filter="open" aria-pressed="true">Open <span></span></button>
-          <button type="button" data-filter="closed" aria-pressed="false">Closed <span></span></button>
-          <button type="button" data-filter="all" aria-pressed="false">All <span></span></button>
-        </div>
-        <ol id="list"></ol>
-      </aside>
-    </div>
+  <div id="body">
+    <div id="app"><iframe id="frame" title="App under review" allow="clipboard-read; clipboard-write; fullscreen"></iframe></div>
+    <aside id="side" aria-label="All pins" hidden>
+      <header><b>Pins</b><button id="side-close" type="button" aria-label="Close" title="Close (P)">✕</button></header>
+      <div id="filter" role="group" aria-label="Show">
+        <button type="button" data-filter="open" aria-pressed="true">Open <span></span></button>
+        <button type="button" data-filter="closed" aria-pressed="false">Closed <span></span></button>
+        <button type="button" data-filter="all" aria-pressed="false">All <span></span></button>
+      </div>
+      <ol id="list"></ol>
+    </aside>
   </div>
 </div>
 <script>
@@ -123,47 +98,14 @@
 const CFG = JSON.parse(document.getElementById("review-config").textContent);
 const API = CFG.appBase + "/__review/";
 const $ = (id) => document.getElementById(id);
-const layout = $("layout"), chat = $("chat"), rail = $("rail"), toggle = $("toggle"), frame = $("frame");
-
-// --- chat pane, as in "marimo + chat" -------------------------------------------
-if (CFG.chatUrl) {
-  const f = document.createElement("iframe");
-  f.title = "Scooter chat";
-  f.src = CFG.chatUrl;
-  f.allow = "clipboard-read; clipboard-write";
-  chat.append(f);
-} else {
-  chat.innerHTML = '<p id="missing">No chat URL: this sandbox has no CONVERSATION_URL.</p>';
-}
-if (CFG.convUrl) $("conv").href = CFG.convUrl;
-else $("conv").hidden = true;
-const KEY_W = "scooter.review.chatWidth", KEY_C = "scooter.review.chatCollapsed";
-const clamp = (w) => Math.max(260, Math.min(w, window.innerWidth - 360));
-const setWidth = (w) => layout.style.setProperty("--chat-width", clamp(w) + "px");
-const setCollapsed = (c) => {
-  layout.classList.toggle("collapsed", c);
-  toggle.textContent = c ? "›" : "‹";
-  toggle.title = toggle.ariaLabel = c ? "Show chat" : "Hide chat";
-  localStorage.setItem(KEY_C, c ? "1" : "0");
-};
-setWidth(Number(localStorage.getItem(KEY_W)) || 420);
-setCollapsed(localStorage.getItem(KEY_C) === "1");
-toggle.addEventListener("click", () => setCollapsed(!layout.classList.contains("collapsed")));
-rail.addEventListener("pointerdown", (e) => {
-  if (e.target !== rail || layout.classList.contains("collapsed")) return;
-  rail.setPointerCapture(e.pointerId);
-  layout.classList.add("dragging");
+const frame = $("frame");
+const page = ChatPage.mount($("main"), {
+  chatUrl: CFG.chatUrl,
+  convUrl: CFG.convUrl,
+  storageKey: "review",
+  full: { href: CFG.appBase + "/", title: "Open the app on its own" },
+  minApp: 360,
 });
-rail.addEventListener("pointermove", (e) => {
-  if (layout.classList.contains("dragging")) setWidth(e.clientX - chat.getBoundingClientRect().left);
-});
-const endDrag = () => {
-  if (!layout.classList.contains("dragging")) return;
-  layout.classList.remove("dragging");
-  localStorage.setItem(KEY_W, String(parseInt(getComputedStyle(chat).width, 10)));
-};
-rail.addEventListener("pointerup", endDrag);
-rail.addEventListener("pointercancel", endDrag);
 
 // --- the app frame and the address bar ------------------------------------------
 // The path after this page's base is the app's route.
@@ -175,7 +117,7 @@ function showRoute(route, title) {
   // replaceState only: the frame's pushes make the Back entries.
   if (next !== location.pathname + location.search + location.hash) history.replaceState(null, "", next);
   $("route").textContent = route;
-  $("full").href = CFG.appBase + route;
+  page.full.href = CFG.appBase + route;
   if (title !== undefined) document.title = (title ? title + " · " : "") + "Review";
   renderList();
 }

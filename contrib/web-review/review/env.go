@@ -38,19 +38,20 @@ func envInt(name string, def int) int {
 
 // Site locates the shell and app, in pod and browser.
 type Site struct {
-	Prefix    string // SCOOTER_SERVICE_PREFIX: "" or "/c/<id>"
-	ShellPort int
-	AppPort   int
-	StateDir  string
-	Public    *url.URL // the browser's origin for both services
-	ChatURL   string
-	ConvURL   string
-	ConvID    string
-	SelfURL   string
-	TokenPath string
-	Chromium  string
-	VendorDir string
-	Target    *Target // from REVIEW_TARGET, rendered at rebuild time
+	Prefix      string // SCOOTER_SERVICE_PREFIX: "" or "/c/<id>"
+	ShellPort   int
+	AppPort     int
+	StateDir    string
+	Public      *url.URL // the browser's origin for both services
+	ChatURL     string
+	ConvURL     string
+	ConvID      string
+	SelfURL     string
+	TokenPath   string
+	Chromium    string
+	VendorDir   string
+	ChatPageDir string  // the shared chat-page.css and .js
+	Target      *Target // from REVIEW_TARGET, rendered at rebuild time
 }
 
 func (s Site) ShellBase() string { return s.Prefix + "/review" }
@@ -59,17 +60,18 @@ func (s Site) ShotsDir() string  { return filepath.Join(s.StateDir, "shots") }
 
 func loadSite() Site {
 	s := Site{
-		Prefix:    os.Getenv("SCOOTER_SERVICE_PREFIX"),
-		ShellPort: envInt("REVIEW_SHELL_PORT", 2731),
-		AppPort:   envInt("REVIEW_APP_PORT", 2732),
-		StateDir:  env("REVIEW_STATE_DIR"),
-		ConvID:    env("CONVERSATION_ID"),
-		SelfURL:   env("SCOOTER_SELF_URL"),
-		TokenPath: env("SCOOTER_SELF_TOKEN_PATH"),
-		ChatURL:   env("SCOOTER_CHAT_URL"),
-		ConvURL:   env("CONVERSATION_URL"),
-		Chromium:  env("REVIEW_CHROMIUM"),
-		VendorDir: env("REVIEW_VENDOR_DIR"),
+		Prefix:      os.Getenv("SCOOTER_SERVICE_PREFIX"),
+		ShellPort:   envInt("REVIEW_SHELL_PORT", 2731),
+		AppPort:     envInt("REVIEW_APP_PORT", 2732),
+		StateDir:    env("REVIEW_STATE_DIR"),
+		ConvID:      env("CONVERSATION_ID"),
+		SelfURL:     env("SCOOTER_SELF_URL"),
+		TokenPath:   env("SCOOTER_SELF_TOKEN_PATH"),
+		ChatURL:     env("SCOOTER_CHAT_URL"),
+		ConvURL:     env("CONVERSATION_URL"),
+		Chromium:    env("REVIEW_CHROMIUM"),
+		VendorDir:   env("REVIEW_VENDOR_DIR"),
+		ChatPageDir: env("REVIEW_CHAT_PAGE_DIR"),
 	}
 	if p := env("REVIEW_TARGET"); p != "" {
 		t, err := readTarget(p)

@@ -191,6 +191,35 @@ Inside the pod, build the URL from `CONVERSATION_URL`'s origin and
 `CONVERSATION_ID`. The browser loads it from the ingress like any other link, so
 the sandbox proxies nothing.
 
+##### "<app> + chat" in a few lines (`chatPage`)
+
+To show the conversation beside an app the sandbox serves, as marimo's **Notebook** does,
+serve the app as an unlisted service and add a second service with `chatPage`:
+
+```nix
+webServices.jupyter = { port = 8888; visibleInMenu = false; command = "…"; extraConfig.partOf = [ "webservice-jupyter-chat.service" ]; };
+webServices.jupyter-chat = {
+  port = 8889;
+  displayName = "Jupyter";
+  chatPage.app = "../jupyter/";   # relative to the page, so it works on either base path
+  extraConfig.wants = [ "webservice-jupyter.service" ];
+};
+```
+
+`chatPage` (`modules/sandbox-os/web-services/chat-page.nix`) builds the page: the chat
+pane, a rail to resize or hide it (kept in localStorage as `scooter.<storageKey>.*`),
+links to the conversation and to the app on its own, and the "No chat URL" fallback. It
+fills in the chat URL at start. `chatPage.extraScript` adds app-specific JS; marimo's
+(`contrib/marimo/notebook/sync.js`) keeps the notebook's route in the address bar.
+
+A page with its own server inlines the same `chat-page.css` and `chat-page.js` from
+`config.chatPage.assets` and calls `ChatPage.mount(appPane, cfg)` on the element that
+goes right of the chat. web-review's shell does this so its toolbar sits above the app.
+`cfg` is `{ chatUrl, convUrl, storageKey, full: { href, title, target }, minApp }`: an
+empty `chatUrl` shows the fallback, an empty `convUrl` hides the 🛴 link, and `minApp` is
+the narrowest the app pane gets (px, default 320). It returns `{ layout, chat, rail, full }`;
+set `full.href` as the app navigates.
+
 **Only the conversation's own sandbox may frame it.** The UI sends
 `Content-Security-Policy: frame-ancestors <scheme>://<label>.<sandboxDomain>` on
 `/chat/<id>`, where `<label>` is the id's first 8 hex characters, and

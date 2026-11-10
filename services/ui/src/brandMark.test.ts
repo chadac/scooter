@@ -66,7 +66,7 @@ describe("one Scooter mark", () => {
 
   it("every favicon uses the kick scooter", () => {
     const kick = "%F0%9F%9B%B4";
-    for (const f of ["services/ui/index.html", "contrib/marimo/notebook/index.html", "contrib/shares/scooter_contrib_shares/transport.py"]) {
+    for (const f of ["services/ui/index.html", "modules/sandbox-os/web-services/chat-page/index.html", "contrib/web-review/review/static/shell.html", "contrib/shares/scooter_contrib_shares/transport.py"]) {
       expect(readFileSync(join(REPO, f), "utf8"), f).toContain(kick);
     }
   });

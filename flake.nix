@@ -281,17 +281,19 @@
               grep -F 'builtins.path { path = ./echo-skill; name = "skill-echo-skill"; }' \
                 ${skillTree}/skill-dirs/module.nix
 
-              # The "marimo + chat" page, from its real ExecStart: the chat pane is the
-              # conversation's /chat/<id> on the app's origin, and the page is served static.
+              # The "marimo + chat" page, rendered by its real ExecStart.
               export RUNTIME_DIRECTORY=$TMPDIR/nb CONVERSATION_ID=5a515e73-860b-49ba-bc3f-6ff8d5fda5ff
               export CONVERSATION_URL="https://scooter.example.com/?thread=$CONVERSATION_ID&x=1"
               mkdir -p $RUNTIME_DIRECTORY && echo SECRET=1 > $RUNTIME_DIRECTORY/conv.env
               ${notebookStart} &
               for _ in $(seq 50); do ${pkgs.curl}/bin/curl -sf -o $TMPDIR/page.html http://127.0.0.1:${toString notebookPort}/ && break; sleep 0.1; done
-              grep -F 'const CHAT_URL = "https://scooter.example.com/chat/5a515e73-860b-49ba-bc3f-6ff8d5fda5ff";' $TMPDIR/page.html
-              grep -F 'href="https://scooter.example.com/?thread=5a515e73-860b-49ba-bc3f-6ff8d5fda5ff&x=1"' $TMPDIR/page.html
-              grep -F 'new URL("../marimo/", location.href)' $TMPDIR/page.html
-              if grep -F '@CHAT_URL@' $TMPDIR/page.html; then echo 'FAIL: placeholder left in the page' >&2; exit 1; fi
+              grep -F '"chatUrl":"https://scooter.example.com/chat/5a515e73-860b-49ba-bc3f-6ff8d5fda5ff"' $TMPDIR/page.html
+              grep -F '"convUrl":"https://scooter.example.com/?thread=5a515e73-860b-49ba-bc3f-6ff8d5fda5ff&x=1"' $TMPDIR/page.html
+              grep -F '"app":"../marimo/"' $TMPDIR/page.html
+              grep -F '"storageKey":"notebook"' $TMPDIR/page.html
+              grep -F 'window.ChatPage' $TMPDIR/page.html
+              grep -F 'w.open = (url, target, features)' $TMPDIR/page.html
+              if grep -E '@(CONFIG|CHAT_PAGE|EXTRA_SCRIPT|TITLE)@' $TMPDIR/page.html; then echo 'FAIL: placeholder left in the page' >&2; exit 1; fi
               # Only the page: conv.env, beside it in the runtime dir, is not served.
               test "$(${pkgs.curl}/bin/curl --path-as-is -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${toString notebookPort}/../conv.env)" != 200
               kill %1

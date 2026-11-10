@@ -337,6 +337,7 @@ in
   imports = [
     ./web-services/terminal.nix
     ./web-services/ssh.nix
+    ./web-services/chat-page.nix
   ];
 
   options.webServices = lib.mkOption {

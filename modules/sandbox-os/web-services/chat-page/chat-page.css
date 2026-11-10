@@ -1,0 +1,23 @@
+/* "<app> + chat" layout: chat, rail, app pane (chat-page.js). */
+:root { color-scheme: light dark; --rail: 28px; --line: #d4d4d8; --muted: #71717a; --bg: #fafafa; }
+@media (prefers-color-scheme: dark) { :root { --line: #3f3f46; --muted: #a1a1aa; --bg: #18181b; } }
+html, body { margin: 0; height: 100%; overflow: hidden; font: 12px system-ui, sans-serif; background: var(--bg); }
+#layout { display: flex; height: 100%; }
+#chat { flex: none; width: var(--chat-width, 420px); min-width: 0; }
+#layout.collapsed #chat { width: 0; }
+iframe { display: block; width: 100%; height: 100%; border: 0; background: Canvas; }
+#rail {
+  flex: none; width: var(--rail); display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding-top: 8px; border-inline: 1px solid var(--line); cursor: col-resize; user-select: none;
+}
+#layout.collapsed #rail { cursor: default; }
+#rail button, #rail a {
+  all: unset; cursor: pointer; width: 22px; height: 22px; display: grid; place-items: center;
+  border-radius: 4px; color: var(--muted); font-size: 13px;
+}
+#rail [hidden] { display: none; }
+#rail button:hover, #rail a:hover { background: color-mix(in srgb, var(--muted) 18%, transparent); color: CanvasText; }
+.chat-page-app { flex: 1; min-width: 0; }
+/* While dragging, the iframes would swallow the pointer. */
+#layout.dragging iframe { pointer-events: none; }
+#missing { padding: 16px; color: var(--muted); }

@@ -1,0 +1,25 @@
+<!doctype html>
+<!-- webServices.<name>.chatPage; @-placeholders are filled by chat-page.nix. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>@TITLE@</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%9B%B4%3C/text%3E%3C/svg%3E">
+@CHAT_PAGE@
+<script id="chat-page-config" type="application/json">@CONFIG@</script>
+</head>
+<body>
+<main id="app-pane"><iframe id="app-frame" title="@TITLE@" allow="clipboard-read; clipboard-write; fullscreen"></iframe></main>
+<script>
+  "use strict";
+  // extraScript sees these globals: CFG, APP, page, frame.
+  const CFG = JSON.parse(document.getElementById("chat-page-config").textContent);
+  const APP = new URL(CFG.app, location.href);
+  const page = ChatPage.mount(document.getElementById("app-pane"), CFG);
+  const frame = document.getElementById("app-frame");
+  frame.src = APP.pathname + location.search + location.hash;
+</script>
+@EXTRA_SCRIPT@
+</body>
+</html>

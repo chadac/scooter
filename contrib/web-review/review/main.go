@@ -29,7 +29,11 @@ func main() {
 			serveProxy(site)
 			return
 		case "shell":
-			serve(site.ShellPort, newShell(site))
+			shell, err := newShell(site)
+			if err != nil {
+				log.Fatalf("chat page: %v", err)
+			}
+			serve(site.ShellPort, shell)
 			return
 		case "dev":
 			if err := execDev(site); err != nil {

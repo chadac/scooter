@@ -34,6 +34,7 @@ let
     REVIEW_APP_PORT = toString app.port;
     REVIEW_STATE_DIR = stateDir;
     REVIEW_VENDOR_DIR = "${review.vendor}";
+    REVIEW_CHAT_PAGE_DIR = "${config.chatPage.assets}";
   } // lib.optionalAttrs (target != null) {
     REVIEW_TARGET = "${targetFile}";
   } // lib.optionalAttrs (config.webReview.chromium != null) {

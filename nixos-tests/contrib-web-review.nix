@@ -93,6 +93,7 @@ pkgs.testers.runNixOSTest {
     # The shell serves every route under its base, framing the app at the same route.
     shell = run.succeed(f"curl -fsS http://localhost:2731{base}/review/orders/1042")
     assert f'"appBase":"{base}/review-app"' in shell, shell[:600]
+    assert "window.ChatPage" in shell, shell[:600]
 
     # The CLI talks to the running service.
     assert "no open notes" in run.succeed("review list")

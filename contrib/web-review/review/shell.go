@@ -4,8 +4,9 @@ import (
 	"bytes"
 	_ "embed"
 	"encoding/json"
-	"html"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -18,7 +19,18 @@ type Shell struct {
 	page []byte
 }
 
-func newShell(site Site) *Shell {
+// newShell inlines chat-page.css and .js from site.ChatPageDir.
+func newShell(site Site) (*Shell, error) {
+	var head bytes.Buffer
+	for _, f := range []struct{ name, tag string }{{"chat-page.css", "style"}, {"chat-page.js", "script"}} {
+		src, err := os.ReadFile(filepath.Join(site.ChatPageDir, f.name))
+		if err != nil {
+			return nil, err
+		}
+		head.WriteString("<" + f.tag + ">\n")
+		head.Write(src)
+		head.WriteString("</" + f.tag + ">\n")
+	}
 	cfg, _ := json.Marshal(map[string]string{
 		"appBase":   site.AppBase(),
 		"shellBase": site.ShellBase(),
@@ -26,9 +38,9 @@ func newShell(site Site) *Shell {
 		"convUrl":   site.ConvURL,
 	})
 	// Safe in <script>: JSON escapes <, > and &.
-	page := bytes.Replace(shellHTML, []byte("@CONFIG@"), cfg, 1)
-	page = bytes.ReplaceAll(page, []byte("@APP_BASE@"), []byte(html.EscapeString(site.AppBase())))
-	return &Shell{site: site, page: page}
+	page := bytes.Replace(shellHTML, []byte("@CHAT_PAGE@"), head.Bytes(), 1)
+	page = bytes.Replace(page, []byte("@CONFIG@"), cfg, 1)
+	return &Shell{site: site, page: page}, nil
 }
 
 func (s *Shell) ServeHTTP(w http.ResponseWriter, r *http.Request) {
