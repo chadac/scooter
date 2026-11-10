@@ -1,7 +1,7 @@
 /**
  * Tier 3 E2E for subagent conversations. A subagent is a full conversation that shares its
  * parent's sandbox, and three rules define how it appears: nested under its parent as a
- * depth-1 row, shown by the parent as a sub-conversation in the Subagents panel, and never
+ * depth-1 row, shown by the parent in its Chats panel, and never
  * rendered as a top-level chat of its own. The fake agent's `~subagent` directive calls the
  * `spawn_subagent` MCP tool exactly as goose does, so the parent/child pair is real.
  */
@@ -49,10 +49,10 @@ fastOnly("the ~subagent directive is a fake-agent test hook")("subagent conversa
 
     // Rule 2: the parent shows it as a sub-conversation; the section only renders when
     // the parent can resolve its children.
-    const section = page.locator('[data-testid="right-panel-section-subagents"]');
-    await expect(section, "the parent's Session tab must offer a Subagents section").toBeVisible();
+    const section = page.locator('[data-testid="right-panel-section-chats"]');
+    await expect(section, "the parent's Session tab must offer a Chats section").toBeVisible();
     await expect(section).toHaveAttribute("data-open", "true");
-    const panelRows = page.locator('[data-testid="subagent-row"]');
+    const panelRows = page.locator('[data-testid="chat-row"][data-kind="subagent"]');
     await expect(panelRows).toHaveCount(1);
     await expect(panelRows.first()).toContainText("investigate the broker timeout");
 
@@ -91,11 +91,11 @@ fastOnly("the ~subagent directive is a fake-agent test hook")("subagent conversa
     await assertMatchesServer(page, request, baseURL, "after an unrelated conversation upserts");
   });
 
-  test("the Subagents panel's Stop removes the child without leaving the parent", async ({ chat, page }) => {
+  test("the Chats panel's Stop removes the child without leaving the parent", async ({ chat, page }) => {
     await chat.open();
     await chat.completeTurn("~subagent long running job");
-    const row = page.locator('[data-testid="subagent-row"]');
-    const stop = row.locator('[data-testid="subagent-cancel"]');
+    const row = page.locator('[data-testid="chat-row"][data-kind="subagent"]');
+    const stop = row.locator('[data-testid="chat-stop"]');
     await row.hover();
     await expect(stop, "a running subagent offers Stop").toBeVisible({ timeout: 60_000 });
     const parentUrl = page.url();
@@ -122,14 +122,14 @@ fastOnly("the ~subagent directive is a fake-agent test hook")("subagent conversa
     const parentId = await page.locator(TOP_LEVEL_ROW).getAttribute("data-conversation-id");
     const base = baseURL ?? "http://localhost:5173";
 
-    const res = await request.post(`${base}/conversations/${parentId}/sessions`, { data: { title: "Refactor the router" } });
+    const res = await request.post(`${base}/conversations/${parentId}/sessions`, { data: { title: "Refactor the router", origin: "vscode" } });
     expect(res.status()).toBe(201);
     const { id } = (await res.json()) as { id: string };
 
     const row = page.locator(`[data-testid="session-item"][data-conversation-id="${id}"]`);
     await expect(row).toHaveAttribute("data-subagent", "true", { timeout: 30_000 });
     await expect(row).toHaveAttribute("data-session-kind", "session");
-    await expect(row.locator('[data-testid="session-vscode"]')).toBeVisible();
+    await expect(row.locator('[data-testid="child-icon"][data-origin="vscode"]')).toBeVisible();
     await shot(page, "vscode session row");
     await page.emulateMedia({ colorScheme: "dark" });
     await page.waitForTimeout(1_000);
@@ -138,6 +138,34 @@ fastOnly("the ~subagent directive is a fake-agent test hook")("subagent conversa
 
     const listed = await request.get(`${base}/conversations/${parentId}/sessions`);
     expect(((await listed.json()) as { sessions: { id: string }[] }).sessions.map((s) => s.id)).toEqual([id]);
+  });
+
+  test("the sidebar's + starts a web session that nests under its parent and opens", async ({ chat, page }) => {
+    await chat.open();
+    await chat.completeTurn("hello");
+    const parent = page.locator(TOP_LEVEL_ROW).first();
+    const parentId = await parent.getAttribute("data-conversation-id");
+
+    await parent.hover();
+    await parent.locator('[data-testid="session-new-child"]').click();
+
+    const row = page.locator(`${SUBAGENT_ROW}[data-session-kind="session"]`);
+    await expect(row).toHaveCount(1, { timeout: 30_000 });
+    await expect(row).toHaveAttribute("data-active", "true", { timeout: 20_000 });
+    await expect(row.locator('[data-testid="child-icon"]')).toHaveAttribute("data-origin", "web");
+    await expect(row.locator('[data-testid="session-title"]')).toHaveText("New chat");
+    const childId = await row.getAttribute("data-conversation-id");
+    expect(childId).not.toBe(parentId);
+
+    // The Chats panel lists both, with the session current.
+    const chats = page.locator('[data-testid="chat-row"]');
+    await expect(chats).toHaveCount(2);
+    await expect(page.locator('[data-testid="chat-row"][data-current="true"]')).toHaveAttribute("data-kind", "session");
+    await shot(page, "web session from the sidebar");
+    await page.emulateMedia({ colorScheme: "dark" });
+    await page.waitForTimeout(500);
+    await shot(page, "web session from the sidebar dark");
+    await page.emulateMedia({ colorScheme: "light" });
   });
 
   test("a long parent title truncates instead of running under its subagent count", async ({ chat, page }) => {

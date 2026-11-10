@@ -5,7 +5,7 @@
  * it is nginx's job and is checked against the rendered config (services/ui/image/check.nix).
  */
 
-import { test, expect, seedConversation } from "./fixtures.js";
+import { test, expect, seedConversation, shot } from "./fixtures.js";
 import { fastOnly } from "./target.js";
 
 const SESSIONS_KEY = "kubenix-agent.sessions.v1";
@@ -125,5 +125,63 @@ fastOnly("raises an approval through the open approvals route and fakes can-appr
     const [popup] = await Promise.all([page.waitForEvent("popup"), page.locator('[data-testid="pop-out-chat"]').click()]);
     await expect.poll(() => new URL(popup.url()).pathname).toBe(`/chat/${id}`);
     await expect(popup.locator(chatPage.root)).toHaveAttribute("data-conversation-id", id);
+  });
+
+  test("the switcher starts a session and switches between the sandbox's chats in place", async ({ chat, page, baseURL, request }) => {
+    const base = (baseURL ?? "").replace(/\/$/, "");
+    const id = await seedConversation(request, base, null, "Notebook chat");
+    const other = await seedConversation(request, base, null, "Someone else's sandbox");
+    // The width of the chat pane beside marimo.
+    await page.setViewportSize({ width: 420, height: 760 });
+
+    await page.goto(`/chat/${id}`);
+    await expect(chat.input()).toBeVisible({ timeout: 20_000 });
+    await chat.completeTurn("hello from the notebook");
+
+    // New session: a child of this conversation, opened in place with the URL tracking it.
+    const switcher = page.locator('[data-testid="chat-switcher"]');
+    await switcher.click();
+    await shot(page, "chat switcher menu");
+    await page.locator('[data-testid="chat-switcher-new"]').click();
+    const root = page.locator(chatPage.root);
+    await expect(root).not.toHaveAttribute("data-active-chat", id, { timeout: 30_000 });
+    const childId = (await root.getAttribute("data-active-chat"))!;
+    expect(new URL(page.url()).pathname, "the path stays the framed conversation's").toBe(`/chat/${id}`);
+    expect(new URL(page.url()).searchParams.get("chat")).toBe(childId);
+    await expect(page.locator(chatPage.openApp)).toHaveAttribute("href", `/?thread=${childId}`);
+
+    const listed = (await (await request.get(`${base}/conversations`)).json()) as Array<{ id: string; parentId?: string; kind?: string; origin?: string }>;
+    expect(listed.find((c) => c.id === childId)).toMatchObject({ parentId: id, kind: "session", origin: "web" });
+
+    // A send lands in the session, not the conversation it was started from.
+    await chat.completeTurn("hello from the session");
+    await switcher.click();
+    const items = page.locator('[data-testid="chat-switcher-item"]');
+    await expect(items).toHaveCount(2);
+    await expect(items.nth(1).locator('[data-testid="child-icon"]')).toHaveAttribute("data-origin", "web");
+    await shot(page, "chat switcher with a web session");
+    await page.emulateMedia({ colorScheme: "dark" });
+    await page.waitForTimeout(500);
+    await shot(page, "chat switcher with a web session dark");
+    await page.emulateMedia({ colorScheme: "light" });
+    await page.keyboard.press("Escape");
+
+    // A reload returns to the session.
+    await page.reload();
+    await expect(root).toHaveAttribute("data-active-chat", childId, { timeout: 20_000 });
+    await expect(chat.userMessages().filter({ hasText: "hello from the session" })).toBeVisible({ timeout: 20_000 });
+    await expect(chat.userMessages().filter({ hasText: "hello from the notebook" })).toHaveCount(0);
+
+    // Alt+Up goes back to the conversation, whose thread is untouched.
+    await page.keyboard.press("Alt+ArrowUp");
+    await expect(root).toHaveAttribute("data-active-chat", id);
+    await expect(chat.userMessages().filter({ hasText: "hello from the notebook" })).toBeVisible({ timeout: 20_000 });
+    expect(new URL(page.url()).searchParams.get("chat")).toBeNull();
+
+    // ?chat= opens only this sandbox's chats.
+    await page.goto(`/chat/${id}?chat=${other}`);
+    await expect(root).toHaveAttribute("data-active-chat", id, { timeout: 20_000 });
+    await expect(chat.input()).toBeVisible({ timeout: 20_000 });
+    expect(new URL(page.url()).searchParams.get("chat")).toBeNull();
   });
 });

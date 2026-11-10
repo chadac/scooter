@@ -20,7 +20,10 @@ import {
   nestSubagents,
   type Session,
 } from "./sessions.js";
-import { subagentsOf } from "./SubagentsPanel.js";
+import { familyOf } from "./family.js";
+
+// The children a parent's Chats panel lists.
+const childrenIn = (all: Session[], id: string | undefined) => familyOf(all, id).slice(1).map((m) => m.session);
 
 beforeEach(() => {
   globalThis.localStorage?.clear?.();
@@ -87,10 +90,10 @@ describe("a subagent nests under the parent that spawned it", () => {
   });
 });
 
-describe("the parent's Subagents panel finds its children", () => {
+describe("the parent's Chats panel finds its children", () => {
   it("lists children of a SERVER-SOURCED parent", () => {
     const all = [s("parent"), s("c1", { parentId: "parent" }), s("c2", { parentId: "parent" }), s("other")];
-    expect(subagentsOf(all, "parent").map((x) => x.id)).toEqual(["c1", "c2"]);
+    expect(childrenIn(all, "parent").map((x) => x.id)).toEqual(["c1", "c2"]);
   });
 
   it("lists children of a parent the user started in this tab (local key)", () => {
@@ -102,13 +105,13 @@ describe("the parent's Subagents panel finds its children", () => {
       s("other"),
     ];
     expect(
-      subagentsOf(all, "local-key-abc").map((x) => x.id),
-      "the Subagents panel must resolve the current conversation's SERVER id",
+      childrenIn(all, "local-key-abc").map((x) => x.id),
+      "the Chats panel must resolve the current conversation's SERVER id",
     ).toEqual(["srv-child"]);
   });
 
   it("returns [] when there is no current conversation", () => {
-    expect(subagentsOf([s("a")], undefined)).toEqual([]);
+    expect(childrenIn([s("a")], undefined)).toEqual([]);
   });
 });
 
@@ -193,8 +196,8 @@ describe("the whole path: a chat started in THIS TAB spawns a subagent", () => {
     const ids = rows.map((r) => r.session.id);
     expect(ids[ids.indexOf("srv-sub") - 1]).toBe(key);
 
-    // 4. The parent's Subagents panel finds it, which is also what gates the tab itself.
-    expect(subagentsOf(sessionStore.get().sessions, sessionStore.get().currentId).map((x) => x.id)).toEqual([
+    // 4. The parent's Chats panel finds it.
+    expect(childrenIn(sessionStore.get().sessions, sessionStore.get().currentId).map((x) => x.id)).toEqual([
       "srv-sub",
     ]);
 

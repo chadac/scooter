@@ -7,7 +7,7 @@
  */
 
 import { memo, useEffect, useLayoutEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
-import { Bot, Check, ChevronRight, Code2, CornerDownRight, FolderPlus, Hourglass, InfinityIcon, Lock, MoreHorizontal, Plus, Star } from "lucide-react";
+import { Bot, Check, ChevronRight, CornerDownRight, FolderPlus, Hourglass, InfinityIcon, Lock, MoreHorizontal, Plus, Star } from "lucide-react";
 import { DropdownMenu, Popover } from "radix-ui";
 
 import { FolderGlyph, IconPicker } from "./FolderGlyph.js";
@@ -27,6 +27,7 @@ import {
 } from "./folders.js";
 import {
   sessionStore,
+  useCurrentUser,
   useSessions,
   filteredSessions,
   nestSubagents,
@@ -42,6 +43,9 @@ import { LinkedResources } from "./LinkedResources.js";
 import { mobileNav, useDrawer } from "./mobileNav.js";
 import { SourceBadge, sourceLabel, TitleBadge } from "./sourceIcon.js";
 import { reloadInto } from "./appUpdate.js";
+import { ChildIcon } from "./ChildIcon.js";
+import { canStartSession } from "./family.js";
+import { startSession } from "./sessionActions.js";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -137,6 +141,7 @@ const SessionRow = memo(function SessionRow({
   active: boolean;
   labelMode: LabelMode;
 }) {
+  const user = useCurrentUser();
   const dot = turnDot(s);
 
   return (
@@ -177,16 +182,7 @@ const SessionRow = memo(function SessionRow({
         <span data-testid="session-title" className="flex min-w-0 items-center">
           <SessionLabel session={s} mode={labelMode} />
         </span>
-        {s.kind === "session" && (
-          <span
-            data-testid="session-vscode"
-            className="ms-1.5 shrink-0 text-xs text-muted-foreground"
-            title="A VS Code chat in this conversation's sandbox"
-            aria-label="VS Code"
-          >
-            <Code2 className="size-3" aria-hidden />
-          </span>
-        )}
+        {s.kind === "session" && <ChildIcon session={s} className="ms-1.5" />}
         {s.visibility === "private" && (
           <span
             data-testid="session-private"
@@ -221,6 +217,20 @@ const SessionRow = memo(function SessionRow({
             </span>
           ))}
         </span>
+      )}
+
+      {depth === 0 && canStartSession(s, user) && (
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          data-testid="session-new-child"
+          aria-label={`New session in ${s.title}`}
+          title="New session in this sandbox"
+          onClick={() => void startSession(s).then((err) => err && window.alert(`Couldn't start a session: ${err}`))}
+          className="shrink-0 text-muted-foreground opacity-0 group-hover:opacity-100 focus-visible:opacity-100 max-md:opacity-100"
+        >
+          <Plus aria-hidden />
+        </Button>
       )}
     </div>
   );

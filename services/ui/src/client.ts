@@ -188,6 +188,28 @@ export async function createConversation(
   }
 }
 
+/** Start a person-driven session in a conversation's sandbox, returning its id or the error. */
+export async function createSession(
+  config: AgentHostConfig,
+  parentId: string,
+): Promise<{ id: string } | { error: string }> {
+  try {
+    const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(parentId)}/sessions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(config.token ? { Authorization: `Bearer ${config.token}` } : {}),
+      },
+      body: JSON.stringify({ origin: "web" }),
+    });
+    const body = (await res.json().catch(() => ({}))) as { id?: string; error?: string };
+    if (res.ok && body.id) return { id: body.id };
+    return { error: body.error ?? `request failed (${res.status})` };
+  } catch (e) {
+    return { error: (e as Error).message };
+  }
+}
+
 /** Resume a suspended sandbox pod, returning the conversation's new status or null on failure. */
 export async function resumeConversation(
   config: AgentHostConfig,

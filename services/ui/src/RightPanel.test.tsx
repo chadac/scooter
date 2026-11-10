@@ -57,8 +57,8 @@ describe("RightPanel", () => {
     expect(tabs).toEqual(['data-testid="right-panel-tab-session"', 'data-testid="right-panel-tab-approvals"']);
     expect(html).toMatch(/data-testid="right-panel-section-services" data-open="true"/);
     expect(html).toMatch(/right-panel-section-toggle-services" aria-expanded="true"/);
-    // No subagents here, so no empty Subagents section.
-    expect(html).not.toContain('data-testid="right-panel-section-subagents"');
+    // No other chats and none can start, so no empty Chats section.
+    expect(html).not.toContain('data-testid="right-panel-section-chats"');
   });
 
   it("has no Queue tab (queued messages render inline in the thread); approvals badge absent when there are none", () => {

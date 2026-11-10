@@ -9,16 +9,18 @@
  * see it (or it doesn't exist), which the page says rather than showing an empty thread.
  */
 
-import { useEffect, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ExternalLink } from "lucide-react";
 
 import { RuntimeProvider, useConversationInterrupts } from "./RuntimeProvider.js";
 import { ConversationArea } from "./App.js";
-import { HeaderConversationTitle } from "./HeaderConversationTitle.js";
 import { InterruptList } from "./InterruptPanel.js";
 import { ThemePicker } from "./ThemePicker.js";
-import { sessionStore, useSessions } from "./sessions.js";
-import { appPathFor } from "./chatRoute.js";
+import { serverKeyOf, sessionStore, useCurrentUser, useSessions } from "./sessions.js";
+import { canStartSession, familyOf } from "./family.js";
+import { ChatSwitcher, stepMember } from "./ChatSwitcher.js";
+import { startSession } from "./sessionActions.js";
+import { appPathFor, CHAT_QUERY, chatQueryId } from "./chatRoute.js";
 import { SCOOTER_MARK } from "./brandMark.js";
 
 // Whether the conversation stream has delivered its first full list, which is what lets
@@ -97,23 +99,131 @@ export function ChatPanel({ conversationId }: { conversationId?: string }) {
   );
 }
 
+const LAST_CHAT_KEY = (rootId: string) => `scooter.chat.last.${rootId}`;
+
+function readLastChat(rootId: string): string | undefined {
+  try {
+    return localStorage.getItem(LAST_CHAT_KEY(rootId)) ?? undefined;
+  } catch {
+    // Storage can be off in a third-party frame.
+    return undefined;
+  }
+}
+
+/** Which of the sandbox's chats this page shows, and switching it in place. */
+function useChatSelection(pathId: string) {
+  const { sessions } = useSessions();
+  const loaded = useSyncExternalStore(chatListStatus.subscribe, chatListStatus.get, chatListStatus.get);
+  const [activeId, setActiveId] = useState(pathId);
+  const [error, setError] = useState<string>();
+  // A session just started, opened once the list carries it.
+  const [starting, setStarting] = useState<string>();
+  const members = useMemo(() => familyOf(sessions, pathId), [sessions, pathId]);
+  const root = members[0]?.session;
+  const rootKey = root ? serverKeyOf(root) : pathId;
+
+  const isMember = (id: string | undefined) => !!id && members.some((m) => m.session.id === id);
+
+  // Only this sandbox's own chats, so a framing page cannot open any other.
+  const select = useCallback(
+    (id: string) => {
+      if (id !== pathId && !isMember(id)) return;
+      setError(undefined);
+      sessionStore.repin(id);
+      setActiveId(id);
+      // The path stays the root's: only its sandbox origin may frame it (nginx.nix).
+      const url = new URL(location.href);
+      if (id === pathId) url.searchParams.delete(CHAT_QUERY);
+      else url.searchParams.set(CHAT_QUERY, id);
+      history.replaceState(history.state, "", url);
+      try {
+        localStorage.setItem(LAST_CHAT_KEY(rootKey), id);
+      } catch {
+        // Storage can be off in a third-party frame; the switch still works.
+      }
+    },
+    [pathId, rootKey, members],
+  );
+
+  // On the first list, reopen the chat the URL names, else the one last used here.
+  const restored = useRef(false);
+  useEffect(() => {
+    if (restored.current || !loaded || !root) return;
+    restored.current = true;
+    const asked = chatQueryId(location.search);
+    const want = isMember(asked) ? asked : isMember(readLastChat(rootKey)) ? readLastChat(rootKey) : undefined;
+    if (want && want !== activeId) select(want);
+    else if (asked && !isMember(asked)) select(pathId);
+  });
+
+  // A chat that leaves the list (deleted, or stopped) falls back to the root.
+  const wasListed = useRef(false);
+  const listed = isMember(activeId);
+  useEffect(() => {
+    if (listed) wasListed.current = true;
+    else if (wasListed.current && root) {
+      wasListed.current = false;
+      select(root.id);
+    }
+  }, [listed, root, select]);
+
+  const user = useCurrentUser();
+  const startNew = canStartSession(root, user) && starting === undefined
+    ? () => {
+        void startSession(root, setStarting).then((err) => err && setError(`Couldn't start a session: ${err}`));
+      }
+    : undefined;
+
+  useEffect(() => {
+    if (starting && isMember(starting)) {
+      setStarting(undefined);
+      select(starting);
+    }
+  });
+
+  // Alt+Up/Down cycles the chats; Alt+N starts a session.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.altKey || e.ctrlKey || e.metaKey) return;
+      const step = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0;
+      if (step !== 0) {
+        const next = stepMember(members, activeId, step);
+        if (next && next !== activeId) select(next);
+        e.preventDefault();
+      } else if (e.code === "KeyN" && startNew) {
+        startNew();
+        e.preventDefault();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [members, activeId, select, startNew]);
+
+  return { activeId, members, select, startNew, starting: starting !== undefined, error };
+}
+
 export function ChatPage({ conversationId }: { conversationId: string }) {
-  const { ready } = usePinned(conversationId);
+  const { activeId, members, select, startNew, starting, error } = useChatSelection(conversationId);
 
   return (
     <RuntimeProvider>
-      <div className="flex h-dvh flex-col" data-testid="chat-page" data-conversation-id={conversationId}>
+      <div className="flex h-dvh flex-col" data-testid="chat-page" data-conversation-id={conversationId} data-active-chat={activeId}>
         <header className="flex h-10 shrink-0 items-center justify-between gap-2 border-b bg-header px-3 text-sm">
           <div className="flex min-w-0 items-center gap-2">
             <span className="text-[15px] leading-none" aria-hidden>{SCOOTER_MARK}</span>
-            {ready && <HeaderConversationTitle />}
+            {members.length > 0 && <ChatSwitcher members={members} activeId={activeId} onSelect={select} onNew={startNew} />}
+            {starting && (
+              <span data-testid="chat-page-starting" className="shrink-0 text-xs text-muted-foreground">
+                Starting session…
+              </span>
+            )}
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <ThemePicker />
             {/* _top: inside a host's iframe this leaves the host page for the full app. */}
             <a
               data-testid="chat-page-open-app"
-              href={appPathFor(conversationId)}
+              href={appPathFor(activeId)}
               target="_top"
               className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
             >
@@ -122,7 +232,12 @@ export function ChatPage({ conversationId }: { conversationId: string }) {
           </div>
         </header>
         <main className="flex min-h-0 flex-1 flex-col">
-          <ChatPanel conversationId={conversationId} />
+          {error && (
+            <p data-testid="chat-page-error" role="alert" className="shrink-0 border-b bg-destructive/10 px-3 py-1.5 text-xs text-destructive">
+              {error}
+            </p>
+          )}
+          <ChatPanel conversationId={activeId} />
         </main>
       </div>
     </RuntimeProvider>
