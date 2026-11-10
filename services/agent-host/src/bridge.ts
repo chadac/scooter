@@ -1790,11 +1790,11 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
             ? deps.model
             : defaultFor(deps.modelCatalog, provider.modelTag, conversationId)
           : deps.model;
-      // A provider with its own MCP set (the BYO tunnel names) wins; otherwise the per-run
-      // resolver, falling back to the static `config.mcpServers`.
+      // BYO tunnel names derive from the resolved set.
+      const known = await currentMcp();
       const resolved = provider.mcpServersFor
-        ? provider.mcpServersFor(conversationId)
-        : ((await currentMcp()) ?? (deps.config.mcpServers as OfferedMcpServer[] | undefined));
+        ? provider.mcpServersFor(conversationId, known ?? [])
+        : (known ?? (deps.config.mcpServers as OfferedMcpServer[] | undefined));
       const mcpServers = resolved;
       // Remember what this session was created with, so a later run can tell whether the
       // sandbox's set changed.
@@ -1900,8 +1900,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
 
   /** Drop a cached session whose MCP set changed; keep it if resolving fails. */
   const dropSessionIfMcpChanged = async (provider: AcpProvider, abandoned?: () => boolean): Promise<void> => {
-    // A provider bringing its own set never used the resolver.
-    if (!deps.resolveMcpServers || provider.mcpServersFor) return;
+    if (!deps.resolveMcpServers) return;
     const providerId = provider.id;
     const cached = readySessions.get(providerId);
     if (!cached) return; // nothing cached: the next readyProvider builds it fresh anyway
@@ -1917,7 +1916,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     const known = await currentMcp();
     if (!known) return;
     // An ended run must not close the retry's session.
-    if (fingerprintOffered(known) === settled.mcpFingerprint || abandoned?.()) return;
+    const offered = provider.mcpServersFor ? provider.mcpServersFor(conversationId, known) : known;
+    if (fingerprintOffered(offered) === settled.mcpFingerprint || abandoned?.()) return;
     log.info("sandbox MCP servers changed; rebuilding the agent session", {
       conversation_id: conversationId,
       provider: providerId,

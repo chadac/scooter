@@ -7,7 +7,7 @@
  */
 
 import { formatError, logger } from "../log.js";
-import { resolveTunnelTarget, type TunnelTargetDeps } from "./tunnelTargets.js";
+import { resolveTunnelTarget, type ResolvedTarget, type TunnelTargetDeps } from "./tunnelTargets.js";
 import type { WireFrame } from "./remoteProtocol.js";
 
 const log = logger("tunnel");
@@ -29,8 +29,10 @@ export interface TunnelService {
 
 /** One in-flight stream: the request being assembled until `end` arrives. */
 interface Pending {
-  url: string;
+  /** Settles undefined when refused; frames keep arriving while it resolves. */
+  target: Promise<ResolvedTarget | undefined>;
   method: string;
+  /** The container's headers, before the resolved target's are injected. */
   headers: Record<string, string>;
   body: Buffer[];
   /** The conversation this stream is scoped to, so log lines can name it. */
@@ -67,13 +69,41 @@ export function createTunnelService(deps: TunnelServiceDeps): TunnelService {
     deps.send({ ch: "tunnel", type: "close", id, payload: { error } });
   };
 
+  /** The container's headers with the target's injected over them. */
+  const requestHeaders = (fromContainer: Record<string, string>, target: ResolvedTarget): Record<string, string> => {
+    const headers = { ...fromContainer };
+    delete headers.host; // the container's Host names its own loopback proxy
+    delete headers["content-length"]; // recomputed by fetch
+    // An injected credential replaces any header the container supplied under the
+    // same name (case-insensitively), so the user's machine cannot present its own.
+    for (const { name } of target.headers) {
+      for (const existing of Object.keys(headers)) {
+        if (existing.toLowerCase() === name.toLowerCase()) delete headers[existing];
+      }
+    }
+    for (const { name, value } of target.headers) headers[name] = value;
+    return headers;
+  };
+
   /** Run the resolved request and stream its response back. */
   const run = async (id: string, p: Pending): Promise<void> => {
+    const target = await p.target;
+    if (!target) return; // already closed with the refusal
+    const reqBody = Buffer.concat(p.body);
+    trace("request", {
+      stream: id,
+      conversation_id: p.conversationId,
+      url: target.url,
+      bytes: reqBody.length,
+      ...rpcOf(reqBody),
+    });
     try {
-      const res = await doFetch(p.url, {
+      // The resolved URL is used as resolved, with the container's `path` not appended,
+      // since honouring it would let the container reach other conversations' resources.
+      const res = await doFetch(target.url, {
         method: p.method,
-        headers: p.headers,
-        body: p.body.length ? Buffer.concat(p.body).toString() : undefined,
+        headers: requestHeaders(p.headers, target),
+        body: reqBody.length ? reqBody.toString() : undefined,
       });
       // Do not read or clone the body here to log it (undici's clone shares the stream),
       // and forward a 4xx rather than swallow it, since the CLI relies on rejections to
@@ -131,37 +161,28 @@ export function createTunnelService(deps: TunnelServiceDeps): TunnelService {
 
       if (frame.type === "open") {
         trace("open", { stream: id, conversation_id: conversationId, target: payload.target, method: payload.method });
-        const resolution = resolveTunnelTarget(payload.target ?? "", conversationId, deps);
-        if (!resolution.ok) {
-          // Loud on both ends.
-          log.warn("refusing target", {
-            conversation_id: conversationId,
-            target: payload.target,
-            reason: resolution.reason,
-          });
-          closeWithError(id, resolution.reason);
-          return;
-        }
-        // The resolved URL is used as resolved, with the container's `path` not appended,
-        // since honouring it would let the container reach other conversations' resources.
-        const headers = { ...(payload.headers ?? {}) };
-        delete headers.host; // the container's Host names its own loopback proxy
-        delete headers["content-length"]; // recomputed by fetch
-        // An injected credential replaces any header the container supplied under the
-        // same name (case-insensitively), so the user's machine cannot present its own.
-        for (const { name } of resolution.target.headers) {
-          for (const existing of Object.keys(headers)) {
-            if (existing.toLowerCase() === name.toLowerCase()) delete headers[existing];
-          }
-        }
-        for (const { name, value } of resolution.target.headers) headers[name] = value;
-        pending.set(id, {
-          url: resolution.target.url,
-          method: payload.method ?? "GET",
-          headers,
-          body: [],
-          conversationId,
-        });
+        const target = resolveTunnelTarget(payload.target ?? "", conversationId, deps).then(
+          (resolution) => {
+            if (resolution.ok) return resolution.target;
+            // Loud on both ends.
+            log.warn("refusing target", {
+              conversation_id: conversationId,
+              target: payload.target,
+              reason: resolution.reason,
+            });
+            if (pending.get(id) === entry) closeWithError(id, resolution.reason);
+            return undefined;
+          },
+          (err: unknown) => {
+            log.warn("target resolution FAILED", { conversation_id: conversationId, target: payload.target, error: formatError(err) });
+            if (pending.get(id) === entry) closeWithError(id, `could not resolve target: ${formatError(err)}`);
+            return undefined;
+          },
+        );
+        // Registered before resolving, since the stream's chunks do not wait for it.
+        const entry: Pending = { target, method: payload.method ?? "GET", headers: payload.headers ?? {}, body: [], conversationId };
+        pending.set(id, entry);
+        await target;
         return;
       }
 
@@ -175,13 +196,6 @@ export function createTunnelService(deps: TunnelServiceDeps): TunnelService {
         return;
       }
       if (frame.type === "end") {
-        trace("request", {
-          stream: id,
-          conversation_id: p.conversationId,
-          url: p.url,
-          bytes: Buffer.concat(p.body).length,
-          ...rpcOf(Buffer.concat(p.body)),
-        });
         const task = run(id, p);
         inflight.add(task);
         void task.finally(() => inflight.delete(task));

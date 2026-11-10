@@ -4,10 +4,10 @@
  * than host:port mean a user's machine can only reach servers the platform offers it.
  * The conversation id is supplied server-side from the stream's session, never from
  * the frame payload, so a container cannot name another conversation's resources.
- * `sandbox-<name>` is reserved but not resolvable over the tunnel yet.
+ * `sandbox-<name>` resolves only to a server declared in this conversation's own pod.
  */
 
-import { SANDBOX_PREFIX } from "../agent/mcpServerRegistry.js";
+import { SANDBOX_PREFIX, type OfferedMcpServer } from "../agent/mcpServerRegistry.js";
 
 /** The one target every conversation gets: the agent-host's in-process MCP endpoint. */
 export const SCOOTER_ENV = "scooter-env";
@@ -36,18 +36,25 @@ export interface TunnelTargetDeps {
   /** The broker MCP proxy's URL (brokerMcpProxy.url); absent when the broker is not
    *  configured, so scooter-broker is not offered. */
   brokerMcpUrlFor?: () => string;
+  /** sandboxMcpProxy.urlFor; absent offers and resolves no sandbox server. */
+  sandboxMcpUrlFor?: (name: string) => string;
+  /** Whether `name` is declared in this conversation's pod. */
+  sandboxServerDeclared?: (conversationId: string, name: string) => Promise<boolean>;
 }
+
+/** Server names as the manifest admits them, so a target cannot smuggle a path. */
+const SANDBOX_NAME_RE = /^[A-Za-z0-9_-]+$/;
 
 export type TunnelResolution =
   | { ok: true; target: ResolvedTarget }
   | { ok: false; reason: string };
 
 /** Resolve `target` for a stream belonging to `conversationId`. */
-export function resolveTunnelTarget(
+export async function resolveTunnelTarget(
   target: string,
   conversationId: string,
   deps: TunnelTargetDeps,
-): TunnelResolution {
+): Promise<TunnelResolution> {
   if (target === SCOOTER_ENV) {
     if (!deps.mcpUrlFor) return { ok: false, reason: "scooter-env is not configured on this deployment" };
     // The scope comes from the stream's session and travels in a token minted here, never
@@ -76,9 +83,20 @@ export function resolveTunnelTarget(
     };
   }
   if (target.startsWith(SANDBOX_PREFIX)) {
+    const name = target.slice(SANDBOX_PREFIX.length);
+    if (!deps.sandboxMcpUrlFor || !deps.sandboxServerDeclared)
+      return { ok: false, reason: "sandbox MCP servers are not configured on this deployment" };
+    // Only this conversation's registry decides, so another pod's server never resolves.
+    if (!SANDBOX_NAME_RE.test(name) || !(await deps.sandboxServerDeclared(conversationId, name)))
+      return { ok: false, reason: `no MCP server named ${JSON.stringify(name)} is declared in this sandbox` };
+    // The proxy re-checks the server against the conversation the token names.
     return {
-      ok: false,
-      reason: "sandbox-declared MCP servers are not supported yet (the target name is reserved)",
+      ok: true,
+      target: {
+        url: deps.sandboxMcpUrlFor(name),
+        rule: "sandbox",
+        headers: deps.mcpHeadersFor?.(conversationId) ?? [],
+      },
     };
   }
   // Everything else, including anything host:port shaped, is refused.
@@ -87,11 +105,13 @@ export function resolveTunnelTarget(
 
 /** The servers to offer a session as `new_session` mcpServers entries; the container starts one local proxy per entry and replaces the placeholder `url`, since only the name matters over the wire. */
 export function offeredTunnelServers(
-  conversationId: string,
   deps: TunnelTargetDeps,
-): Array<{ type: "http"; name: string; url: string; headers: Array<{ name: string; value: string }> }> {
+  resolved: readonly OfferedMcpServer[] = [],
+): OfferedMcpServer[] {
   if (!deps.mcpUrlFor) return []; // nothing to offer, so the container starts no proxy
-  void conversationId;
+  const sandbox = deps.sandboxMcpUrlFor && deps.sandboxServerDeclared
+    ? resolved.filter((s) => s.name.startsWith(SANDBOX_PREFIX))
+    : [];
   return [
     { type: "http", name: SCOOTER_ENV, url: `tunnel://${SCOOTER_ENV}`, headers: [] },
     // The contrib provider tools, without which a BYO agent has the github skill but no
@@ -99,5 +119,7 @@ export function offeredTunnelServers(
     ...(deps.brokerMcpUrlFor
       ? [{ type: "http" as const, name: SCOOTER_BROKER, url: `tunnel://${SCOOTER_BROKER}`, headers: [] }]
       : []),
+    // Names only: the real URL and token are applied as each stream resolves.
+    ...sandbox.map((s) => ({ type: "http" as const, name: s.name, url: `tunnel://${s.name}`, headers: [] })),
   ];
 }

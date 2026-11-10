@@ -215,7 +215,7 @@ describe("bridge — sandbox MCP servers change under a live conversation", () =
   });
 
   it("does NOT rebuild a provider that brings its own MCP set", async () => {
-    // BYO's own set never matches the resolver's fingerprint.
+    // A constant set has nothing to re-offer.
     const exec = createSandboxExecBackend(createFakeSandboxApi());
     const rec = recordingProvider(exec);
     const own = [{ type: "http" as const, name: "scooter-env", url: "tunnel://scooter-env", headers: [] }];
@@ -233,6 +233,41 @@ describe("bridge — sandbox MCP servers change under a live conversation", () =
 
     expect(rec.clients(), "its session must be reused").toBe(1);
     expect(rec.sessions()[0]).toEqual(own);
+
+    await bridge.stop();
+  });
+
+  it("re-offers a BYO provider's set when the sandbox's servers change", async () => {
+    // A server added by scooter-rebuild or Settings reaches a BYO session on the next message.
+    const exec = createSandboxExecBackend(createFakeSandboxApi());
+    const rec = recordingProvider(exec);
+    const provider: AcpProvider = {
+      ...rec.provider,
+      mcpServersFor: (_conv, resolved) =>
+        resolved.map((s) => ({ type: "http" as const, name: s.name, url: `tunnel://${s.name}`, headers: [] })),
+    };
+    let offered = [server("fetch", 9780)];
+
+    const bridge = createSessionBridge({
+      config: BRIDGE_CONFIG,
+      exec,
+      acpProviders: [provider],
+      resolveMcpServers: async () => offered,
+    });
+
+    await bridge.prompt({ threadId: "t1", text: "one" });
+    await bridge.prompt({ threadId: "t1", text: "two" });
+    expect(rec.clients(), "an unchanged set keeps the session").toBe(1);
+
+    offered = [server("fetch", 9780), server("jupyter", 9700)];
+    await bridge.prompt({ threadId: "t1", text: "three" });
+    expect(rec.clients(), "the new server rebuilds the session").toBe(2);
+    expect(rec.sessions()[1].map((s) => s.url)).toEqual(["tunnel://sandbox-fetch", "tunnel://sandbox-jupyter"]);
+
+    // A port move behind the same name is the proxy's business, not the session's.
+    offered = [server("fetch", 9781), server("jupyter", 9700)];
+    await bridge.prompt({ threadId: "t1", text: "four" });
+    expect(rec.clients()).toBe(2);
 
     await bridge.stop();
   });

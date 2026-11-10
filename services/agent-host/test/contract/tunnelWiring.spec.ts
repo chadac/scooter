@@ -18,7 +18,7 @@ describe("BYO provider tunnel wiring", () => {
       exec,
       mcpUrlFor: (conv) => `http://127.0.0.1:8080/mcp?conv=${conv}`,
     });
-    const offered = p.mcpServersFor?.("conv-a") ?? [];
+    const offered = p.mcpServersFor?.("conv-a", []) ?? [];
     expect(offered.map((s) => s.name)).toEqual(["scooter-env"]);
     expect(offered[0].url, "the OFFER must not leak the agent-host's loopback URL")
       .not.toContain("127.0.0.1:8080");
@@ -26,7 +26,7 @@ describe("BYO provider tunnel wiring", () => {
 
   it("offers NOTHING when no MCP endpoint is configured", () => {
     const p = createRemotePersonalizedProvider({ controllerUrl: "http://c:8080", exec });
-    expect(p.mcpServersFor?.("conv-a") ?? []).toEqual([]);
+    expect(p.mcpServersFor?.("conv-a", []) ?? []).toEqual([]);
   });
 
   it("tags itself byoc so the model catalog resolves the right namespace", () => {

@@ -223,3 +223,52 @@ describe("tunnel credential injection", () => {
     expect(cap.seen[0].headers.accept).toBe("application/json");
   });
 });
+
+describe("tunnel service — a target that resolves asynchronously", () => {
+  it("keeps the frames that arrive while a sandbox server is being checked", async () => {
+    // The tunnel client dispatches frames without awaiting, so the chunk and end land mid-check.
+    const out = collector();
+    let release!: (ok: boolean) => void;
+    const seen: Array<{ url: string; body: string; auth: string | null }> = [];
+    const fetchImpl = (async (url: string, init: RequestInit) => {
+      seen.push({ url, body: String(init.body), auth: new Headers(init.headers).get("authorization") });
+      return new Response("ok");
+    }) as unknown as typeof fetch;
+    const svc = createTunnelService({
+      send: out.send,
+      ...deps(fetchImpl),
+      mcpHeadersFor: (conv: string) => [{ name: "Authorization", value: `Bearer ${conv}` }],
+      sandboxMcpUrlFor: (name: string) => `http://agent-host/sandbox-mcp/${name}`,
+      sandboxServerDeclared: () => new Promise<boolean>((r) => (release = r)),
+    });
+
+    const open = svc.onFrame("conv-a", { ch: "tunnel", type: "open", id: "s1", payload: { target: "sandbox-jupyter", method: "POST", path: "/mcp", headers: { authorization: "Bearer mine" } } });
+    await svc.onFrame("conv-a", { ch: "tunnel", type: "chunk", id: "s1", payload: { data: Buffer.from('{"m":1}').toString("base64") } });
+    await svc.onFrame("conv-a", { ch: "tunnel", type: "end", id: "s1", payload: {} });
+    release(true);
+    await open;
+    await svc.drain?.();
+
+    expect(seen).toEqual([{ url: "http://agent-host/sandbox-mcp/jupyter", body: '{"m":1}', auth: "Bearer conv-a" }]);
+  });
+
+  it("closes with the reason when the server turns out undeclared, even after end", async () => {
+    const out = collector();
+    const fetchImpl = vi.fn(async () => new Response("ok")) as unknown as typeof fetch;
+    const svc = createTunnelService({
+      send: out.send,
+      ...deps(fetchImpl),
+      sandboxMcpUrlFor: (name: string) => `http://agent-host/sandbox-mcp/${name}`,
+      sandboxServerDeclared: async () => false,
+    });
+
+    const open = svc.onFrame("conv-a", { ch: "tunnel", type: "open", id: "s1", payload: { target: "sandbox-x", method: "POST", path: "/mcp", headers: {} } });
+    await svc.onFrame("conv-a", { ch: "tunnel", type: "end", id: "s1", payload: {} });
+    await open;
+    await svc.drain?.();
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(out.sent).toHaveLength(1);
+    expect((out.sent[0].payload as { error?: string }).error).toMatch(/no MCP server named "x"/);
+  });
+});
