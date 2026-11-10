@@ -123,6 +123,8 @@ fullOnly("needs real sandbox pods and the rollout hook")("cold sandbox pod (clus
     const first = `WARM-${Date.now()}`;
     await chat.send(first);
     await expect(chat.assistantMessages().filter({ hasText: first }).first()).toBeVisible({ timeout: BOOT_MS });
+    // A mid-run suspend leaves the run open; waking resumes it first.
+    await chat.waitForIdle(60_000);
 
     const res = await page.request.post(`/conversations/${id}/suspend`);
     expect(res.ok(), `suspend: ${res.status()}`).toBeTruthy();
