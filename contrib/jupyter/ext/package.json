@@ -1,0 +1,22 @@
+{
+  "name": "scooter-jupyter-chat",
+  "version": "0.1.0",
+  "description": "This Scooter conversation as a JupyterLab sidebar panel.",
+  "license": "Apache-2.0",
+  "main": "src/index.js",
+  "files": ["src/*.js", "style/*.css"],
+  "style": "style/index.css",
+  "dependencies": {
+    "@jupyterlab/application": "^4.4.0",
+    "@jupyterlab/coreutils": "^6.4.0",
+    "@jupyterlab/ui-components": "^4.4.0",
+    "@lumino/widgets": "^2.3.0"
+  },
+  "devDependencies": {
+    "@jupyterlab/builder": "^4.4.0"
+  },
+  "jupyterlab": {
+    "extension": true,
+    "outputDir": "labext"
+  }
+}

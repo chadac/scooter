@@ -37,6 +37,8 @@ in
   dev-env-contrib-files = runTest ./contrib-files.nix;
   # contrib/web-review's sandbox half: the dev server unit, the base path and the overlay.
   dev-env-contrib-web-review = runTest ./contrib-web-review.nix;
+  # contrib/jupyter's sandbox half: lab under the base path, kernelspecs, the sidebar extension.
+  dev-env-contrib-jupyter = runTest ./contrib-jupyter.nix;
   # Web-service persistence across a pod recreate: the enabled set is recorded on the PVC and restored at boot.
   dev-env-service-persist = runTest ./service-persist.nix;
   # The mcpServers option: unit, discovery manifest, auto-assigned ports, open ports and the stdio wrapper.

@@ -1,0 +1,7 @@
+.jp-ScooterChat { display: flex; }
+.jp-ScooterChat iframe { flex: 1; border: 0; width: 100%; height: 100%; background: var(--jp-layout-color1); }
+/* Widens the sidebar past lab's 250px default. */
+#jp-left-stack > .jp-ScooterChat { min-width: 320px; }
+/* Keeps splitter drags from being swallowed by the iframe. */
+body.lm-mod-override-cursor .jp-ScooterChat iframe { pointer-events: none; }
+.jp-ScooterChat-missing { padding: 12px; color: var(--jp-ui-font-color2); }

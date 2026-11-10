@@ -492,6 +492,7 @@ check-npm-hashes:
     check lib/ts/scooter-svcauth/package-lock.json lib/ts/scooter-svcauth/default.nix
     check contrib/files/viewer-ui/package-lock.json contrib/files/viewer-ui/default.nix
     check contrib/code-server/ahp/package-lock.json contrib/code-server/ahp/default.nix
+    check contrib/jupyter/ext/package-lock.json contrib/jupyter/ext/default.nix
     [ "$fail" -eq 0 ] && echo "✅ npmDepsHash values match their lockfiles"
     exit "$fail"
 
