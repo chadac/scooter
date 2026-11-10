@@ -117,7 +117,7 @@ function InfoTip({ text }: { text: string }) {
 /** A row's label: the provider's link, drawn by its contrib's view, else the title. */
 function SessionLabel({ session: s, mode }: { session: import("./sessions.js").Session; mode: LabelMode }) {
   const link = mode !== "title" ? linkForProvider(s, mode) : undefined;
-  return link ? <LinkText link={link} /> : <>{sessionLabel(s, mode)}</>;
+  return link ? <LinkText link={link} /> : <span className="truncate">{sessionLabel(s, mode)}</span>;
 }
 
 /** One conversation row: select only. Star / rename / delete live beside the title in the
@@ -179,7 +179,7 @@ const SessionRow = memo(function SessionRow({
         {s.kind === "session" && (
           <span
             data-testid="session-vscode"
-            className="ms-1.5 text-xs text-muted-foreground"
+            className="ms-1.5 shrink-0 text-xs text-muted-foreground"
             title="A VS Code chat in this conversation's sandbox"
             aria-label="VS Code"
           >
@@ -189,7 +189,7 @@ const SessionRow = memo(function SessionRow({
         {s.visibility === "private" && (
           <span
             data-testid="session-private"
-            className="ms-1.5 text-xs text-muted-foreground"
+            className="ms-1.5 shrink-0 text-xs text-muted-foreground"
             title="Private: only you can see it"
             aria-label="Private"
           >
@@ -197,8 +197,13 @@ const SessionRow = memo(function SessionRow({
           </span>
         )}
         {childCount > 0 && (
-          <span data-testid="subagent-count" className="ms-1.5 text-xs text-muted-foreground">
-            <Bot className="me-0.5 inline size-3" aria-hidden />{childCount} subagent{childCount === 1 ? "" : "s"}
+          <span
+            data-testid="subagent-count"
+            className="ms-1.5 shrink-0 text-xs text-muted-foreground"
+            title={`${childCount} subagent${childCount === 1 ? "" : "s"}`}
+            aria-label={`${childCount} subagent${childCount === 1 ? "" : "s"}`}
+          >
+            <Bot className="me-0.5 inline size-3" aria-hidden />{childCount}
           </span>
         )}
       </Button>

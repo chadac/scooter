@@ -119,4 +119,34 @@ fastOnly("the ~subagent directive is a fake-agent test hook")("subagent conversa
     const listed = await request.get(`${base}/conversations/${parentId}/sessions`);
     expect(((await listed.json()) as { sessions: { id: string }[] }).sessions.map((s) => s.id)).toEqual([id]);
   });
+
+  test("a long parent title truncates instead of running under its subagent count", async ({ chat, page }) => {
+    await chat.open();
+    await chat.completeTurn("~subagent check every flaky shard in the nightly end to end suite and report back");
+    await expect(page.locator(SUBAGENT_ROW)).toHaveCount(1, { timeout: 30_000 });
+    const parentId = await page.locator(TOP_LEVEL_ROW).first().getAttribute("data-conversation-id");
+
+    // Leaving the parent collapses its subagents behind the count badge.
+    await page.locator('[data-testid="new-session"]').click();
+    await chat.completeTurn("hello");
+    const parent = page.locator(`[data-testid="session-item"][data-conversation-id="${parentId}"]`);
+    const badge = parent.locator('[data-testid="subagent-count"]');
+    await expect(badge).toBeVisible({ timeout: 20_000 });
+    await parent.scrollIntoViewIfNeeded();
+    await shot(page, "long parent title with subagent count");
+    await page.emulateMedia({ colorScheme: "dark" });
+    await page.waitForTimeout(1_000);
+    await shot(page, "long parent title with subagent count dark");
+    await page.emulateMedia({ colorScheme: "light" });
+
+    // The title text must clip before reaching the badge.
+    const title = await parent.locator('[data-testid="session-title"]').evaluate((el) => {
+      const text = document.createTreeWalker(el, NodeFilter.SHOW_TEXT).nextNode()!.parentElement!;
+      const style = getComputedStyle(text);
+      return { right: text.getBoundingClientRect().right, clips: style.overflow === "hidden" && text.scrollWidth > text.clientWidth };
+    });
+    const badgeBox = (await badge.boundingBox())!;
+    expect(title.right, "the title must end before the badge starts").toBeLessThanOrEqual(badgeBox.x);
+    expect(title.clips, "the title must be truncated, not overflowing").toBe(true);
+  });
 });
