@@ -33,8 +33,10 @@ plugins:
 
 extra_css:
   - assets/options.css
+  - assets/samples.css
 extra_javascript:
   - assets/options.js
+  - assets/samples.js
 
 markdown_extensions:
   - admonition
@@ -44,12 +46,14 @@ markdown_extensions:
           class: mermaid
           format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.highlight
+  - md_in_html
   - tables
   - toc:
       permalink: true
 
 nav:
   - Home: index.md
+  - Samples: samples.md
   - Architecture: architecture.md
   - Tutorial:
       - Getting started: getting-started.md
