@@ -23,9 +23,12 @@ import {
   type SandboxSizePreset,
   type PendingRestart,
 } from "./client.js";
+import { useAui } from "@assistant-ui/react";
+
 import { useSessions, currentConversation } from "./sessions.js";
 import { useConversationTopic } from "./conversationState.js";
 import { ServiceRows } from "./ServicesPanel.js";
+import { AddServiceDialog } from "./AddServiceDialog.js";
 import { PanelSection } from "./PanelSection.js";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -379,6 +382,8 @@ export interface SandboxPanelViewProps {
   /** Re-read the in-pod service manifest to pick up a just-declared service without waiting. */
   onRescanServices?: () => void;
   rescanning?: boolean;
+  /** Sends an "add this service" request to the conversation; absent hides the Add row. */
+  onRequestService?: (prompt: string) => void;
   /** Further Session-tab sections, rendered after Services. */
   children?: ReactNode;
 }
@@ -407,10 +412,10 @@ export function SandboxPanelView({
   onStopService,
   onRescanServices,
   rescanning,
+  onRequestService,
   children,
 }: SandboxPanelViewProps) {
-  // The "+ Service" card reveals an explainer, since services are declared in-sandbox rather than created here.
-  const [showAddHint, setShowAddHint] = useState(false);
+  const [adding, setAdding] = useState(false);
 
   return (
     <div className="flex flex-col gap-4" data-testid="sandbox-panel">
@@ -519,17 +524,15 @@ export function SandboxPanelView({
               starting={busy}
               onStart={onStartService}
               onStop={onStopService}
-              onAdd={() => setShowAddHint((v) => !v)}
+              onAdd={onRequestService ? () => setAdding(true) : undefined}
             />
-            {showAddHint ? (
-              <p
-                data-testid="service-add-hint"
-                className="rounded-md border bg-muted/30 p-2 text-[11px] leading-relaxed text-muted-foreground"
-              >
-                Web services are declared inside the sandbox — ask Scooter
-                to add one (e.g. a terminal or VS Code) with <span className="font-mono">scooter-rebuild</span>.
-                {onRescanServices ? <> Use the <RotateCw className="inline size-3" role="img" aria-label="Re-scan" /> button above to re-scan once it&apos;s added.</> : ""}
-              </p>
+            {onRequestService ? (
+              <AddServiceDialog
+                open={adding}
+                onOpenChange={setAdding}
+                existing={services.map((x) => x.name)}
+                onSubmit={onRequestService}
+              />
             ) : null}
           </div>
         ) : (
@@ -560,6 +563,7 @@ export interface SandboxPanelProps {
 export function SandboxPanel({ status: s, children }: SandboxPanelProps) {
   const { sessions, currentId } = useSessions();
   const owner = sessions.find((x) => x.id === currentId)?.owner ?? null;
+  const aui = useAui();
 
   // Re-fetched when the pod comes up, since the broker applies a pending size on restart.
   const [resources, setResources] = useState<SandboxResources | null>(null);
@@ -689,6 +693,7 @@ export function SandboxPanel({ status: s, children }: SandboxPanelProps) {
       onStartSandbox={() => void s.startSandbox()}
       onStartService={s.startService}
       onStopService={s.stopService}
+      onRequestService={(prompt) => aui.thread().append(prompt)}
     >
       {children}
     </SandboxPanelView>

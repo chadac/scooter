@@ -47,7 +47,7 @@ describe("ServiceRows", () => {
     );
     expect(html).toContain('data-testid="service-fit"');
     expect(html).toContain("Needs 8Gi memory");
-    // The full sentence rides along as the tooltip; the card is too narrow for it.
+    // The full sentence rides along as the tooltip; the row is too narrow for it.
     expect(html).toContain("may be throttled or OOM-killed");
     // Advisory only; it must not gate the control.
     expect(html).toContain("service-start");
