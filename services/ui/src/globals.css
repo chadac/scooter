@@ -70,7 +70,9 @@
    and --border (decorative dividers) is deliberately lighter than --input (control
    boundaries, 3.3:1 per WCAG 1.4.11) — do NOT collapse them back into one value or
    composer/search outlines disappear again. Dark theme is still Solarized. PR #538. */
-:root {
+/* `.light` lets a preview inside a dark page reselect these. */
+:root,
+.light {
   --radius: 0.625rem;
   --background: #faf8f3; /* warm paper body */
   --foreground: #1c1917; /* near-black ink (stone-900) */

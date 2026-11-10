@@ -6,12 +6,16 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { PassThrough } from "node:stream";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { createManagementApi, SANDBOX_SOURCE, raiseApprovalInterrupt, fetchPendingApprovals, fetchPendingApprovalsByKeys, approvalAgentMessage, parseByteRange } from "../../src/api/management.js";
 import { UserSkillError, type UserSkillStore } from "../../src/session/userSkillStore.js";
 import { createMemoryUserHookSettingsStore, type UserHookSettingsStore } from "../../src/hooks/userHookSettingsStore.js";
 import type { HookDef } from "../../src/hooks/types.js";
+import { createMemoryUserThemeStore, type UserThemeStore } from "../../src/theme/userThemeStore.js";
 import { parseContribUserApi } from "../../src/api/contribApi.js";
 import { shortId } from "../../src/session/manager.js";
 import { createMemoryIdentityRegistry } from "../../src/session/identityRegistry.js";
@@ -2038,6 +2042,44 @@ describe("hook settings", () => {
     const api = mk(undefined);
     expect(((await call(api, "GET", "/user-hooks", undefined, alice)).json as { configurable: boolean }).configurable).toBe(false);
     expect((await call(api, "PATCH", "/user-hooks/finish-or-ask", { enabled: false }, alice)).status).toBe(501);
+  });
+});
+
+describe("theme routes (settings page and header toggle)", () => {
+  const alice = { "x-auth-user": "alice" };
+  const mk = (opts: { userThemes?: UserThemeStore; themesDir?: string } = {}) =>
+    createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }), ...opts });
+
+  it("lists the deployment's themes from the directory", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "themes-"));
+    writeFileSync(join(dir, "nord.json"), JSON.stringify({ name: "Nord", variants: [{ appearance: "dark", tokens: { background: "#2e3440" } }] }));
+    const res = await call(mk({ themesDir: dir }), "GET", "/themes");
+    expect(res.json).toEqual({ themes: [{ id: "nord", name: "Nord", variants: [{ appearance: "dark", tokens: { background: "#2e3440" } }] }] });
+  });
+
+  it("lists none without a themes directory", async () => {
+    expect((await call(mk(), "GET", "/themes")).json).toEqual({ themes: [] });
+  });
+
+  it("saves each user's choice, merging partial updates", async () => {
+    const api = mk({ userThemes: createMemoryUserThemeStore() });
+    expect((await call(api, "GET", "/user-theme", undefined, alice)).json).toEqual({ configurable: true });
+    expect((await call(api, "PATCH", "/user-theme", { mode: "dark" }, alice)).json).toEqual({ themeId: "scooter", mode: "dark" });
+    expect((await call(api, "PATCH", "/user-theme", { themeId: "nord" }, alice)).json).toEqual({ themeId: "nord", mode: "dark" });
+    expect((await call(api, "GET", "/user-theme", undefined, alice)).json).toEqual({ configurable: true, themeId: "nord", mode: "dark" });
+    expect((await call(api, "GET", "/user-theme", undefined, { "x-auth-user": "bob" })).json).toEqual({ configurable: true });
+  });
+
+  it("rejects a bad mode or theme id", async () => {
+    const api = mk({ userThemes: createMemoryUserThemeStore() });
+    expect((await call(api, "PATCH", "/user-theme", { mode: "sepia" }, alice)).status).toBe(400);
+    expect((await call(api, "PATCH", "/user-theme", { themeId: "../x" }, alice)).status).toBe(400);
+  });
+
+  it("is per-browser only without a database", async () => {
+    const api = mk();
+    expect((await call(api, "GET", "/user-theme", undefined, alice)).json).toEqual({ configurable: false });
+    expect((await call(api, "PATCH", "/user-theme", { mode: "dark" }, alice)).status).toBe(501);
   });
 });
 

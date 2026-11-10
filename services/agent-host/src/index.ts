@@ -94,6 +94,7 @@ import { createSkillProviderRegistry, parseSkillProviders, type SkillProviderDef
 import type { HookDef, HookRunner } from "./hooks/types.js";
 import { createPgFolderReader } from "./hooks/folderReader.js";
 import { createPgUserHookSettingsStore } from "./hooks/userHookSettingsStore.js";
+import { createPgUserThemeStore } from "./theme/userThemeStore.js";
 import { createMemoryIdentityRegistry, createPgIdentityRegistry } from "./session/identityRegistry.js";
 import { conversationTree, createMemoryAuthorStore, createPgAuthorStore, isOwnText, steeringAuthor, type Author } from "./session/authorStore.js";
 import {
@@ -187,6 +188,8 @@ export interface AgentHostConfig {
   agentName: string;
   /** Directory of markdown skills injected into the agent, read per conversation into .goosehints. */
   skillsDir: string;
+  /** scooter.ui.themes ConfigMap mount, read on each GET /themes. */
+  themesDir: string;
   /** Agent tools contribs make wait on the user, from BLOCKING_TOOLS_JSON. */
   blockingTools?: Record<string, BlockingTool>;
   /** Deployment hooks, from AGENT_HOOKS_JSON. */
@@ -272,6 +275,7 @@ export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
     availableModels: availableIds(catalog),
     agentName: process.env.AGENT_NAME ?? "Scooter",
     skillsDir: process.env.SKILLS_DIR ?? "/etc/agent-sandbox/skills",
+    themesDir: process.env.THEMES_DIR ?? "/etc/scooter/themes",
     blockingTools: parseBlockingTools(process.env.BLOCKING_TOOLS_JSON, (m) => hostLog.warn(m)),
     hooks: parseHooks(process.env.AGENT_HOOKS_JSON, (m) => hostLog.warn(m)),
     skillProviders: parseSkillProviders(process.env.SKILL_PROVIDERS_JSON, (m) => hostLog.warn(m)),
@@ -1155,6 +1159,8 @@ export async function main(
     : createMemoryAuthorStore({ family: (id) => conversationTree(sessions, id) });
   // Without a database every hook stays on.
   const userHookSettings = agentHostDsn ? createPgUserHookSettingsStore({ db: agentHostDb }) : undefined;
+  // Without a database the theme choice stays in each browser.
+  const userThemes = agentHostDsn ? createPgUserThemeStore({ db: agentHostDb }) : undefined;
   const hookFolders = agentHostDsn && (config.hooks ?? []).length > 0 ? createPgFolderReader({ db: agentHostDb }) : undefined;
   const hooksLog = logger("hooks");
   hostLog.info("conversation hooks", {
@@ -1867,6 +1873,8 @@ export async function main(
       userSkills: userSkillStore,
       hooks: config.hooks,
       userHookSettings,
+      themesDir: config.themesDir,
+      userThemes,
       // Settings tabs reach their contrib's broker half as the signed-in user.
       contribApi: {
         contribs: parseContribUserApi(process.env.CONTRIB_USER_API_JSON),

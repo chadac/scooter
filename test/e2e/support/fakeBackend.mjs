@@ -153,6 +153,8 @@ const spawnAgentHost = (name, port, statePath, mirrorPath) =>
     // built-in skill NAMES a personal skill can shadow (the settings form warns on a
     // collision, and with no skills dir there is nothing to collide with).
     SKILLS_DIR: process.env.SKILLS_DIR ?? join(REPO_ROOT, "skills"),
+    // Stand-ins for the scooter.ui.themes ConfigMap.
+    THEMES_DIR: join(REPO_ROOT, "test/e2e/support/themes"),
     GOOSE_MODEL: process.env.GOOSE_MODEL ?? "model-default",
     AGENT_AVAILABLE_MODELS: process.env.AGENT_AVAILABLE_MODELS ?? "model-default,model-fast,model-smart",
     // The env is an explicit allowlist, and AGENT_MODELS_JSON carries the provider-tagged catalog that makes the picker render its grouped branch.

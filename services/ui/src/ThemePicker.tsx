@@ -1,12 +1,8 @@
-/**
- * Header theme toggle: one ghost icon button that cycles light -> dark -> system,
- * with the icon showing the current mode. Persists via themeStore; "system" follows
- * the OS live (see theme.ts).
- */
+/** Header toggle: cycles light, dark, system; names single-variant themes. */
 import { Sun, Moon, Monitor } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { themeStore, useTheme, type ThemeMode } from "./theme.js";
+import { activeTheme, fixedAppearance, themeStore, useThemeState, type ThemeMode } from "./theme.js";
 
 const NEXT: Record<ThemeMode, ThemeMode> = {
   light: "dark",
@@ -27,15 +23,25 @@ const ICON: Record<ThemeMode, typeof Sun> = {
 };
 
 export function ThemePicker() {
-  const mode = useTheme();
-  const Icon = ICON[mode];
+  const state = useThemeState();
+  const theme = activeTheme(state);
+  const fixed = fixedAppearance(theme);
+  if (fixed) {
+    const Icon = ICON[fixed];
+    return (
+      <Button variant="ghost" size="icon-sm" disabled aria-label={`Theme: ${theme.name}`} title={`Theme: ${theme.name}`}>
+        <Icon />
+      </Button>
+    );
+  }
+  const Icon = ICON[state.mode];
   return (
     <Button
       variant="ghost"
       size="icon-sm"
-      aria-label={`Theme: ${LABEL[mode]} (click to switch)`}
-      title={`Theme: ${LABEL[mode]}`}
-      onClick={() => themeStore.set(NEXT[mode])}
+      aria-label={`Theme: ${LABEL[state.mode]} (click to switch)`}
+      title={`Theme: ${LABEL[state.mode]}`}
+      onClick={() => themeStore.setMode(NEXT[state.mode])}
     >
       <Icon />
     </Button>

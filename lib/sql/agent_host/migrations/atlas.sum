@@ -1,4 +1,4 @@
-h1:6kL5zoxoARYC4GGOJ996ZT2nNAaYBzdFhdi4Zmox2/Q=
+h1:KHqOr5NilzBsOQJiTHR+kDYiYNVANzMfiL495s0Szi8=
 20260831184920_create_conversation_jobs.sql h1:iuMeVplqACz56tY81stXZq2zM5gojTDGkZby4hdIaAw=
 20260831203036_create_conversations.sql h1:FWFJ5L5WjnUtjyNz9OyXmLqF64UWgDgjSDWS21CLhqA=
 20260901163900_create_conversation_events.sql h1:MD1+P9uCLlF7y28sjec1JXqVTnpSl5UTqPY9am/30Zk=
@@ -25,3 +25,4 @@ h1:6kL5zoxoARYC4GGOJ996ZT2nNAaYBzdFhdi4Zmox2/Q=
 20261109204442_conversation_kind.sql h1:eJ8tExVmTpnCmcm9bJ5nYLEK2dVLWlAg8rj47pTB8x8=
 20261109222836_taint_clears.sql h1:h75vWzP0WKQwhT3WiHXQ79o50X2UkoJBQE9JRswRCNo=
 20261110154224_conversation_origin.sql h1:MUVmmtlBJL6XLNFBAEQw7bvueRtHBs3p2KDS4csQurA=
+20261110212233_add_user_ui_settings.sql h1:MhgF0JlMWzBn8+ew05EKzhyq4K+jjIfCDlTI+MdE3II=

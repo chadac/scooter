@@ -2,13 +2,12 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
 import "./globals.css";
-// Side-effect import: converge <html>.dark to the stored/OS theme and register the
-// prefers-color-scheme listener before the app mounts.
-import "./theme.js";
+// Side-effect import: paint the cached theme before the app mounts.
+import { themeStore } from "./theme.js";
 import { App } from "./App.js";
 import { viewStore } from "./view.js";
 import { currentConversation, sessionStore } from "./sessions.js";
-import { loadWhoami } from "./client.js";
+import { loadThemes, loadUserTheme, loadWhoami, saveUserTheme } from "./client.js";
 import { setUploadLimits } from "./fileUpload.js";
 import { subscribeConversations } from "./conversationStream.js";
 import { conversationCache } from "./conversationCache.js";
@@ -51,6 +50,18 @@ void loadWhoami({ baseUrl: BASE_URL }).then((me) => {
   void conversationCache.setUser(me.id);
   // The upload caps come from the deployment (scooter.uploads), not the image.
   setUploadLimits(me.limits);
+});
+
+// The account's choice wins; this browser's seeds an unset one.
+void Promise.all([loadThemes({ baseUrl: BASE_URL }), loadUserTheme({ baseUrl: BASE_URL })]).then(([themes, saved]) => {
+  // On failure keep the cached paint, not the built-in.
+  if (themes) themeStore.setThemes(themes);
+  if (!saved.configurable) return;
+  const save = (choice: Parameters<typeof saveUserTheme>[1]) =>
+    void saveUserTheme({ baseUrl: BASE_URL }, choice).catch((e) => console.warn("[theme] save failed:", e));
+  if (saved.themeId) themeStore.adopt(saved);
+  else save({ themeId: themeStore.get().themeId, mode: themeStore.get().mode });
+  themeStore.onChange(save);
 });
 
 // The conversation list has exactly one source: the stream's `snapshot` on connect, then its

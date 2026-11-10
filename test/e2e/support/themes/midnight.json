@@ -1,0 +1,4 @@
+{
+  "name": "Midnight",
+  "variants": [{ "appearance": "dark", "tokens": { "background": "#05050a", "foreground": "#e8e8f0" } }]
+}

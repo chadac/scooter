@@ -248,6 +248,14 @@ CREATE TABLE "user_hook_settings" (
   PRIMARY KEY ("owner", "hook_id")
 );
 
+-- Each user's UI theme, following them across devices.
+CREATE TABLE "user_ui_settings" (
+  "owner"      text NOT NULL PRIMARY KEY,
+  "theme_id"   text NOT NULL,
+  "theme_mode" text NOT NULL CHECK ("theme_mode" IN ('light', 'dark', 'system')),
+  "updated_at" bigint NOT NULL
+);
+
 -- One account in one system, keyed by that system's stable id so a rename keeps
 -- what was granted to it. Created the first time a message names it; `handle`
 -- is refreshed from each one. `scooter_user` is set once the account is linked.

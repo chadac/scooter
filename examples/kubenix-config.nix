@@ -88,6 +88,11 @@
 
     # Conversation UI (nginx serving assistant-ui + proxying the agent-host API).
     ui.enable = true;
+    # A deployment theme beside the built-in, in Settings → Appearance.
+    ui.themes.high-contrast = {
+      name = "High contrast";
+      variants = [{ appearance = "dark"; tokens = { background = "#000000"; foreground = "#ffffff"; brand = "#ffd700"; }; }];
+    };
 
     # Bring-your-own-Claude: deploys the controller, the unauthenticated connect
     # Ingress and the agent-host's remote-agent routes.

@@ -1,0 +1,7 @@
+{
+  "name": "Ocean",
+  "variants": [
+    { "appearance": "light", "tokens": { "background": "#eef6fb", "foreground": "#0b2533", "brand": "#0b5c8a" } },
+    { "appearance": "dark", "tokens": { "background": "#0b1d2a", "foreground": "#d4e6f1", "brand": "#5cb8e6" } }
+  ]
+}

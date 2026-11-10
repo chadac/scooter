@@ -21,6 +21,7 @@ const TABS = [
   { id: "tasks", label: "Scheduled Tasks" },
   { id: "skills", label: "Skills" },
   { id: "claude", label: "Bring Your Own Claude" },
+  { id: "appearance", label: "Appearance" },
   { id: "admin", label: "Admin Area" },
 ];
 

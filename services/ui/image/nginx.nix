@@ -118,6 +118,9 @@ let
         location /user-hooks    { proxy_pass ''${AGENT_HOST_PROXY}; proxy_set_header Host $host; proxy_set_header Connection ""; }
         # The deployment's sandbox size presets, for the size picker.
         location /sandbox-sizes { proxy_pass ''${AGENT_HOST_PROXY}; proxy_set_header Host $host; proxy_set_header Connection ""; }
+        # The theme list and the caller's theme choice.
+        location /themes        { proxy_pass ''${AGENT_HOST_PROXY}; proxy_set_header Host $host; proxy_set_header Connection ""; }
+        location /user-theme    { proxy_pass ''${AGENT_HOST_PROXY}; proxy_set_header Host $host; proxy_set_header Connection ""; }
         # Contrib settings tabs reach their broker half as the signed-in user; the
         # agent-host maps /contrib-api/<name>/ to the contrib, so new contribs add nothing here.
         location /contrib-api/  { proxy_pass ''${AGENT_HOST_PROXY}; proxy_set_header Host $host; proxy_set_header Connection ""; }

@@ -60,6 +60,9 @@ user_hook_settings         = { writers = ["agent-host"], readers = [] }
 # and reads them at conversation start, so it is the only writer and there are no
 # readers: a skill body is user prose about their own repos, not shared config.
 user_skills                = { writers = ["agent-host"], readers = [] }
+# Each user's UI theme and light/dark/system mode, set from the settings page or the
+# header toggle and read back by the UI on load.
+user_ui_settings           = { writers = ["agent-host"], readers = [] }
 
 [broker]
 owner = "broker"

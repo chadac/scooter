@@ -209,6 +209,19 @@ class UserSkills(Base):
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
+class UserUiSettings(Base):
+    __tablename__ = 'user_ui_settings'
+    __table_args__ = (
+        CheckConstraint("theme_mode = ANY (ARRAY['light'::text, 'dark'::text, 'system'::text])", name='user_ui_settings_theme_mode_check'),
+        PrimaryKeyConstraint('owner', name='user_ui_settings_pkey')
+    )
+
+    owner: Mapped[str] = mapped_column(Text, primary_key=True)
+    theme_id: Mapped[str] = mapped_column(Text, nullable=False)
+    theme_mode: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
 class UserConversationMetadata(Base):
     __tablename__ = 'user_conversation_metadata'
     __table_args__ = (

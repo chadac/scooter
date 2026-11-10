@@ -5,6 +5,7 @@
  */
 
 import { HttpAgent } from "@ag-ui/client";
+import type { Theme, ThemeChoice } from "./theme.js";
 
 export interface AgentHostConfig {
   /** Base URL of the agent-host (e.g. http://localhost:8080). */
@@ -1037,4 +1038,41 @@ export function getConversationTaint(config: AgentHostConfig, conversationId: st
 /** Clears shown authors; returns what still taints, null on error. */
 export function clearConversationTaint(config: AgentHostConfig, conversationId: string, authors: TaintAuthor[]): Promise<TaintView | null> {
   return taintRequest(config, conversationId, "taint/clear", { authors });
+}
+
+/** scooter.ui.themes; undefined when the fetch fails. */
+export async function loadThemes(config: AgentHostConfig): Promise<Theme[] | undefined> {
+  try {
+    const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/themes`, { headers: authHeaders(config) });
+    if (!res.ok) {
+      console.warn(`[client] loadThemes: HTTP ${res.status}`);
+      return undefined;
+    }
+    return ((await res.json()) as { themes?: Theme[] }).themes ?? [];
+  } catch (e) {
+    console.warn("[client] loadThemes failed:", e);
+    return undefined;
+  }
+}
+
+/** The caller's saved choice; unconfigurable without a database. */
+export async function loadUserTheme(config: AgentHostConfig): Promise<{ configurable: boolean } & Partial<ThemeChoice>> {
+  try {
+    const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/user-theme`, { headers: authHeaders(config) });
+    if (!res.ok) return { configurable: false };
+    return (await res.json()) as { configurable: boolean } & Partial<ThemeChoice>;
+  } catch (e) {
+    console.warn("[client] loadUserTheme failed:", e);
+    return { configurable: false };
+  }
+}
+
+/** Save part of the caller's theme choice to their account. */
+export async function saveUserTheme(config: AgentHostConfig, choice: Partial<ThemeChoice>): Promise<void> {
+  const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/user-theme`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", ...authHeaders(config) },
+    body: JSON.stringify(choice),
+  });
+  if (!res.ok) throw new Error(`saving the theme failed: HTTP ${res.status}`);
 }

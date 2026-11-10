@@ -50,6 +50,8 @@ import { EMPTY_CHECKSUM, chainAll } from "../agui/integrity.js";
 import { DERIVED_SOURCES, HUMAN_TRIGGER_SOURCES, USER_RELAY_SOURCES } from "../acp/remoteAgentRegistry.js";
 import type { HookDef } from "../hooks/types.js";
 import type { UserHookSettingsStore } from "../hooks/userHookSettingsStore.js";
+import { BUILTIN_THEME_ID, isThemeId, loadThemes } from "../theme/themes.js";
+import { isThemeMode, type UserThemeStore } from "../theme/userThemeStore.js";
 
 const log = logger("agent-host");
 
@@ -226,6 +228,10 @@ export interface ManagementDeps {
   hooks?: readonly HookDef[];
   /** Per-user hook opt-outs; absent makes the toggles read-only. */
   userHookSettings?: UserHookSettingsStore;
+  /** The scooter.ui.themes mount; absent means only the built-in. */
+  themesDir?: string;
+  /** Per-user theme choices; absent leaves it to each browser. */
+  userThemes?: UserThemeStore;
   /** The /contrib-api relay for contrib settings tabs; absent means the routes are not mounted. */
   contribApi?: ContribApiDeps;
   /** Absent builds one with the built-in `sandbox` watcher. */
@@ -1706,6 +1712,29 @@ export function createManagementApi(deps: ManagementDeps): Router {
     if (typeof body.enabled !== "boolean") return { status: 400, json: { error: "enabled must be a boolean" } };
     await deps.userHookSettings.set(skillOwner(ctx), hook.id, body.enabled);
     return { json: { id: hook.id, enabled: body.enabled } };
+  });
+
+  // --- Themes (UI settings page and header toggle) -------------------------------
+  r.get("/themes", async () => ({
+    json: { themes: deps.themesDir ? await loadThemes(deps.themesDir, (m) => log.warn(m)) : [] },
+  }));
+
+  r.get("/user-theme", async (ctx) => {
+    const choice = deps.userThemes ? await deps.userThemes.get(skillOwner(ctx)) : undefined;
+    return { json: { configurable: deps.userThemes !== undefined, ...(choice ?? {}) } };
+  });
+
+  r.patch("/user-theme", async (ctx) => {
+    if (!deps.userThemes) return { status: 501, json: { error: "theme settings not configured" } };
+    const { themeId, mode } = await ctx.body<{ themeId?: unknown; mode?: unknown }>();
+    // Unknown ids are kept; the UI falls back meanwhile.
+    if (themeId !== undefined && !isThemeId(themeId)) return { status: 400, json: { error: "themeId must be a lowercase slug" } };
+    if (mode !== undefined && !isThemeMode(mode)) return { status: 400, json: { error: 'mode must be "light", "dark" or "system"' } };
+    const owner = skillOwner(ctx);
+    const current = (await deps.userThemes.get(owner)) ?? { themeId: BUILTIN_THEME_ID, mode: "system" as const };
+    const next = { themeId: isThemeId(themeId) ? themeId : current.themeId, mode: isThemeMode(mode) ? mode : current.mode };
+    await deps.userThemes.set(owner, next);
+    return { json: next };
   });
 
   // --- Contrib settings-tab API -------------------------------------------------

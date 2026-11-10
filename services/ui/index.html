@@ -19,11 +19,20 @@
       (function () {
         try {
           var m = localStorage.getItem("scooter-theme");
-          var dark =
-            m === "dark" ||
-            ((m === "system" || m === null) &&
-              window.matchMedia("(prefers-color-scheme: dark)").matches);
+          var t = JSON.parse(localStorage.getItem("scooter-theme-css") || "null") || {};
+          var dark = t.fixed
+            ? t.fixed === "dark"
+            : m === "dark" ||
+              ((m === "system" || m === null) &&
+                window.matchMedia("(prefers-color-scheme: dark)").matches);
           document.documentElement.classList.toggle("dark", dark);
+          var css = t[dark ? "dark" : "light"];
+          if (css) {
+            var s = document.createElement("style");
+            s.id = "scooter-theme";
+            s.textContent = css;
+            document.head.appendChild(s);
+          }
         } catch (e) {
           /* localStorage/matchMedia unavailable — default to light. */
         }

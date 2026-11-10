@@ -675,6 +675,32 @@ in
         when disabled, the ingress targets the agent-host directly.
       '';
     };
+    ui.themes = mkOption {
+      type = types.attrsOf (types.either types.path types.attrs);
+      default = { };
+      example = literalExpression ''
+        {
+          nord = ./themes/nord.json;
+          high-contrast = {
+            name = "High contrast";
+            variants = [{ appearance = "dark"; tokens = { background = "#000000"; foreground = "#ffffff"; brand = "#ffd700"; }; }];
+          };
+        }
+      '';
+      description = ''
+        UI color themes offered in Settings → Appearance next to the built-in `scooter`
+        theme, keyed by id (a lowercase slug). Each is a JSON file (a path, read at eval
+        time) or an attrset of the same shape: `name`, and `variants`, one per appearance
+        (one for a single theme, or one `light` and one `dark`), each with `appearance`
+        and `tokens`, a map from CSS token names without the `--` (`background`,
+        `foreground`, `brand`, `muted-foreground`, `chart-1`, `sidebar`, …) to CSS colors.
+        Tokens a theme leaves out come from the built-in theme.
+
+        Rendered to the `agent-ui-themes` ConfigMap, which agent-host re-reads on each
+        request, so editing it changes the themes on the next page load without a restart.
+        An invalid theme is skipped with a warning in agent-host's log.
+      '';
+    };
     replicas = mkOption {
       type = types.int;
       default = 1;
@@ -1542,6 +1568,12 @@ in
             Per-user opt-outs from deployment hooks marked `userCanDisable`, set in the settings
             page and read when a conversation's bridge is built.'';
         };
+        user_ui_settings = {
+          writers = [ "agent-host" ];
+          note = ''
+            Each user's UI theme and light/dark/system mode, set from the settings page or the
+            header toggle and read back by the UI on load.'';
+        };
         identities = {
           writers = [ "agent-host" ];
           note = ''
@@ -2032,6 +2064,8 @@ in
                 ++ lib.optional (cfg.agent.skills != { })
                   # Skills ConfigMap -> read per conversation into .goosehints.
                   { name = "skills"; mountPath = "/etc/agent-sandbox/skills"; readOnly = true; }
+                ++ lib.optional (cfg.ui.themes != { })
+                  { name = "themes"; mountPath = "/etc/scooter/themes"; readOnly = true; }
                 ++ lib.optional (cfg.observability.otel.enable && cfg.observability.otel.pricing != { })
                   # Per-model price table -> cost derivation (AGENT_PRICING_FILE).
                   { name = "pricing"; mountPath = "/etc/agent-sandbox/pricing"; readOnly = true; }
@@ -2062,6 +2096,8 @@ in
                   { name = "assets"; persistentVolumeClaim.claimName = "agent-host-assets"; }
               ++ lib.optional (cfg.agent.skills != { })
                 { name = "skills"; configMap.name = "agent-skills"; }
+              ++ lib.optional (cfg.ui.themes != { })
+                { name = "themes"; configMap.name = "agent-ui-themes"; }
               ++ lib.optional (cfg.observability.otel.enable && cfg.observability.otel.pricing != { })
                 { name = "pricing"; configMap.name = "agent-pricing"; }
               ++ lib.optional cfg.broker.enable
@@ -2087,6 +2123,12 @@ in
         agent-skills = {
           metadata = { name = "agent-skills"; namespace = cfg.namespace; };
           data = allSkills;
+        };
+      } // lib.optionalAttrs (cfg.ui.themes != { }) {
+        agent-ui-themes = {
+          metadata = { name = "agent-ui-themes"; namespace = cfg.namespace; };
+          data = lib.mapAttrs' (id: theme: lib.nameValuePair "${id}.json"
+            (if builtins.isAttrs theme then builtins.toJSON theme else builtins.readFile theme)) cfg.ui.themes;
         };
       } // lib.optionalAttrs (cfg.deployTools.configFiles != { }) {
         # Deployment config files mounted as a flat dir at /etc/agent-sandbox/config in

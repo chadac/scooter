@@ -1,5 +1,6 @@
 /**
- * Settings page: the Scheduled Tasks, Skills, Bring Your Own Claude and Admin tabs.
+ * Settings page: the Scheduled Tasks, Skills, Hooks, Bring Your Own Claude, Appearance and
+ * Admin tabs.
  *
  * A scheduled task cron-spawns a fresh Scooter conversation with a prompt via the
  * scheduler service, proxied through the agent-host's /scheduled-tasks routes and
@@ -37,6 +38,7 @@ import {
 import { viewStore, useSettingsTab, settingsTabList, resolveTab, isBuiltinTab, type BuiltinTab } from "./view.js";
 import { contribSettingsTabs } from "./contribManifest.js";
 import { ContribTabBody } from "./contribTabs.js";
+import { AppearanceSection } from "./AppearanceSection.js";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -1084,6 +1086,7 @@ const TAB_BODIES: Record<BuiltinTab, FC> = {
   skills: SkillsSection,
   hooks: HooksSection,
   claude: ClaudeAgentSection,
+  appearance: AppearanceSection,
   admin: AdminAreaSection,
 };
 
