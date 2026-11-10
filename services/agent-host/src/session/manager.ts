@@ -59,7 +59,19 @@ export interface RouterMeta extends AccessFacts {
 
 /** Whether a title is still the create-time placeholder, i.e. the conversation is unnamed. */
 export function isPlaceholderTitle(title: string | undefined): boolean {
-  return (title ?? "").trim() === "" || title === PLACEHOLDER_TITLE;
+  return placeholderPrefix(title) !== undefined;
+}
+
+/** The placeholder for an unnamed conversation whose name must start with `prefix`. */
+export function prefixedPlaceholder(prefix: string): string {
+  return `${prefix}: ${PLACEHOLDER_TITLE}`;
+}
+
+/** What an unnamed conversation's name keeps ("" or "<prefix>: "); undefined once it is named. */
+export function placeholderPrefix(title: string | undefined): string | undefined {
+  const t = title ?? "";
+  if (t.trim() === "" || t === PLACEHOLDER_TITLE) return "";
+  return t.endsWith(`: ${PLACEHOLDER_TITLE}`) ? t.slice(0, -PLACEHOLDER_TITLE.length) : undefined;
 }
 
 /** An event plus the rolling integrity checksum before it (`prevChecksum`) and through it
@@ -1269,7 +1281,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         sandbox: parent.sandbox, // shared, no provisioner.create
         bridge: undefined,
         status: "running",
-        title: args.title ?? (args.kind === "session" ? "Session" : "Subagent"),
+        title: args.title ?? (args.kind === "session" ? PLACEHOLDER_TITLE : "Subagent"),
         createdAt: nowMs(),
         lastActivityAt: nowMs(),
         model,
@@ -1868,8 +1880,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // A user-chosen name is locked against the agent, force or not.
       if (entry.userTitled) return;
       // A conversation is named only once; `force` is the deliberate rename.
-      if (!force && !isPlaceholderTitle(entry.title)) return;
-      entry.title = title;
+      const prefix = placeholderPrefix(entry.title);
+      if (!force && prefix === undefined) return;
+      // An unnamed session keeps its creator's prefix, e.g. "vscode: ".
+      entry.title = (prefix ?? "") + title;
       // The durable write drives the live sidebar: the conversations row's trigger fires NOTIFY and
       // the conversation-router pushes the upsert.
       return saveMeta(entry);

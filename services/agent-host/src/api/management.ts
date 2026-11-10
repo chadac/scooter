@@ -12,7 +12,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { createRouter, type JsonResult, type Router, type ResolveUser } from "../http/router.js";
 import type { SessionManager, Conversation } from "../session/manager.js";
 import type { ConversationStore, ChecksummedEvent, ConversationLink } from "../session/manager.js";
-import { sandboxKey } from "../session/manager.js";
+import { prefixedPlaceholder, sandboxKey } from "../session/manager.js";
 import type { SessionId } from "../types.js";
 import { tailByRuns } from "../session/eventWindow.js";
 import { trimToBoundary } from "../session/eventStore.js";
@@ -46,7 +46,7 @@ import { serviceUrl, type SandboxOrigins } from "../proxy/sandboxOrigin.js";
 import { createStateHub, sandboxWatcher, type StateHub } from "../session/stateHub.js";
 import { mountStateStream } from "./stateStream.js";
 import { EMPTY_CHECKSUM, chainAll } from "../agui/integrity.js";
-import { DERIVED_SOURCES, HUMAN_TRIGGER_SOURCES } from "../acp/remoteAgentRegistry.js";
+import { DERIVED_SOURCES, HUMAN_TRIGGER_SOURCES, USER_RELAY_SOURCES } from "../acp/remoteAgentRegistry.js";
 import type { HookDef } from "../hooks/types.js";
 import type { UserHookSettingsStore } from "../hooks/userHookSettingsStore.js";
 
@@ -59,7 +59,9 @@ export function isWorkspacePath(p: string): boolean {
 const remoteAgentLog = logger("remote-agent");
 
 /** Sources POST /messages refuses, so a sandbox cannot pose as human. */
-const RESERVED_SOURCES: ReadonlySet<string> = new Set([...HUMAN_TRIGGER_SOURCES, ...DERIVED_SOURCES]);
+const RESERVED_SOURCES: ReadonlySet<string> = new Set(
+  [...HUMAN_TRIGGER_SOURCES, ...DERIVED_SOURCES].filter((s) => !USER_RELAY_SOURCES.has(s)),
+);
 
 /** Set by the router's sandbox self-access listener. */
 const SANDBOX_CALLER_HEADER = "x-scooter-caller";
@@ -839,9 +841,12 @@ export function createManagementApi(deps: ManagementDeps): Router {
   // Idle children a pod service, such as VS Code, drives.
   r.post("/conversations/:id/sessions", async (ctx) => {
     if (!deps.subagents) return { status: 501, json: { error: "sessions unavailable" } };
-    const body = await ctx.body<{ title?: unknown; model?: unknown }>();
+    const body = await ctx.body<{ title?: unknown; titlePrefix?: unknown; model?: unknown }>();
     if (body.title !== undefined && typeof body.title !== "string") {
       return { status: 400, json: { error: "title must be a string" } };
+    }
+    if (body.titlePrefix !== undefined && !(typeof body.titlePrefix === "string" && /^[a-z][a-z0-9_-]{0,31}$/.test(body.titlePrefix))) {
+      return { status: 400, json: { error: "titlePrefix must be a lowercase name" } };
     }
     if (body.model !== undefined && typeof body.model !== "string") {
       return { status: 400, json: { error: "model must be a string" } };
@@ -856,7 +861,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
     try {
       const child = await deps.subagents.spawn(conv!.id as SessionId, {
         kind: "session",
-        ...(body.title ? { title: body.title } : {}),
+        ...(body.title ? { title: body.title } : body.titlePrefix ? { title: prefixedPlaceholder(body.titlePrefix) } : {}),
         ...(body.model ? { model: body.model } : {}),
       });
       stateHub.nudge(conv!.id);

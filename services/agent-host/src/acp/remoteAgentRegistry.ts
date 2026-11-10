@@ -20,7 +20,10 @@ const log = logger("remote-personalized");
 const tunnelLog = logger("tunnel");
 
 /** The human-trigger allowlist: a BYO remote agent may only be driven by one of these sources (or an undefined source, a plain UI prompt), and any other source must be added here explicitly. */
-export const HUMAN_TRIGGER_SOURCES: ReadonlySet<string> = new Set(["ui", "slack", "github", "gitlab"]);
+export const HUMAN_TRIGGER_SOURCES: ReadonlySet<string> = new Set(["ui", "slack", "github", "gitlab", "vscode"]);
+
+/** Human sources a sandbox service may post for the user. */
+export const USER_RELAY_SOURCES: ReadonlySet<string> = new Set(["vscode"]);
 
 /** Whether this run is human-initiated and so eligible for a BYO remote agent. */
 export function isHumanTrigger(source: string | undefined): boolean {

@@ -1,33 +1,54 @@
 import { readFileSync } from "node:fs";
-import type { AguiEvent, ScooterApi } from "./scooterBackend.js";
+import type { AguiEvent, ChildSession, ScooterApi, SessionsApi } from "./scooterBackend.js";
+import { MESSAGE_SOURCE, RouterRefused } from "./conversationView.js";
+
+function check(res: Response, what: string): void {
+  if (res.status === 403 || res.status === 404) throw new RouterRefused(res.status, what);
+  if (!res.ok || !res.body) throw new Error(`${what}: ${res.status}`);
+}
 
 /** The conversation-router's sandbox self-access API, authenticated as this pod (see conversation-router/selfaccess.go). */
-export function routerApi(baseUrl: string, conversationId: string, tokenPath?: string): ScooterApi {
-  const base = `${baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(conversationId)}`;
+export function routerApi(baseUrl: string, conversationId: string, tokenPath?: string): SessionsApi {
+  const root = `${baseUrl.replace(/\/$/, "")}/conversations/`;
+  const urlOf = (id: string) => root + encodeURIComponent(id);
   // Re-read per call: the projected token rotates on disk.
   const headers = (): Record<string, string> =>
     tokenPath ? { authorization: `Bearer ${readFileSync(tokenPath, "utf8").trim()}` } : {};
-  const post = async (path: string, body?: unknown): Promise<void> => {
-    const res = await fetch(`${base}${path}`, {
-      method: "POST",
-      headers: { ...headers(), "content-type": "application/json" },
-      body: JSON.stringify(body ?? {}),
-    });
+  const request = async (url: string, init: RequestInit = {}): Promise<Response> => {
+    const res = await fetch(url, { ...init, headers: { ...headers(), ...(init.body ? { "content-type": "application/json" } : {}) } });
     if (!res.ok) throw new Error(`${res.status} ${(await res.text().catch(() => "")).trim()}`.trim());
+    return res;
   };
+  const post = (url: string, body?: unknown) => request(url, { method: "POST", body: JSON.stringify(body ?? {}) });
+  const sessions = `${urlOf(conversationId)}/sessions`;
   return {
-    sendMessage: (text) => post("/messages", { text }),
-    cancel: () => post("/cancel"),
+    async create(titlePrefix) {
+      return (await (await post(sessions, { titlePrefix })).json()) as ChildSession;
+    },
+    async list() {
+      return ((await (await request(sessions)).json()) as { sessions: ChildSession[] }).sessions;
+    },
+    async end(id) {
+      await post(`${urlOf(id)}/suspend`);
+    },
+    conversation: (id) => conversationApi(urlOf(id), headers, post),
+  };
+}
+
+function conversationApi(base: string, headers: () => Record<string, string>, post: (url: string, body?: unknown) => Promise<Response>): ScooterApi {
+  return {
+    sendMessage: async (text) => { await post(`${base}/messages`, { text, source: MESSAGE_SOURCE }); },
+    cancel: async () => { await post(`${base}/cancel`); },
     async stream(onEvent, signal) {
       // /events only replays; live events reach a persistent viewer through /events.integrity.
       // Subscribe first so nothing appended while /history is read is missed, then link the
       // two by checksum: history ends at checksum H, live frames continue from H.
       const res = await fetch(`${base}/events.integrity`, { headers: { ...headers(), accept: "text/event-stream" }, signal });
-      if (!res.ok || !res.body) throw new Error(`events.integrity: ${res.status}`);
+      check(res, "events.integrity");
       const frames = sseData(res.body as unknown as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]();
       const first = frames.next(); // start reading so the subscription is live before /history
       const hist = await fetch(`${base}/history`, { headers: headers(), signal });
-      if (!hist.ok) throw new Error(`history: ${hist.status}`);
+      check(hist, "history");
       const { events, checksum } = (await hist.json()) as { events: AguiEvent[]; checksum: string };
       for (const e of events) onEvent(e);
       const link = linker(checksum);

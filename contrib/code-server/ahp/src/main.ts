@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * scooter-vscode-ahp: an Agent Host Protocol server exposing this sandbox's ONE conversation
- * to code-server, which connects via `--agent-host-bridge-port` on loopback.
+ * scooter-vscode-ahp: an Agent Host Protocol server exposing this sandbox's conversation (and
+ * its VS Code sessions) to code-server, which connects via `--agent-host-bridge-port` on loopback.
  *
  * Env: CONVERSATION_ID (pod env), SCOOTER_SELF_URL + SCOOTER_SELF_TOKEN_PATH (router
  * self-access), CONVERSATION_URL (link back to the web UI), AHP_PORT (default 8765),
@@ -9,7 +9,7 @@
  * <dir>/bridge-token for code-server to pass as --agent-host-bridge-connection-token).
  */
 import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { ScooterBackend } from "./scooterBackend.js";
 import { ensureSettings } from "./settings.js";
 import { routerApi } from "./routerApi.js";
@@ -43,6 +43,8 @@ const selfUrl = required("SCOOTER_SELF_URL");
 const tokenPath = required("SCOOTER_SELF_TOKEN_PATH");
 const port = Number(process.env.AHP_PORT ?? 8765);
 const stateDir = process.env.AHP_STATE_DIR ?? "/run/scooter-vscode-ahp";
+// Outlives restarts, unlike stateDir: VS Code keeps its session URIs across them.
+const sessionsPath = process.env.AHP_SESSIONS_PATH ?? join(stateDir, "sessions.json");
 setDebug(process.env.AHP_DEBUG === "1");
 
 const backend = new ScooterBackend({
@@ -51,13 +53,15 @@ const backend = new ScooterBackend({
   workspaceUri: process.env.WORKSPACE_URI ?? "file:///workspace",
   conversationUrl: process.env.CONVERSATION_URL,
   api: routerApi(selfUrl, conversationId, tokenPath),
+  statePath: sessionsPath,
   log: (m) => console.error(m),
 });
+mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+mkdirSync(dirname(sessionsPath), { recursive: true, mode: 0o700 });
 const core = new ProtocolCore({ backend, detachGraceMs: 5000 });
 await core.start();
 
 // A fresh bridge token per start: only code-server (same pod, loopback) should ever connect.
-mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 const tokens = new TokenRegistry({ path: join(stateDir, "tokens.json") });
 const minted = tokens.mint("code-server");
 writeFileSync(join(stateDir, "bridge-token"), minted.token, { mode: 0o600 });

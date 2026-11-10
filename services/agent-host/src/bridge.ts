@@ -31,6 +31,7 @@ import { fingerprintOffered, type OfferedMcpServer } from "./agent/mcpServerRegi
 
 import { errorText, formatError, logger } from "./log.js";
 import type { HookEvent, HookFolder, HookOutcome, HookRunner } from "./hooks/types.js";
+import { USER_RELAY_SOURCES } from "./acp/remoteAgentRegistry.js";
 import { inlineImage, replaceInlineImages, toImageRef, type StageAsset } from "./session/mediaRefs.js";
 
 const log = logger("bridge");
@@ -161,6 +162,7 @@ export interface MessageSender {
 /** The decoration prepended to a system message so the agent treats it as a platform
  *  event rather than a human turn. */
 export function decorateSystemMessage(source: string, text: string): string {
+  if (USER_RELAY_SOURCES.has(source)) return `[The user typed this in ${source}.]\n\n${text}`;
   return (
     `[System message${source ? ` from ${source}` : ""} — this is an automated platform ` +
     `event, not the user speaking. Act on it if relevant to your task; do NOT reply to ` +

@@ -252,9 +252,20 @@ describe("sessions (kind: session)", () => {
     const ses = await sessions.spawnChild(parent.id, "s1", { kind: "session" });
 
     expect(prompts).toEqual([]);
-    expect(ses).toMatchObject({ kind: "session", parentId: parent.id, owner: "alice", title: "Session" });
+    expect(ses).toMatchObject({ kind: "session", parentId: parent.id, owner: "alice", title: "New chat" });
     expect(ses.sandbox).toEqual(parent.sandbox);
     expect(provisioner.create).toHaveBeenCalledOnce();
+  });
+
+  it("the agent's <title> names a session after its creator's prefix, once", async () => {
+    const sessions = createSessionManager({ provisioner: fakeProvisioner(), store: inMemoryStore(), bridgeFactory: fakeBridgeFactory().factory });
+    const parent = await sessions.start("p", undefined, "alice");
+    const ses = await sessions.spawnChild(parent.id, "s1", { kind: "session", title: "vscode: New chat" });
+
+    await sessions.setTitle(ses.id, "Fix the login redirect");
+    await sessions.setTitle(ses.id, "Something else");
+
+    expect(sessions.get(ses.id)?.title).toBe("vscode: Fix the login redirect");
   });
 
   it("a session's finished run is never reported to its parent", async () => {

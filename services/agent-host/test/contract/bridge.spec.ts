@@ -693,6 +693,11 @@ describe("system messages (platform-injected, non-human)", () => {
     return { bridge, prompts };
   };
 
+  it("decorateSystemMessage frames a relayed source as the user speaking", () => {
+    const out = decorateSystemMessage("vscode", "fix the build");
+    expect(out).toBe("[The user typed this in vscode.]\n\nfix the build");
+  });
+
   it("decorateSystemMessage brackets the source + tells the agent not to reply just to ack", () => {
     const out = decorateSystemMessage("github", "PR #4 was labeled");
     expect(out).toContain("System message from github");

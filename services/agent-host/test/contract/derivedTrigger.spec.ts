@@ -58,6 +58,8 @@ describe("POST /messages cannot borrow a derived source", () => {
   it("rejects every derived source", () => {
     for (const s of ["resume", "subagent", "parent-clarification", "background job"]) expect(isPostableSource(s)).toBe(false);
     expect(isPostableSource("ci-bot")).toBe(true);
+    expect(isPostableSource("vscode")).toBe(true); // the user typed it in VS Code
+    expect(isPostableSource("slack")).toBe(false);
   });
 });
 

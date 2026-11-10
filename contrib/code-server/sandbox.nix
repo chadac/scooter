@@ -48,6 +48,7 @@ in
       state="''${RUNTIME_DIRECTORY%%:*}/ahp"
       rm -f "$state/bridge-token"
       SCOOTER_SELF_URL="$self_url" SCOOTER_SELF_TOKEN_PATH="$self_token" AHP_STATE_DIR="$state" \
+        AHP_SESSIONS_PATH="''${HOME:-/root}/.local/share/code-server/scooter-ahp/sessions.json" \
         AHP_PORT=${toString ahpPort} ${vscodeAhp}/bin/scooter-vscode-ahp &
       # The first start may build the stub from source, so allow minutes.
       for _ in $(seq 1 600); do [ -s "$state/bridge-token" ] && break; sleep 0.5; done
