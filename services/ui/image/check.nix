@@ -115,6 +115,16 @@ pkgs.runCommand "ui-nginx-frame-ancestors"
   curl -sf http://127.0.0.1:18081/s/abc/ | grep -q scooter-ui-stub \
     && echo "ok   /s/ unlisted -> SPA" || { echo "FAIL /s/ without publicPaths is still proxied"; fail=1; }
 
+  # API prefixes reach the dead upstream (502), not the SPA.
+  proxied() { # proxied <method> <path>
+    local got; got=$(curl -s -o /dev/null -w '%{http_code}' -X "$1" "http://127.0.0.1:18082$2")
+    if [ "$got" = 502 ]; then echo "ok   $1 $2 proxied"; else echo "FAIL $1 $2 -> $got (want 502)"; fail=1; fi
+  }
+  proxied GET /user-hooks
+  proxied PATCH /user-hooks/h1
+  proxied GET /user-skills
+  proxied GET /sandbox-sizes
+
   # Shell revalidates, hashed assets cache forever, missing ones 404.
   header() { # header <path> <want Cache-Control>
     local got; got=$(curl -s -D - -o /dev/null "http://127.0.0.1:18082$1" | tr -d '\r' \
