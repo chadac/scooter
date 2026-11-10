@@ -11,12 +11,14 @@ import logging
 import httpx
 from fastapi import APIRouter, Header, HTTPException, Request
 
+from scooter_lib.attachments import MAX_IMAGE_BYTES, AttachmentRef, inline_images, refs_block
 from scooter_lib.logging_config import format_error
 
 from scooter_webhooks_lib import store as db
 from scooter_webhooks_lib.store import PENDING_CONVERSATION_ID, is_pending
 from scooter_webhooks_lib.vars import ConversationVars
 
+from . import attachments
 from .config import settings
 from scooter_webhooks_lib.agent_host_client import (
     SendOutcome, conversation_url, create_conversation, deliver_message, push_link, send_message,
@@ -256,6 +258,8 @@ async def _handle_note(payload: dict):
     message_text = policy.strip_mention(note_body)
     diff_context = _format_diff_context(note)
     comment_body = f"{diff_context}\n\n@{user} commented:\n\n{message_text}" if diff_context else f"@{user} commented:\n\n{message_text}"
+    refs = attachments.parse_refs(note_body, project_id, settings.gitlab_host)
+    comment_body += refs_block(attachments.TOOL, refs)
 
     if is_pending(existing):
         discussion_id = note.get("discussion_id")
@@ -325,7 +329,7 @@ async def _handle_note(payload: dict):
             source="gitlab", res_type=res_type, res_id=res_id,
             message=full_message, repo=repo, conv_title=conv_title,
             project_id=project_id, note_api_type=note_api_type,
-            noteable_iid=noteable_iid, invoking_user=user, sender=sender,
+            noteable_iid=noteable_iid, invoking_user=user, sender=sender, refs=refs,
         )
     )
 
@@ -351,7 +355,8 @@ async def _handle_issue(payload: dict):
     await db.store_conversation("gitlab", "issue", res_id, PENDING_CONVERSATION_ID)
 
     reply_hint = _response_instructions("issues", issue_iid)
-    message = f"Issue #{issue_iid} '{issue_title}' in {repo}\n\n{issue_desc}{reply_hint}"
+    refs = attachments.parse_refs(issue_desc, project_id, settings.gitlab_host)
+    message = f"Issue #{issue_iid} '{issue_title}' in {repo}\n\n{issue_desc}{refs_block(attachments.TOOL, refs)}{reply_hint}"
 
     spawn(
         _background_create_conversation(
@@ -360,7 +365,7 @@ async def _handle_issue(payload: dict):
             conv_title=f"Issue #{issue_iid}: {issue_title}",
             project_id=project_id, note_api_type="issues",
             invoking_user=payload.get("user", {}).get("username"),
-            noteable_iid=issue_iid, event=payload,
+            noteable_iid=issue_iid, event=payload, refs=refs,
         )
     )
 
@@ -390,7 +395,11 @@ async def _handle_merge_request(payload: dict):
     await db.store_conversation("gitlab", "merge_request", res_id, PENDING_CONVERSATION_ID)
 
     reply_hint = _response_instructions("merge_requests", mr_iid)
-    message = f"MR !{mr_iid} '{mr_title}' (branch: {source_branch}) in {repo}\n\n{mr_desc}{reply_hint}"
+    refs = attachments.parse_refs(mr_desc, project_id, settings.gitlab_host)
+    message = (
+        f"MR !{mr_iid} '{mr_title}' (branch: {source_branch}) in {repo}\n\n"
+        f"{mr_desc}{refs_block(attachments.TOOL, refs)}{reply_hint}"
+    )
 
     spawn(
         _background_create_conversation(
@@ -399,7 +408,7 @@ async def _handle_merge_request(payload: dict):
             conv_title=f"MR !{mr_iid}: {mr_title}",
             project_id=project_id, note_api_type="merge_requests",
             invoking_user=payload.get("user", {}).get("username"),
-            noteable_iid=mr_iid, event=payload,
+            noteable_iid=mr_iid, event=payload, refs=refs,
         )
     )
 
@@ -565,11 +574,37 @@ async def _forward_pipeline(
     await _forward_once(conversation, res_id, message, key, {"id": pipeline_id, "status": status})
 
 
+async def _first_message_images(refs: list[AttachmentRef]) -> list[dict]:
+    """The images that start a conversation, fetched now so the agent sees them on its first turn.
+
+    A failure costs only the images, never the conversation.
+    """
+    try:
+        if not any(r.image for r in refs):
+            return []
+        async with httpx.AsyncClient(timeout=30) as client:
+
+            async def api_get(path: str) -> httpx.Response:
+                return await client.get(
+                    f"https://{settings.gitlab_host}/{path}", headers={"PRIVATE-TOKEN": settings.gitlab_token},
+                )
+
+            async def fetch(ref: AttachmentRef):
+                _, fetched = await attachments.fetch(ref.ref, api_get, client, max_bytes=MAX_IMAGE_BYTES)
+                return fetched
+
+            return await inline_images(refs, fetch)
+    except Exception:
+        logger.warning("first-message images failed; starting without them", extra={**_C, "source": "gitlab"}, exc_info=True)
+        return []
+
+
 async def _background_create_conversation(
     source: str, res_type: str, res_id: str, message: str, repo: str,
     conv_title: str, project_id: int, note_api_type: str,
     noteable_iid: int, invoking_user: str | None = None,
     sender: Sender | None = None, event: dict | None = None,
+    refs: list[AttachmentRef] | None = None,
 ) -> None:
     """Start a conversation for a resource; `event` names the sender when `sender` isn't given."""
     # Runs pre-run, since create_conversation blocks until the whole agent turn finishes.
@@ -598,6 +633,7 @@ async def _background_create_conversation(
         result = await create_conversation(
             message, repository=repo, title=conv_title, on_created=_register,
             owner=conv_owner, source="gitlab", sender=sender,
+            images=await _first_message_images(refs or []) or None,
         )
         if not result:
             await _clear_pending(source, res_type, res_id)

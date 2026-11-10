@@ -1,4 +1,4 @@
-"""GitHub's agent tools: comment on the conversation's PR or issue, and summarise a PR."""
+"""GitHub's agent tools: comment on the conversation's PR or issue, summarise a PR, and fetch an attachment."""
 
 from __future__ import annotations
 
@@ -7,10 +7,15 @@ import logging
 import httpx
 from fastmcp import FastMCP
 
+from scooter_broker_lib.attachments import attachment_tool
 from scooter_broker_lib.links import first_target, links_for, ref_of, resource_type_is
 from scooter_broker_lib.mcp import ToolContext, ToolContextDep, ToolResult, gate
 from scooter_broker_lib.refs import GithubTarget, parse_github_resource_id, parse_github_url
 
+from scooter_lib.attachments import MAX_FILE_BYTES
+
+from . import attachments
+from .config import GitHubSettings
 from .pr_summary import fetch_pr_summary
 
 logger = logging.getLogger(__name__)
@@ -252,6 +257,26 @@ async def github_pr_summary(
                 "PR URL or `owner/repo#123`."
             )
     return await fetch_pr_summary(ctx.upstream, target)
+
+
+@mcp.tool
+async def github_attachment(ref: str, ctx: ToolContext = ToolContextDep) -> ToolResult:
+    """Fetch a file attached to a GitHub issue, PR, comment or review.
+
+    `ref` is a `gh:…` ref from the "Attachments" list of a forwarded GitHub message.
+    An image comes back for you to look at, a text file inline, and a binary file as a
+    curl command that saves it under /workspace/uploads. Fetch the screenshots on an
+    issue before working on it.
+    """
+    github_host = GitHubSettings().github_host
+
+    async def download(client):
+        return await attachments.fetch(
+            ref, lambda path, headers: ctx.upstream.request("GET", path, headers=headers), client,
+            github_host=github_host, max_bytes=MAX_FILE_BYTES,
+        )
+
+    return await attachment_tool(download)
 
 
 def github_mcp_server() -> FastMCP:

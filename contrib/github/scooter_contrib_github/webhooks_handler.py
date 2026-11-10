@@ -18,6 +18,9 @@ from scooter_webhooks_lib.resources import link_variants as _lib_link_variants
 from scooter_webhooks_lib.store import PENDING_CONVERSATION_ID, is_pending
 from scooter_webhooks_lib.vars import ConversationVars
 
+from scooter_lib.attachments import MAX_IMAGE_BYTES, AttachmentRef, inline_images, refs_block
+
+from . import attachments
 from .config import settings
 from scooter_webhooks_lib.agent_host_client import (
     SendOutcome, conversation_url, create_conversation, deliver_message, push_link, send_message,
@@ -227,9 +230,9 @@ async def _handle_comment(payload: dict):
         return
 
     message_text = policy.strip_mention(comment_body)
-    comment_text = f"@{user} commented:\n\n{message_text}"
-
     comment_id = comment.get("id")
+    refs = _refs(comment_body, owner, repo, f"comment/{comment_id}")
+    comment_text = f"@{user} commented:\n\n{message_text}{refs_block(attachments.TOOL, refs)}"
 
     if is_pending(existing):
         forward_msg = _format_forwarded_message(
@@ -284,7 +287,7 @@ async def _handle_comment(payload: dict):
             res_type=res_type, res_id=res_id,
             message=full_message, repo=full_repo, conv_title=conv_title,
             owner=owner, repo_name=repo, issue_number=issue_number,
-            invoking_user=user, sender=sender,
+            invoking_user=user, sender=sender, refs=refs,
         )
     )
 
@@ -326,13 +329,14 @@ async def _handle_review_comment(payload: dict):
     hunk = comment.get("diff_hunk", "")
     comment_id = comment.get("id")
     threaded = comment.get("in_reply_to_id") is not None
+    refs = _refs(body, owner, repo, f"review_comment/{comment_id}")
 
     message = (
         f"@{user} commented on a specific LINE of PR #{number} in {owner}/{repo}"
         f"{' (replying in an existing thread)' if threaded else ''}:\n\n"
         f"**{where}**\n\n"
         + (f"```diff\n{hunk}\n```\n\n" if hunk else "")
-        + f"{body}\n\n---\n\n"
+        + f"{body}{refs_block(attachments.TOOL, refs)}\n\n---\n\n"
         f"{_reply_steps(comment_id)}\n\n"
         f"This is a LINE comment, so reply IN THE THREAD: "
         f"`github_comment(body, in_reply_to={comment_id})`. That puts your answer next to "
@@ -382,6 +386,8 @@ async def _handle_review(payload: dict):
             "if it asks for something."
         )
 
+    refs = _refs(body, owner, repo, f"review/{number}/{review.get('id')}")
+    body = (body + refs_block(attachments.TOOL, refs)).strip()
     message = f"{head}\n\n" + (f"{body}\n\n" if body else "") + f"---\n\n{tail}"
     sender = sender_from(author, review.get("author_association"))
     await _forward_or_ignore(_resource_id(owner, repo, number), message, sender)
@@ -534,7 +540,11 @@ async def _handle_issue_event(payload: dict):
     await db.store_conversation("github", "issue", res_id, PENDING_CONVERSATION_ID)
 
     reply_hint = _response_instructions(owner, repo, issue_number, is_pr=False)
-    message = f"Issue #{issue_number} '{issue_title}' in {full_repo}\n\n{issue_body}{reply_hint}"
+    refs = _refs(issue_body, owner, repo, f"issue/{issue_number}")
+    message = (
+        f"Issue #{issue_number} '{issue_title}' in {full_repo}\n\n"
+        f"{issue_body}{refs_block(attachments.TOOL, refs)}{reply_hint}"
+    )
 
     spawn(
         _background_create_conversation(
@@ -543,7 +553,7 @@ async def _handle_issue_event(payload: dict):
             conv_title=f"Issue #{issue_number}: {issue_title}",
             owner=owner, repo_name=repo, issue_number=issue_number,
             invoking_user=payload.get("sender", {}).get("login"),
-            sender=actor_on(payload, issue),
+            sender=actor_on(payload, issue), refs=refs,
         )
     )
 
@@ -724,7 +734,11 @@ async def _handle_pr_event(payload: dict):
     await db.store_conversation("github", "pull_request", res_id, PENDING_CONVERSATION_ID)
 
     reply_hint = _response_instructions(owner, repo, pr_number, is_pr=True)
-    message = f"PR #{pr_number} '{pr_title}' (branch: {source_branch}) in {full_repo}\n\n{pr_body}{reply_hint}"
+    refs = _refs(pr_body, owner, repo, f"issue/{pr_number}")
+    message = (
+        f"PR #{pr_number} '{pr_title}' (branch: {source_branch}) in {full_repo}\n\n"
+        f"{pr_body}{refs_block(attachments.TOOL, refs)}{reply_hint}"
+    )
 
     spawn(
         _background_create_conversation(
@@ -733,16 +747,48 @@ async def _handle_pr_event(payload: dict):
             conv_title=f"PR #{pr_number}: {pr_title}",
             owner=owner, repo_name=repo, issue_number=pr_number,
             invoking_user=payload.get("sender", {}).get("login"),
-            sender=actor_on(payload, pr),
+            sender=actor_on(payload, pr), refs=refs,
         )
     )
+
+
+def _refs(body: str, owner: str, repo: str, item: str) -> list[AttachmentRef]:
+    return attachments.parse_refs(body, owner, repo, item, settings.github_host)
+
+
+async def _first_message_images(owner: str, repo: str, refs: list[AttachmentRef]) -> list[dict]:
+    """The images that start a conversation, fetched now so the agent sees them on its first turn.
+
+    A failure costs only the images, never the conversation.
+    """
+    try:
+        if not any(r.image for r in refs):
+            return []
+        from .responses import GITHUB_API, _headers_for_repo
+
+        auth = await _headers_for_repo(owner, repo)
+        async with httpx.AsyncClient(timeout=30) as client:
+
+            async def api_get(path: str, headers: dict[str, str]) -> httpx.Response:
+                return await client.get(f"{GITHUB_API}/{path}", headers={**auth, **headers})
+
+            async def fetch(ref: AttachmentRef):
+                _, fetched = await attachments.fetch(
+                    ref.ref, api_get, client, github_host=settings.github_host, max_bytes=MAX_IMAGE_BYTES,
+                )
+                return fetched
+
+            return await inline_images(refs, fetch)
+    except Exception:
+        logger.warning("first-message images failed; starting without them", extra={**_C, "source": "github"}, exc_info=True)
+        return []
 
 
 async def _background_create_conversation(
     res_type: str, res_id: str, message: str, repo: str,
     conv_title: str, owner: str, repo_name: str,
     issue_number: int, invoking_user: str | None = None,
-    sender: Sender | None = None,
+    sender: Sender | None = None, refs: list[AttachmentRef] | None = None,
 ) -> None:
     # Runs pre-run, since create_conversation blocks until the whole agent turn finishes.
     async def _register(conv_id: str) -> None:
@@ -766,6 +812,7 @@ async def _background_create_conversation(
         result = await create_conversation(
             message, repository=repo, git_provider="github", title=conv_title, on_created=_register,
             owner=conv_owner, source="github", sender=sender,
+            images=await _first_message_images(owner, repo_name, refs or []) or None,
         )
         if not result:
             await _clear_pending(res_type, res_id)

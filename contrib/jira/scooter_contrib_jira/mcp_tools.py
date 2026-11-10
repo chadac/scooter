@@ -1,4 +1,4 @@
-"""Jira's agent tool: comment on the conversation's issue."""
+"""Jira's agent tools: comment on the conversation's issue, and fetch an attachment."""
 
 from __future__ import annotations
 
@@ -6,9 +6,13 @@ from urllib.parse import quote
 
 from fastmcp import FastMCP
 
+from scooter_broker_lib.attachments import attachment_tool
 from scooter_broker_lib.links import first_target, ref_of
 from scooter_broker_lib.mcp import ToolContext, ToolContextDep, ToolResult, gate
 from scooter_broker_lib.refs import ISSUE_KEY_RE, JiraTarget, parse_jira_url
+from scooter_lib.attachments import MAX_FILE_BYTES
+
+from . import attachments
 
 mcp = FastMCP(name="jira")
 
@@ -55,6 +59,24 @@ async def jira_comment(body: str, ctx: ToolContext = ToolContextDep) -> ToolResu
     path = f"rest/api/2/issue/{quote(target.issue_key, safe='')}/comment"
     response = await ctx.upstream.request("POST", path, json={"body": body})
     return ToolResult.from_upstream(response, success_text="Commented on the Jira issue.")
+
+
+@mcp.tool
+async def jira_attachment(ref: str, ctx: ToolContext = ToolContextDep) -> ToolResult:
+    """Fetch a file attached to a Jira issue.
+
+    `ref` is a `jira:…` ref from the "Attachments" list of a forwarded Jira message.
+    An image comes back for you to look at, a text file inline, and a binary file as a
+    curl command that saves it under /workspace/uploads. Fetch the screenshots on an
+    issue before working on it.
+    """
+
+    async def download(client):
+        return await attachments.fetch(
+            ref, lambda path: ctx.upstream.request("GET", path), client, max_bytes=MAX_FILE_BYTES,
+        )
+
+    return await attachment_tool(download)
 
 
 def jira_mcp_server() -> FastMCP:

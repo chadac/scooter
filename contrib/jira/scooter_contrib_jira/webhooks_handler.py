@@ -10,17 +10,22 @@ import hmac
 import json
 import logging
 
+import httpx
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from scooter_webhooks_lib import store as db
 from scooter_webhooks_lib.store import PENDING_CONVERSATION_ID, is_pending
 
+from scooter_lib.attachments import MAX_IMAGE_BYTES, AttachmentRef, inline_images, refs_block
+from scooter_lib.logging_config import format_error
+
+from . import attachments
 from .config import settings
 from scooter_webhooks_lib import policy
 from scooter_webhooks_lib.agent_host_client import (
     SendOutcome, conversation_url, create_conversation, deliver_message, push_link, send_message,
 )
-from .responses import post_jira_comment
+from .responses import _api_base, _headers, post_jira_comment
 from .senders import sender_of
 from scooter_webhooks_lib.sender import Sender
 from scooter_webhooks_lib.tasks import spawn
@@ -153,7 +158,8 @@ async def _handle_comment(payload: dict):
     sender = await sender_of(author, issue)
 
     message_text = policy.strip_mention(comment_body)
-    comment_text = f"@{author_name} commented:\n\n{message_text}"
+    refs = await _comment_refs(comment, issue)
+    comment_text = f"@{author_name} commented:\n\n{message_text}{refs_block(attachments.TOOL, refs)}"
 
     if is_pending(existing):
         forward_msg = _format_forwarded_message(comment_text, issue_key, has_mention)
@@ -200,7 +206,7 @@ async def _handle_comment(payload: dict):
     spawn(
         _background_create_conversation(
             issue_key=issue_key, message=full_message,
-            conv_title=conv_title, sender=sender,
+            conv_title=conv_title, sender=sender, refs=refs,
         )
     )
 
@@ -235,20 +241,78 @@ async def _handle_issue_updated(payload: dict):
     await db.link_resource(PENDING_CONVERSATION_ID, "jira", "issue", issue_key)
 
     reply_hint = _response_instructions(issue_key)
-    message = f"Jira issue {issue_key} '{issue_summary}'\n\n{issue_desc}{reply_hint}"
+    # The trigger label forwards every attachment, referenced or not.
+    refs = attachments.all_refs(await _issue_attachments(issue))
+    message = f"Jira issue {issue_key} '{issue_summary}'\n\n{issue_desc}{refs_block(attachments.TOOL, refs)}{reply_hint}"
 
     spawn(
         _background_create_conversation(
             issue_key=issue_key, message=message,
             conv_title=f"Jira {issue_key}: {issue_summary}",
-            actor=payload.get("user"), issue=issue,
+            actor=payload.get("user"), issue=issue, refs=refs,
         )
     )
+
+
+async def _issue_attachments(issue: dict) -> list[dict]:
+    """The issue's attachment list: from the payload when it has one, else from the API."""
+    listed = (issue.get("fields") or {}).get("attachment")
+    if isinstance(listed, list):
+        return listed
+    key = issue.get("key", "")
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{_api_base()}/issue/{key}", headers=await _headers(), params={"fields": "attachment"},
+            )
+            resp.raise_for_status()
+            return (resp.json().get("fields") or {}).get("attachment") or []
+    except (httpx.HTTPError, ValueError) as e:
+        logger.warning(
+            "attachment lookup failed; forwarding without refs",
+            extra={**_C, "source": "jira", "issue_key": key, "error": format_error(e)},
+        )
+        return []
+
+
+async def _comment_refs(comment: dict, issue: dict) -> list[AttachmentRef]:
+    """The attachments a comment references; the API is asked only when it names one."""
+    names = attachments.referenced_names(comment.get("body", ""))
+    if not names:
+        return []
+    return attachments.match(names, await _issue_attachments(issue), before=comment.get("created"))
+
+
+async def _first_message_images(refs: list[AttachmentRef]) -> list[dict]:
+    """The images that start a conversation, fetched now so the agent sees them on its first turn.
+
+    A failure costs only the images, never the conversation.
+    """
+    try:
+        if not any(r.image for r in refs):
+            return []
+        # Bearer only: `_headers` asks for JSON, not a file.
+        auth = {"Authorization": (await _headers())["Authorization"]}
+        site = _api_base().removesuffix("/rest/api/3")
+        async with httpx.AsyncClient(timeout=30) as client:
+
+            async def api_get(path: str) -> httpx.Response:
+                return await client.get(f"{site}/{path}", headers=auth)
+
+            async def fetch(ref: AttachmentRef):
+                _, fetched = await attachments.fetch(ref.ref, api_get, client, max_bytes=MAX_IMAGE_BYTES)
+                return fetched
+
+            return await inline_images(refs, fetch)
+    except Exception:
+        logger.warning("first-message images failed; starting without them", extra={**_C, "source": "jira"}, exc_info=True)
+        return []
 
 
 async def _background_create_conversation(
     issue_key: str, message: str, conv_title: str,
     sender: Sender | None = None, actor: dict | None = None, issue: dict | None = None,
+    refs: list[AttachmentRef] | None = None,
 ) -> None:
     """Start a conversation for an issue; `actor` names the sender when `sender` isn't given."""
     # Runs pre-run, since create_conversation blocks until the whole agent turn finishes.
@@ -269,7 +333,10 @@ async def _background_create_conversation(
         if sender is None and actor is not None:
             # Looked up here, off the webhook's response path.
             sender = await sender_of(actor, issue or {})
-        result = await create_conversation(message, title=conv_title, on_created=_register, source="jira", sender=sender)
+        result = await create_conversation(
+            message, title=conv_title, on_created=_register, source="jira", sender=sender,
+            images=await _first_message_images(refs or []) or None,
+        )
         if not result:
             await _clear_pending(issue_key)
             # Correct the optimistic comment already posted in _register.

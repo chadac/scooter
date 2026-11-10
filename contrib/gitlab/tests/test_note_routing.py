@@ -169,3 +169,12 @@ async def test_the_route_answers_before_the_forward_finishes(deliver, monkeypatc
     release.set()
     await tasks.drain(timeout=5)
     assert deliver.await_args.args[0] == "conv-mr"
+
+
+async def test_a_note_with_an_upload_forwards_its_ref(deliver):
+    await store.link_resource("conv-mr", "gitlab", "mr", MR_URL)
+    secret = "0123456789abcdef0123456789abcdef"
+    await gitlab_h._handle_note(_mr_note(body=f"see ![shot](/uploads/{secret}/shot.png)"))
+    message = deliver.await_args.args[1]
+    assert f"- shot.png (image), ref: `gl:9:{secret}/shot.png`" in message
+    assert "gitlab_attachment(ref)" in message

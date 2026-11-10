@@ -15,6 +15,11 @@ triggers:
 - gitlab_comment
 - github_pr_summary
 - gitlab_mr_summary
+- github_attachment
+- gitlab_attachment
+- jira_attachment
+- attachment
+- screenshot
 - pr status
 - pr summary
 - ci status
@@ -140,6 +145,18 @@ Call it instead of piecing the state together from `check-runs`, `reviews` and
 - **When you pick work back up** (a new comment arrives, a scheduled run fires, a
   subagent finishes), so you don't lose track of a draft, a red check, or a thread
   you never answered.
+
+## Attachments on an issue, PR, MR or comment
+
+A forwarded GitHub, GitLab or Jira message ends with an **Attachments** list when
+it has uploads: each line names a file and gives a ref (`gh:…`, `gl:…`, `jira:…`).
+Pass the ref to `github_attachment` / `gitlab_attachment` / `jira_attachment`. An
+image comes back for you to look at, a text file inline, and a binary as a `curl`
+command that saves it under `/workspace/uploads`.
+
+The images in the message that starts a conversation are already attached to it.
+For later messages, **fetch the screenshots before you work on the request**: a
+screenshot is often the point of the report.
 
 ## Looking things up
 

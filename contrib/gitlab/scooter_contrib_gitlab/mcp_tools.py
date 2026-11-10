@@ -1,4 +1,4 @@
-"""GitLab's agent tools: comment on the conversation's MR or issue, and summarise an MR."""
+"""GitLab's agent tools: comment on the conversation's MR or issue, summarise an MR, and fetch an attachment."""
 
 from __future__ import annotations
 
@@ -6,10 +6,14 @@ from urllib.parse import quote
 
 from fastmcp import FastMCP
 
+from scooter_broker_lib.attachments import attachment_tool
 from scooter_broker_lib.links import first_target, ref_of, resource_type_is
 from scooter_broker_lib.mcp import ToolContext, ToolContextDep, ToolResult, gate
 from scooter_broker_lib.refs import GitlabTarget, parse_gitlab_resource_id
 
+from scooter_lib.attachments import MAX_FILE_BYTES
+
+from . import attachments
 from .mr_summary import fetch_mr_summary
 
 mcp = FastMCP(name="gitlab")
@@ -120,6 +124,24 @@ async def gitlab_mr_summary(
                 "MR URL or `group/project!123`."
             )
     return await fetch_mr_summary(ctx.upstream, target)
+
+
+@mcp.tool
+async def gitlab_attachment(ref: str, ctx: ToolContext = ToolContextDep) -> ToolResult:
+    """Fetch a file attached to a GitLab comment, issue or MR description.
+
+    `ref` is a `gl:…` ref from the "Attachments" list of a forwarded GitLab message.
+    An image comes back for you to look at, a text file inline, and a binary file as a
+    curl command that saves it under /workspace/uploads. Fetch the screenshots on an
+    issue before working on it.
+    """
+
+    async def download(client):
+        return await attachments.fetch(
+            ref, lambda path: ctx.upstream.request("GET", path), client, max_bytes=MAX_FILE_BYTES,
+        )
+
+    return await attachment_tool(download)
 
 
 def gitlab_mcp_server() -> FastMCP:
