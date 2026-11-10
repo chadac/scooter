@@ -31,8 +31,6 @@ export function stepMember(members: FamilyMember[], activeId: string, step: numb
   return members[(((i < 0 ? 0 : i) + step) % members.length + members.length) % members.length].session.id;
 }
 
-const item = menuItem;
-
 export interface ChatSwitcherProps {
   members: FamilyMember[];
   activeId: string;
@@ -97,7 +95,7 @@ export function ChatSwitcher({ members, activeId, onSelect, onNew, summary = fal
               data-conversation-id={s.serverId ?? s.id}
               data-active={s.id === activeId ? "true" : undefined}
               onSelect={() => onSelect(s.id)}
-              className={cn(item, s.id === activeId && "font-medium")}
+              className={cn(menuItem, s.id === activeId && "font-medium")}
               style={{ paddingInlineStart: `${0.5 + depth * 0.875}rem` }}
             >
               <ChildIcon session={s} />
@@ -112,7 +110,7 @@ export function ChatSwitcher({ members, activeId, onSelect, onNew, summary = fal
             data-testid="chat-switcher-new"
             disabled={!onNew}
             onSelect={() => onNew?.("blank")}
-            className={item}
+            className={menuItem}
             title={onNew ? "Alt+N" : "Resume this conversation to start a session"}
           >
             <Plus className="size-3.5" aria-hidden />
@@ -123,7 +121,7 @@ export function ChatSwitcher({ members, activeId, onSelect, onNew, summary = fal
               data-testid="chat-switcher-new-summary"
               disabled={!onNew}
               onSelect={() => onNew?.("summary")}
-              className={item}
+              className={menuItem}
               title={onNew ? FROM_CONTEXT_TITLE : "Resume this conversation to start a session"}
             >
               <GitFork className="size-3.5" aria-hidden />

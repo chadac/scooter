@@ -13,7 +13,7 @@ export const SessionSeedCard: FC = () => {
   if (!seed) return null;
   // The parent's row, if listed, so its title opens it.
   const parent = sessions.find((s) => s.serverId === seed.parentId || s.id === seed.parentId);
-  const title = parent?.title ?? seed.parentTitle ?? "the parent conversation";
+  const title = parent?.title || seed.parentTitle || "the parent conversation";
   return (
     <div data-testid="session-seed-card" className="mx-auto mb-6 w-full max-w-2xl rounded-lg border bg-card text-sm">
       <div className="flex items-center gap-2 px-3 py-2">
