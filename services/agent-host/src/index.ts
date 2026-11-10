@@ -129,8 +129,8 @@ import {
 } from "./agent/subagentTools.js";
 import { createSubagentManager, DEFAULT_SUBAGENT_LIMITS } from "./session/subagentManager.js";
 import { createRouterSubagentCreator } from "./session/routerSubagents.js";
-import { isUnansweredInterrupt, lastRunCompleted } from "./session/danglingRun.js";
-import { orphanedAnswerPrompt } from "./session/orphanedAnswer.js";
+import { lastRunCompleted, unansweredInterrupt } from "./session/danglingRun.js";
+import { orphanedAnswerPrompt, orphanedChoicePrompt } from "./session/orphanedAnswer.js";
 import { answerApprovalFromLog, loggedApproval } from "./session/approvalAnswer.js";
 import { randomUUID } from "node:crypto";
 import { createHttpSchedulerClient } from "./agent/schedulerClient.js";
@@ -1786,14 +1786,18 @@ export async function main(
     });
     if (answer()) return { ok: true };
 
-    // 4) No live run holds it: settle a dismissal, or prompt with a question's answers.
-    const orphanedPrompt = entry.status === "cancelled" ? undefined : orphanedAnswerPrompt(result);
-    if (entry.status === "cancelled" || orphanedPrompt) {
-      const events = await collectEventsSafe(store.readEvents(sessionId as SessionId));
-      if (isUnansweredInterrupt(events, entry.interruptId)) {
+    // 4) No live run holds it: settle a dismissal, or prompt with the answer or picked option.
+    const events = await collectEventsSafe(store.readEvents(sessionId as SessionId));
+    const orphan = unansweredInterrupt(events, entry.interruptId);
+    if (orphan) {
+      const orphanedPrompt =
+        entry.status === "cancelled"
+          ? undefined
+          : (orphanedAnswerPrompt(result) ?? (optionId ? orphanedChoicePrompt(orphan, optionId) : undefined));
+      if (entry.status === "cancelled" || orphanedPrompt) {
         hostLog.info(
           orphanedPrompt
-            ? "resume: answering an orphaned question with a new prompt"
+            ? "resume: answering an orphaned interrupt with a new prompt"
             : "resume: settling a dismissed interrupt with no live run",
           { conversation_id: sessionId, interrupt_id: entry.interruptId },
         );

@@ -98,6 +98,36 @@ fullOnly("needs kubectl access to delete the owner pod mid-run")(
       expect(new URL(page.url()).searchParams.get("thread")).toBe(thread);
       await chat.completeTurn("after the move", 100_000);
     });
+
+    test("a pending approval survives its pod moving and can still be answered", async ({ chat, page, request }) => {
+      test.setTimeout(300_000);
+      const hook = process.env.E2E_ROLLOUT_HOOK ?? "";
+      test.skip(!hook, "no rollout hook configured for this run");
+      const panel = page.locator('[data-testid="interrupt-panel"]');
+      const red = page.locator('[data-testid="interrupt-option"]').filter({ hasText: /red/i });
+
+      await chat.open();
+      await chat.completeTurn("before the move", 100_000);
+      const thread = new URL(page.url()).searchParams.get("thread");
+      expect(thread, "the URL must name a conversation").toBeTruthy();
+
+      await chat.send("?pick a color");
+      await expect(panel).toBeVisible({ timeout: 60_000 });
+      const moved = await request.post(`${hook}/move/${thread}`);
+      expect(moved.ok(), `the hook must delete the owner pod: ${await moved.text()}`).toBeTruthy();
+
+      // Wait out the reassignment, then the card must still be there after a fresh load.
+      await page.waitForTimeout(30_000);
+      await page.reload();
+      await expect(panel).toBeVisible({ timeout: 60_000 });
+
+      // The asking session died with its pod, so the pick reaches the agent as a new prompt.
+      await expect(async () => {
+        if (await panel.isVisible().catch(() => false)) await red.click({ timeout: 5_000 }).catch(() => {});
+        await expect(chat.assistantMessages().last()).toContainText(/I picked: Red/i, { timeout: 15_000 });
+      }).toPass({ timeout: 120_000 });
+      await expect(panel).toHaveCount(0, { timeout: 15_000 });
+    });
   },
 );
 
