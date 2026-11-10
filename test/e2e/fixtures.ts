@@ -243,8 +243,10 @@ export const test = base.extend<Fixtures>({
       // The full target gets more attempts because a suspended conversation must be hydrated
       // before it can be ended.
       const attempts = process.env.E2E_TARGET === "full" ? 150 : 50;
+      // scope=all: a named caller's "mine" list hides unowned leftovers.
+      const listURL = `${base}/conversations?scope=all`;
       for (let i = 0; i < attempts; i++) {
-        const res = await request.get(`${base}/conversations`);
+        const res = await request.get(listURL);
         if (!res.ok()) {
           // Fast: the single-process server is down, so there is nothing to wipe.
           if (process.env.E2E_TARGET !== "full") break;
@@ -262,7 +264,7 @@ export const test = base.extend<Fixtures>({
           let stable = true;
           for (let k = 0; k < 3; k++) {
             await new Promise((r) => setTimeout(r, 1000));
-            const again = await request.get(`${base}/conversations`);
+            const again = await request.get(listURL);
             if (!again.ok()) continue; // a transient read error is not evidence of a dirty slate
             const rows = (await again.json()) as Array<{ id: string }>;
             if (rows.length > 0) {
@@ -298,7 +300,7 @@ export const test = base.extend<Fixtures>({
         await new Promise((r) => setTimeout(r, process.env.E2E_TARGET === "full" ? 1000 : 100));
         // Fail loudly on the last iteration rather than hand the next test a dirty slate.
         if (i === attempts - 1) {
-          const left = (await (await request.get(`${base}/conversations`)).json()) as Array<{
+          const left = (await (await request.get(listURL)).json()) as Array<{
             id: string;
             starred?: boolean;
             title?: string;
