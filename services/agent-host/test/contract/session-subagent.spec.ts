@@ -249,10 +249,10 @@ describe("sessions (kind: session)", () => {
     const sessions = createSessionManager({ provisioner, store: inMemoryStore(), bridgeFactory: factory });
     const parent = await sessions.start("p", undefined, "alice");
 
-    const ses = await sessions.spawnChild(parent.id, "s1", { kind: "session" });
+    const ses = await sessions.spawnChild(parent.id, "s1", { kind: "session", origin: "web" });
 
     expect(prompts).toEqual([]);
-    expect(ses).toMatchObject({ kind: "session", parentId: parent.id, owner: "alice", title: "New chat" });
+    expect(ses).toMatchObject({ kind: "session", origin: "web", parentId: parent.id, owner: "alice", title: "New chat" });
     expect(ses.sandbox).toEqual(parent.sandbox);
     expect(provisioner.create).toHaveBeenCalledOnce();
   });

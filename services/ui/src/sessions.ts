@@ -35,6 +35,8 @@ export interface Session {
   parentId?: string;
   /** A child's kind, server-sourced. */
   kind?: "subagent" | "session";
+  /** Where a session was started from, e.g. "vscode" or "web"; server-sourced. */
+  origin?: string;
   /** The conversation's sandbox lifecycle state, server-sourced and live via the /conversations/events stream. */
   status?: "running" | "suspended" | "failed" | "ended";
   /** The user renamed this conversation, so the server title is authoritative and the agent's title never overrides it. */
@@ -66,6 +68,7 @@ export type ServerConversation = {
   status?: Session["status"];
   parentId?: string;
   kind?: "subagent" | "session";
+  origin?: string;
   userTitled?: boolean;
   visibility?: "shared" | "private";
   runStartedAt?: number;
@@ -165,7 +168,8 @@ const sameSession = (a: Session, b: Session): boolean => {
     a.awaitingInputAt !== b.awaitingInputAt ||
     a.lastSeenAt !== b.lastSeenAt ||
     a.parentId !== b.parentId ||
-    a.kind !== b.kind
+    a.kind !== b.kind ||
+    a.origin !== b.origin
   ) return false;
   const srcA = a.sources ?? [], srcB = b.sources ?? [];
   if (srcA.length !== srcB.length || srcA.some((v, i) => v !== srcB[i])) return false;
@@ -384,6 +388,12 @@ export const sessionStore = {
     this.requestSelect(id);
   },
 
+  /** Move this page's pin to another conversation, keeping the loaded list. */
+  repin(id: string) {
+    pinnedId = id;
+    this.requestSelect(id);
+  },
+
   /** The conversation this page is pinned to, if any. */
   pinned(): string | undefined {
     return pinnedId;
@@ -506,6 +516,7 @@ export const sessionStore = {
         status: c.status ?? existing?.status,
         parentId: c.parentId ?? existing?.parentId,
         kind: c.kind ?? existing?.kind,
+        origin: c.origin ?? existing?.origin,
         // Every server row is a whole row, so an absent runStartedAt means the turn ended.
         runStartedAt: c.runStartedAt,
         lastReplyAt: c.lastReplyAt ?? existing?.lastReplyAt,

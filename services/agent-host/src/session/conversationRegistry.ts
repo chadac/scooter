@@ -18,6 +18,8 @@ export interface ConversationSpec {
   parentId?: string;
   /** Read-only here: set by the router's insert. */
   kind?: ConversationKind;
+  /** Read-only here: set by the router's insert. */
+  origin?: string;
   /** The backing Sandbox name, if known at start (sandbox_ref). */
   sandboxRef?: string;
   /** The pod that created the conversation (creator_pod), a placement hint the controller

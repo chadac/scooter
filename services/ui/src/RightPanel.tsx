@@ -1,23 +1,24 @@
 /**
  * RightPanel: the single right-side panel with two tabs. Session holds the sandbox
- * status and collapsible sections (Services, Subagents, then one per enabled contrib
+ * status and collapsible sections (Services, Chats, then one per enabled contrib
  * that declares a `ui.panel`), so adding a section never widens the tab bar.
  * Approvals is a gate the user cannot miss, so a new interrupt auto-focuses that tab.
  * (Queued messages render inline in the thread.) The tab bodies are existing
  * components, e.g. InterruptList (data-testid `interrupt-panel`).
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 
 import { mobileNav, useDrawer } from "./mobileNav.js";
 import { InterruptList } from "./InterruptPanel.js";
 import { SandboxPanelView, useSandboxStatus } from "./SandboxPanel.js";
-import { SubagentsPanel, subagentsOf } from "./SubagentsPanel.js";
+import { ChatsPanel } from "./ChatsPanel.js";
+import { canStartSession, familyOf } from "./family.js";
 import { PanelSection } from "./PanelSection.js";
 import { contribPanels } from "./contribManifest.js";
 import { ContribPanelBody } from "./contribPanels.js";
-import { useSessions } from "./sessions.js";
+import { useCurrentUser, useSessions } from "./sessions.js";
 import { useConversationInterrupts } from "./RuntimeProvider.js";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -76,9 +77,11 @@ export function RightPanel() {
   const { interrupts } = useConversationInterrupts();
   const sandbox = useSandboxStatus();
   const { sessions, currentId } = useSessions();
+  const user = useCurrentUser();
   const nInterrupts = interrupts.length;
-  const subagents = subagentsOf(sessions, currentId);
-  const nSubagents = subagents.length;
+  const family = useMemo(() => familyOf(sessions, currentId), [sessions, currentId]);
+  // Shown once there is another chat, or one could start.
+  const showChats = family.length > 1 || canStartSession(family[0]?.session, user);
   const panels = Object.values(contribPanels()).sort(
     (a, b) => a.order - b.order || a.contrib.localeCompare(b.contrib),
   );
@@ -165,9 +168,9 @@ export function RightPanel() {
             onRescanServices={sandbox.rescanServices}
             rescanning={sandbox.rescanning}
           >
-            {nSubagents > 0 && (
-              <PanelSection id="subagents" label="Subagents" count={nSubagents}>
-                <SubagentsPanel />
+            {showChats && (
+              <PanelSection id="chats" label="Chats" count={family.length - 1}>
+                <ChatsPanel members={family} />
               </PanelSection>
             )}
             {panels.map((p) => (

@@ -46,6 +46,7 @@ export const conversations = pgTable("conversations", {
 	owner: text(),
 	parentId: text("parent_id"),
 	kind: text(),
+	origin: text(),
 	userTitled: boolean("user_titled"),
 	starred: boolean(),
 	pendingQueue: jsonb("pending_queue"),
@@ -67,6 +68,7 @@ export const conversations = pgTable("conversations", {
 	index("conversations_by_sandbox_ref").using("btree", table.sandboxRef.asc().nullsLast().op("text_ops")),
 	check("conversations_model_set_by_check", sql`model_set_by = ANY (ARRAY['user'::text, 'agent'::text])`),
 	check("conversations_kind_check", sql`kind = ANY (ARRAY['subagent'::text, 'session'::text])`),
+	check("conversations_origin_check", sql`origin ~ '^[a-z][a-z0-9_-]{0,31}$'::text`),
 	check("conversations_visibility_check", sql`visibility = ANY (ARRAY['shared'::text, 'private'::text])`),
 	check("conversations_private_has_owner", sql`(visibility = 'shared'::text) OR (owner IS NOT NULL)`),
 ]);

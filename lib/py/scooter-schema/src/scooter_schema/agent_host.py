@@ -126,6 +126,7 @@ class Conversations(Base):
     __table_args__ = (
         CheckConstraint("kind = ANY (ARRAY['subagent'::text, 'session'::text])", name='conversations_kind_check'),
         CheckConstraint("model_set_by = ANY (ARRAY['user'::text, 'agent'::text])", name='conversations_model_set_by_check'),
+        CheckConstraint("origin ~ '^[a-z][a-z0-9_-]{0,31}$'::text", name='conversations_origin_check'),
         CheckConstraint("visibility = 'shared'::text OR owner IS NOT NULL", name='conversations_private_has_owner'),
         CheckConstraint("visibility = ANY (ARRAY['shared'::text, 'private'::text])", name='conversations_visibility_check'),
         PrimaryKeyConstraint('id', name='conversations_pkey'),
@@ -147,6 +148,7 @@ class Conversations(Base):
     owner: Mapped[Optional[str]] = mapped_column(Text)
     parent_id: Mapped[Optional[str]] = mapped_column(Text)
     kind: Mapped[Optional[str]] = mapped_column(Text)
+    origin: Mapped[Optional[str]] = mapped_column(Text)
     user_titled: Mapped[Optional[bool]] = mapped_column(Boolean)
     starred: Mapped[Optional[bool]] = mapped_column(Boolean)
     pending_queue: Mapped[Optional[dict]] = mapped_column(JSONB)

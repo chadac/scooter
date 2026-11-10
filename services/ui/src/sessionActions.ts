@@ -4,7 +4,7 @@
  * started in this browser), while the server must be addressed by `serverId`.
  */
 
-import { deleteConversation, renameConversation, setConversationVisibility } from "./client.js";
+import { createSession, deleteConversation, renameConversation, setConversationVisibility } from "./client.js";
 import { agentHostConfig } from "./config.js";
 import { conversationFor, sessionStore, type Session } from "./sessions.js";
 
@@ -66,3 +66,13 @@ export const clearTaintWarning = (labels: string[]): string =>
   [...new Set(labels)].map((l) => `• ${l}`).join("\n") +
   "\n\nIt stays in the agent's context and could steer it while it uses your SSH key, commit " +
   "identity and forge tokens. Anything they write later taints the conversation again.";
+
+/** Start a web session in `root`'s sandbox and select it once listed; returns an error or null. */
+export async function startSession(root: Session, select: (id: string) => void = (id) => sessionStore.requestSelect(id)): Promise<string | null> {
+  const parentId = serverIdOf(root);
+  if (parentId === undefined) return "this conversation has not started yet";
+  const res = await createSession(agentHostConfig, parentId);
+  if ("error" in res) return res.error;
+  select(res.id);
+  return null;
+}

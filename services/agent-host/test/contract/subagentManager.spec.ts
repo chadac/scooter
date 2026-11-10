@@ -255,6 +255,12 @@ describe("sessions (children a person drives, e.g. VS Code chats)", () => {
     expect(sessions.spawnChild).toHaveBeenCalledWith("root", "minted", { kind: "session", title: "VS Code" });
   });
 
+  it("passes a session's origin to the router", async () => {
+    const { mgr, createChild } = mgrOver([top("root")]);
+    await mgr.spawn("root" as SessionId, { kind: "session", origin: "web" });
+    expect(createChild).toHaveBeenCalledWith("root", { title: undefined, model: undefined, kind: "session", origin: "web" });
+  });
+
   it("a session is depth 0, so it may spawn subagents at the default depth", async () => {
     const { mgr } = mgrOver([top("root"), kid("ses", "root", "session")]);
     await expect(mgr.spawn("ses" as SessionId, { prompt: "x" })).resolves.toBeDefined();

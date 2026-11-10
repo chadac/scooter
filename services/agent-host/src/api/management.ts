@@ -12,7 +12,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { createRouter, type JsonResult, type Router, type ResolveUser } from "../http/router.js";
 import type { SessionManager, Conversation } from "../session/manager.js";
 import type { ConversationStore, ChecksummedEvent, ConversationLink } from "../session/manager.js";
-import { prefixedPlaceholder, sandboxKey } from "../session/manager.js";
+import { PLACEHOLDER_TITLE, prefixedPlaceholder, sandboxKey } from "../session/manager.js";
 import type { SessionId } from "../types.js";
 import { tailByRuns } from "../session/eventWindow.js";
 import { trimToBoundary } from "../session/eventStore.js";
@@ -104,9 +104,12 @@ export function parseByteRange(header: string, size: number): [number, number] |
   return start <= end ? [start, end] : null;
 }
 
+/** A source, titlePrefix or origin: a short lowercase name. */
+const LOWERCASE_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
+
 /** Whether a POST /messages caller may tag its message with this system source. */
 export function isPostableSource(source: unknown): source is string {
-  return typeof source === "string" && /^[a-z][a-z0-9_-]{0,31}$/.test(source) && !RESERVED_SOURCES.has(source);
+  return typeof source === "string" && LOWERCASE_NAME.test(source) && !RESERVED_SOURCES.has(source);
 }
 
 /** Public JSON-safe view of a conversation (omits the in-memory bridge). */
@@ -126,6 +129,8 @@ function view(c: Conversation, now = Date.now()) {
     parentId: c.parentId,
     // "session" when a person drives this child.
     kind: c.kind,
+    // Where a session was started from, e.g. "vscode" or "web".
+    origin: c.origin,
     // Set by a user rename; the agent's <title> does not override it.
     userTitled: c.userTitled ?? false,
     starred: c.starred ?? false,
@@ -844,12 +849,15 @@ export function createManagementApi(deps: ManagementDeps): Router {
   // Idle children a pod service, such as VS Code, drives.
   r.post("/conversations/:id/sessions", async (ctx) => {
     if (!deps.subagents) return { status: 501, json: { error: "sessions unavailable" } };
-    const body = await ctx.body<{ title?: unknown; titlePrefix?: unknown; model?: unknown }>();
+    const body = await ctx.body<{ title?: unknown; titlePrefix?: unknown; origin?: unknown; model?: unknown }>();
     if (body.title !== undefined && typeof body.title !== "string") {
       return { status: 400, json: { error: "title must be a string" } };
     }
-    if (body.titlePrefix !== undefined && !(typeof body.titlePrefix === "string" && /^[a-z][a-z0-9_-]{0,31}$/.test(body.titlePrefix))) {
+    if (body.titlePrefix !== undefined && !(typeof body.titlePrefix === "string" && LOWERCASE_NAME.test(body.titlePrefix))) {
       return { status: 400, json: { error: "titlePrefix must be a lowercase name" } };
+    }
+    if (body.origin !== undefined && !(typeof body.origin === "string" && LOWERCASE_NAME.test(body.origin))) {
+      return { status: 400, json: { error: "origin must be a lowercase name" } };
     }
     if (body.model !== undefined && typeof body.model !== "string") {
       return { status: 400, json: { error: "model must be a string" } };
@@ -861,10 +869,15 @@ export function createManagementApi(deps: ManagementDeps): Router {
     if (error === 404) return { status: 404, json: { error: "not found" } };
     if (error === 403) return { status: 403, json: { error: "not your conversation" } };
     if (conv!.parentId) return { status: 400, json: { error: "a session's parent must be a top-level conversation" } };
+    if (conv!.status !== "running") return { status: 409, json: { error: "the sandbox is not running; resume the conversation first" } };
+    // A prefixed title already names its origin, as VS Code's does.
+    const origin = (body.origin ?? body.titlePrefix) as string | undefined;
     try {
       const child = await deps.subagents.spawn(conv!.id as SessionId, {
         kind: "session",
-        ...(body.title ? { title: body.title } : body.titlePrefix ? { title: prefixedPlaceholder(body.titlePrefix) } : {}),
+        // A placeholder title, so the router's row does not read "Subagent".
+        title: (body.title as string | undefined) || (body.titlePrefix ? prefixedPlaceholder(body.titlePrefix as string) : PLACEHOLDER_TITLE),
+        ...(origin ? { origin } : {}),
         ...(body.model ? { model: body.model } : {}),
       });
       stateHub.nudge(conv!.id);

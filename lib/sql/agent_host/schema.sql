@@ -53,6 +53,8 @@ CREATE TABLE "conversations" (
   "parent_id"        text NULL,
   -- A child's kind; NULL for a top-level conversation.
   "kind"             text NULL CHECK ("kind" IN ('subagent', 'session')),
+  -- Where a session was started from (e.g. vscode, web); NULL otherwise.
+  "origin"           text NULL CHECK ("origin" ~ '^[a-z][a-z0-9_-]{0,31}$'),
   "user_titled"      boolean NULL,
   -- Owner's star: agent-host's delete guard, derived by the router.
   "starred"          boolean NULL,

@@ -16,7 +16,7 @@ export interface CreatedSubagent {
 /** Rejects rather than let a caller mint its own id. */
 export type SubagentCreator = (
   parentId: string,
-  args: { title?: string; model?: string; kind?: ConversationKind },
+  args: { title?: string; model?: string; kind?: ConversationKind; origin?: string },
 ) => Promise<CreatedSubagent>;
 
 export interface RouterSubagentsConfig {
@@ -56,6 +56,7 @@ export function createRouterSubagentCreator(config: RouterSubagentsConfig): Suba
       ...(args.title ? { title: args.title } : {}),
       ...(args.model ? { model: args.model } : {}),
       ...(args.kind ? { kind: args.kind } : {}),
+      ...(args.origin ? { origin: args.origin } : {}),
     });
     const signal = AbortSignal.timeout(timeoutMs);
     let res: Response;
