@@ -64,13 +64,21 @@ def _describe(v: dict, blockers: list[Blocker]) -> str:
     if card is None:
         return (
             f'No status set yet; the card shows in "{v["column"]}". Stages: {stages}.'
-            f"{blocked}{_describe_tags(v)}{_describe_skills(v)}{_describe_details(v)}"
+            f"{blocked}{_describe_gates(v)}{_describe_tags(v)}{_describe_skills(v)}{_describe_details(v)}"
         )
     note = f' Note: "{card["note"]}".' if card["note"] else ""
     return (
         f'The card is in "{v["column"]}", last set by the {card["updated_by"]} at {card["updated_at"]}.'
-        f"{note} Stages: {stages}.{blocked}{_describe_tags(v)}{_describe_skills(v)}{_describe_details(v)}"
+        f"{note} Stages: {stages}.{blocked}{_describe_gates(v)}{_describe_tags(v)}{_describe_skills(v)}{_describe_details(v)}"
     )
+
+
+def _describe_gates(v: dict) -> str:
+    """What the card must pass to move on from its stage; nothing when the stage has no gates."""
+    gates = v.get("gates") or []
+    if not gates:
+        return ""
+    return f' To move on from "{v["column"]}" it must pass: {"; ".join(g["line"] for g in gates)}.'
 
 
 def _describe_details(v: dict) -> str:
@@ -118,6 +126,11 @@ async def kanban_set_status(column: str, note: str = "", ctx: ToolContext = Tool
     board's stages. Call it when the work changes phase, and to confirm the status when
     asked: setting the same stage again records that it is still right. A card blocked
     by other cards can't move to a later stage until they are in the board's last stage.
+
+    A stage may have gates the card must pass to move on from it, as kanban_get_status
+    lists them: a command (e.g. the tests), which runs on your last commit just before
+    this call and must pass, and the user's approval, which this call asks for. When it
+    says the card is waiting for approval, end your turn; a message comes with the answer.
     """
     key = await _key(ctx)
     if isinstance(key, ToolResult):
@@ -131,6 +144,7 @@ async def kanban_set_status(column: str, note: str = "", ctx: ToolContext = Tool
     tags = await _boards.tag_view(key, where.place.board)
     v = view(
         card, where.stages, where.stage, **tags, details=await _boards.store.details(key),
+        gates=await _boards.gate_view(key, where.place.board, where.stage),
         stale_after=_stale_after, now=datetime.now(timezone.utc),
     )
     return ToolResult.ok(_describe(v, blockers))
@@ -139,7 +153,8 @@ async def kanban_set_status(column: str, note: str = "", ctx: ToolContext = Tool
 @mcp.tool
 async def kanban_get_status(ctx: ToolContext = ToolContextDep) -> ToolResult:
     """Read this conversation's card on its kanban board: its stage, note, blockers, tags,
-    priority and description, and the board's stages and skills."""
+    priority and description, the gates it must pass to move on, and the board's stages
+    and skills."""
     key = await _key(ctx)
     if isinstance(key, ToolResult):
         return key
@@ -154,8 +169,9 @@ async def kanban_get_status(ctx: ToolContext = ToolContextDep) -> ToolResult:
         tags = await _boards.tag_view(key, where.place.board)
         details = await _boards.store.details(key)
         skills = await _boards.store.skills(where.place.board)
+        gates = await _boards.gate_view(key, where.place.board, where.stage)
     v = view(
-        card, where.stages, where.stage, **tags, details=details, skills=skills,
+        card, where.stages, where.stage, **tags, details=details, skills=skills, gates=gates,
         stale_after=_stale_after, now=datetime.now(timezone.utc),
     )
     return ToolResult.ok(_describe(v, blockers))

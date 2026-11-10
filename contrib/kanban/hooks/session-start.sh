@@ -12,6 +12,11 @@ printf '%s' "$card" | jq -r '
         " It is blocked by " + (.blocked_by | map("\(.title | @json) (\(.stage))") | join(", "))
         + ", so it can'\''t move past this stage until they reach \"\(.columns[-1])\"; you will be messaged when they do."
       else "" end
+    + if (.gates // []) == [] then "" else
+        " To move on from \"\(.column)\" the card must pass: \(.gates | map(.line) | join("; ")). "
+        + "Commands run on your last commit when you call kanban_set_status, so commit first; "
+        + "an approval asks the user, and you then end your turn until they answer."
+      end
     + if (.tags // []) == [] then "" else
         " Board tags: \(.tags | map("\"\(.)\"") | join(", ")); this card has "
         + if (.card_tags // []) == [] then "none" else (.card_tags | map("\"\(.)\"") | join(", ")) end

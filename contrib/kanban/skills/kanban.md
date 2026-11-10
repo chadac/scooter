@@ -25,6 +25,16 @@ telling the truth.
   stage but `kanban_set_status` won't move it to a later one. Do what you can there,
   say what you're waiting on, and end your turn: a message comes when the blockers
   reach the last stage. Don't poll for it.
+- **A stage can have gates** the card must pass before you move it on from that stage;
+  the hook and `kanban_get_status` list them. A *command* gate (e.g. the tests) runs in
+  your sandbox on a clean checkout of your last commit when you call
+  `kanban_set_status`, so commit first; uncommitted edits don't count. If it fails, the
+  call is refused with the output: fix it, commit, and call again. An *approval* gate asks
+  the user once every command passes: tell them what to look at (the PR, a preview, the
+  doc), then end your turn. A message comes when they approve, so move the card on then,
+  or when they reject it, with their comment, so address it and ask again. Don't poll,
+  and don't try to get around a gate. Only the user can change gates, under Edit board;
+  if one looks wrong, or the user asks for gates you can't set, tell them what to put.
 - **When planning work as several cards**, start each one (e.g. with `handoff_spawn`),
   put it on the board with `kanban_add_card(conversation, blocked_by)`, and order the
   cards with `kanban_set_blockers`. `kanban_list_cards` shows the cards and their ids.

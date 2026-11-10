@@ -64,5 +64,14 @@ can't move on until every card blocking it reaches the last stage. Under **Edit 
 the user can write a board's skills: short notes, such as conventions or release steps,
 that every agent on the board gets as a skill named `board-<name>`. Agents can write
 and update them too, when asked or when they learn something the whole board should
-know. Setup is in
+know.
+
+Edit board also sets each stage's **gates**: checks a card must pass before its agent
+moves it on from that stage. A **command** gate, such as `nix develop -c just test` in
+`/workspace/<repo>`, runs in the card's sandbox when the agent calls `kanban_set_status`,
+by default on a clean checkout of its last commit. If it fails, the agent gets the
+output instead of the move. An **approval** gate asks you once the commands pass: the
+card shows **Approve**, and its Details tab has Approve and Reject with a comment the
+agent receives. Moving a card past a gate uses up the pass, so a card that comes back
+to the stage has to pass again. Your own moves skip gates. Setup is in
 [Setting up contribs](../tutorial/contribs.md#kanban-boards).

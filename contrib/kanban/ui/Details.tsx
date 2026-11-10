@@ -3,7 +3,7 @@
 // Description, priority and blockers come from /kanban/conversation/<id>/details; the stage,
 // note and tags are the board's, passed in, so the tab and the card never disagree.
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Lock, Pencil, Plus, X } from "lucide-react";
+import { Check, Lock, Pencil, Plus, ShieldCheck, X } from "lucide-react";
 import {
   Button,
   cn,
@@ -37,6 +37,96 @@ interface Related {
   done: boolean;
 }
 
+/** A check the card must pass to leave its stage, and where it stands on it. */
+export interface GateRow {
+  id: string;
+  name: string;
+  kind: "approval" | "command";
+  command: string;
+  workdir: string;
+  /** command: passed | failed; approval: pending | approved | rejected; "" before any. */
+  state: string;
+  /** A failed command's output, or the user's comment. */
+  detail: string;
+  commit: string;
+  updated_at: string;
+}
+
+const GATE_STATE: Record<string, { label: string; className: string }> = {
+  "": { label: "Not checked", className: "text-muted-foreground" },
+  passed: { label: "Passed", className: "text-green-700 dark:text-green-400" },
+  failed: { label: "Failed", className: "text-destructive" },
+  pending: { label: "Waiting for you", className: "text-amber-700 dark:text-amber-400" },
+  approved: { label: "Approved", className: "text-green-700 dark:text-green-400" },
+  rejected: { label: "Rejected", className: "text-destructive" },
+};
+
+function GateItem({ gate, decide }: { gate: GateRow; decide(approve: boolean, comment: string): Promise<boolean> }) {
+  const [comment, setComment] = useState("");
+  const [busy, setBusy] = useState(false);
+  const state = GATE_STATE[gate.state] ?? GATE_STATE[""];
+  const answer = async (approve: boolean) => {
+    setBusy(true);
+    if (await decide(approve, comment)) setComment("");
+    setBusy(false);
+  };
+  return (
+    <li
+      data-testid="kanban-gate"
+      data-gate-kind={gate.kind}
+      data-gate-state={gate.state || undefined}
+      className={cn("flex flex-col gap-1 rounded-md border px-2 py-1.5", gate.state === "pending" && "border-amber-500/60")}
+    >
+      <div className="flex items-baseline gap-2">
+        <span className="min-w-0 flex-1 truncate text-sm font-medium" title={gate.name}>
+          {gate.name}
+        </span>
+        <span data-testid="kanban-gate-state" className={cn("shrink-0 text-[11px]", state.className)}>
+          {state.label}
+        </span>
+      </div>
+      <span className="truncate text-[11px] text-muted-foreground" title={gate.command}>
+        {gate.kind === "command" ? (
+          <>
+            <code>{gate.command}</code>
+            {gate.workdir ? ` in ${gate.workdir}` : ""}
+            {gate.commit ? ` · ${gate.commit.slice(0, 12)}` : ""}
+          </>
+        ) : (
+          "Your approval"
+        )}
+      </span>
+      {gate.detail && (gate.state === "failed" ? (
+        <pre data-testid="kanban-gate-output" className="max-h-40 overflow-auto rounded bg-muted p-1.5 text-[11px] whitespace-pre-wrap">
+          {gate.detail}
+        </pre>
+      ) : (
+        <p className="text-xs">“{gate.detail}”</p>
+      ))}
+      {gate.kind === "approval" && gate.state !== "approved" && (
+        <div className="flex flex-col gap-1">
+          <input
+            aria-label={`Comment on ${gate.name}`}
+            data-testid="kanban-gate-comment"
+            className={inputClass}
+            placeholder={gate.state === "pending" ? "Comment (sent to the agent)" : "Approve ahead of time, or leave a comment"}
+            value={comment}
+            onChange={(e) => setComment(e.currentTarget.value)}
+          />
+          <div className="flex gap-1">
+            <Button size="sm" data-testid="kanban-gate-approve" disabled={busy} onClick={() => void answer(true)}>
+              <Check aria-hidden /> Approve
+            </Button>
+            <Button size="sm" variant="outline" data-testid="kanban-gate-reject" disabled={busy || !comment.trim()} onClick={() => void answer(false)}>
+              <X aria-hidden /> Reject
+            </Button>
+          </div>
+        </div>
+      )}
+    </li>
+  );
+}
+
 interface DetailsRow {
   description: string;
   priority: Priority;
@@ -44,6 +134,8 @@ interface DetailsRow {
   updated_at: string;
   blocked_by: Related[];
   blocking: Related[];
+  /** The gates on the card's stage. */
+  gates?: GateRow[];
 }
 
 /** High and Urgent, as a card on the board marks them; nothing for the rest. */
@@ -288,6 +380,15 @@ export function CardDetails({
     }
   };
 
+  const decide = async (gate: GateRow, approve: boolean, comment: string) => {
+    const ok = await call(`gates/${gate.id}`, "PUT", { decision: approve ? "approve" : "reject", comment }, approve ? "approve it" : "reject it");
+    if (ok) {
+      await load();
+      changed();
+    }
+    return ok;
+  };
+
   if (!row)
     return (
       <div className="flex flex-1 items-center justify-center p-4 text-sm text-muted-foreground">
@@ -321,6 +422,18 @@ export function CardDetails({
         {note && <p className="text-sm">{note}</p>}
         <p className="text-[11px] text-muted-foreground">{updated}</p>
       </Section>
+      {(row.gates ?? []).length > 0 && (
+        <Section title="Gates to move on" testId="kanban-details-gates">
+          <p className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+            <ShieldCheck aria-hidden className="size-3" /> The agent can move the card on once these pass; your own moves skip them.
+          </p>
+          <ul className="flex flex-col gap-1">
+            {(row.gates ?? []).map((g) => (
+              <GateItem key={g.id} gate={g} decide={(approve, comment) => decide(g, approve, comment)} />
+            ))}
+          </ul>
+        </Section>
+      )}
       <Section title="Priority">
         <select
           aria-label="Priority"

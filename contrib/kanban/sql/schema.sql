@@ -110,3 +110,46 @@ CREATE TABLE "kanban_card_details" (
   "updated_at"      character varying NOT NULL,
   PRIMARY KEY ("conversation_id")
 );
+
+-- Gates: checks a card must pass before the agent moves it on from a stage.
+CREATE TABLE "kanban_gates" (
+  "id"              character varying NOT NULL,
+  -- The board's folder id (kanban_boards.folder_id).
+  "board_id"        character varying NOT NULL,
+  -- The stage the gate guards leaving (kanban_stages.folder_id).
+  "stage_id"        character varying NOT NULL,
+  -- "approval" (the user approves) or "command" (a script passes in the sandbox).
+  "kind"            character varying NOT NULL,
+  -- What the user and the agent call it, e.g. "Unit tests".
+  "name"            character varying NOT NULL,
+  -- kind "command": a bash script, run by the gate hook in the card's sandbox.
+  "command"         text NOT NULL DEFAULT '',
+  -- kind "command": the directory under /workspace it runs in, e.g. "scooter".
+  "workdir"         character varying NOT NULL DEFAULT '',
+  -- kind "command": run on a clean checkout of HEAD rather than the working tree.
+  "clean"           boolean NOT NULL DEFAULT true,
+  "timeout_seconds" integer NOT NULL DEFAULT 600,
+  -- Order on the stage; gates run in this order, approvals after commands.
+  "position"        double precision NOT NULL,
+  PRIMARY KEY ("id")
+);
+CREATE INDEX "ix_kanban_gates_board_id" ON "kanban_gates" ("board_id");
+
+-- Where a card stands on each gate: a command's last run, or an approval's request.
+CREATE TABLE "kanban_gate_results" (
+  -- kanban_cards.conversation_id
+  "conversation_id" character varying NOT NULL,
+  -- kanban_gates.id
+  "gate_id"         character varying NOT NULL,
+  -- command: "passed" or "failed"; approval: "pending", "approved" or "rejected".
+  "state"           character varying NOT NULL,
+  -- A failed command's last output, or the user's comment on an approval.
+  "detail"          text NOT NULL DEFAULT '',
+  -- The git commit a command ran on, when it ran on one.
+  "commit"          character varying NOT NULL DEFAULT '',
+  -- "agent", "hook" or "user".
+  "updated_by"      character varying NOT NULL,
+  "updated_at"      character varying NOT NULL,
+  PRIMARY KEY ("conversation_id", "gate_id")
+);
+CREATE INDEX "ix_kanban_gate_results_gate_id" ON "kanban_gate_results" ("gate_id");

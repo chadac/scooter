@@ -7,7 +7,7 @@
 // with POST /kanban/user/boards/<id>/cards and again when kanban pushes a change to them. Moving a card files the
 // conversation in the stage, then tells it as the user.
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ChevronLeft, ChevronRight, Lock, Pencil, Plus, Tag as TagIcon, Trash2, X } from "lucide-react";
+import { ArrowLeft, ChevronLeft, ChevronRight, Lock, Pencil, Plus, ShieldCheck, Tag as TagIcon, Trash2, X } from "lucide-react";
 import {
   Button,
   ChatPanel,
@@ -57,11 +57,28 @@ interface Skill {
   position: number;
 }
 
+/** A check a card must pass before its agent moves it on from `stage`. */
+interface Gate {
+  id: string;
+  /** The stage's id. */
+  stage: string;
+  kind: "approval" | "command";
+  name: string;
+  position: number;
+  command: string;
+  /** A directory under /workspace, e.g. "scooter". */
+  workdir: string;
+  /** Run on a clean checkout of the last commit. */
+  clean: boolean;
+  timeout_seconds: number;
+}
+
 interface BoardRow {
   folder: string;
   stages: Stage[];
   tags: Tag[];
   skills?: Skill[];
+  gates?: Gate[];
 }
 
 interface CardRow {
@@ -86,6 +103,8 @@ interface CardView {
   // Ids from any board; only this board's show.
   tags?: string[];
   priority?: string;
+  /** Ids of the approval gates the agent asked the user for. */
+  awaiting?: string[];
 }
 
 const CARD_MIME = "application/x-scooter-kanban-card";
@@ -94,6 +113,8 @@ const MAX_CARD_TAGS = 5;
 const MAX_BOARD_SKILLS = 10;
 const MAX_SKILL_NAME_CHARS = 60;
 const MAX_SKILL_CHARS = 4000;
+const MAX_BOARD_GATES = 20;
+const MAX_GATE_NAME_CHARS = 60;
 // `tagging` while the Details tab's tag field is open.
 const DETAILS_TAGS = "details";
 // Cards a lane shows at first, and adds per scroll.
@@ -320,6 +341,7 @@ interface Draft {
   stages: Stage[];
   tags: Tag[];
   skills: Skill[];
+  gates: Gate[];
 }
 
 const NEW = "new:";
@@ -328,10 +350,20 @@ const newId = () => `${NEW}${++made}`;
 const isNew = (id: string) => id.startsWith(NEW);
 
 /** The PUT body saving a draft: the board's stages, tags and skills as they should end up. */
-const draftBody = ({ stages, tags, skills }: Draft) => ({
+const draftBody = ({ stages, tags, skills, gates }: Draft) => ({
   stages: stages.map((s) => (isNew(s.id) ? { name: s.label } : { id: s.id, name: s.label })),
   tags: tags.map((t) => (isNew(t.id) ? { name: t.name, color: t.color } : { id: t.id, name: t.name, color: t.color })),
   skills: skills.map((k) => (isNew(k.id) ? { name: k.name, body: k.body } : { id: k.id, name: k.name, body: k.body })),
+  // A gate goes with its stage, and a new stage gets gates once saved.
+  gates: gates
+    .filter((g) => stages.some((s) => s.id === g.stage && !isNew(s.id)))
+    .map(({ id, stage, kind, name, command, workdir, clean, timeout_seconds }) => ({
+      ...(isNew(id) ? {} : { id }),
+      stage,
+      kind,
+      name,
+      ...(kind === "command" ? { command, workdir, clean, timeout_seconds } : {}),
+    })),
 });
 
 /** The agent's name for a skill, as kanban's skill_slug makes it. */
@@ -422,6 +454,7 @@ export default function BoardsView() {
         stages={current.row.stages}
         tags={current.row.tags ?? []}
         skills={current.row.skills ?? []}
+        gates={current.row.gates ?? []}
         boards={shown.map((b) => b.folder)}
         conversations={conversations.filter((c) => onBoard(current.row, c))}
         navigate={navigate}
@@ -526,6 +559,7 @@ function Board({
   stages: savedStages,
   tags: savedTags,
   skills: savedSkills,
+  gates: savedGates,
   boards,
   conversations,
   navigate,
@@ -537,6 +571,7 @@ function Board({
   stages: Stage[];
   tags: Tag[];
   skills: Skill[];
+  gates: Gate[];
   boards: ViewFolder[];
   conversations: ViewConversation[];
   navigate(path: string): void;
@@ -564,7 +599,7 @@ function Board({
   const tags = draft?.tags ?? savedTags;
   const dirty =
     draft !== null &&
-    JSON.stringify(draftBody(draft)) !== JSON.stringify(draftBody({ stages: savedStages, tags: savedTags, skills: savedSkills }));
+    JSON.stringify(draftBody(draft)) !== JSON.stringify(draftBody({ stages: savedStages, tags: savedTags, skills: savedSkills, gates: savedGates }));
   const [newStage, setNewStage] = useState("");
   const [newTag, setNewTag] = useState("");
   // The card whose tag field is open.
@@ -784,6 +819,19 @@ function Board({
   const shiftStage = (i: number, by: -1 | 1) => edit((d) => ({ ...d, stages: shift(d.stages, i, by) }));
   const changeSkill = (id: string, patch: Partial<Skill>) =>
     edit((d) => ({ ...d, skills: d.skills.map((k) => (k.id === id ? { ...k, ...patch } : k)) }));
+  const changeGate = (id: string, patch: Partial<Gate>) =>
+    edit((d) => ({ ...d, gates: d.gates.map((g) => (g.id === id ? { ...g, ...patch } : g)) }));
+  const addGate = (stage: string, kind: Gate["kind"]) =>
+    edit((d) => ({
+      ...d,
+      gates: [
+        ...d.gates,
+        {
+          id: newId(), stage, kind, name: kind === "approval" ? "Your approval" : "", position: 0,
+          command: "", workdir: "", clean: true, timeout_seconds: 600,
+        },
+      ],
+    }));
   const changeTag = (id: string, patch: Partial<Tag>) =>
     edit((d) => ({ ...d, tags: d.tags.map((t) => (t.id === id ? { ...t, ...patch } : t)) }));
 
@@ -876,7 +924,7 @@ function Board({
             onClick={() => {
               if (editing) return void saveDraft();
               setTagging(null);
-              setDraft({ stages: savedStages, tags: savedTags, skills: savedSkills });
+              setDraft({ stages: savedStages, tags: savedTags, skills: savedSkills, gates: savedGates });
             }}
           >
             {saving && <Spinner />}
@@ -1056,6 +1104,122 @@ function Board({
           </Button>
         </section>
       )}
+      {editing && draft && (
+        <section data-testid="kanban-gates" aria-label="Gates" className="space-y-2 border-b px-4 py-2">
+          <div className="flex flex-wrap items-baseline gap-2">
+            <h2 className="text-xs font-medium text-muted-foreground">Gates</h2>
+            <span className="text-xs text-muted-foreground">
+              What a card must pass before its agent moves it on from a stage. Commands run in the card's sandbox on its
+              last commit; approvals ask you. Your own moves skip them.
+            </span>
+          </div>
+          {draft.stages.map((st) => {
+            const mine = draft.gates.filter((g) => g.stage === st.id);
+            return (
+              <div key={st.id} data-testid="kanban-stage-gates" data-stage={st.label} className="space-y-1 rounded border p-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-medium">Leaving {st.label || "this stage"}</span>
+                  {isNew(st.id) ? (
+                    <span className="text-[11px] text-muted-foreground">Save the board to add gates to a new stage.</span>
+                  ) : (
+                    <>
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        data-testid="kanban-add-approval-gate"
+                        disabled={draft.gates.length >= MAX_BOARD_GATES}
+                        onClick={() => addGate(st.id, "approval")}
+                      >
+                        <Plus aria-hidden /> Approval
+                      </Button>
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        data-testid="kanban-add-command-gate"
+                        disabled={draft.gates.length >= MAX_BOARD_GATES}
+                        onClick={() => addGate(st.id, "command")}
+                      >
+                        <Plus aria-hidden /> Command
+                      </Button>
+                    </>
+                  )}
+                </div>
+                {mine.map((g) => (
+                  <div key={g.id} data-testid="kanban-gate-edit" data-gate-kind={g.kind} className="space-y-1 rounded bg-muted/40 p-1.5">
+                    <div className="flex items-center gap-2">
+                      <span className="shrink-0 text-[11px] text-muted-foreground">{g.kind === "approval" ? "Approval" : "Command"}</span>
+                      <input
+                        aria-label="Gate name"
+                        data-testid="kanban-gate-name"
+                        className={cn(inputClass, "min-w-0 flex-1 py-1 text-xs")}
+                        placeholder={g.kind === "approval" ? "Name, e.g. Design approved" : "Name, e.g. Unit tests"}
+                        maxLength={MAX_GATE_NAME_CHARS}
+                        value={g.name}
+                        onChange={(e) => changeGate(g.id, { name: e.currentTarget.value })}
+                      />
+                      <Button
+                        size="icon-xs"
+                        variant="ghost"
+                        aria-label={`Delete ${g.name || "this gate"}`}
+                        onClick={() => edit((d) => ({ ...d, gates: d.gates.filter((x) => x.id !== g.id) }))}
+                      >
+                        <Trash2 aria-hidden />
+                      </Button>
+                    </div>
+                    {g.kind === "command" && (
+                      <>
+                        <textarea
+                          aria-label={`Command for ${g.name || "the gate"}`}
+                          data-testid="kanban-gate-command"
+                          className={cn(inputClass, "min-h-12 w-full py-1 font-mono text-xs")}
+                          placeholder="nix develop -c just test"
+                          value={g.command}
+                          onChange={(e) => changeGate(g.id, { command: e.currentTarget.value })}
+                        />
+                        <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                          <label className="flex items-center gap-1">
+                            /workspace/
+                            <input
+                              aria-label="Directory"
+                              data-testid="kanban-gate-workdir"
+                              className={cn(inputClass, "w-32 py-0.5 text-xs")}
+                              placeholder="repo"
+                              value={g.workdir}
+                              onChange={(e) => changeGate(g.id, { workdir: e.currentTarget.value })}
+                            />
+                          </label>
+                          <label className="flex items-center gap-1">
+                            <input
+                              type="checkbox"
+                              data-testid="kanban-gate-clean"
+                              checked={g.clean}
+                              onChange={(e) => changeGate(g.id, { clean: e.currentTarget.checked })}
+                            />
+                            Clean checkout of the last commit
+                          </label>
+                          <label className="flex items-center gap-1">
+                            Timeout
+                            <input
+                              type="number"
+                              aria-label="Timeout in seconds"
+                              className={cn(inputClass, "w-20 py-0.5 text-xs")}
+                              min={10}
+                              max={3600}
+                              value={g.timeout_seconds}
+                              onChange={(e) => changeGate(g.id, { timeout_seconds: Math.round(Number(e.currentTarget.value) || 0) })}
+                            />
+                            s
+                          </label>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+        </section>
+      )}
       <div className="flex min-h-0 flex-1">
         <div
           className={cn(
@@ -1232,6 +1396,18 @@ function Board({
                           {conv.dot && <StatusDot dot={conv.dot} />}
                           <span className="line-clamp-2 font-medium">{conv.title}</span>
                           <PriorityMark priority={cards[conv.id]?.priority} />
+                          {(cards[conv.id]?.awaiting ?? []).length > 0 && (
+                            <span
+                              data-testid="kanban-card-awaiting"
+                              title={`Waiting for your approval: ${savedGates
+                                .filter((g) => cards[conv.id]?.awaiting?.includes(g.id))
+                                .map((g) => g.name)
+                                .join(", ")}`}
+                              className="inline-flex shrink-0 items-center gap-0.5 rounded bg-amber-500/15 px-1 text-[10px] font-semibold uppercase leading-4 text-amber-700 dark:text-amber-300"
+                            >
+                              <ShieldCheck aria-hidden className="size-3" /> Approve
+                            </span>
+                          )}
                         </button>
                         {!editing && (
                           <Button

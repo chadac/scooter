@@ -12,13 +12,14 @@ import json
 import logging
 import re
 from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
 from .filed import Filings
 from .folders import Conversation, FolderError, Folders
 from .messages import Send
-from .store import PRIORITIES, Card, Details, KanbanStore, Place, Skill, Stage, Tag
+from .store import GATE_KINDS, PRIORITIES, Card, Details, Gate, GateResult, KanbanStore, Place, Skill, Stage, Tag
 
 MAX_TAG_CHARS = 24
 MAX_BOARD_TAGS = 20
@@ -29,6 +30,15 @@ MAX_SKILL_NAME_CHARS = 60
 MAX_SKILL_CHARS = 4_000
 # What a board skill's name becomes in the agent's skill list, e.g. "board-release-steps".
 SKILL_PREFIX = "board-"
+# A board's gates, and what one may hold.
+MAX_BOARD_GATES = 20
+MAX_GATE_NAME_CHARS = 60
+MAX_GATE_COMMAND_CHARS = 4_000
+MIN_GATE_TIMEOUT, MAX_GATE_TIMEOUT = 10, 3_600
+# How long a command gate's pass, recorded by the gate hook, lets the card move on.
+COMMAND_PASS_TTL = timedelta(minutes=15)
+# How much of a failed command's output the agent is shown.
+FAILURE_TAIL_CHARS = 2_000
 # Palette keys; the board maps each to its own classes.
 TAG_COLORS = ("gray", "red", "orange", "yellow", "green", "teal", "blue", "purple")
 # Router lookups a board load runs at once.
@@ -95,6 +105,13 @@ def skill_file(skill: Skill) -> dict:
     )
     content = f"---\nname: {name}\ndescription: {json.dumps(description)}\n---\n\n# {skill.name}\n\n{skill.body}\n"
     return {"name": name, "content": content}
+
+
+def gate_line(g: Gate, r: GateResult | None) -> str:
+    """One gate as the agent reads it, e.g. `Unit tests` (command: just test) — passed on abc123."""
+    what = f"command `{g.command}`" + (f" in {g.workdir}" if g.workdir else "") if g.kind == "command" else "the user's approval"
+    state = f" — {r.state}" + (f" on {r.commit[:12]}" if r.commit else "") if r else ""
+    return f'"{g.name}" ({what}){state}'
 
 
 def parse_priority(name: str) -> int:
@@ -209,6 +226,7 @@ class Boards:
                 "stages": [s.payload() for s in stages or await self.stages(b, owner)],
                 "tags": [t.payload() for t in tags],
                 "skills": [k.payload() for k in skills],
+                "gates": [g.payload() for g in await self.store.gates(b)],
             }
             for b, stages, tags, skills in await self.store.layout(owner, board)
         ]
@@ -219,7 +237,13 @@ class Boards:
         return board
 
     async def save(
-        self, owner: str, board: str, stages: list[Stage], tags: list[Tag], skills: list[Skill] | None = None
+        self,
+        owner: str,
+        board: str,
+        stages: list[Stage],
+        tags: list[Tag],
+        skills: list[Skill] | None = None,
+        gates: list[Gate] | None = None,
     ) -> dict:
         """Make a board's stages, tags and skills these, in this order; returns the board as `list` shows it.
 
@@ -232,6 +256,10 @@ class Boards:
         stages, tags = self._check(stages, tags, have, old_tags)
         if skills is not None:
             skills = self._check_skills(skills, {k.id for k in await self.store.skills(board)})
+        if gates is not None:
+            gates = self._check_gates(
+                gates, {s.folder for s in stages if s.folder}, {g.id for g in await self.store.gates(board)}
+            )
         at = positions([have[s.folder].position if s.folder else None for s in stages])
 
         async def put(s: Stage, position: float) -> tuple[Stage | None, FolderError | None]:
@@ -272,6 +300,7 @@ class Boards:
             outcome,
             [replace(t, position=p) for t, p in zip(tags, tag_at)],
             None if skills is None else [replace(k, position=float(i + 1)) for i, k in enumerate(skills)],
+            None if gates is None else [replace(g, position=float(i + 1)) for i, g in enumerate(gates)],
         )
         await self.changed(owner)
         failed = next((e for _, e in done if e is not None), None)
@@ -341,6 +370,46 @@ class Boards:
             if len(body) > MAX_SKILL_CHARS:
                 raise BoardError(400, f"a skill is at most {MAX_SKILL_CHARS} characters")
             out.append(replace(k, name=name, body=body))
+        return out
+
+    @staticmethod
+    def _check_gates(gates: list[Gate], stages: set[str], have: set[str]) -> list[Gate]:
+        """The gates a save asks for, cleaned up, or the BoardError refusing them.
+
+        A gate sits on one of the board's saved stages; a stage new in this save gets its
+        gates once it is saved.
+        """
+        if len(gates) > MAX_BOARD_GATES:
+            raise BoardError(409, f"a board has at most {MAX_BOARD_GATES} gates")
+        ids = [g.id for g in gates if g.id]
+        if any(i not in have for i in ids) or len(set(ids)) != len(ids):
+            raise BoardError(400, "gates must be new or this board's, each once")
+        out: list[Gate] = []
+        for g in gates:
+            if g.stage not in stages:
+                raise BoardError(400, "a gate must be on one of this board's saved stages")
+            if g.kind not in GATE_KINDS:
+                raise BoardError(400, f"a gate's kind is one of {', '.join(GATE_KINDS)}")
+            name = g.name.strip()
+            if not name:
+                raise BoardError(400, "a gate needs a name")
+            if len(name) > MAX_GATE_NAME_CHARS:
+                raise BoardError(400, f"a gate name is at most {MAX_GATE_NAME_CHARS} characters")
+            command, workdir = g.command.strip(), g.workdir.strip().strip("/")
+            if g.kind == "command":
+                if not command:
+                    raise BoardError(400, f"the gate `{name}` needs a command")
+                if len(command) > MAX_GATE_COMMAND_CHARS:
+                    raise BoardError(400, f"a gate's command is at most {MAX_GATE_COMMAND_CHARS} characters")
+                if workdir.startswith("~") or ".." in workdir.split("/") or not re.fullmatch(r"[A-Za-z0-9._/-]*", workdir):
+                    raise BoardError(400, f"the gate `{name}` needs a directory under /workspace, like `scooter`")
+                if not MIN_GATE_TIMEOUT <= g.timeout_seconds <= MAX_GATE_TIMEOUT:
+                    raise BoardError(
+                        400, f"a gate's timeout is {MIN_GATE_TIMEOUT} to {MAX_GATE_TIMEOUT} seconds"
+                    )
+            else:
+                command, workdir = "", ""
+            out.append(replace(g, name=name, command=command, workdir=workdir))
         return out
 
     async def create(self, owner: str, name: str) -> str:
@@ -414,12 +483,19 @@ class Boards:
                     f"or earlier until they reach \"{last.name}\". Do what you can here, then end your turn: "
                     "a message comes when they are done",
                 )
+        crossed = self._crossed(where.stages, where.stage, to)
+        gates = [g for g in await self.store.gates(board) if g.stage in crossed]
+        if gates:
+            await self._pass_gates(key, where, gates)
         if to.folder != where.folder:
             try:
                 await self.folders.file(owner, where.conversation.id, to.folder)
             except FolderError as e:
                 raise _refused(e) from None
         card = await self.store.put(key, column=to.folder, by="agent", note=note)
+        if to != where.stage:
+            # Passing a gate counts once; back in its stage, the card meets it again.
+            await self.store.clear_results(key, [g.id for g in await self.store.gates(board) if g.stage == where.stage.folder] + [g.id for g in gates])
         if to == last and where.stage != last:
             await self.release(key, owner, board)
         await self.changed(owner, where.conversation.id)
@@ -432,11 +508,166 @@ class Boards:
             raise BoardError(400, "column must be one of your boards' stage ids")
         before = await self.store.card(key)
         card = await self.store.put(key, column=column, by="user", position=position)
+        if before is None or before.column != column:
+            # The user's move is never gated, and the stage it left is met afresh; with no
+            # card yet, any stage but this one may be the one it left.
+            left = [
+                g.id for g in await self.store.gates(place.board)
+                if (g.stage == before.column if before else g.stage != column)
+            ]
+            await self.store.clear_results(key, left)
         stages = await self.stages(place.board, owner)
         if column == stages[-1].folder and (before is None or before.column != column):
             await self.release(key, owner, place.board)
         await self.changed_card(key, owner)
         return card
+
+    @staticmethod
+    def _crossed(stages: list[Stage], at: Stage, to: Stage) -> set[str]:
+        """The stages a move from `at` to `to` leaves, whose gates it must pass; none going back."""
+        i, j = stages.index(at), stages.index(to)
+        return {s.folder for s in stages[i:j]}
+
+    async def _pass_gates(self, key: str, where: Located, gates: list[Gate]) -> None:
+        """Raise the BoardError holding the card back, unless it has passed every gate.
+
+        Commands go first: their passes are recorded by the gate hook, which runs them in the
+        sandbox just before the agent's kanban_set_status. Approvals come last, so the user is
+        asked once the rest passes; asking records a pending request the board shows.
+        """
+        results = await self.store.gate_results(key)
+        now = datetime.now(timezone.utc)
+        order = {s.folder: i for i, s in enumerate(where.stages)}
+        gates = sorted(gates, key=lambda g: (g.kind != "command", order.get(g.stage, 0), g.position))
+        problems: list[str] = []
+        for g in (g for g in gates if g.kind == "command"):
+            r = results.get(g.id)
+            fresh = False
+            if r is not None and r.updated_by == "hook":
+                try:
+                    fresh = now - datetime.fromisoformat(r.updated_at) <= COMMAND_PASS_TTL
+                except ValueError:
+                    fresh = False
+            if r is not None and fresh and r.state == "passed":
+                continue
+            if r is not None and fresh and r.state == "failed":
+                tail = r.detail[-FAILURE_TAIL_CHARS:].strip()
+                on = f" on {r.commit[:12]}" if r.commit else ""
+                problems.append(f'the gate "{g.name}" failed{on}:\n{tail}' if tail else f'the gate "{g.name}" failed{on}')
+            else:
+                problems.append(
+                    f'the gate "{g.name}" has no passing run from the last {int(COMMAND_PASS_TTL.total_seconds() // 60)} '
+                    "minutes. The kanban gate hook runs it in your sandbox when you call kanban_set_status; if it "
+                    "didn't run (e.g. the sandbox wasn't ready), call again, and if that keeps happening, tell the user"
+                )
+        if problems:
+            raise BoardError(
+                409,
+                f"this card can't leave \"{where.stage.name}\" yet: " + "\n\n".join(problems)
+                + "\n\nFix what failed, commit, and call kanban_set_status again",
+            )
+        waiting: list[Gate] = []
+        for g in (g for g in gates if g.kind == "approval"):
+            r = results.get(g.id)
+            if r is not None and r.state == "approved":
+                continue
+            if r is None or r.state != "pending":
+                await self.store.put_result(key, g.id, state="pending", by="agent")
+            waiting.append(g)
+        if waiting:
+            await self.changed(where.conversation.owner, where.conversation.id)
+            names = ", ".join(f'"{g.name}"' for g in waiting)
+            raise BoardError(
+                409,
+                f"moving on from \"{where.stage.name}\" needs the user's approval ({names}). They have been asked "
+                "on the board. Tell them what to look at, then end your turn: a message comes when they approve "
+                "or reject it",
+            )
+
+    async def gate_view(self, key: str, board: str, stage: Stage) -> list[tuple[Gate, GateResult | None]]:
+        """The gates on the card's stage, each with where the card stands on it."""
+        gates = [g for g in await self.store.gates(board) if g.stage == stage.folder]
+        results = await self.store.gate_results(key) if gates else {}
+        return [(g, results.get(g.id)) for g in gates]
+
+    async def gates_to_run(self, key: str, stage: str) -> tuple[Located, list[Gate]]:
+        """The command gates the agent's move to `stage` must pass, for the gate hook to run.
+
+        None when the move goes nowhere new or back, or the card's blockers hold it anyway.
+        """
+        where = await self.locate(key)
+        want = stage.strip().casefold()
+        to = next((s for s in where.stages if want in (s.name.casefold(), s.folder.casefold())), None)
+        if to is None:
+            return where, []
+        crossed = self._crossed(where.stages, where.stage, to)
+        if not crossed:
+            return where, []
+        owner, board = where.conversation.owner, where.place.board
+        if any(not b.done for b in await self.blockers(key, owner, board)):
+            return where, []
+        order = {s.folder: i for i, s in enumerate(where.stages)}
+        gates = [g for g in await self.store.gates(board) if g.kind == "command" and g.stage in crossed]
+        return where, sorted(gates, key=lambda g: (order.get(g.stage, 0), g.position))
+
+    async def record_runs(self, key: str, runs: list[dict]) -> list[GateResult]:
+        """The gate hook records its runs: each {gate, passed, output, commit}, for a command gate on the card's board."""
+        where = await self.locate(key)
+        gates = {g.id: g for g in await self.store.gates(where.place.board) if g.kind == "command"}
+        out: list[GateResult] = []
+        for run in runs:
+            if run["gate"] not in gates:
+                raise BoardError(404, f"`{run['gate']}` is not a command gate on this card's board")
+        for run in runs:
+            out.append(await self.store.put_result(
+                key, run["gate"], state="passed" if run["passed"] else "failed", by="hook",
+                detail=run.get("output", ""), commit=run.get("commit", ""),
+            ))
+        await self.changed(where.conversation.owner, where.conversation.id)
+        return out
+
+    async def decide(self, owner: str, key: str, gate_id: str, *, approve: bool, comment: str = "") -> GateResult:
+        """The user approves or rejects one of a card's approval gates, and its agent is told."""
+        on = await self._board_of(key, owner)
+        if on is None:
+            raise BoardError(409, "this conversation isn't filed on one of your boards")
+        conv, board, _ = on
+        gate = next((g for g in await self.store.gates(board) if g.id == gate_id), None)
+        if gate is None or gate.kind != "approval":
+            raise BoardError(404, "no such approval gate on this card's board")
+        comment = comment.strip()
+        before = (await self.store.gate_results(key)).get(gate_id)
+        result = await self.store.put_result(
+            key, gate_id, state="approved" if approve else "rejected", by="user", detail=comment
+        )
+        said = f' They said: "{comment}".' if comment else ""
+        if approve:
+            text = (
+                f'The user approved "{gate.name}" on the kanban board.{said} '
+                "Move the card on to its next stage with kanban_set_status now."
+            )
+        else:
+            text = (
+                f'The user rejected "{gate.name}" on the kanban board.{said} '
+                "Address it, then call kanban_set_status again to ask for approval."
+            )
+        # A rejection is always feedback; an approval only matters to an agent that asked.
+        if self.send is not None and (not approve or (before is not None and before.state == "pending")):
+            try:
+                await self.send(conv.id, text)
+            except httpx.HTTPError as e:
+                logger.warning("kanban approval message failed", extra={"conversation_id": conv.id, "error": str(e)})
+        await self.changed(owner, conv.id)
+        return result
+
+    async def stage_of_card(self, key: str, owner: str) -> tuple[str, Stage] | None:
+        """The board and stage `owner` filed the card on; None off every board."""
+        on = await self._board_of(key, owner)
+        if on is None:
+            return None
+        conv, board, placements = on
+        found = await self.at(placements.get(conv.id) or "")
+        return (board, found[2]) if found else None
 
     async def _conversation(self, ref: str) -> Conversation | None:
         try:
@@ -614,6 +845,8 @@ class Boards:
                 "blockers": [blocker(k) for k in view.blockers.get(key, []) if k in near],
                 "tags": view.tags.get(key, []),
                 "priority": view.details.get(key, Details()).payload()["priority"],
+                # Approval gates the agent has asked the user for.
+                "awaiting": view.pending.get(key, []),
             }
             for key, conv in on.items()
         }

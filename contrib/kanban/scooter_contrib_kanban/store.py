@@ -17,7 +17,7 @@ from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 
-from sqlalchemy import Float, Integer, String, Text, delete, func, select
+from sqlalchemy import Boolean, Float, Integer, String, Text, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -27,6 +27,9 @@ MAX_NOTE_CHARS = 280
 MAX_DESCRIPTION_CHARS = 10_000
 # A priority's name is its index, as kanban_card_details stores it.
 PRIORITIES = ("none", "low", "medium", "high", "urgent")
+# What a gate checks: the user approves, or a script passes in the card's sandbox.
+GATE_KINDS = ("approval", "command")
+MAX_GATE_DETAIL_CHARS = 4_000
 
 
 class _Base(DeclarativeBase):
@@ -102,6 +105,37 @@ class _Skill(_Base):
     position: Mapped[float] = mapped_column(Float)
 
 
+class _Gate(_Base):
+    """Mirrors `kanban_gates` in contrib/kanban/sql/schema.sql."""
+
+    __tablename__ = "kanban_gates"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    board_id: Mapped[str] = mapped_column(String, index=True)
+    stage_id: Mapped[str] = mapped_column(String)
+    kind: Mapped[str] = mapped_column(String)
+    name: Mapped[str] = mapped_column(String)
+    command: Mapped[str] = mapped_column(Text, default="")
+    workdir: Mapped[str] = mapped_column(String, default="")
+    clean: Mapped[bool] = mapped_column(Boolean, default=True)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, default=600)
+    position: Mapped[float] = mapped_column(Float)
+
+
+class _GateResult(_Base):
+    """Mirrors `kanban_gate_results` in contrib/kanban/sql/schema.sql."""
+
+    __tablename__ = "kanban_gate_results"
+
+    conversation_id: Mapped[str] = mapped_column(String, primary_key=True)
+    gate_id: Mapped[str] = mapped_column(String, primary_key=True, index=True)
+    state: Mapped[str] = mapped_column(String)
+    detail: Mapped[str] = mapped_column(Text, default="")
+    commit: Mapped[str] = mapped_column(String, default="")
+    updated_by: Mapped[str] = mapped_column(String)
+    updated_at: Mapped[str] = mapped_column(String)
+
+
 class _CardTag(_Base):
     """Mirrors `kanban_card_tags` in contrib/kanban/sql/schema.sql."""
 
@@ -169,6 +203,39 @@ class Skill:
 
 
 @dataclass(frozen=True)
+class Gate:
+    """A check a card must pass before the agent moves it on from `stage`."""
+
+    id: str
+    stage: str
+    kind: str
+    name: str
+    position: float = 0.0
+    command: str = ""
+    workdir: str = ""
+    clean: bool = True
+    timeout_seconds: int = 600
+
+    def payload(self) -> dict:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class GateResult:
+    """Where a card stands on one gate."""
+
+    gate: str
+    state: str
+    detail: str = ""
+    commit: str = ""
+    updated_by: str = ""
+    updated_at: str = ""
+
+    def payload(self) -> dict:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class Place:
     """Where a folder sits on a board: the board root has no stage."""
 
@@ -198,6 +265,8 @@ class BoardView:
     tags: dict[str, list[str]] = field(default_factory=dict)
     details: dict[str, Details] = field(default_factory=dict)
     blockers: dict[str, list[str]] = field(default_factory=dict)
+    # Ids of the gates each card awaits the user's approval on.
+    pending: dict[str, list[str]] = field(default_factory=dict)
 
 
 def now_iso() -> str:
@@ -349,12 +418,18 @@ class KanbanStore:
             return [(b, stages[b], tags[b], skills[b]) for b in boards]
 
     async def save_board(
-        self, board_id: str, stages: list[Stage], tags: list[Tag], skills: list[Skill] | None = None
+        self,
+        board_id: str,
+        stages: list[Stage],
+        tags: list[Tag],
+        skills: list[Skill] | None = None,
+        gates: list[Gate] | None = None,
     ) -> list[Tag]:
-        """Make a board's stages, tags and skills these, in one transaction; a tag or skill without an id is new.
+        """Make a board's stages, tags, skills and gates these, in one transaction; one without an id is new.
 
-        Stages, tags and skills not listed are deleted, and deleted tags come off every card.
-        `skills` None leaves them as they are. Returns the tags as stored, new ones with their ids.
+        Stages, tags, skills and gates not listed are deleted, deleted tags come off every card, and
+        a deleted stage takes its gates. `skills` or `gates` None leaves them as they are. Returns
+        the tags as stored, new ones with their ids.
         """
         async with self._session() as s, s.begin():
             have = {r.folder_id: r for r in (await s.execute(select(_Stage).where(_Stage.board_id == board_id))).scalars()}
@@ -382,7 +457,31 @@ class KanbanStore:
                 out.append(_tag(row))
             if skills is not None:
                 await self._write_skills(s, board_id, skills)
+            if gates is not None:
+                await self._write_gates(s, board_id, gates)
+            # A stage that went takes its gates.
+            gone_gates = select(_Gate.id).where(_Gate.board_id == board_id, _Gate.stage_id.not_in(keep))
+            await s.execute(delete(_GateResult).where(_GateResult.gate_id.in_(gone_gates)))
+            await s.execute(delete(_Gate).where(_Gate.board_id == board_id, _Gate.stage_id.not_in(keep)))
             return out
+
+    @staticmethod
+    async def _write_gates(s, board_id: str, gates: list[Gate]) -> None:
+        have = {r.id: r for r in (await s.execute(select(_Gate).where(_Gate.board_id == board_id))).scalars()}
+        keep = [g.id for g in gates if g.id in have]
+        gone = [i for i in have if i not in keep]
+        await s.execute(delete(_GateResult).where(_GateResult.gate_id.in_(gone)))
+        await s.execute(delete(_Gate).where(_Gate.id.in_(gone)))
+        for g in gates:
+            row = have.get(g.id)
+            if row is None:
+                row = _Gate(id=str(uuid.uuid4()), board_id=board_id)
+                s.add(row)
+            elif (row.kind, row.command, row.workdir, row.clean) != (g.kind, g.command, g.workdir, g.clean):
+                # What passed before is no longer what the gate checks.
+                await s.execute(delete(_GateResult).where(_GateResult.gate_id == row.id))
+            row.stage_id, row.kind, row.name, row.position = g.stage, g.kind, g.name, g.position
+            row.command, row.workdir, row.clean, row.timeout_seconds = g.command, g.workdir, g.clean, g.timeout_seconds
 
     async def save_skills(self, board_id: str, skills: list[Skill]) -> None:
         """Make a board's skills these, leaving its stages and tags; a skill without an id is new."""
@@ -400,6 +499,46 @@ class KanbanStore:
                 row = _Skill(id=str(uuid.uuid4()), board_id=board_id)
                 s.add(row)
             row.name, row.body, row.position = k.name, k.body, k.position
+
+    async def gates(self, board_id: str) -> list[Gate]:
+        """A board's gates, in board order within each stage."""
+        async with self._read() as s:
+            rows = await s.execute(
+                select(_Gate).where(_Gate.board_id == board_id).order_by(_Gate.position, _Gate.id)
+            )
+            return [_gate(r) for r in rows.scalars()]
+
+    async def gate_results(self, conversation_id: str) -> dict[str, GateResult]:
+        """Where a card stands on each gate it has met, by gate id."""
+        async with self._read() as s:
+            rows = await s.execute(select(_GateResult).where(_GateResult.conversation_id == conversation_id))
+            return {r.gate_id: _result(r) for r in rows.scalars()}
+
+    async def put_result(
+        self, conversation_id: str, gate_id: str, *, state: str, by: str, detail: str = "", commit: str = "",
+        now: str | None = None,
+    ) -> GateResult:
+        """Record a card's standing on a gate, replacing what was there."""
+        async with self._session() as s, s.begin():
+            row = await s.get(_GateResult, (conversation_id, gate_id))
+            if row is None:
+                row = _GateResult(conversation_id=conversation_id, gate_id=gate_id)
+                s.add(row)
+            row.state, row.detail, row.commit = state, detail[-MAX_GATE_DETAIL_CHARS:], commit
+            row.updated_by, row.updated_at = by, now or now_iso()
+            await s.flush()
+            return _result(row)
+
+    async def clear_results(self, conversation_id: str, gate_ids: list[str]) -> None:
+        """Forget a card's standing on these gates, e.g. once it has moved past them."""
+        if not gate_ids:
+            return
+        async with self._session() as s, s.begin():
+            await s.execute(
+                delete(_GateResult).where(
+                    _GateResult.conversation_id == conversation_id, _GateResult.gate_id.in_(gate_ids)
+                )
+            )
 
     async def stages(self, board_id: str) -> list[Stage]:
         """A board's stages in board order."""
@@ -423,6 +562,9 @@ class KanbanStore:
             await s.execute(delete(_CardTag).where(_CardTag.tag_id.in_(tags)))
             await s.execute(delete(_Tag).where(_Tag.board_id == folder_id))
             await s.execute(delete(_Skill).where(_Skill.board_id == folder_id))
+            gates = select(_Gate.id).where(_Gate.board_id == folder_id)
+            await s.execute(delete(_GateResult).where(_GateResult.gate_id.in_(gates)))
+            await s.execute(delete(_Gate).where(_Gate.board_id == folder_id))
             return True
 
     async def blockers(self, conversation_id: str) -> list[str]:
@@ -553,12 +695,33 @@ class KanbanStore:
             )
             for key, blocker in edges:
                 out.blockers.setdefault(key, []).append(blocker)
+            pending = await s.execute(
+                select(_GateResult.conversation_id, _GateResult.gate_id)
+                .where(_GateResult.conversation_id.in_(keys), _GateResult.state == "pending")
+            )
+            for key, gate in pending:
+                out.pending.setdefault(key, []).append(gate)
         return out
 
 
 def _details(row: _Details) -> Details:
     return Details(
         description=row.description or "", priority=row.priority or 0, updated_by=row.updated_by, updated_at=row.updated_at
+    )
+
+
+def _gate(row: _Gate) -> Gate:
+    return Gate(
+        id=row.id, stage=row.stage_id, kind=row.kind, name=row.name, position=row.position,
+        command=row.command or "", workdir=row.workdir or "", clean=bool(row.clean),
+        timeout_seconds=row.timeout_seconds or 600,
+    )
+
+
+def _result(row: _GateResult) -> GateResult:
+    return GateResult(
+        gate=row.gate_id, state=row.state, detail=row.detail or "", commit=row.commit or "",
+        updated_by=row.updated_by, updated_at=row.updated_at,
     )
 
 

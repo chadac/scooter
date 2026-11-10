@@ -1,7 +1,8 @@
-h1:4Bb7duDm4JH89dRAI7FzMXOwsf86v8Sn1UklRuY1tfY=
+h1:s5ZZmRzQ/zAemNdmuNZk76zZS2Ozb2Ws/a9dqcXWnbA=
 20261106220000_create_kanban.sql h1:GCUgbCy8uwlY+5mCTr6/oFAhnubceWRrl3pzY6UuMoc=
 20261107045247_add_kanban_stages.sql h1:Lg1dnLN7GE29YxdnLVrzidT0pBLlMEG5U+iuiQ0wVcM=
 20261107162219_add_kanban_blockers.sql h1:byzWz9qgd7Bs5nvCkhSRTQH0xfMu9DBhnoNPRKdS7ro=
 20261107171325_add_kanban_tags.sql h1:ebE0WSZ+0b+r0Lrx/Q31+LjAnKDg4qTwW242chLxvJg=
 20261107174049_add_kanban_card_details.sql h1:ePx4NRshZiZSpFDbllSUW0+uAOKYTSq73M9CFTHkXP0=
 20261109211540_add_kanban_skills.sql h1:bgzMSm8dCGmTek8voIyQ4aOW33Z5E3d+r3CbardBnA8=
+20261110173449_add_kanban_gates.sql h1:mRva/ElT+3zTxwzI1+UtcNgN+KAamXZh0MO1XGMUGvg=

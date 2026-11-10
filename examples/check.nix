@@ -1522,7 +1522,7 @@ let
   };
   stopHook = enable: { scooter.agent.hooks.nag = { inherit enable; event = "Stop"; command = "exit 0"; userCanDisable = true; }; };
   hookProblems =
-    (if hookIds { } == [ "name-conversation" "kanban.prompt-submit" "kanban.session-start" "kanban.stop" ] then [ ] else [ "AGENT_HOOKS_JSON has undeclared hooks: ${builtins.toJSON (hookIds { })}" ])
+    (if hookIds { } == [ "name-conversation" "kanban.gate" "kanban.prompt-submit" "kanban.session-start" "kanban.stop" ] then [ ] else [ "AGENT_HOOKS_JSON has undeclared hooks: ${builtins.toJSON (hookIds { })}" ])
     ++ (let d = hooksOf (hostEnvOf { }); in
         if d != [ ] && ((builtins.head d).when or null) == "untitled" then [ ]
         else [ "the default name-conversation hook lost its `when = untitled` pre-filter" ])

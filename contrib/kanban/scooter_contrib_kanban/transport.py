@@ -2,10 +2,12 @@
 
     GET    /card?folder=<id>&since=<t>             this conversation's card and stage, if the folder is on a board (hooks)
     GET    /skills                                 the skills of this conversation's board, as a skill provider prints them
+    GET    /gates/run?stage=<name>                 the command gates this conversation's move to that stage must pass (the gate hook)
+    POST   /gates/runs                             {runs: [{gate, passed, output?, commit?}]}: the gate hook records what it ran
     GET    /user/boards                            the user's boards and their stages (the view, via /contrib-api)
     POST   /user/boards                            {name}: a new board, with the default stages
     PATCH  /user/boards/{board}                    {name}: rename a board
-    PUT    /user/boards/{board}                    {stages: [{id?, name}], tags: [{id?, name, color?}], skills?: [{id?, name, body}]}: save the board's stages, tags and skills at once; a dropped stage's cards move to the first
+    PUT    /user/boards/{board}                    {stages: [{id?, name}], tags: [{id?, name, color?}], skills?: [{id?, name, body}], gates?: [{id?, stage, kind, name, command?, workdir?, clean?, timeout_seconds?}]}: save the board at once; a dropped stage's cards move to the first
     DELETE /user/boards/{board}                    delete a board and its stages; its conversations stay, unfiled
     POST   /user/boards/{board}/cards              {conversations}: those cards on the board, as GET /conversation/{key}/card shows one
     GET    /conversation/{key}/card                one card, its blockers, tag ids and priority (the board, via the conversation relay)
@@ -14,6 +16,7 @@
     PUT    /conversation/{key}/card/blockers       {blocked_by: [conversation id]}: the user replaces the card's blockers
     GET    /conversation/{key}/details             the card's description, priority, blockers and the cards it blocks
     PATCH  /conversation/{key}/details             {description?, priority?}: the user edits them
+    PUT    /conversation/{key}/gates/{gate}        {decision: approve|reject, comment?}: the user answers an approval gate
 
 /user/* and /conversation/* are reached only through the agent-host's relays, which
 name the user and have already checked they may see the conversation. Every board
@@ -34,8 +37,8 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from scooter_broker_lib.types import AuthDependency, Identity, Provider, Transport
 from scooter_broker_lib.user import user_identity
 
-from .boards import MAX_READ_CARDS, BoardError, Blocker, Boards, skill_file, skill_slug
-from .store import Card, Details, KanbanStore, Skill, Stage, Tag
+from .boards import MAX_READ_CARDS, BoardError, Blocker, Boards, gate_line, skill_file, skill_slug
+from .store import Card, Details, Gate, GateResult, KanbanStore, Skill, Stage, Tag
 
 # Folder and tag ids are URL-safe: UUIDs, or ids a folder service chose.
 _FOLDER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
@@ -68,6 +71,7 @@ def view(
     blockers: list[Blocker] | None = None,
     details: Details | None = None,
     skills: list[Skill] | None = None,
+    gates: list[tuple[Gate, GateResult | None]] | None = None,
 ) -> dict:
     """A card on a board, as the hooks and the agent tools read it."""
     return {
@@ -82,9 +86,19 @@ def view(
         "details": (details or Details()).payload(),
         # The agent's names for the board's skills, which the skill provider offers it.
         "skills": [skill_slug(k.name) for k in skills or []],
+        # What the card must pass to leave its stage, and how it stands on each.
+        "gates": [gate_payload(g, r) for g, r in gates or []],
         "stale": is_stale(card, stale_after, now, since),
         # The broker's clock, so a hook marks a run's start without trusting its own.
         "now": now.isoformat(),
+    }
+
+
+def gate_payload(g: Gate, r: GateResult | None) -> dict:
+    return {
+        "id": g.id, "name": g.name, "kind": g.kind, "command": g.command, "workdir": g.workdir,
+        "state": r.state if r else "", "detail": r.detail if r else "", "commit": r.commit if r else "",
+        "updated_at": r.updated_at if r else "", "line": gate_line(g, r),
     }
 
 
@@ -184,6 +198,7 @@ class Kanban(Transport):
                 tags = await _boards().tag_view(key, place.board)
                 details = await _store().details(key)
                 skills = await _store().skills(place.board)
+                gates = await _boards().gate_view(key, place.board, stage)
             return view(
                 card,
                 stages,
@@ -195,7 +210,44 @@ class Kanban(Transport):
                 blockers=blockers,
                 details=details,
                 skills=skills,
+                gates=gates,
             )
+
+        @router.get("/gates/run")
+        async def gates_to_run(stage: str = "", identity: Identity = Depends(authed)) -> dict:
+            """The gate hook's list: what to run before the agent's move to `stage`; none off a board."""
+            key = identity.conversation_id
+            if not key:
+                raise HTTPException(status_code=403, detail="a conversation identity is required")
+            try:
+                _, gates = await _boards().gates_to_run(key, stage)
+            except BoardError as e:
+                if e.status in (404, 409):
+                    return {"gates": []}
+                raise _http(e) from None
+            return {"gates": [
+                {"id": g.id, "name": g.name, "command": g.command, "workdir": g.workdir, "clean": g.clean,
+                 "timeout_seconds": g.timeout_seconds}
+                for g in gates
+            ]}
+
+        @router.post("/gates/runs")
+        async def record_runs(body: dict = Body(...), identity: Identity = Depends(authed)) -> dict:
+            key = identity.conversation_id
+            if not key:
+                raise HTTPException(status_code=403, detail="a conversation identity is required")
+            runs = body.get("runs")
+            if not isinstance(runs, list) or not all(
+                isinstance(r, dict) and isinstance(r.get("gate"), str) and isinstance(r.get("passed"), bool)
+                and isinstance(r.get("output", ""), str) and isinstance(r.get("commit", ""), str)
+                for r in runs
+            ):
+                raise HTTPException(status_code=400, detail="runs must be a list of {gate, passed, output?, commit?}")
+            try:
+                results = await _boards().record_runs(key, runs)
+            except BoardError as e:
+                raise _http(e) from None
+            return {"results": [r.payload() for r in results]}
 
         @router.get("/skills")
         async def own_skills(identity: Identity = Depends(authed)) -> dict:
@@ -242,6 +294,18 @@ class Kanban(Transport):
                     raise HTTPException(status_code=400, detail=f"{key} ids must be ids")
             return items
 
+        def _gate(g: dict) -> Gate:
+            stage, kind = g.get("stage"), g.get("kind")
+            command, workdir = g.get("command", ""), g.get("workdir", "")
+            clean, timeout = g.get("clean", True), g.get("timeout_seconds", 600)
+            if not isinstance(stage, str) or not isinstance(kind, str):
+                raise HTTPException(status_code=400, detail="each gate needs a stage id and a kind")
+            if not isinstance(command, str) or not isinstance(workdir, str) or not isinstance(clean, bool):
+                raise HTTPException(status_code=400, detail="a gate's command and workdir are strings, clean a boolean")
+            if isinstance(timeout, bool) or not isinstance(timeout, int):
+                raise HTTPException(status_code=400, detail="a gate's timeout_seconds is a whole number")
+            return Gate(g.get("id", ""), stage, kind, g["name"], 0.0, command, workdir, clean, timeout)
+
         @router.put("/user/boards/{board}")
         async def save_board(board: str, body: dict = Body(...), owner: str = user) -> dict:
             stages = [Stage(s.get("id", ""), s["name"], 0.0) for s in _items(body, "stages")]
@@ -252,8 +316,11 @@ class Kanban(Transport):
                 if not all(isinstance(k.get("body"), str) for k in items):
                     raise HTTPException(status_code=400, detail="each skill needs a body")
                 skills = [Skill(k.get("id", ""), k["name"], k["body"], 0.0) for k in items]
+            gates = None
+            if "gates" in body:
+                gates = [_gate(g) for g in _items(body, "gates")]
             try:
-                return {"board": await _boards().save(owner, _folder(board), stages, tags, skills)}
+                return {"board": await _boards().save(owner, _folder(board), stages, tags, skills, gates)}
             except BoardError as e:
                 raise _http(e) from None
 
@@ -285,11 +352,13 @@ class Kanban(Transport):
                     raise _http(e) from None
                 tags = await _store().card_tags(key)
                 details = await _store().details(key)
+                results = await _store().gate_results(key)
             return {
                 "card": card.payload() if card else None,
                 "blockers": [b.payload() for b in blockers],
                 "tags": tags,
                 "priority": details.payload()["priority"],
+                "awaiting": [g for g, r in results.items() if r.state == "pending"],
             }
 
         @router.put("/conversation/{key}/card")
@@ -338,10 +407,13 @@ class Kanban(Transport):
                 except BoardError as e:
                     raise _http(e) from None
                 details = await _store().details(key)
+                at = await _boards().stage_of_card(key, owner)
+                gates = await _boards().gate_view(key, *at) if at else []
             return {
                 **details.payload(),
                 "blocked_by": [b.payload() for b in blocked_by],
                 "blocking": [b.payload() for b in blocking],
+                "gates": [gate_payload(g, r) for g, r in gates],
             }
 
         @router.get("/conversation/{key}/details")
@@ -358,6 +430,16 @@ class Kanban(Transport):
             if description is None and priority is None:
                 raise HTTPException(status_code=400, detail="description or priority is required")
             await _do(_boards().set_details(key, by="user", description=description, priority=priority, owner=owner))
+            return await _details(key, owner)
+
+        @router.put("/conversation/{key}/gates/{gate}")
+        async def decide_gate(key: str, gate: str, body: dict = Body(...), owner: str = user) -> dict:
+            decision, comment = body.get("decision"), body.get("comment", "")
+            if decision not in ("approve", "reject"):
+                raise HTTPException(status_code=400, detail="decision must be approve or reject")
+            if not isinstance(comment, str):
+                raise HTTPException(status_code=400, detail="comment must be a string")
+            await _do(_boards().decide(owner, key, _folder(gate), approve=decision == "approve", comment=comment))
             return await _details(key, owner)
 
         return router

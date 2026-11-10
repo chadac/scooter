@@ -1258,3 +1258,174 @@ async def test_the_agent_s_bad_board_skills_are_refused(app, boards, folders, st
     folders.placements[("alice", "conv-1")] = ""
     assert (await mcp_tools.kanban_set_skill(name="s0", body="y", ctx=_ctx())).is_error
     assert {k.body for k in await store.skills(board["folder"])} == {"x"}
+
+
+# --- gates -------------------------------------------------------------------------
+
+async def _gated(app, board: dict, gates: list[dict]) -> dict:
+    """Save `gates` on `board`, each naming its stage by label; returns the saved board."""
+    body = {
+        "stages": _kept(board), "tags": [],
+        "gates": [{**g, "stage": _stage(board, g["stage"])} for g in gates],
+    }
+    async with as_(app, user="alice") as c:
+        r = await c.put(f"/kanban/user/boards/{board['folder']}", json=body)
+    assert r.status_code == 200, r.text
+    return r.json()["board"]
+
+
+def _gate_id(board: dict, name: str) -> str:
+    return next(g["id"] for g in board["gates"] if g["name"] == name)
+
+
+async def _hook_runs(app, key: str, stage: str) -> list[dict]:
+    async with as_(app, conversation=key) as c:
+        r = await c.get("/kanban/gates/run", params={"stage": stage})
+    assert r.status_code == 200, r.text
+    return r.json()["gates"]
+
+
+async def _hook_records(app, key: str, runs: list[dict]):
+    async with as_(app, conversation=key) as c:
+        return await c.post("/kanban/gates/runs", json={"runs": runs})
+
+
+async def test_a_board_saves_and_lists_its_gates(app):
+    board = await _board(app)
+    saved = await _gated(app, board, [
+        {"stage": "In progress", "kind": "command", "name": " Unit tests ", "command": "just test", "workdir": "/scooter/"},
+        {"stage": "Design", "kind": "approval", "name": "Design OK", "command": "ignored"},
+    ])
+    gates = {g["name"]: g for g in saved["gates"]}
+    assert gates["Unit tests"]["workdir"] == "scooter" and gates["Unit tests"]["clean"] is True
+    assert gates["Design OK"]["command"] == "" and gates["Design OK"]["stage"] == _stage(board, "Design")
+    # Dropping a stage drops its gates.
+    async with as_(app, user="alice") as c:
+        r = await c.put(f"/kanban/user/boards/{board['folder']}", json={
+            "stages": [s for s in _kept(board) if s["name"] != "In progress"], "tags": [],
+        })
+    assert [g["name"] for g in r.json()["board"]["gates"]] == ["Design OK"]
+
+
+async def test_bad_gates_are_refused(app):
+    board = await _board(app)
+    design = _stage(board, "Design")
+    bad = [
+        {"stage": "nope", "kind": "approval", "name": "x"},
+        {"stage": design, "kind": "vibes", "name": "x"},
+        {"stage": design, "kind": "approval", "name": " "},
+        {"stage": design, "kind": "command", "name": "x"},
+        {"stage": design, "kind": "command", "name": "x", "command": "t", "workdir": "../etc"},
+        {"stage": design, "kind": "command", "name": "x", "command": "t", "timeout_seconds": 1},
+        {"stage": design, "kind": "command", "name": "x", "command": "t", "timeout_seconds": True},
+        {"stage": design, "kind": "approval", "name": "x", "id": "unknown"},
+    ]
+    async with as_(app, user="alice") as c:
+        for g in bad:
+            r = await c.put(f"/kanban/user/boards/{board['folder']}", json={"stages": _kept(board), "tags": [], "gates": [g]})
+            assert r.status_code == 400, (g, r.text)
+
+
+async def test_an_approval_gate_asks_the_user_and_lets_the_card_on_once_approved(app, boards, folders, store):
+    sent = Sent()
+    boards.send = sent
+    board = await _cards(app, boards, folders, "api")
+    board = await _gated(app, board, [{"stage": "Design", "kind": "approval", "name": "Design OK"}])
+    gate = _gate_id(board, "Design OK")
+    got = await mcp_tools.kanban_get_status(ctx=_ctx("thread-api"))
+    assert 'must pass: "Design OK" (the user\'s approval)' in got.text
+    out = await mcp_tools.kanban_set_status(column="In progress", ctx=_ctx("thread-api"))
+    assert out.is_error and "needs the user's approval" in out.text and "end your turn" in out.text
+    assert folders.placements[("alice", "conv-api")] == _stage(board, "Design")
+    # The board shows the request.
+    async with as_(app, user="alice") as c:
+        cards = (await c.post(f"/kanban/user/boards/{board['folder']}/cards", json={"conversations": ["conv-api"]})).json()
+        assert cards["cards"]["conv-api"]["awaiting"] == [gate]
+        details = (await c.get("/kanban/conversation/key-api/details")).json()
+        assert [(g["name"], g["state"]) for g in details["gates"]] == [("Design OK", "pending")]
+        r = await c.put(f"/kanban/conversation/key-api/gates/{gate}", json={"decision": "approve", "comment": "ship it"})
+        assert r.status_code == 200 and r.json()["gates"][0]["state"] == "approved"
+    assert [c for c, _ in sent.messages] == ["conv-api"] and "approved" in sent.messages[0][1]
+    assert not (await mcp_tools.kanban_set_status(column="In progress", ctx=_ctx("thread-api"))).is_error
+    # The approval was used up: back in Design, the card meets the gate again.
+    assert await store.gate_results("key-api") == {}
+    assert not (await mcp_tools.kanban_set_status(column="Design", ctx=_ctx("thread-api"))).is_error
+    assert (await mcp_tools.kanban_set_status(column="Review", ctx=_ctx("thread-api"))).is_error
+
+
+async def test_a_rejection_tells_the_agent_why_and_asking_again_re_requests(app, boards, folders, store):
+    sent = Sent()
+    boards.send = sent
+    board = await _cards(app, boards, folders, "api")
+    board = await _gated(app, board, [{"stage": "Design", "kind": "approval", "name": "Design OK"}])
+    gate = _gate_id(board, "Design OK")
+    await mcp_tools.kanban_set_status(column="In progress", ctx=_ctx("thread-api"))
+    async with as_(app, user="alice") as c:
+        r = await c.put(f"/kanban/conversation/key-api/gates/{gate}", json={"decision": "reject", "comment": "needs an API sketch"})
+        assert r.status_code == 200
+        assert (await c.put(f"/kanban/conversation/key-api/gates/{gate}", json={"decision": "maybe"})).status_code == 400
+        assert (await c.put("/kanban/conversation/key-api/gates/nope", json={"decision": "approve"})).status_code == 404
+    assert '"needs an API sketch"' in sent.messages[0][1]
+    assert (await mcp_tools.kanban_set_status(column="In progress", ctx=_ctx("thread-api"))).is_error
+    assert (await store.gate_results("key-api"))[gate].state == "pending"
+    async with as_(app, user="bob") as c:
+        r = await c.put(f"/kanban/conversation/key-api/gates/{gate}", json={"decision": "approve"})
+        assert r.status_code == 409
+
+
+async def test_a_command_gate_needs_a_fresh_pass_from_the_hook(app, boards, folders, store):
+    board = await _cards(app, boards, folders, "api", stage="In progress")
+    board = await _gated(app, board, [
+        {"stage": "In progress", "kind": "command", "name": "Unit tests", "command": "just test", "workdir": "scooter"},
+        {"stage": "In progress", "kind": "approval", "name": "Looks right"},
+    ])
+    tests = _gate_id(board, "Unit tests")
+    # The hook is told what to run for a forward move, and nothing for a move back or a no-op.
+    assert [g["name"] for g in await _hook_runs(app, "key-api", "Review")] == ["Unit tests"]
+    assert await _hook_runs(app, "key-api", "Design") == []
+    assert await _hook_runs(app, "key-api", "In progress") == []
+    assert await _hook_runs(app, "key-other", "Review") == []
+    # Without a recorded run, the broker refuses.
+    out = await mcp_tools.kanban_set_status(column="Review", ctx=_ctx("thread-api"))
+    assert out.is_error and "no passing run" in out.text
+    assert (await _hook_records(app, "key-api", [{"gate": tests, "passed": False, "output": "FAILED test_x", "commit": "abc123"}])).status_code == 200
+    out = await mcp_tools.kanban_set_status(column="Review", ctx=_ctx("thread-api"))
+    assert out.is_error and '"Unit tests" failed on abc123' in out.text and "FAILED test_x" in out.text
+    # Approval isn't asked for while a command fails.
+    assert (await store.gate_results("key-api"))[tests].state == "failed"
+    assert len(await store.gate_results("key-api")) == 1
+    await _hook_records(app, "key-api", [{"gate": tests, "passed": True, "commit": "def456"}])
+    out = await mcp_tools.kanban_set_status(column="Review", ctx=_ctx("thread-api"))
+    assert out.is_error and "needs the user's approval" in out.text
+    # A stale pass no longer counts.
+    await store.put_result("key-api", tests, state="passed", by="hook", now=(datetime.now(timezone.utc) - timedelta(hours=1)).isoformat())
+    assert "no passing run" in (await mcp_tools.kanban_set_status(column="Review", ctx=_ctx("thread-api"))).text
+
+
+async def test_the_hook_records_only_its_board_s_command_gates(app, boards, folders):
+    board = await _cards(app, boards, folders, "api")
+    board = await _gated(app, board, [{"stage": "Design", "kind": "approval", "name": "Design OK"}])
+    r = await _hook_records(app, "key-api", [{"gate": _gate_id(board, "Design OK"), "passed": True}])
+    assert r.status_code == 404
+    assert (await _hook_records(app, "key-api", [{"gate": "x", "passed": "yes"}])).status_code == 400
+
+
+async def test_the_user_moves_past_gates(app, boards, folders, store):
+    board = await _cards(app, boards, folders, "api")
+    board = await _gated(app, board, [{"stage": "Design", "kind": "approval", "name": "Design OK"}])
+    await mcp_tools.kanban_set_status(column="Design", ctx=_ctx("thread-api"))
+    await mcp_tools.kanban_set_status(column="Review", ctx=_ctx("thread-api"))
+    async with as_(app, user="alice") as c:
+        r = await c.put("/kanban/conversation/key-api/card", json={"column": _stage(board, "Review")})
+    assert r.status_code == 200
+    # The pending request went with the stage it was for.
+    assert await store.gate_results("key-api") == {}
+
+
+async def test_the_hooks_see_the_stage_s_gates(app, boards, folders):
+    board = await _cards(app, boards, folders, "api")
+    board = await _gated(app, board, [{"stage": "Design", "kind": "command", "name": "Lint", "command": "just lint"}])
+    async with as_(app, conversation="key-api") as c:
+        r = (await c.get("/kanban/card", params={"folder": _stage(board, "Design")})).json()
+        assert [g["line"] for g in r["gates"]] == ['"Lint" (command `just lint`)']
+        assert (await c.get("/kanban/card", params={"folder": _stage(board, "Review")})).json()["gates"] == []
