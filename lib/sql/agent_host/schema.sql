@@ -275,5 +275,24 @@ CREATE TABLE "conversation_authors" (
   "kind"            text   NOT NULL CHECK ("kind" IN ('identity', 'user', 'unknown')),
   "author"          text   NOT NULL,
   "first_at"        bigint NOT NULL, -- epoch ms this author first wrote here
+  "last_at"         bigint NOT NULL, -- epoch ms this author last wrote here
   PRIMARY KEY ("conversation_id", "kind", "author")
 );
+
+-- Authors the owner vouched for, moved out of conversation_authors. A clear covers
+-- text up to last_at, so an author who writes again taints again.
+CREATE TABLE "conversation_author_clears" (
+  "id"              bigint GENERATED ALWAYS AS IDENTITY,
+  "conversation_id" text   NOT NULL,
+  "kind"            text   NOT NULL,
+  "author"          text   NOT NULL,
+  "first_at"        bigint NOT NULL,
+  "last_at"         bigint NOT NULL,
+  "cleared_at"      bigint NOT NULL,
+  "cleared_by"      text   NOT NULL, -- the owner's users.id
+  "via"             text   NOT NULL CHECK ("via" IN ('ui', 'agent')),
+  "reason"          text   NULL, -- the agent's explanation, for an agent request
+  PRIMARY KEY ("id")
+);
+
+CREATE INDEX "conversation_author_clears_by_conversation" ON "conversation_author_clears" ("conversation_id");

@@ -59,3 +59,10 @@ export async function toggleVisibility(s: Session, confirmShared: (msg: string) 
     sessionStore.setVisibility(s.id, current);
   }
 }
+
+/** The confirm text before the owner clears a taint. */
+export const clearTaintWarning = (labels: string[]): string =>
+  "Clear the taint? You vouch for the text these authors wrote:\n\n" +
+  [...new Set(labels)].map((l) => `• ${l}`).join("\n") +
+  "\n\nIt stays in the agent's context and could steer it while it uses your SSH key, commit " +
+  "identity and forge tokens. Anything they write later taints the conversation again.";

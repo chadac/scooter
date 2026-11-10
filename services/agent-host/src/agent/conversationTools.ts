@@ -1,8 +1,8 @@
 /**
- * The conversation_status and make_conversation_private MCP tools. Going private only ever
- * narrows access: an agent may take a shared conversation private so the broker vends its
- * owner's personal credentials, but going back to shared stays an owner-only action in the
- * UI (PATCH /visibility).
+ * The conversation_status, make_conversation_private and request_untaint MCP tools. Going
+ * private only ever narrows access: an agent may take a shared conversation private so the
+ * broker vends its owner's personal credentials, but going back to shared stays an owner-only
+ * action in the UI (PATCH /visibility). Clearing a taint is the owner's too: the agent only asks.
  */
 
 import type { ToolResult } from "./mcpServer.js";
@@ -11,6 +11,8 @@ import type { SandboxResources } from "../session/resources.js";
 import type { Visibility } from "../session/visibility.js";
 import type { SandboxRef } from "../types.js";
 import { formatPodWait, podWaitStatus } from "../exec/podReadiness.js";
+import type { ResolvedAuthor } from "../session/authorStore.js";
+import { describeTaint } from "../session/taint.js";
 
 /** " — but the sandbox pod has not been Ready for 3m" while a readiness wait on this sandbox hasn't succeeded. */
 function podWaitNote(sandbox: SandboxRef | undefined, now: number): string {
@@ -28,6 +30,10 @@ export interface ConversationToolsWiring {
   makePrivate(rootId: string): Promise<void>;
   /** The sandbox's recorded size; absent for a fake sandbox. */
   resources?(rootId: string): Promise<SandboxResources>;
+  /** Authors other than the owner across the tree. */
+  taint?(conversationId: string, owner: string | undefined): Promise<ResolvedAuthor[]>;
+  /** Put a card asking the owner to clear `authors` in the conversation. */
+  requestUntaint?(conversationId: string, authors: ResolvedAuthor[], reason: string): Promise<void>;
 }
 
 const text = (t: string, isError = false): ToolResult => ({
@@ -70,8 +76,9 @@ export async function handleConversationStatus(
     `owner: ${root.owner ?? "(none)"}`,
     `visibility: ${visibility} — ` +
       (visibility === "private"
-        ? "the sandbox acts as the owner (their SSH key and commit identity)"
+        ? "only the owner can see or prompt it"
         : "anyone who can see it may prompt it; no personal credentials (see make_conversation_private)"),
+    ...(visibility === "private" ? [await credentialsLine(deps, self.id, root.owner)] : []),
     `model: ${self.model ?? "(host default)"}`,
     `sandbox: ${root.status}` + podWaitNote(root.sandbox, now),
     `age: ${formatDuration(now - self.createdAt)}; last activity ${formatDuration(now - self.lastActivityAt)} ago`,
@@ -83,6 +90,18 @@ export async function handleConversationStatus(
     lines.push(r ? `size: requests ${side(r.requests)}; limits ${side(r.limits)}` : "size: (unavailable)");
   }
   return text(lines.join("\n"));
+}
+
+/** Whether a private conversation acts as its owner, and if not, who taints it. */
+async function credentialsLine(deps: ConversationToolsWiring, id: string, owner: string | undefined): Promise<string> {
+  if (!deps.taint) return "credentials: the owner's (SSH key, commit identity, forge tokens)";
+  const authors = await deps.taint(id, owner).catch(() => undefined);
+  if (!authors) return "credentials: none — the authors could not be read, so the broker withholds them";
+  if (authors.length === 0) return "credentials: the owner's (SSH key, commit identity, forge tokens)";
+  return (
+    `credentials: none — tainted by ${describeTaint(authors)}. Only the owner can vouch for that ` +
+    "text; call request_untaint to ask them"
+  );
 }
 
 /** make_conversation_private: shared → private, never the reverse. */
@@ -102,7 +121,37 @@ export async function handleMakeConversationPrivate(
   await deps.makePrivate(root.id);
   return text(
     "This conversation is now private: only its owner can see or prompt it, and within a few " +
-      "seconds the sandbox acts as them (their SSH key and commit identity). Only the owner can " +
-      "make it shared again, from the UI.",
+      "seconds the sandbox acts as them (their SSH key and commit identity) unless someone else " +
+      "wrote text here; conversation_status says which. Only the owner can make it shared again, " +
+      "from the UI.",
+  );
+}
+
+/** request_untaint: asks the owner to vouch for tainting authors. */
+export async function handleRequestUntaint(
+  deps: ConversationToolsWiring,
+  conversationId: string,
+  args: { reason?: string },
+): Promise<ToolResult> {
+  const root = rootOf(deps, conversationId);
+  if (!root || !deps.taint || !deps.requestUntaint) return text("Clearing a taint is not available here.", true);
+  if (!root.owner) return text("This conversation has no owner, so nobody can clear its taint.", true);
+  if ((await deps.currentVisibility(root.id)) !== "private") {
+    return text(
+      "This conversation is shared, so anyone who can see it may still prompt it and a clear would not " +
+        "last. Make it private first (make_conversation_private), then ask.",
+      true,
+    );
+  }
+  const reason = args.reason?.trim();
+  if (!reason) return text("Say why you need the owner's credentials in `reason`; the owner reads it.", true);
+  const authors = await deps.taint(conversationId, root.owner).catch(() => undefined);
+  if (!authors) return text("The conversation's authors could not be read; try again shortly.", true);
+  if (authors.length === 0) return text("This conversation is not tainted; it already acts as its owner.");
+  await deps.requestUntaint(conversationId, authors, reason);
+  return text(
+    `Asked the owner to clear the taint from ${describeTaint(authors)}. A card in the conversation ` +
+      "shows them the authors and your reason. You'll get a message with their answer; don't ask again " +
+      "in chat, and carry on with work that doesn't need their credentials meanwhile.",
   );
 }

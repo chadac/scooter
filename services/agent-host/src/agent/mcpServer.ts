@@ -26,7 +26,7 @@ import type { ConversationLink } from "../session/manager.js";
 import { registerWebFetch } from "./agentTools.js";
 import { registerSchedulerTools, type SchedulerToolsWiring } from "./schedulerTools.js";
 import { handleListModels, handleSwitchModel, type ModelToolsWiring } from "./modelTools.js";
-import { handleConversationStatus, handleMakeConversationPrivate, type ConversationToolsWiring } from "./conversationTools.js";
+import { handleConversationStatus, handleMakeConversationPrivate, handleRequestUntaint, type ConversationToolsWiring } from "./conversationTools.js";
 import {
   handleSetConversationTitle,
   MAX_TITLE_LENGTH,
@@ -186,9 +186,10 @@ export async function buildServer(
       {
         title: "Show this conversation's status",
         description:
-          "Show THIS conversation's id, title, owner, visibility (shared or private: whether the " +
-          "sandbox acts as the owner), model, sandbox state and size, age and last activity. Check " +
-          "it before relying on the owner's credentials (SSH key, commit identity).",
+          "Show THIS conversation's id, title, owner, visibility (shared or private), whether the " +
+          "sandbox acts as the owner and, if not, which authors taint it, model, sandbox state and " +
+          "size, age and last activity. Check it before relying on the owner's credentials (SSH " +
+          "key, commit identity, forge tokens).",
         inputSchema: {},
       },
       async () =>
@@ -209,6 +210,25 @@ export async function buildServer(
       async () =>
         handleMakeConversationPrivate(conversation, conversationId) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
     );
+    if (conversation.requestUntaint) {
+      server.registerTool(
+        "request_untaint",
+        {
+          title: "Ask the owner to clear this conversation's taint",
+          description:
+            "Ask the owner to vouch for the text other people wrote in THIS private conversation, so " +
+            "the sandbox acts as them again (SSH key, commit identity, forge tokens). Puts an approval " +
+            "card in the conversation listing those authors and your reason; you get a message with " +
+            "the answer. Only the owner can clear it. Use it when a task needs their credentials and " +
+            "conversation_status or the broker says the conversation is tainted, instead of asking in chat.",
+          inputSchema: {
+            reason: z.string().describe("Why the task needs the owner's credentials; the owner reads this."),
+          },
+        },
+        async (args) =>
+          handleRequestUntaint(conversation, conversationId, args) as Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }>,
+      );
+    }
   }
   if (jobs) {
     server.registerTool(

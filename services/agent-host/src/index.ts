@@ -96,6 +96,14 @@ import { createPgFolderReader } from "./hooks/folderReader.js";
 import { createPgUserHookSettingsStore } from "./hooks/userHookSettingsStore.js";
 import { createMemoryIdentityRegistry, createPgIdentityRegistry } from "./session/identityRegistry.js";
 import { conversationTree, createMemoryAuthorStore, createPgAuthorStore, isOwnText, steeringAuthor, type Author } from "./session/authorStore.js";
+import {
+  answerUntaint as answerUntaintCard,
+  taintingAuthors,
+  UNTAINT_CONTRIB,
+  untaintMessage,
+  type UntaintAnswerDeps,
+  type UntaintRequest,
+} from "./session/taint.js";
 import { mintConvToken } from "./auth/convToken.js";
 import { createMcpEndpoint, resolveConversation } from "./agent/mcpServer.js";
 import { readSandboxFileBase64, IMAGE_MAX_BYTES, type ImageToolsWiring } from "./agent/imageTools.js";
@@ -1343,7 +1351,59 @@ export async function main(
       await sessions.setVisibility(id as SessionId, "private");
     },
     resources: resourceToolsWiring?.currentResources,
+    taint: async (id, owner) => taintingAuthors(await authorStore.listTree(id), owner),
+    requestUntaint: async (id, authors, reason) => {
+      const bridge = sessions.get(id as SessionId)?.bridge;
+      if (!bridge) throw new Error("this conversation has no live run to show the card in");
+      const requestId = `untaint-${randomUUID()}`;
+      const shown: UntaintRequest = {
+        authors: authors.map(({ conversationId, kind, author, lastAt }) => ({ conversationId, kind, author, lastAt })),
+        reason,
+      };
+      bridge.raiseInterrupt({
+        id: requestId,
+        message: untaintMessage(authors, reason),
+        options: [
+          { optionId: "approve", name: "Clear taint", kind: "allow_once" },
+          { optionId: "deny", name: "Keep it", kind: "reject_once" },
+        ],
+        metadata: { contrib: UNTAINT_CONTRIB, requestId, untaint: shown },
+        onAnswer: (optionId, approver) => {
+          if (optionId === null) return;
+          void answerUntaint(id, requestId, optionId, approver ?? { id }).catch((e) => {
+            hostLog.errorWith("untaint answer NOT recorded", e, { conversation_id: id, request_id: requestId });
+            untaintDeps.tell(id, `The owner's answer to your untaint request could not be applied: ${e instanceof Error ? e.message : String(e)}`);
+          });
+        },
+      });
+    },
   };
+
+  /** The tree's owner and visibility, fresh from the store. */
+  const rootAccess = async (id: string) => {
+    if (!sessions.get(id as SessionId)) await sessions.ensureReadable(id as SessionId);
+    let root = sessions.get(id as SessionId);
+    while (root?.parentId) root = sessions.get(root.parentId as SessionId);
+    if (!root) return undefined;
+    return { owner: root.owner, visibility: (await store.readAccess?.(root.id as SessionId))?.visibility ?? root.visibility };
+  };
+  const untaintDeps: UntaintAnswerDeps = {
+    access: rootAccess,
+    events: (id) => collectEventsSafe(store.readEvents(id as SessionId)),
+    store: authorStore,
+    tell: (id, text) =>
+      void sessions
+        .prompt(id as SessionId, text, undefined, undefined, undefined, undefined, undefined, "broker")
+        .catch((e) => hostLog.errorWith("failed to tell the agent the untaint answer", e, { conversation_id: id })),
+  };
+  const answerUntaint = (id: string, requestId: string, optionId: string, approver: ApproverIdentity) =>
+    answerUntaintCard(untaintDeps, id, requestId, optionId, approver);
+
+  /** Untaint cards are answered here; others go to the broker. */
+  const resolveApproval = (sessionId: string, contrib: string, requestId: string, optionId: string, approver: ApproverIdentity) =>
+    contrib === UNTAINT_CONTRIB
+      ? answerUntaint(sessionId, requestId, optionId, approver)
+      : resolveApprovalForBroker(sessionId, contrib, requestId, optionId, approver);
 
   // One HTTP client to the scheduler service, shared by the agent MCP tools and the UI
   // settings proxy, with every call scoped to an owner.
@@ -1628,7 +1688,7 @@ export async function main(
       });
       // Anonymous deployments name the conversation, as a live bridge does.
       return answerApprovalFromLog(approval, entry.interruptId, optionId, approver ?? { id: sessionId }, {
-        relay: (contrib, requestId, verb, who) => resolveApprovalForBroker(sessionId, contrib, requestId, verb, who),
+        relay: (contrib, requestId, verb, who) => resolveApproval(sessionId, contrib, requestId, verb, who),
         settle: async (toolCallId, chosen) => {
           const resolved: AguiEvent = { type: "PERMISSION_RESOLVED", toolCallId, optionId: chosen };
           await store.appendEvent(sessionId as SessionId, resolved);
@@ -1808,8 +1868,12 @@ export async function main(
       sandboxMcpHandler: sandboxMcpProxy ? (req, res, body, name) => sandboxMcpProxy.handle(req, res, body, name) : undefined,
       answerInterrupt: resumeInterrupt,
       // Relay the user's answer to the contrib that asked, shared with the revive re-raise.
-      resolveApproval: resolveApprovalForBroker,
-      canApproveRequest: async (_sessionId, contrib, requestId, approver) => {
+      resolveApproval,
+      canApproveRequest: async (sessionId, contrib, requestId, approver) => {
+        if (contrib === UNTAINT_CONTRIB) {
+          const owner = (await rootAccess(sessionId))?.owner;
+          return { canApprove: !!owner && approver.id === owner };
+        }
         // Per-viewer read-only check of whether this viewer may act on this request, failing
         // closed on any hiccup and defaulting to true when BROKER_URL is unset.
         const cfg = approvalContribs[contrib];

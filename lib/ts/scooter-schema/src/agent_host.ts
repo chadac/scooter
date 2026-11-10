@@ -101,6 +101,26 @@ export const identities = pgTable("identities", {
 	uniqueIndex("identities_provider_external_id").using("btree", table.provider.asc().nullsLast().op("text_ops"), table.externalId.asc().nullsLast().op("text_ops")),
 ]);
 
+export const conversationAuthorClears = pgTable("conversation_author_clears", {
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	id: bigint({ mode: "number" }).primaryKey().generatedAlwaysAsIdentity({ name: "conversation_author_clears_id_seq", startWith: 1, increment: 1, minValue: 1, maxValue: 9223372036854775807, cache: 1 }),
+	conversationId: text("conversation_id").notNull(),
+	kind: text().notNull(),
+	author: text().notNull(),
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	firstAt: bigint("first_at", { mode: "number" }).notNull(),
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	lastAt: bigint("last_at", { mode: "number" }).notNull(),
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	clearedAt: bigint("cleared_at", { mode: "number" }).notNull(),
+	clearedBy: text("cleared_by").notNull(),
+	via: text().notNull(),
+	reason: text(),
+}, (table) => [
+	index("conversation_author_clears_by_conversation").using("btree", table.conversationId.asc().nullsLast().op("text_ops")),
+	check("conversation_author_clears_via_check", sql`via = ANY (ARRAY['ui'::text, 'agent'::text])`),
+]);
+
 export const userConversationMetadata = pgTable("user_conversation_metadata", {
 	owner: text().notNull(),
 	conversationId: text("conversation_id").notNull(),
@@ -130,17 +150,6 @@ export const userHookSettings = pgTable("user_hook_settings", {
 	primaryKey({ columns: [table.owner, table.hookId], name: "user_hook_settings_pkey"}),
 ]);
 
-export const conversationAuthors = pgTable("conversation_authors", {
-	conversationId: text("conversation_id").notNull(),
-	kind: text().notNull(),
-	author: text().notNull(),
-	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
-	firstAt: bigint("first_at", { mode: "number" }).notNull(),
-}, (table) => [
-	primaryKey({ columns: [table.kind, table.conversationId, table.author], name: "conversation_authors_pkey"}),
-	check("conversation_authors_kind_check", sql`kind = ANY (ARRAY['identity'::text, 'user'::text, 'unknown'::text])`),
-]);
-
 export const conversationJobs = pgTable("conversation_jobs", {
 	conversationId: text("conversation_id").notNull(),
 	jobId: text("job_id").notNull(),
@@ -152,6 +161,19 @@ export const conversationJobs = pgTable("conversation_jobs", {
 }, (table) => [
 	index("conversation_jobs_by_conv").using("btree", table.conversationId.asc().nullsLast().op("int8_ops"), table.startedAt.desc().nullsFirst().op("int8_ops")),
 	primaryKey({ columns: [table.jobId, table.conversationId], name: "conversation_jobs_pkey"}),
+]);
+
+export const conversationAuthors = pgTable("conversation_authors", {
+	conversationId: text("conversation_id").notNull(),
+	kind: text().notNull(),
+	author: text().notNull(),
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	firstAt: bigint("first_at", { mode: "number" }).notNull(),
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	lastAt: bigint("last_at", { mode: "number" }).notNull(),
+}, (table) => [
+	primaryKey({ columns: [table.kind, table.conversationId, table.author], name: "conversation_authors_pkey"}),
+	check("conversation_authors_kind_check", sql`kind = ANY (ARRAY['identity'::text, 'user'::text, 'unknown'::text])`),
 ]);
 
 export const conversationEvents = pgTable("conversation_events", {

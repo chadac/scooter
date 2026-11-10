@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import httpx
 
 from scooter_broker_lib.autolink import Link, post_link
-from scooter_broker_lib.owner import OwnerResolver
+from scooter_broker_lib.owner import TAINTED_HINT, OwnerResolver
 from scooter_lib.logging_config import format_error
 
 from . import HANDOFF_SOURCE
@@ -76,7 +76,7 @@ class Spawner:
         if access.visibility == "private" and access.acting_user is None:
             raise SpawnFailed(
                 "handoff refused: this private conversation holds text its owner didn't write. "
-                "Ask the user to start the new conversation themselves."
+                + TAINTED_HINT
             )
         return access.owner or ""
 

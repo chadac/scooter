@@ -960,3 +960,49 @@ export async function promptConversation(config: AgentHostConfig, conversationId
     ctl.abort();
   }
 }
+
+/** One tainting author, as GET /taint returns it. */
+export interface TaintAuthor {
+  conversationId: string;
+  kind: "identity" | "user" | "unknown";
+  author: string;
+  lastAt: number;
+  /** How the owner reads it, e.g. "@someone (github)". */
+  label: string;
+}
+
+/** Who taints a conversation; `authors` is empty when it acts as its owner. */
+export interface TaintView {
+  visibility: "shared" | "private";
+  summary: string;
+  authors: TaintAuthor[];
+}
+
+async function taintRequest(config: AgentHostConfig, conversationId: string, path: string, body?: unknown): Promise<TaintView | null> {
+  const url = `${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(conversationId)}/${path}`;
+  try {
+    const res = await fetch(url, {
+      method: body === undefined ? "GET" : "POST",
+      headers: { ...authHeaders(config), ...(body === undefined ? {} : { "content-type": "application/json" }) },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    if (!res.ok) {
+      console.warn(`[client] ${path} ${conversationId}: HTTP ${res.status}`);
+      return null;
+    }
+    return (await res.json()) as TaintView;
+  } catch (e) {
+    console.warn(`[client] ${path} ${conversationId} failed:`, e);
+    return null;
+  }
+}
+
+/** Who taints the conversation, or null on error. */
+export function getConversationTaint(config: AgentHostConfig, conversationId: string): Promise<TaintView | null> {
+  return taintRequest(config, conversationId, "taint");
+}
+
+/** Clears shown authors; returns what still taints, null on error. */
+export function clearConversationTaint(config: AgentHostConfig, conversationId: string, authors: TaintAuthor[]): Promise<TaintView | null> {
+  return taintRequest(config, conversationId, "taint/clear", { authors });
+}
