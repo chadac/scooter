@@ -522,6 +522,33 @@ class Boards:
         await self.changed_card(key, owner)
         return card
 
+    async def user_request_move(self, key: str, owner: str, column: str) -> Stage:
+        """The user asks the card's agent to move it to `column`, so its gates run on the way.
+
+        The agent's kanban_set_status runs the gate hook in its sandbox, as for its own moves;
+        the card moves only if they pass. Nothing changes here until it does.
+        """
+        if self.send is None:
+            raise BoardError(503, "kanban can't message this conversation's agent")
+        on = await self._board_of(key, owner)
+        if on is None:
+            raise BoardError(409, "this conversation isn't filed on one of your boards")
+        conv, board, _ = on
+        to = next((s for s in await self.stages(board, owner) if s.folder == column), None)
+        if to is None:
+            raise BoardError(400, "column must be a stage of this card's board")
+        try:
+            await self.send(
+                conv.id,
+                f'The user wants this card moved to "{to.name}" on the kanban board, once its gates pass. '
+                f'Call kanban_set_status with column "{to.name}" now: the gate hook runs the checks. If one '
+                "fails, fix what you can, commit, and try again, or tell the user what's in the way.",
+            )
+        except httpx.HTTPError as e:
+            logger.warning("kanban move request failed", extra={"conversation_id": conv.id, "error": str(e)})
+            raise BoardError(502, "couldn't reach this conversation's agent") from None
+        return to
+
     @staticmethod
     def _crossed(stages: list[Stage], at: Stage, to: Stage) -> set[str]:
         """The stages a move from `at` to `to` leaves, whose gates it must pass; none going back."""

@@ -1429,3 +1429,33 @@ async def test_the_hooks_see_the_stage_s_gates(app, boards, folders):
         r = (await c.get("/kanban/card", params={"folder": _stage(board, "Design")})).json()
         assert [g["line"] for g in r["gates"]] == ['"Lint" (command `just lint`)']
         assert (await c.get("/kanban/card", params={"folder": _stage(board, "Review")})).json()["gates"] == []
+
+
+async def test_the_user_asks_the_agent_to_make_a_gated_move(app, boards, folders):
+    sent = Sent()
+    boards.send = sent
+    board = await _cards(app, boards, folders, "api")
+    review = _stage(board, "Review")
+    async with as_(app, user="alice") as c:
+        r = await c.post("/kanban/conversation/key-api/card/request", json={"column": review})
+        assert r.status_code == 200, r.text
+        assert r.json() == {"requested": review}
+        # Not one of this board's stages, or not a stage id at all.
+        assert (await c.post("/kanban/conversation/key-api/card/request", json={"column": "elsewhere"})).status_code == 400
+        assert (await c.post("/kanban/conversation/key-api/card/request", json={"column": 3})).status_code == 400
+    # The agent is asked to call kanban_set_status, which runs the gates; nothing moves yet.
+    assert [c for c, _ in sent.messages] == ["conv-api"]
+    assert 'Call kanban_set_status with column "Review"' in sent.messages[0][1]
+    assert folders.placements[("alice", "conv-api")] == _stage(board, "Design")
+    # Only the owner may ask.
+    async with as_(app, user="bob") as c:
+        assert (await c.post("/kanban/conversation/key-api/card/request", json={"column": review})).status_code == 409
+    assert len(sent.messages) == 1
+
+
+async def test_asking_the_agent_needs_a_way_to_message_it(app, boards, folders):
+    boards.send = None
+    board = await _cards(app, boards, folders, "api")
+    async with as_(app, user="alice") as c:
+        r = await c.post("/kanban/conversation/key-api/card/request", json={"column": _stage(board, "Review")})
+    assert r.status_code == 503

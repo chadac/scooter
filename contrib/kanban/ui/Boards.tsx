@@ -314,6 +314,19 @@ export function pageLane<C extends { id: string; lastActivityAt: number }>(
 }
 
 /** A position strictly between two neighbours; either may be missing. */
+/**
+ * The gates a move from stage `from` to `to` passes, as the broker counts them: every
+ * gate on the stages it leaves behind, so a jump past a stage owes that stage's too. A
+ * move back, or within a stage, passes none.
+ */
+export function gatesOnTheWay<G extends { stage: string }>(stages: Array<{ id: string }>, gates: G[], from: string, to: string): G[] {
+  const at = stages.findIndex((s) => s.id === from);
+  const until = stages.findIndex((s) => s.id === to);
+  if (at < 0 || until <= at) return [];
+  const left = new Set(stages.slice(at, until).map((s) => s.id));
+  return gates.filter((g) => left.has(g.stage));
+}
+
 function between(before?: number, after?: number): number {
   if (before === undefined && after === undefined) return 0;
   if (before === undefined) return after! - 1;
@@ -768,6 +781,29 @@ function Board({
       }
     },
     [cards, pending, lanes, stages, first, folder.name, conversations, stageOf],
+  );
+
+  // The user's move is never gated, but a move past command gates (e.g. the tests) asks
+  // first whether the card's agent should make it instead, so its gate hook runs them.
+  const [checking, setChecking] = useState<CheckAsk | null>(null);
+  const requestMove = useCallback(
+    (id: string, column: string, before?: string) => {
+      const conv = conversations.find((c) => c.id === id);
+      const from = conv ? stageOf(conv) : first;
+      const owed = gatesOnTheWay(savedStages, savedGates, from, column);
+      const commands = owed.filter((g) => g.kind === "command");
+      if (commands.length === 0) return void move(id, column, before);
+      setChecking({
+        id,
+        column,
+        before,
+        title: conv?.title || "This card",
+        stage: stages.find((s) => s.id === column)?.label ?? column,
+        commands,
+        approvals: owed.filter((g) => g.kind === "approval"),
+      });
+    },
+    [conversations, stageOf, first, savedStages, savedGates, stages, move],
   );
 
   const tagsOf = useCallback(
@@ -1245,7 +1281,7 @@ function Board({
                 e.preventDefault();
                 setDragging(null);
                 setDropAt(null);
-                if (id) void move(id, col.id, dropAt?.column === col.id ? dropAt.before : undefined);
+                if (id) requestMove(id, col.id, dropAt?.column === col.id ? dropAt.before : undefined);
               }}
               className={cn(
                 "flex w-64 shrink-0 flex-col rounded-lg bg-muted/40 max-md:w-[85vw] max-md:snap-start",
@@ -1565,7 +1601,7 @@ function Board({
                   note={cards[openConv.id]?.card?.note}
                   updated={updatedLine(cards[openConv.id]?.card)}
                   board={order}
-                  move={(column) => void move(openConv.id, column)}
+                  move={(column) => requestMove(openConv.id, column)}
                   open={openConversation}
                   changed={() => load([openConv.id])}
                   tagField={
@@ -1595,6 +1631,16 @@ function Board({
           </aside>
         )}
       </div>
+      {checking && (
+        <RunChecks
+          ask={checking}
+          move={() => {
+            setChecking(null);
+            void move(checking.id, checking.column, checking.before);
+          }}
+          cancel={() => setChecking(null)}
+        />
+      )}
       {leaving !== null && (
         <SaveChanges
           saving={saving}
@@ -1610,6 +1656,122 @@ function Board({
           cancel={() => setLeaving(null)}
         />
       )}
+    </div>
+  );
+}
+
+/** A move the user asked for that passes command gates, waiting on whether to run them. */
+interface CheckAsk {
+  id: string;
+  column: string;
+  before?: string;
+  title: string;
+  /** The stage it would move to, by name. */
+  stage: string;
+  commands: Gate[];
+  approvals: Gate[];
+}
+
+type CheckPhase =
+  | { at: "ask" }
+  | { at: "asking" }
+  | { at: "asked" }
+  /** `text`: why the agent couldn't be asked. */
+  | { at: "failed"; text: string };
+
+/**
+ * Asks, before the user's move past command gates, whether the card's agent should run them.
+ * Ask the agent messages it to make the move itself: its kanban_set_status runs kanban's gate
+ * hook in its sandbox, and the card moves once they pass. Move anyway moves it now, ungated.
+ */
+function RunChecks({ ask, move, cancel }: { ask: CheckAsk; move(): void; cancel(): void }) {
+  const title = useId();
+  const [phase, setPhase] = useState<CheckPhase>({ at: "ask" });
+
+  const request = async () => {
+    setPhase({ at: "asking" });
+    try {
+      const r = await conversationApi("kanban", ask.id, "card/request", { method: "POST", json: { column: ask.column } });
+      if (!r.ok) {
+        const body = (await r.json().catch(() => null)) as { detail?: string } | null;
+        return setPhase({ at: "failed", text: body?.detail ?? `The agent couldn't be asked (${r.status}).` });
+      }
+      setPhase({ at: "asked" });
+    } catch (e) {
+      setPhase({ at: "failed", text: `The agent couldn't be asked: ${(e as Error).message}` });
+    }
+  };
+
+  const names = (gs: Gate[]) => gs.map((g) => `"${g.name}"`).join(", ");
+  const busy = phase.at === "asking";
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={busy ? undefined : cancel}>
+      <div
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby={title}
+        data-testid="kanban-run-checks"
+        data-phase={phase.at}
+        className="w-[28rem] max-w-[92vw] rounded-lg border bg-background p-4 shadow-lg"
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.key === "Escape" && !busy && cancel()}
+      >
+        <h2 id={title} className="flex items-center gap-1.5 font-medium">
+          <ShieldCheck className="size-4 shrink-0" aria-hidden />
+          Run checks before moving to {ask.stage}?
+        </h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          To move on, <span className="font-medium text-foreground">{ask.title}</span> must pass {names(ask.commands)}. The
+          card's agent can run {ask.commands.length === 1 ? "it" : "them"} in its sandbox and move the card once{" "}
+          {ask.commands.length === 1 ? "it passes" : "they pass"}.
+          {ask.approvals.length > 0 && <> Moving it anyway counts as the approval for {names(ask.approvals)}.</>}
+        </p>
+        <ul className="mt-2 space-y-1 text-xs" data-testid="kanban-run-checks-gates">
+          {ask.commands.map((g) => (
+            <li key={g.id} className="truncate">
+              <span className="font-medium">{g.name}</span>{" "}
+              <code className="text-muted-foreground">
+                {g.command}
+                {g.workdir ? ` in ${g.workdir}` : ""}
+              </code>
+            </li>
+          ))}
+        </ul>
+        {phase.at === "asked" && (
+          <p className="mt-3 text-sm" role="status" data-testid="kanban-run-checks-asked">
+            Asked the agent. The card moves when the checks pass; if they don't, the agent says why in the chat.
+          </p>
+        )}
+        {phase.at === "failed" && (
+          <p
+            role="alert"
+            data-testid="kanban-run-checks-output"
+            className="mt-3 rounded border border-destructive/40 bg-destructive/5 p-2 text-xs"
+          >
+            {phase.text}
+          </p>
+        )}
+        <div className="mt-4 flex justify-end gap-2">
+          {phase.at === "asked" ? (
+            <Button size="sm" autoFocus onClick={cancel}>
+              Done
+            </Button>
+          ) : (
+            <>
+              <Button size="sm" variant="ghost" disabled={busy} onClick={cancel}>
+                Cancel
+              </Button>
+              <Button size="sm" variant="outline" disabled={busy} onClick={move}>
+                Move anyway
+              </Button>
+              <Button size="sm" autoFocus disabled={busy} onClick={() => void request()}>
+                {busy ? <Spinner /> : null}
+                Ask the agent
+              </Button>
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

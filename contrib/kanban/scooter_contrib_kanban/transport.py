@@ -373,6 +373,19 @@ class Kanban(Transport):
                 raise _http(e) from None
             return {"card": card.payload()}
 
+        # Asks the card's agent to make the move, so its gates run first (the user's own
+        # moves skip them).
+        @router.post("/conversation/{key}/card/request")
+        async def request_move(key: str, body: dict = Body(...), owner: str = user) -> dict:
+            column = body.get("column")
+            if not isinstance(column, str) or not _FOLDER.match(column):
+                raise HTTPException(status_code=400, detail="column must be one of your boards' stage ids")
+            try:
+                to = await _boards().user_request_move(key, owner, column)
+            except BoardError as e:
+                raise _http(e) from None
+            return {"requested": to.folder}
+
         @router.put("/conversation/{key}/card/tags")
         async def tag_card(key: str, body: dict = Body(...), owner: str = user) -> dict:
             tags, board, create = body.get("tags"), body.get("board", ""), body.get("create", [])

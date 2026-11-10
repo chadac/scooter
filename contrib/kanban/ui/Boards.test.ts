@@ -4,7 +4,7 @@
 
 import { describe, it, expect } from "vitest";
 
-import { pageLane, skillSlug } from "./Boards.js";
+import { gatesOnTheWay, pageLane, skillSlug } from "./Boards.js";
 
 const card = (id: string, lastActivityAt: number) => ({ id, lastActivityAt });
 
@@ -37,5 +37,26 @@ describe("skillSlug", () => {
     expect(skillSlug("  UI / Layout ")).toBe("board-ui-layout");
     expect(skillSlug("***")).toBe("");
     expect(skillSlug("x".repeat(60)).length).toBeLessThanOrEqual(64);
+  });
+});
+
+describe("gatesOnTheWay", () => {
+  const stages = [{ id: "design" }, { id: "build" }, { id: "review" }, { id: "done" }];
+  const gate = (id: string, stage: string) => ({ id, stage });
+  const gates = [gate("plan-ok", "design"), gate("tests", "build"), gate("lint", "build"), gate("signoff", "review")];
+  const ids = (gs: Array<{ id: string }>) => gs.map((g) => g.id);
+
+  it("owes the gates of the stage a card leaves", () => {
+    expect(ids(gatesOnTheWay(stages, gates, "build", "review"))).toEqual(["tests", "lint"]);
+  });
+
+  it("owes every skipped stage's gates on a jump, but not the target's", () => {
+    expect(ids(gatesOnTheWay(stages, gates, "design", "review"))).toEqual(["plan-ok", "tests", "lint"]);
+  });
+
+  it("owes nothing moving back, within a stage, or from a stage it doesn't know", () => {
+    expect(gatesOnTheWay(stages, gates, "review", "design")).toEqual([]);
+    expect(gatesOnTheWay(stages, gates, "build", "build")).toEqual([]);
+    expect(gatesOnTheWay(stages, gates, "gone", "done")).toEqual([]);
   });
 });
