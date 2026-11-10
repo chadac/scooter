@@ -1190,6 +1190,12 @@ function Board({
                       data-open={open || undefined}
                       data-blocked={waiting.length > 0 || undefined}
                       draggable={tagging !== conv.id}
+                      // Card opens its chat; inner controls keep their clicks.
+                      onClick={(e) => {
+                        if (tagging === conv.id || (e.target as HTMLElement).closest("button, input, a, [role=listbox]")) return;
+                        openConversation(conv.id);
+                        setPanel(true);
+                      }}
                       onDragStart={(e) => {
                         e.dataTransfer.setData(CARD_MIME, conv.id);
                         e.dataTransfer.effectAllowed = "move";
@@ -1206,7 +1212,7 @@ function Board({
                         if (dropAt?.before !== conv.id) setDropAt({ column: col.id, before: conv.id });
                       }}
                       className={cn(
-                        "group rounded-md border bg-background p-2 text-sm shadow-xs",
+                        "group cursor-pointer rounded-md border bg-background p-2 text-sm shadow-xs",
                         open && "ring-2 ring-primary",
                         waiting.length > 0 && "border-dashed bg-muted/40",
                         dragging === conv.id && "opacity-50",
