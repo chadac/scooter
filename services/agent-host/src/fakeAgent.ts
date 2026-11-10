@@ -319,6 +319,33 @@ class FakeAgent implements Agent {
       return { stopReason: "end_turn" };
     }
 
+    // A "~tools" message is a test directive: runs of tool calls around prose, one message each.
+    if (userText.startsWith("~tools")) {
+      const tool = async (title: string, kind: string, rawInput: unknown, out: string) => {
+        const toolCallId = this.nextToolCallId();
+        await u({ sessionUpdate: "tool_call", toolCallId, title, kind, status: "pending", rawInput } as never);
+        await sleep(60);
+        await u({
+          sessionUpdate: "tool_call_update",
+          toolCallId,
+          status: "completed",
+          content: [{ type: "content", content: { type: "text", text: out } }],
+        } as never);
+      };
+      const say = (text: string) => u({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
+      await u({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "Find where the notebook loads its data." } });
+      await tool("grep", "search", { pattern: "read_parquet", path: "/workspace" }, "notebook.py:14: df = pd.read_parquet(SRC)\nnotebook.py:52: ref = pd.read_parquet(REF)");
+      await tool("read_file", "read", { path: "/workspace/notebook.py" }, "import marimo as mo\nimport pandas as pd\n\nSRC = 's3://metrics/daily.parquet'\n…");
+      await tool("bash", "execute", { command: "python -c 'import pandas; print(pandas.__version__)'" }, "2.2.3");
+      await say("The notebook reads two parquet files, and the second one (`REF`) is the slow one:\n\n");
+      await say("- **`SRC`** — daily metrics, ~40 MB, cached after the first run\n- **`REF`** — reference table, ~1.2 GB, re-read on every cell change\n\n");
+      await say("I'll move the `REF` load into its own cell so marimo only re-runs it when the path changes.\n\n");
+      await tool("edit", "edit", { path: "/workspace/notebook.py" }, "Replaced 3 lines.");
+      await tool("bash", "execute", { command: "marimo check notebook.py" }, "ok");
+      await say("Done. Changing a filter now re-runs in **~0.3s** instead of ~9s. Want me to add a cache for `SRC` too?");
+      return { stopReason: "end_turn" };
+    }
+
     // A "~subagent <title>" message is a test directive: spawn a real subagent via the
     // scooter-env MCP tool, whose child sleeps because the host end()s it as soon as its run completes.
     if (userText.startsWith("~subagent")) {

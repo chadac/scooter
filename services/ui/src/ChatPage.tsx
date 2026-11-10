@@ -2,6 +2,7 @@
  * The conversation subpage, `/chat/<id>` (chatRoute.ts): one conversation's thread, composer and
  * pending approvals under a thin header, with no sidebar and no right panel. Embedded beside a
  * sandbox's own service (the marimo wrapper) and opened by the main header's "Pop out chat".
+ * A framing page can ask for compact density with `?density=compact` (density.ts).
  *
  * The page renders the thread only once the server has listed the pinned conversation and it is
  * selected; until then the composer stays hidden, because a send against the placeholder
@@ -10,7 +11,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, Rows4 } from "lucide-react";
 
 import { RuntimeProvider, useConversationInterrupts } from "./RuntimeProvider.js";
 import { ConversationArea } from "./App.js";
@@ -22,6 +23,7 @@ import { ChatSwitcher, stepMember } from "./ChatSwitcher.js";
 import { startSession } from "./sessionActions.js";
 import { appPathFor, CHAT_QUERY, chatQueryId } from "./chatRoute.js";
 import { SCOOTER_MARK } from "./brandMark.js";
+import { CompactContext, densityStore, useDensity } from "./density.js";
 
 // Whether the conversation stream has delivered its first full list, which is what lets
 // "not listed yet" become "not found". Set from main.tsx's onSnapshot.
@@ -204,42 +206,57 @@ function useChatSelection(pathId: string) {
 
 export function ChatPage({ conversationId }: { conversationId: string }) {
   const { activeId, members, select, startNew, starting, error } = useChatSelection(conversationId);
+  const density = useDensity();
+  const compact = density === "compact";
 
   return (
     <RuntimeProvider>
-      <div className="flex h-dvh flex-col" data-testid="chat-page" data-conversation-id={conversationId} data-active-chat={activeId}>
-        <header className="flex h-10 shrink-0 items-center justify-between gap-2 border-b bg-header px-3 text-sm">
-          <div className="flex min-w-0 items-center gap-2">
-            <span className="text-[15px] leading-none" aria-hidden>{SCOOTER_MARK}</span>
-            {members.length > 0 && <ChatSwitcher members={members} activeId={activeId} onSelect={select} onNew={startNew} />}
-            {starting && (
-              <span data-testid="chat-page-starting" className="shrink-0 text-xs text-muted-foreground">
-                Starting session…
-              </span>
+      <CompactContext.Provider value={compact}>
+        <div className="flex h-dvh flex-col" data-testid="chat-page" data-density={density} data-conversation-id={conversationId} data-active-chat={activeId}>
+          <header className="flex h-10 shrink-0 items-center justify-between gap-2 border-b bg-header px-3 text-sm">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="text-[15px] leading-none" aria-hidden>{SCOOTER_MARK}</span>
+              {members.length > 0 && <ChatSwitcher members={members} activeId={activeId} onSelect={select} onNew={startNew} />}
+              {starting && (
+                <span data-testid="chat-page-starting" className="shrink-0 text-xs text-muted-foreground">
+                  Starting session…
+                </span>
+              )}
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                data-testid="chat-page-density"
+                aria-pressed={compact}
+                title="Compact view"
+                aria-label="Compact view"
+                onClick={() => densityStore.set(compact ? "comfortable" : "compact")}
+                className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground aria-pressed:bg-accent aria-pressed:text-foreground"
+              >
+                <Rows4 className="size-4" aria-hidden />
+              </button>
+              <ThemePicker />
+              {/* _top: inside a host's iframe this leaves the host page for the full app. */}
+              <a
+                data-testid="chat-page-open-app"
+                href={appPathFor(activeId)}
+                target="_top"
+                className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                Open in Scooter <ExternalLink className="ms-1 inline size-3.5" aria-hidden />
+              </a>
+            </div>
+          </header>
+          <main className="flex min-h-0 flex-1 flex-col">
+            {error && (
+              <p data-testid="chat-page-error" role="alert" className="shrink-0 border-b bg-destructive/10 px-3 py-1.5 text-xs text-destructive">
+                {error}
+              </p>
             )}
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <ThemePicker />
-            {/* _top: inside a host's iframe this leaves the host page for the full app. */}
-            <a
-              data-testid="chat-page-open-app"
-              href={appPathFor(activeId)}
-              target="_top"
-              className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
-            >
-              Open in Scooter <ExternalLink className="ms-1 inline size-3.5" aria-hidden />
-            </a>
-          </div>
-        </header>
-        <main className="flex min-h-0 flex-1 flex-col">
-          {error && (
-            <p data-testid="chat-page-error" role="alert" className="shrink-0 border-b bg-destructive/10 px-3 py-1.5 text-xs text-destructive">
-              {error}
-            </p>
-          )}
-          <ChatPanel conversationId={activeId} />
-        </main>
-      </div>
+            <ChatPanel conversationId={activeId} />
+          </main>
+        </div>
+      </CompactContext.Provider>
     </RuntimeProvider>
   );
 }

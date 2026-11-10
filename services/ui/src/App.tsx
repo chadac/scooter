@@ -4,7 +4,7 @@
  * live as the agent works in the sandbox.
  */
 
-import { Fragment } from "react";
+import { Fragment, useContext } from "react";
 import { Menu, PanelRight, PictureInPicture2, Settings } from "lucide-react";
 
 import { RuntimeProvider, useConversationInterrupts } from "./RuntimeProvider.js";
@@ -17,6 +17,8 @@ import { UserBadge } from "./UserBadge.js";
 import { ThemePicker } from "./ThemePicker.js";
 import { ToolCallView } from "./ToolCallView.js";
 import { ToolGroupOpen } from "./ToolGroupOpen.js";
+import { ToolGroupCompact } from "./ToolGroupCompact.js";
+import { CompactContext } from "./density.js";
 import { SettingsPage } from "./SettingsPage.js";
 import { ContribViewHost } from "./ContribView.js";
 import { contribViews } from "./contribManifest.js";
@@ -36,9 +38,10 @@ import { UpdateBanner } from "./UpdateBanner.js";
 /** The Thread in an error boundary keyed to the render tick, so a transient runtime crash recovers on the next frame. */
 export function GuardedThread() {
   const { renderTick } = useConversationInterrupts();
+  const compact = useContext(CompactContext);
   return (
     <ThreadErrorBoundary resetKey={renderTick}>
-      <Thread components={{ ToolFallback: ToolCallView, ToolGroup: ToolGroupOpen }} />
+      <Thread components={{ ToolFallback: ToolCallView, ToolGroup: compact ? ToolGroupCompact : ToolGroupOpen }} />
     </ThreadErrorBoundary>
   );
 }
