@@ -57,10 +57,21 @@ def test_gh_graphql_creates_are_linked():
     from scooter_broker_lib.forge import find_forge_hosts
 
     rules = find_forge_hosts(github()).graphql_link_rules
-    pr = rules["createPullRequest"]({"pullRequest": {"url": "https://github.com/o/r/pull/7", "title": "T"}})
+    pr = rules["createPullRequest"]({"pullRequest": {"url": "https://github.com/o/r/pull/7", "title": "T"}}, {})
     assert (pr.resource_type, pr.url, pr.title) == ("pr", "https://github.com/o/r/pull/7", "T")
-    assert rules["createIssue"]({"issue": {"url": "https://github.com/o/r/issues/8"}}).resource_type == "issue"
-    assert rules["createPullRequest"]({"pullRequest": None}) is None
+    assert rules["createIssue"]({"issue": {"url": "https://github.com/o/r/issues/8"}}, {}).resource_type == "issue"
+    assert rules["createPullRequest"]({"pullRequest": None}, {}) is None
+
+
+def test_gh_graphql_creates_take_the_title_from_the_input():
+    """gh's createPullRequest selects only id and url."""
+    from scooter_broker_lib.forge import find_forge_hosts
+
+    rules = find_forge_hosts(github()).graphql_link_rules
+    pr = rules["createPullRequest"]({"pullRequest": {"id": "PR_1", "url": "https://github.com/o/r/pull/7"}},
+                                    {"input": {"title": "Fix the thing"}})
+    assert pr.title == "Fix the thing"
+    assert rules["createIssue"]({"issue": {"url": "https://github.com/o/r/issues/8"}}, {}).title is None
 
 
 def test_forge_policy_is_loaded_from_settings(monkeypatch):

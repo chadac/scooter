@@ -114,7 +114,7 @@ def world(ca, monkeypatch):
         transports=[ForgeHosts(
             hosts=[ForgeHost("github.com", git=True), ForgeHost("api.github.com", api_prefixes=("/",))],
             dialect=_GitHubish(),
-            graphql_link_rules={"createPullRequest": lambda d: Link("github", "pr", d["pullRequest"]["url"])},
+            graphql_link_rules={"createPullRequest": lambda d, v: Link("github", "pr", d["pullRequest"]["url"], v["input"].get("title"))},
         )],
         forge_policy=gh_policy,
     )
@@ -231,10 +231,10 @@ async def test_graphql_mutation_is_parsed_and_autolinked(running, ca):
     proxy, _, links, policy, _ = running
     query = "mutation PullRequestCreate($input: CreatePullRequestInput!) { createPullRequest(input: $input) { pullRequest { url } } }"
     async with _client(proxy, ca) as c:
-        r = await c.post("https://api.github.com/graphql", json={"query": query, "variables": {"input": {}}})
+        r = await c.post("https://api.github.com/graphql", json={"query": query, "variables": {"input": {"title": "Add X"}}})
     assert r.json()["data"]["createPullRequest"]["pullRequest"]["url"].endswith("/pull/7")
     assert policy.seen[0].graphql[0].fields == ("createPullRequest",)
-    assert links == [Link("github", "pr", "https://github.com/o/r/pull/7")]
+    assert links == [Link("github", "pr", "https://github.com/o/r/pull/7", "Add X")]
 
 
 async def test_the_credential_source_sees_the_request(running, ca):

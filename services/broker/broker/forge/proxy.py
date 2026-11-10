@@ -309,7 +309,9 @@ class ForgeProxy:
             await upstream.aclose()
 
         if body is not None and 200 <= upstream.status_code < 300 and identity.conversation_id:
-            await self._autolink(forge, method, path, graphql, bytes(body), identity.conversation_id)
+            await self._autolink(
+                forge, method, path, graphql, _graphql_variables(graphql_body), bytes(body), identity.conversation_id,
+            )
         return True
 
     # -- auto-linking ----------------------------------------------------------
@@ -325,7 +327,8 @@ class ForgeProxy:
         return any(r.matches(method, rel) for r in forge.link_rules)
 
     async def _autolink(
-        self, forge: ForgeHosts, method: str, path: str, graphql, body: bytes, conversation_id: str,
+        self, forge: ForgeHosts, method: str, path: str, graphql, variables: dict, body: bytes,
+        conversation_id: str,
     ) -> None:
         try:
             data = json.loads(body)
@@ -334,7 +337,7 @@ class ForgeProxy:
                 result = data.get("data") or {}
                 for name, extract in forge.graphql_link_rules.items():
                     if isinstance(result.get(name), dict):
-                        link = extract(result[name])
+                        link = extract(result[name], variables)
                         if link is not None:
                             links.append(link)
             else:
@@ -348,6 +351,16 @@ class ForgeProxy:
         for link in links:
             if link.url:
                 await post_link(self.agent_host_url, conversation_id, link)
+
+
+def _graphql_variables(body: bytes | None) -> dict:
+    """A single GraphQL request's variables; empty for a batch or an unreadable body."""
+    try:
+        payload = json.loads(body or b"")
+    except ValueError:
+        return {}
+    variables = payload.get("variables") if isinstance(payload, dict) else None
+    return variables if isinstance(variables, dict) else {}
 
 
 class _H11IO:

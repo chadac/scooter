@@ -37,10 +37,12 @@ _GITHUB_LINK_RULES = [
 
 # The same creates made by `gh` through the forge proxy, which uses GraphQL for most of them.
 def _graphql_link(field: str, resource_type: str):
-    def link(data: dict) -> Link | None:
+    def link(data: dict, variables: dict) -> Link | None:
         node = (data or {}).get(field) or {}
         url = node.get("url")
-        return Link(source="github", resource_type=resource_type, url=url, title=node.get("title")) if url else None
+        # gh's create response has no title; the input does.
+        title = node.get("title") or (variables.get("input") or {}).get("title")
+        return Link(source="github", resource_type=resource_type, url=url, title=title) if url else None
     return link
 
 

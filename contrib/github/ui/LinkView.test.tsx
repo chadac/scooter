@@ -22,7 +22,12 @@ describe("github link view", () => {
 
   it("puts the number before the title", () => {
     expect(text("https://github.com/o/r/pull/7", "feat: x")).toBe("|#7|feat: x|");
-    expect(text("https://github.com/o/r/issues/7", undefined, "issue")).toBe("|#7|GitHub issue|");
+  });
+
+  it("names an untitled link by its repo", () => {
+    expect(text("https://github.com/o/r/pull/7")).toBe("|#7|o/r|");
+    expect(text("https://github.com/o/r/issues/7", undefined, "issue")).toBe("|#7|o/r|");
+    expect(text("https://example.com/x", undefined, "issue")).toBe("|GitHub issue|");
   });
 
   it("leaves a title that already shows the number alone", () => {

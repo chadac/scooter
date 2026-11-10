@@ -35,8 +35,8 @@ class ForgeHost:
     api_prefixes: tuple[str, ...] = ()
 
 
-# A GraphQL mutation's top-level field -> the created resource, read from the field's `data` entry.
-GraphQLLinkRule = Callable[[dict], Link | None]
+# A GraphQL mutation's top-level field -> the created resource, from its `data` entry and the request's variables.
+GraphQLLinkRule = Callable[[dict, dict], Link | None]
 
 
 @dataclass
