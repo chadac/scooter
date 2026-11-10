@@ -12,7 +12,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { createRouter, type JsonResult, type Router, type ResolveUser } from "../http/router.js";
 import type { SessionManager, Conversation } from "../session/manager.js";
 import type { ConversationStore, ChecksummedEvent, ConversationLink } from "../session/manager.js";
-import { prefixedPlaceholder, sandboxKey } from "../session/manager.js";
+import { PLACEHOLDER_TITLE, prefixedPlaceholder, sandboxKey } from "../session/manager.js";
 import type { SessionId } from "../types.js";
 import { tailByRuns } from "../session/eventWindow.js";
 import { trimToBoundary } from "../session/eventStore.js";
@@ -866,12 +866,14 @@ export function createManagementApi(deps: ManagementDeps): Router {
     if (error === 404) return { status: 404, json: { error: "not found" } };
     if (error === 403) return { status: 403, json: { error: "not your conversation" } };
     if (conv!.parentId) return { status: 400, json: { error: "a session's parent must be a top-level conversation" } };
+    if (conv!.status !== "running") return { status: 409, json: { error: "the sandbox is not running; resume the conversation first" } };
     // A prefixed title already names its origin, as VS Code's does.
     const origin = (body.origin ?? body.titlePrefix) as string | undefined;
     try {
       const child = await deps.subagents.spawn(conv!.id as SessionId, {
         kind: "session",
-        ...(body.title ? { title: body.title } : body.titlePrefix ? { title: prefixedPlaceholder(body.titlePrefix) } : {}),
+        // A placeholder title, so the router's row does not read "Subagent".
+        title: (body.title as string | undefined) || (body.titlePrefix ? prefixedPlaceholder(body.titlePrefix as string) : PLACEHOLDER_TITLE),
         ...(origin ? { origin } : {}),
         ...(body.model ? { model: body.model } : {}),
       });

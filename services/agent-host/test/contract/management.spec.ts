@@ -2069,7 +2069,7 @@ describe("sessions routes (children a pod service such as VS Code drives)", () =
   it("an origin is recorded without a title prefix", async () => {
     const { api, spawn } = setup();
     expect((await call(api, "POST", "/conversations/c1/sessions", { origin: "web" })).status).toBe(201);
-    expect(spawn).toHaveBeenCalledWith("c1", { kind: "session", origin: "web" });
+    expect(spawn).toHaveBeenCalledWith("c1", { kind: "session", title: "New chat", origin: "web" });
     expect((await call(api, "POST", "/conversations/c1/sessions", { origin: "Web UI" })).status).toBe(400);
     expect(spawn).toHaveBeenCalledTimes(1);
   });
@@ -2086,6 +2086,13 @@ describe("sessions routes (children a pod service such as VS Code drives)", () =
     await sessions.start("sub", undefined, undefined);
     Object.assign(sessions.get("sub")!, { parentId: "c1" });
     expect((await call(api, "POST", "/conversations/sub/sessions", {})).status).toBe(400);
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("refuses a session while the parent's sandbox is not running", async () => {
+    const { api, sessions, spawn } = setup();
+    Object.assign(sessions.get("c1")!, { status: "suspended" });
+    expect((await call(api, "POST", "/conversations/c1/sessions", {})).status).toBe(409);
     expect(spawn).not.toHaveBeenCalled();
   });
 
