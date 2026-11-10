@@ -24,7 +24,7 @@ export const MCP_RUNTIME_MANIFEST_PATH = "/run/scooter/mcp-servers.runtime.json"
 export const SANDBOX_PREFIX = "sandbox-";
 
 /** Server names model APIs accept inside a tool name (`mcp__<server>__<tool>`). */
-const NAME_RE = /^[A-Za-z0-9_-]+$/;
+export const MCP_NAME_RE = /^[A-Za-z0-9_-]+$/;
 
 export interface McpServerDescriptor {
   name: string;
@@ -81,7 +81,7 @@ export function parseMcpManifest(json: string): McpServerDescriptor[] {
     return data.servers.flatMap((s): McpServerDescriptor[] => {
       if (typeof s !== "object" || s === null) return [];
       const o = s as Record<string, unknown>;
-      if (typeof o.name !== "string" || !NAME_RE.test(o.name) || typeof o.port !== "number") return [];
+      if (typeof o.name !== "string" || !MCP_NAME_RE.test(o.name) || typeof o.port !== "number") return [];
       return [{
         name: o.name,
         displayName: typeof o.displayName === "string" ? o.displayName : o.name,

@@ -7,7 +7,7 @@
  * `sandbox-<name>` resolves only to a server declared in this conversation's own pod.
  */
 
-import { SANDBOX_PREFIX, type OfferedMcpServer } from "../agent/mcpServerRegistry.js";
+import { MCP_NAME_RE, SANDBOX_PREFIX, type OfferedMcpServer } from "../agent/mcpServerRegistry.js";
 
 /** The one target every conversation gets: the agent-host's in-process MCP endpoint. */
 export const SCOOTER_ENV = "scooter-env";
@@ -41,9 +41,6 @@ export interface TunnelTargetDeps {
   /** Whether `name` is declared in this conversation's pod. */
   sandboxServerDeclared?: (conversationId: string, name: string) => Promise<boolean>;
 }
-
-/** Server names as the manifest admits them, so a target cannot smuggle a path. */
-const SANDBOX_NAME_RE = /^[A-Za-z0-9_-]+$/;
 
 export type TunnelResolution =
   | { ok: true; target: ResolvedTarget }
@@ -87,7 +84,7 @@ export async function resolveTunnelTarget(
     if (!deps.sandboxMcpUrlFor || !deps.sandboxServerDeclared)
       return { ok: false, reason: "sandbox MCP servers are not configured on this deployment" };
     // Only this conversation's registry decides, so another pod's server never resolves.
-    if (!SANDBOX_NAME_RE.test(name) || !(await deps.sandboxServerDeclared(conversationId, name)))
+    if (!MCP_NAME_RE.test(name) || !(await deps.sandboxServerDeclared(conversationId, name)))
       return { ok: false, reason: `no MCP server named ${JSON.stringify(name)} is declared in this sandbox` };
     // The proxy re-checks the server against the conversation the token names.
     return {
