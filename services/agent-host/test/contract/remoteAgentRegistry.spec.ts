@@ -135,7 +135,7 @@ describe("remote-personalized: the MCP offer", () => {
       mcpHeadersFor: (c: string) => [{ name: "Authorization", value: `Bearer ${c}` }],
       brokerMcpUrlFor: () => "http://broker/mcp",
     });
-    const offered = provider.mcpServersFor?.("conv-1") ?? [];
+    const offered = provider.mcpServersFor?.("conv-1", []) ?? [];
     expect(offered.map((s) => s.name).sort()).toEqual(["scooter-broker", "scooter-env"]);
     // headers:[] is deliberate, since a credential handed to the container is one the user holds, so the token is injected server-side.
     for (const s of offered) expect(s.headers).toEqual([]);
@@ -150,7 +150,37 @@ describe("remote-personalized: the MCP offer", () => {
       // brokerMcpUrlFor omitted: the target must not be advertised, because the
       // inbound stream could not resolve it.
     });
-    const names = (provider.mcpServersFor?.("conv-1") ?? []).map((s) => s.name);
+    const names = (provider.mcpServersFor?.("conv-1", []) ?? []).map((s) => s.name);
     expect(names).toEqual(["scooter-env"]);
+  });
+});
+
+describe("remote-personalized: the pod's own MCP servers", () => {
+  const base = {
+    registry: createRemoteAgentRegistry(),
+    controllerUrl: "http://controller:8080",
+    mcpUrlFor: (c: string) => `http://mcp/${c}`,
+  };
+  const resolved = [
+    { type: "http" as const, name: "scooter-env", url: "http://mcp/conv-1", headers: [{ name: "Authorization", value: "t" }] },
+    { type: "http" as const, name: "sandbox-jupyter", url: "http://agent-host/sandbox-mcp/jupyter", headers: [{ name: "Authorization", value: "t" }] },
+  ];
+
+  it("offers each running sandbox server as a tunnel name", () => {
+    const provider = createRemotePersonalizedProvider({
+      ...base,
+      sandboxMcpUrlFor: (n: string) => `http://agent-host/sandbox-mcp/${n}`,
+      sandboxServerDeclared: async () => true,
+    });
+    const offered = provider.mcpServersFor?.("conv-1", resolved) ?? [];
+    expect(offered).toEqual([
+      { type: "http", name: "scooter-env", url: "tunnel://scooter-env", headers: [] },
+      { type: "http", name: "sandbox-jupyter", url: "tunnel://sandbox-jupyter", headers: [] },
+    ]);
+  });
+
+  it("does not offer them when the tunnel could not resolve them", () => {
+    const provider = createRemotePersonalizedProvider(base);
+    expect((provider.mcpServersFor?.("conv-1", resolved) ?? []).map((s) => s.name)).toEqual(["scooter-env"]);
   });
 });

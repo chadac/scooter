@@ -6,6 +6,7 @@
  */
 
 import { formatError, logger } from "../log.js";
+import type { OfferedMcpServer } from "../agent/mcpServerRegistry.js";
 
 import type { AcpClient } from "./client.js";
 import type { SessionId } from "../types.js";
@@ -30,8 +31,8 @@ export interface RunContext {
 
 /** One selectable ACP backend: a pure declaration of capability plus a factory, with selection and lifecycle owned by the resolver and BridgeAcpManager. */
 export interface AcpProvider {
-  /** The MCP servers to offer this provider's sessions, overriding the bridge's default (a BYO container offers tunnel names it proxies locally). */
-  mcpServersFor?: (conversationId: string) => Array<{ type: "http"; name: string; url: string; headers: Array<{ name: string; value: string }> }>;
+  /** The MCP servers to offer this provider's sessions, derived from the bridge's per-run set (a BYO container offers tunnel names it proxies locally). */
+  mcpServersFor?: (conversationId: string, resolved: readonly OfferedMcpServer[]) => OfferedMcpServer[];
   /** The model namespace this provider serves, matched against each catalog model's `providers` tags; absent offers any catalog model. */
   modelTag?: string;
   /** True when the agent cannot read this pod's filesystem, so the skills must travel as data in `new_session`; the default suits an in-pod agent, which reads `skillsDir` itself. */

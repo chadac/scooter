@@ -121,6 +121,10 @@ export function createRemotePersonalizedProvider(deps: {
   /** The broker MCP proxy's URL, so a BYO agent is offered the contrib provider
    *  tools (github, gitlab, jira, slack) and not only scooter-env. */
   brokerMcpUrlFor?: () => string;
+  /** sandboxMcpProxy.urlFor, so the pod's own servers are offered. */
+  sandboxMcpUrlFor?: (name: string) => string;
+  /** Whether a server is declared in the conversation's pod. */
+  sandboxServerDeclared?: (conversationId: string, name: string) => Promise<boolean>;
   /** The model catalog, so eligibility can honor a cloud-only model pick; absent means no
    *  model gate. */
   catalog?: ModelCatalog;
@@ -145,12 +149,7 @@ export function createRemotePersonalizedProvider(deps: {
     modelTag: "byoc",
     // MCP over the tunnel offers names the container proxies locally, since a laptop cannot
     // reach the agent-host's loopback URL.
-    mcpServersFor: (conversationId: string) =>
-      offeredTunnelServers(conversationId, {
-        mcpUrlFor: deps.mcpUrlFor,
-        mcpHeadersFor: deps.mcpHeadersFor,
-        brokerMcpUrlFor: deps.brokerMcpUrlFor,
-      }),
+    mcpServersFor: (_conversationId, resolved) => offeredTunnelServers(deps, resolved),
     kind: "claude",
     // The container shares nothing with this pod: no skills directory, no prompt of its own,
     // so both travel with new_session.
@@ -259,6 +258,8 @@ export function createRemotePersonalizedProvider(deps: {
             // The inbound stream must resolve scooter-broker too, so the offer and the
             // resolver are fed from the same place.
             brokerMcpUrlFor: deps.brokerMcpUrlFor,
+            sandboxMcpUrlFor: deps.sandboxMcpUrlFor,
+            sandboxServerDeclared: deps.sandboxServerDeclared,
             fetchImpl: deps.fetchImpl,
             idleMs: deps.streamIdleMs,
             ownsSession: (sid) => acpSessions.has(sid),
