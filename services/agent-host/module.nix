@@ -32,7 +32,7 @@ in
       refKey = "agentHost";
       # /tmp is already a volume; /var/lib holds only volumes.
       imageless.writableDirs = [ "/var/tmp" "/var/lib" "/var/run/secrets" ];
-      imageless.mountPoints = [ "/tmp" "/mirror" "/etc/agent-sandbox/skills" "/etc/agent-sandbox/pricing" ];
+      imageless.mountPoints = [ "/tmp" "/mirror" "/etc/agent-sandbox/skills" "/etc/agent-sandbox/pricing" "/etc/scooter/themes" ];
     };
   };
 }
