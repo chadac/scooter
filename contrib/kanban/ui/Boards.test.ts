@@ -4,7 +4,7 @@
 
 import { describe, it, expect } from "vitest";
 
-import { pageLane } from "./Boards.js";
+import { pageLane, skillSlug } from "./Boards.js";
 
 const card = (id: string, lastActivityAt: number) => ({ id, lastActivityAt });
 
@@ -27,5 +27,15 @@ describe("pageLane", () => {
     const copy = [...lane];
     expect(pageLane(lane, 4, recent, () => 0).map((c) => c.id)).toEqual(["newer", "new", "mid", "old"]);
     expect(lane).toEqual(copy);
+  });
+});
+
+describe("skillSlug", () => {
+  // The same names kanban's boards.skill_slug gives the agent.
+  it("names a board skill as the agent sees it", () => {
+    expect(skillSlug("Release steps!")).toBe("board-release-steps");
+    expect(skillSlug("  UI / Layout ")).toBe("board-ui-layout");
+    expect(skillSlug("***")).toBe("");
+    expect(skillSlug("x".repeat(60)).length).toBeLessThanOrEqual(64);
   });
 });

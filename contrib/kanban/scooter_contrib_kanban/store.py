@@ -90,6 +90,18 @@ class _Tag(_Base):
     position: Mapped[float] = mapped_column(Float)
 
 
+class _Skill(_Base):
+    """Mirrors `kanban_skills` in contrib/kanban/sql/schema.sql."""
+
+    __tablename__ = "kanban_skills"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    board_id: Mapped[str] = mapped_column(String, index=True)
+    name: Mapped[str] = mapped_column(String)
+    body: Mapped[str] = mapped_column(Text)
+    position: Mapped[float] = mapped_column(Float)
+
+
 class _CardTag(_Base):
     """Mirrors `kanban_card_tags` in contrib/kanban/sql/schema.sql."""
 
@@ -137,6 +149,19 @@ class Tag:
     id: str
     name: str
     color: str
+    position: float
+
+    def payload(self) -> dict:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class Skill:
+    """A note the user wrote for every agent on a board."""
+
+    id: str
+    name: str
+    body: str
     position: float
 
     def payload(self) -> dict:
@@ -296,8 +321,10 @@ class KanbanStore:
             board = await s.get(_Board, stage.board_id) if stage else None
             return Place(board=board.folder_id, owner=board.owner, stage=stage.folder_id) if board else None
 
-    async def layout(self, owner: str, board_id: str | None = None) -> list[tuple[str, list[Stage], list[Tag]]]:
-        """`owner`'s boards, oldest first, with their stages and tags; only `board_id` when given."""
+    async def layout(
+        self, owner: str, board_id: str | None = None
+    ) -> list[tuple[str, list[Stage], list[Tag], list[Skill]]]:
+        """`owner`'s boards, oldest first, with their stages, tags and skills; only `board_id` when given."""
         async with self._read() as s:
             q = select(_Board.folder_id).where(_Board.owner == owner)
             if board_id is not None:
@@ -305,6 +332,7 @@ class KanbanStore:
             boards = list((await s.execute(q.order_by(_Board.created_at))).scalars())
             stages: dict[str, list[Stage]] = {b: [] for b in boards}
             tags: dict[str, list[Tag]] = {b: [] for b in boards}
+            skills: dict[str, list[Skill]] = {b: [] for b in boards}
             rows = await s.execute(
                 select(_Stage).where(_Stage.board_id.in_(boards)).order_by(_Stage.position, _Stage.folder_id)
             )
@@ -313,13 +341,20 @@ class KanbanStore:
             rows = await s.execute(select(_Tag).where(_Tag.board_id.in_(boards)).order_by(_Tag.position, _Tag.id))
             for r in rows.scalars():
                 tags[r.board_id].append(_tag(r))
-            return [(b, stages[b], tags[b]) for b in boards]
+            rows = await s.execute(
+                select(_Skill).where(_Skill.board_id.in_(boards)).order_by(_Skill.position, _Skill.id)
+            )
+            for r in rows.scalars():
+                skills[r.board_id].append(_skill(r))
+            return [(b, stages[b], tags[b], skills[b]) for b in boards]
 
-    async def save_board(self, board_id: str, stages: list[Stage], tags: list[Tag]) -> list[Tag]:
-        """Make a board's stages and tags these, in one transaction; a tag without an id is new.
+    async def save_board(
+        self, board_id: str, stages: list[Stage], tags: list[Tag], skills: list[Skill] | None = None
+    ) -> list[Tag]:
+        """Make a board's stages, tags and skills these, in one transaction; a tag or skill without an id is new.
 
-        Stages and tags not listed are deleted, and deleted tags come off every card.
-        Returns the tags as stored, new ones with their ids.
+        Stages, tags and skills not listed are deleted, and deleted tags come off every card.
+        `skills` None leaves them as they are. Returns the tags as stored, new ones with their ids.
         """
         async with self._session() as s, s.begin():
             have = {r.folder_id: r for r in (await s.execute(select(_Stage).where(_Stage.board_id == board_id))).scalars()}
@@ -345,7 +380,26 @@ class KanbanStore:
                     s.add(row)
                 row.name, row.color, row.position = t.name, t.color, t.position
                 out.append(_tag(row))
+            if skills is not None:
+                await self._write_skills(s, board_id, skills)
             return out
+
+    async def save_skills(self, board_id: str, skills: list[Skill]) -> None:
+        """Make a board's skills these, leaving its stages and tags; a skill without an id is new."""
+        async with self._session() as s, s.begin():
+            await self._write_skills(s, board_id, skills)
+
+    @staticmethod
+    async def _write_skills(s, board_id: str, skills: list[Skill]) -> None:
+        have = {r.id: r for r in (await s.execute(select(_Skill).where(_Skill.board_id == board_id))).scalars()}
+        keep = [k.id for k in skills if k.id in have]
+        await s.execute(delete(_Skill).where(_Skill.board_id == board_id, _Skill.id.not_in(keep)))
+        for k in skills:
+            row = have.get(k.id)
+            if row is None:
+                row = _Skill(id=str(uuid.uuid4()), board_id=board_id)
+                s.add(row)
+            row.name, row.body, row.position = k.name, k.body, k.position
 
     async def stages(self, board_id: str) -> list[Stage]:
         """A board's stages in board order."""
@@ -368,6 +422,7 @@ class KanbanStore:
             tags = select(_Tag.id).where(_Tag.board_id == folder_id)
             await s.execute(delete(_CardTag).where(_CardTag.tag_id.in_(tags)))
             await s.execute(delete(_Tag).where(_Tag.board_id == folder_id))
+            await s.execute(delete(_Skill).where(_Skill.board_id == folder_id))
             return True
 
     async def blockers(self, conversation_id: str) -> list[str]:
@@ -412,6 +467,14 @@ class KanbanStore:
                 select(_Tag).where(_Tag.board_id == board_id).order_by(_Tag.position, _Tag.id)
             )
             return [_tag(r) for r in rows.scalars()]
+
+    async def skills(self, board_id: str) -> list[Skill]:
+        """A board's skills in board order."""
+        async with self._read() as s:
+            rows = await s.execute(
+                select(_Skill).where(_Skill.board_id == board_id).order_by(_Skill.position, _Skill.id)
+            )
+            return [_skill(r) for r in rows.scalars()]
 
     async def card_tags(self, conversation_id: str) -> list[str]:
         """The ids of a card's tags, from any board."""
@@ -497,6 +560,10 @@ def _details(row: _Details) -> Details:
     return Details(
         description=row.description or "", priority=row.priority or 0, updated_by=row.updated_by, updated_at=row.updated_at
     )
+
+
+def _skill(row: _Skill) -> Skill:
+    return Skill(id=row.id, name=row.name, body=row.body, position=row.position)
 
 
 def _tag(row: _Tag) -> Tag:

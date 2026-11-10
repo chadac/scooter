@@ -64,12 +64,12 @@ def _describe(v: dict, blockers: list[Blocker]) -> str:
     if card is None:
         return (
             f'No status set yet; the card shows in "{v["column"]}". Stages: {stages}.'
-            f"{blocked}{_describe_tags(v)}{_describe_details(v)}"
+            f"{blocked}{_describe_tags(v)}{_describe_skills(v)}{_describe_details(v)}"
         )
     note = f' Note: "{card["note"]}".' if card["note"] else ""
     return (
         f'The card is in "{v["column"]}", last set by the {card["updated_by"]} at {card["updated_at"]}.'
-        f"{note} Stages: {stages}.{blocked}{_describe_tags(v)}{_describe_details(v)}"
+        f"{note} Stages: {stages}.{blocked}{_describe_tags(v)}{_describe_skills(v)}{_describe_details(v)}"
     )
 
 
@@ -86,6 +86,12 @@ def _describe_tags(v: dict) -> str:
     if not v["tags"]:
         return ""
     return f" Tags: {_quoted(v['card_tags']) or 'none'}. Board tags: {_quoted(v['tags'])}."
+
+
+def _describe_skills(v: dict) -> str:
+    """The board's skills, by the names the agent has them as; nothing when it has none."""
+    skills = v.get("skills") or []
+    return f" Board skills: {', '.join(f'`{s}`' for s in skills)}." if skills else ""
 
 
 def _quoted(names: list[str]) -> str:
@@ -133,7 +139,7 @@ async def kanban_set_status(column: str, note: str = "", ctx: ToolContext = Tool
 @mcp.tool
 async def kanban_get_status(ctx: ToolContext = ToolContextDep) -> ToolResult:
     """Read this conversation's card on its kanban board: its stage, note, blockers, tags,
-    priority and description, and the board's stages."""
+    priority and description, and the board's stages and skills."""
     key = await _key(ctx)
     if isinstance(key, ToolResult):
         return key
@@ -147,8 +153,9 @@ async def kanban_get_status(ctx: ToolContext = ToolContextDep) -> ToolResult:
         card = await _boards.store.card(key)
         tags = await _boards.tag_view(key, where.place.board)
         details = await _boards.store.details(key)
+        skills = await _boards.store.skills(where.place.board)
     v = view(
-        card, where.stages, where.stage, **tags, details=details,
+        card, where.stages, where.stage, **tags, details=details, skills=skills,
         stale_after=_stale_after, now=datetime.now(timezone.utc),
     )
     return ToolResult.ok(_describe(v, blockers))
@@ -279,6 +286,29 @@ async def kanban_set_details(
         return ToolResult.error(f"{e.detail}.")
     said = "a description" if details.description else "no description"
     return ToolResult.ok(f'The card in "{where.stage.name}" has priority {details.payload()["priority"]} and {said}.')
+
+
+@mcp.tool
+async def kanban_set_skill(name: str, body: str, ctx: ToolContext = ToolContextDep) -> ToolResult:
+    """Write, replace or delete one of this kanban board's skills, which every card on the
+    board gets as `board-<name>`.
+
+    `name` is the skill's name, with or without `board-`; an existing skill with that name
+    has its text replaced, otherwise a new one is added. `body` is the whole markdown text;
+    "" deletes the skill. Use it for what every card on the board should know (conventions,
+    where things live, how to ship) when the user asks or you learn something lasting, not
+    for notes on this card. The user sees and edits these under Edit board. Other agents
+    get the change from their next run.
+    """
+    key = await _key(ctx)
+    if isinstance(key, ToolResult):
+        return key
+    assert _boards is not None
+    try:
+        _, slug, done = await _boards.set_skill(key, name, body)
+    except BoardError as e:
+        return ToolResult.error(f"{e.detail}.")
+    return ToolResult.ok(f"The board skill `{slug}` was {done}.")
 
 
 def kanban_mcp_server() -> FastMCP:

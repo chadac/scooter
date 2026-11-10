@@ -8,7 +8,9 @@ first stage.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
 from dataclasses import dataclass, replace
 
 import httpx
@@ -16,11 +18,17 @@ import httpx
 from .filed import Filings
 from .folders import Conversation, FolderError, Folders
 from .messages import Send
-from .store import PRIORITIES, Card, Details, KanbanStore, Place, Stage, Tag
+from .store import PRIORITIES, Card, Details, KanbanStore, Place, Skill, Stage, Tag
 
 MAX_TAG_CHARS = 24
 MAX_BOARD_TAGS = 20
 MAX_CARD_TAGS = 5
+# A board's skills: what every agent on it is told when its conversation starts.
+MAX_BOARD_SKILLS = 10
+MAX_SKILL_NAME_CHARS = 60
+MAX_SKILL_CHARS = 4_000
+# What a board skill's name becomes in the agent's skill list, e.g. "board-release-steps".
+SKILL_PREFIX = "board-"
 # Palette keys; the board maps each to its own classes.
 TAG_COLORS = ("gray", "red", "orange", "yellow", "green", "teal", "blue", "purple")
 # Router lookups a board load runs at once.
@@ -70,6 +78,23 @@ class Blocker:
 
     def payload(self) -> dict:
         return {"id": self.id, "title": self.title, "stage": self.stage, "done": self.done}
+
+
+def skill_slug(name: str) -> str:
+    """The agent's name for a board skill: "Release steps" is `board-release-steps`."""
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return (SKILL_PREFIX + slug)[:64].rstrip("-") if slug else ""
+
+
+def skill_file(skill: Skill) -> dict:
+    """A board skill as a skill provider prints it: its name and a whole SKILL.md."""
+    name = skill_slug(skill.name)
+    description = (
+        f"The user's notes for every card on this kanban board: {skill.name}. "
+        "Read them before you start work on the card, and follow them."
+    )
+    content = f"---\nname: {name}\ndescription: {json.dumps(description)}\n---\n\n# {skill.name}\n\n{skill.body}\n"
+    return {"name": name, "content": content}
 
 
 def parse_priority(name: str) -> int:
@@ -183,8 +208,9 @@ class Boards:
                 "folder": b,
                 "stages": [s.payload() for s in stages or await self.stages(b, owner)],
                 "tags": [t.payload() for t in tags],
+                "skills": [k.payload() for k in skills],
             }
-            for b, stages, tags in await self.store.layout(owner, board)
+            for b, stages, tags, skills in await self.store.layout(owner, board)
         ]
 
     async def own(self, owner: str, board: str) -> str:
@@ -192,8 +218,10 @@ class Boards:
             raise BoardError(404, "no such board")
         return board
 
-    async def save(self, owner: str, board: str, stages: list[Stage], tags: list[Tag]) -> dict:
-        """Make a board's stages and tags these, in this order; returns the board as `list` shows it.
+    async def save(
+        self, owner: str, board: str, stages: list[Stage], tags: list[Tag], skills: list[Skill] | None = None
+    ) -> dict:
+        """Make a board's stages, tags and skills these, in this order; returns the board as `list` shows it.
 
         An item with an empty id is new, a listed one keeps its id, and the rest are deleted.
         Stage folders change first, as the router can't share kanban's transaction; what they
@@ -202,6 +230,8 @@ class Boards:
         have = {s.folder: s for s in await self.stages(await self.own(owner, board), owner)}
         old_tags = {t.id: t for t in await self.store.tags(board)}
         stages, tags = self._check(stages, tags, have, old_tags)
+        if skills is not None:
+            skills = self._check_skills(skills, {k.id for k in await self.store.skills(board)})
         at = positions([have[s.folder].position if s.folder else None for s in stages])
 
         async def put(s: Stage, position: float) -> tuple[Stage | None, FolderError | None]:
@@ -237,7 +267,12 @@ class Boards:
         )
         outcome = sorted((st for st, _ in done if st is not None), key=lambda st: st.position)
         tag_at = positions([old_tags[t.id].position if t.id else None for t in tags])
-        await self.store.save_board(board, outcome, [replace(t, position=p) for t, p in zip(tags, tag_at)])
+        await self.store.save_board(
+            board,
+            outcome,
+            [replace(t, position=p) for t, p in zip(tags, tag_at)],
+            None if skills is None else [replace(k, position=float(i + 1)) for i, k in enumerate(skills)],
+        )
         await self.changed(owner)
         failed = next((e for _, e in done if e is not None), None)
         if failed is not None:
@@ -278,6 +313,35 @@ class Boards:
             color = t.color or (old_tags[t.id].color if t.id else _pick_color([x.color for x in out_tags]))
             out_tags.append(replace(t, name=name, color=self._color(color)))
         return out_stages, out_tags
+
+    @staticmethod
+    def _check_skills(skills: list[Skill], have: set[str]) -> list[Skill]:
+        """The skills a save asks for, trimmed, or the BoardError refusing them."""
+        if len(skills) > MAX_BOARD_SKILLS:
+            raise BoardError(409, f"a board has at most {MAX_BOARD_SKILLS} skills")
+        ids = [k.id for k in skills if k.id]
+        if any(i not in have for i in ids) or len(set(ids)) != len(ids):
+            raise BoardError(400, "skills must be new or this board's, each once")
+        out: list[Skill] = []
+        seen: set[str] = set()
+        for k in skills:
+            name, body = k.name.strip(), k.body.strip()
+            if not name:
+                raise BoardError(400, "a skill needs a name")
+            if len(name) > MAX_SKILL_NAME_CHARS:
+                raise BoardError(400, f"a skill name is at most {MAX_SKILL_NAME_CHARS} characters")
+            slug = skill_slug(name)
+            if not slug:
+                raise BoardError(400, f"the skill name `{name}` needs a letter or a digit")
+            if slug in seen:
+                raise BoardError(409, f"this board already has a skill named like `{name}`")
+            seen.add(slug)
+            if not body:
+                raise BoardError(400, f"the skill `{name}` needs some text")
+            if len(body) > MAX_SKILL_CHARS:
+                raise BoardError(400, f"a skill is at most {MAX_SKILL_CHARS} characters")
+            out.append(replace(k, name=name, body=body))
+        return out
 
     async def create(self, owner: str, name: str) -> str:
         try:
@@ -724,6 +788,38 @@ class Boards:
         await self.store.set_card_tags(key, picked)
         await self.changed(where.conversation.owner, where.conversation.id)
         return where
+
+    async def set_skill(self, key: str, name: str, body: str) -> tuple[Located, str, str]:
+        """The agent writes, replaces or (with an empty `body`) deletes one of its board's skills.
+
+        The skill is matched by the name the agent sees it as, so "Release steps" and
+        "board-release-steps" are the same one. Returns where the card is, the skill's name
+        as the agent sees it, and what happened: "added", "updated" or "deleted".
+        """
+        where = await self.locate(key)
+        board = where.place.board
+        have = await self.store.skills(board)
+        want = name.strip()
+        if want.casefold().startswith(SKILL_PREFIX):
+            want = want[len(SKILL_PREFIX) :].strip()
+        slug = skill_slug(want)
+        if not slug:
+            raise BoardError(400, f"the skill name `{name}` needs a letter or a digit")
+        at = next((i for i, k in enumerate(have) if skill_slug(k.name) == slug), None)
+        if not body.strip():
+            if at is None:
+                names = ", ".join(f"`{skill_slug(k.name)}`" for k in have) or "none"
+                raise BoardError(404, f"this board has no skill `{slug}`; its skills: {names}")
+            skills, done = have[:at] + have[at + 1 :], "deleted"
+        elif at is None:
+            skills, done = [*have, Skill(id="", name=want, body=body, position=0.0)], "added"
+        else:
+            # It keeps the name the user gave it.
+            skills, done = [*have[:at], replace(have[at], body=body), *have[at + 1 :]], "updated"
+        skills = self._check_skills(skills, {k.id for k in have})
+        await self.store.save_skills(board, [replace(k, position=float(i + 1)) for i, k in enumerate(skills)])
+        await self.changed(where.conversation.owner)
+        return where, slug, done
 
     async def tag_view(self, key: str, board: str) -> dict[str, list[Tag]]:
         """A board's tags and the card's, as `view` takes them."""

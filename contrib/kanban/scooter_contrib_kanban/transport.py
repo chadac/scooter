@@ -1,10 +1,11 @@
 """kanban's HTTP routes, mounted under /kanban/*.
 
     GET    /card?folder=<id>&since=<t>             this conversation's card and stage, if the folder is on a board (hooks)
+    GET    /skills                                 the skills of this conversation's board, as a skill provider prints them
     GET    /user/boards                            the user's boards and their stages (the view, via /contrib-api)
     POST   /user/boards                            {name}: a new board, with the default stages
     PATCH  /user/boards/{board}                    {name}: rename a board
-    PUT    /user/boards/{board}                    {stages: [{id?, name}], tags: [{id?, name, color?}]}: save the board's stages and tags at once; a dropped stage's cards move to the first
+    PUT    /user/boards/{board}                    {stages: [{id?, name}], tags: [{id?, name, color?}], skills?: [{id?, name, body}]}: save the board's stages, tags and skills at once; a dropped stage's cards move to the first
     DELETE /user/boards/{board}                    delete a board and its stages; its conversations stay, unfiled
     POST   /user/boards/{board}/cards              {conversations}: those cards on the board, as GET /conversation/{key}/card shows one
     GET    /conversation/{key}/card                one card, its blockers, tag ids and priority (the board, via the conversation relay)
@@ -33,8 +34,8 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from scooter_broker_lib.types import AuthDependency, Identity, Provider, Transport
 from scooter_broker_lib.user import user_identity
 
-from .boards import MAX_READ_CARDS, BoardError, Blocker, Boards
-from .store import Card, Details, KanbanStore, Stage, Tag
+from .boards import MAX_READ_CARDS, BoardError, Blocker, Boards, skill_file, skill_slug
+from .store import Card, Details, KanbanStore, Skill, Stage, Tag
 
 # Folder and tag ids are URL-safe: UUIDs, or ids a folder service chose.
 _FOLDER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
@@ -66,6 +67,7 @@ def view(
     since: datetime | None = None,
     blockers: list[Blocker] | None = None,
     details: Details | None = None,
+    skills: list[Skill] | None = None,
 ) -> dict:
     """A card on a board, as the hooks and the agent tools read it."""
     return {
@@ -78,6 +80,8 @@ def view(
         "tags": [t.name for t in tags],
         "card_tags": [t.name for t in card_tags],
         "details": (details or Details()).payload(),
+        # The agent's names for the board's skills, which the skill provider offers it.
+        "skills": [skill_slug(k.name) for k in skills or []],
         "stale": is_stale(card, stale_after, now, since),
         # The broker's clock, so a hook marks a run's start without trusting its own.
         "now": now.isoformat(),
@@ -179,6 +183,7 @@ class Kanban(Transport):
                     raise _http(e) from None
                 tags = await _boards().tag_view(key, place.board)
                 details = await _store().details(key)
+                skills = await _store().skills(place.board)
             return view(
                 card,
                 stages,
@@ -189,7 +194,24 @@ class Kanban(Transport):
                 since=_since(since),
                 blockers=blockers,
                 details=details,
+                skills=skills,
             )
+
+        @router.get("/skills")
+        async def own_skills(identity: Identity = Depends(authed)) -> dict:
+            """The kanban skill provider's answer: none off a board."""
+            key = identity.conversation_id
+            if not key:
+                raise HTTPException(status_code=403, detail="a conversation identity is required")
+            try:
+                async with _store().reading():
+                    where = await _boards().locate(key)
+                    skills = await _store().skills(where.place.board)
+            except BoardError as e:
+                if e.status in (404, 409):
+                    return {"skills": []}
+                raise _http(e) from None
+            return {"skills": [skill_file(k) for k in skills]}
 
         @router.get("/user/boards")
         async def list_boards(owner: str = user) -> dict:
@@ -224,8 +246,14 @@ class Kanban(Transport):
         async def save_board(board: str, body: dict = Body(...), owner: str = user) -> dict:
             stages = [Stage(s.get("id", ""), s["name"], 0.0) for s in _items(body, "stages")]
             tags = [Tag(t.get("id", ""), t["name"], _color(t) or "", 0.0) for t in _items(body, "tags")]
+            skills = None
+            if "skills" in body:
+                items = _items(body, "skills")
+                if not all(isinstance(k.get("body"), str) for k in items):
+                    raise HTTPException(status_code=400, detail="each skill needs a body")
+                skills = [Skill(k.get("id", ""), k["name"], k["body"], 0.0) for k in items]
             try:
-                return {"board": await _boards().save(owner, _folder(board), stages, tags)}
+                return {"board": await _boards().save(owner, _folder(board), stages, tags, skills)}
             except BoardError as e:
                 raise _http(e) from None
 

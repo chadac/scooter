@@ -26,12 +26,19 @@ interface Tag {
   position: number;
 }
 
+interface Skill {
+  id: string;
+  name: string;
+  body: string;
+  position: number;
+}
+
 // Board folders this file made, deleted after each test so the sidebar stays short.
 const madeBoards: string[] = [];
 
 /** Kanban's broker half, in memory: the boards and stages (as router folders), card state, every PUT. */
 async function serveKanban(page: Page, request: APIRequestContext, base: string) {
-  const boards: Array<{ folder: string; stages: Stage[]; tags: Tag[] }> = [];
+  const boards: Array<{ folder: string; stages: Stage[]; tags: Tag[]; skills: Skill[] }> = [];
   const cardTags: Record<string, string[]> = {};
   const cards: Record<string, { column: string; position: number; note: string; updated_by: string; updated_at: string }> = {};
   const puts: Array<{ id: string; body: { column: string } }> = [];
@@ -55,7 +62,7 @@ async function serveKanban(page: Page, request: APIRequestContext, base: string)
   const folder = async (name: string, parentId?: string) =>
     ((await (await request.post(`${base}/folders`, { data: { name, parentId } })).json()) as { id: string }).id;
   const board = async (name: string) => {
-    const made = { folder: await folder(name), stages: [] as Stage[], tags: [] as Tag[] };
+    const made = { folder: await folder(name), stages: [] as Stage[], tags: [] as Tag[], skills: [] as Skill[] };
     for (const [i, label] of STAGES.entries()) made.stages.push({ id: await folder(label, made.folder), label, position: i + 1 });
     boards.push(made);
     madeBoards.push(made.folder);
@@ -83,10 +90,11 @@ async function serveKanban(page: Page, request: APIRequestContext, base: string)
       boards.splice(boards.indexOf(row), 1);
     }
     if (row && method === "PUT") {
-      // One save: the board's stages and tags, as wanted.
+      // One save: the board's stages, tags and skills, as wanted.
       const want = route.request().postDataJSON() as {
         stages: Array<{ id?: string; name: string }>;
         tags: Array<{ id?: string; name: string; color: string }>;
+        skills?: Array<{ id?: string; name: string; body: string }>;
       };
       saves.push(want);
       const keep = new Set(want.stages.map((x) => x.id));
@@ -100,7 +108,10 @@ async function serveKanban(page: Page, request: APIRequestContext, base: string)
       const tags = want.tags.map((t, i) => ({ id: t.id ?? `tag-${Date.now()}-${i}`, name: t.name, color: t.color, position: i + 1 }));
       const ids = new Set(tags.map((t) => t.id));
       for (const k of Object.keys(cardTags)) cardTags[k] = cardTags[k].filter((x) => ids.has(x));
-      Object.assign(row, { stages, tags });
+      const skills = want.skills
+        ? want.skills.map((k, i) => ({ id: k.id ?? `skill-${Date.now()}-${i}`, name: k.name, body: k.body, position: i + 1 }))
+        : row.skills;
+      Object.assign(row, { stages, tags, skills });
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ board: row }) });
       return;
     }
@@ -479,6 +490,39 @@ fastOnly("the kanban broker routes are stubbed in the browser")("kanban /boards 
     await expect.poll(chips).toEqual(["ui"]);
     await page.getByTestId("kanban-edit-stages").click();
     await expect.poll(() => kanban.cardTags[id]?.length).toBe(1);
+  });
+
+  test("the user writes a board's skills in Edit board, and saves them with the board", async ({ page, request, baseURL }) => {
+    const base = baseURL ?? "http://localhost:5173";
+    const kanban = await serveKanban(page, request, base);
+    const board = await kanban.board(`e2e-board-skills-${Date.now()}`);
+
+    await page.goto(`/boards/${board.folder}`);
+    await expect(page.getByTestId("kanban-board")).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId("kanban-skills")).toHaveCount(0);
+    await page.getByTestId("kanban-edit-stages").click();
+    const skills = page.getByTestId("kanban-skills");
+    for (const [i, [name, body]] of [["Release steps", "Tag, then deploy."], ["Style", "Small PRs."]].entries()) {
+      await page.getByTestId("kanban-add-skill").click();
+      await skills.getByTestId("kanban-skill-name").nth(i).fill(name);
+      await skills.getByTestId("kanban-skill-body").nth(i).fill(body);
+    }
+    // The name the agent will see it by.
+    await expect(skills.getByTestId("kanban-skill").first()).toContainText("board-release-steps");
+    await page.getByTestId("kanban-edit-stages").click();
+    await expect.poll(() => kanban.boards[0].skills.map((k) => [k.name, k.body])).toEqual([
+      ["Release steps", "Tag, then deploy."],
+      ["Style", "Small PRs."],
+    ]);
+    expect(kanban.saves).toHaveLength(1);
+
+    // Deleting one and editing the other is one more save.
+    await page.getByTestId("kanban-edit-stages").click();
+    await skills.getByRole("button", { name: "Delete Release steps" }).click();
+    await skills.getByTestId("kanban-skill-body").first().fill("Small PRs, one change each.");
+    await page.getByTestId("kanban-edit-stages").click();
+    await expect.poll(() => kanban.boards[0].skills.map((k) => [k.name, k.body])).toEqual([["Style", "Small PRs, one change each."]]);
+    expect(kanban.saves).toHaveLength(2);
   });
 
   test("Rename and Delete board change the board's folder", async ({ page, request, baseURL }) => {

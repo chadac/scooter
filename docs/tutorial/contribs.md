@@ -310,7 +310,9 @@ conversations into these folders or take them out. The broker manages the folder
 themselves, since it is the router's folder service by default
 (`scooter.conversationController.folderServices`). The agent gets `kanban_*` tools and
 a skill for keeping its card current. Cards can have tags, a priority, a description,
-and other cards blocking them.
+and other cards blocking them. A board can have skills, written under **Edit board**,
+which every conversation filed on it gets as `board-<name>` skills through the
+`kanban.board` skill provider.
 
 Kanban keeps its boards in a database of its own, `contrib_kanban`, owned by the
 broker's role. You don't create it yourself. On the next deploy:

@@ -34,6 +34,7 @@
         tables.kanban_tags = { };
         tables.kanban_card_tags = { };
         tables.kanban_card_details = { };
+        tables.kanban_skills = { };
       };
 
       services.broker = {
@@ -47,6 +48,14 @@
       };
 
       skills."kanban.md" = ./skills/kanban.md;
+
+      # The skills the user wrote on the conversation's board (Edit board), as `board-<name>`.
+      agent.skillProviders.board = {
+        command = "agent-broker kanban/skills -f";
+        timeout = 20;
+        wait = 5;
+        description = "The skills written on the board this conversation is filed on.";
+      };
 
       ui.views.boards = {
         label = "Boards";

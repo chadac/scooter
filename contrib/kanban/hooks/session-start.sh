@@ -22,4 +22,7 @@ printf '%s' "$card" | jq -r '
       else
         " Its description: \(.details.description | if length > 500 then .[:500] + "..." else . end | @json)."
       end
+    + if (.skills // []) == [] then "" else
+        " The user wrote skills for every card on this board: \(.skills | map("`\(.)`") | join(", ")). Read them before you start."
+      end
 '

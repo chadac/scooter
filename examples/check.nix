@@ -1527,7 +1527,7 @@ let
     ++ (if !(builtins.elem "echo.ping" (hookIds (echoHook false))) then [ ]
         else [ "a disabled contrib's hook is in AGENT_HOOKS_JSON" ]);
 
-  # Skill providers: none by default, wait capped, contrib namespacing and gating.
+  # Skill providers: only the shipped contribs' (kanban, skills) by default, wait capped, contrib namespacing and gating.
   providersOf = extra:
     let m = builtins.filter (e: e.name == "SKILL_PROVIDERS_JSON") (hostEnvOf extra);
     in if m == [ ] then [ ] else builtins.fromJSON (builtins.head m).value;
@@ -1535,8 +1535,8 @@ let
   providerIds = extra: map (p: p.id) (providersOf extra);
   providerById = extra: id: builtins.filter (p: p.id == id) (providersOf extra);
   providerProblems =
-    (if providerIds { } == [ "skills.sandbox" ] then [ ]
-     else [ "SKILL_PROVIDERS_JSON is not just the skills contrib's: ${builtins.toJSON (providerIds { })}" ])
+    (if providerIds { } == [ "kanban.board" "skills.sandbox" ] then [ ]
+     else [ "SKILL_PROVIDERS_JSON has undeclared providers: ${builtins.toJSON (providerIds { })}" ])
     ++ (let r = providerById { scooter.agent.skillProviders.team = { command = "x"; timeout = 90; }; } "team"; in
         if r != [ ] && (builtins.head r).timeoutSec == 90 && (builtins.head r).waitSec == 90 then [ ]
         else [ "a provider with no `wait` does not wait its whole timeout" ])

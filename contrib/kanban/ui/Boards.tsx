@@ -49,10 +49,19 @@ interface Tag {
   position: number;
 }
 
+/** A note the user writes for every agent on the board; each gets it as a skill. */
+interface Skill {
+  id: string;
+  name: string;
+  body: string;
+  position: number;
+}
+
 interface BoardRow {
   folder: string;
   stages: Stage[];
   tags: Tag[];
+  skills?: Skill[];
 }
 
 interface CardRow {
@@ -81,6 +90,10 @@ interface CardView {
 
 const CARD_MIME = "application/x-scooter-kanban-card";
 const MAX_CARD_TAGS = 5;
+// As kanban's boards.py allows.
+const MAX_BOARD_SKILLS = 10;
+const MAX_SKILL_NAME_CHARS = 60;
+const MAX_SKILL_CHARS = 4000;
 // `tagging` while the Details tab's tag field is open.
 const DETAILS_TAGS = "details";
 // Cards a lane shows at first, and adds per scroll.
@@ -302,10 +315,11 @@ class CallError extends Error {
   }
 }
 
-/** A board's stages and tags while Edit board is open; new ones have ids from `newId`. */
+/** A board's stages, tags and skills while Edit board is open; new ones have ids from `newId`. */
 interface Draft {
   stages: Stage[];
   tags: Tag[];
+  skills: Skill[];
 }
 
 const NEW = "new:";
@@ -313,11 +327,21 @@ let made = 0;
 const newId = () => `${NEW}${++made}`;
 const isNew = (id: string) => id.startsWith(NEW);
 
-/** The PUT body saving a draft: the board's stages and tags as they should end up. */
-const draftBody = ({ stages, tags }: Draft) => ({
+/** The PUT body saving a draft: the board's stages, tags and skills as they should end up. */
+const draftBody = ({ stages, tags, skills }: Draft) => ({
   stages: stages.map((s) => (isNew(s.id) ? { name: s.label } : { id: s.id, name: s.label })),
   tags: tags.map((t) => (isNew(t.id) ? { name: t.name, color: t.color } : { id: t.id, name: t.name, color: t.color })),
+  skills: skills.map((k) => (isNew(k.id) ? { name: k.name, body: k.body } : { id: k.id, name: k.name, body: k.body })),
 });
+
+/** The agent's name for a skill, as kanban's skill_slug makes it. */
+export const skillSlug = (name: string) => {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug ? `board-${slug}`.slice(0, 64).replace(/-+$/, "") : "";
+};
 
 /** The user's boards and their stages, with calls that change them. */
 function useBoards() {
@@ -351,7 +375,7 @@ function useBoards() {
     rename: (folder: string, name: string) => call(board(folder), "PATCH", { name }),
     remove: (folder: string) => call(board(folder), "DELETE"),
     reload: () => call("boards"),
-    /** Saves a board's stages and tags in one request. */
+    /** Saves a board's stages, tags and skills in one request. */
     save: async (folder: string, draft: Draft) => {
       const reply = await request<{ board: BoardRow }>(board(folder), "PUT", draftBody(draft));
       putRow(folder, () => reply.board);
@@ -397,6 +421,7 @@ export default function BoardsView() {
         folder={current.folder}
         stages={current.row.stages}
         tags={current.row.tags ?? []}
+        skills={current.row.skills ?? []}
         boards={shown.map((b) => b.folder)}
         conversations={conversations.filter((c) => onBoard(current.row, c))}
         navigate={navigate}
@@ -500,6 +525,7 @@ function Board({
   folder,
   stages: savedStages,
   tags: savedTags,
+  skills: savedSkills,
   boards,
   conversations,
   navigate,
@@ -510,6 +536,7 @@ function Board({
   folder: ViewFolder;
   stages: Stage[];
   tags: Tag[];
+  skills: Skill[];
   boards: ViewFolder[];
   conversations: ViewConversation[];
   navigate(path: string): void;
@@ -525,7 +552,7 @@ function Board({
   const [dropAt, setDropAt] = useState<{ column: string; before?: string } | null>(null);
   // A URL naming a conversation opens its chat; main.tsx selects it.
   const [panel, setPanel] = useState(() => threadInUrl() !== null);
-  // Edit board's unsaved stages and tags; null when not editing.
+  // Edit board's unsaved stages, tags and skills; null when not editing.
   const [draft, setDraft] = useState<Draft | null>(null);
   const [saving, setSaving] = useState(false);
   // Where to go once the "Save changes?" prompt is answered.
@@ -536,7 +563,8 @@ function Board({
   const stages = draft?.stages ?? savedStages;
   const tags = draft?.tags ?? savedTags;
   const dirty =
-    draft !== null && JSON.stringify(draftBody(draft)) !== JSON.stringify(draftBody({ stages: savedStages, tags: savedTags }));
+    draft !== null &&
+    JSON.stringify(draftBody(draft)) !== JSON.stringify(draftBody({ stages: savedStages, tags: savedTags, skills: savedSkills }));
   const [newStage, setNewStage] = useState("");
   const [newTag, setNewTag] = useState("");
   // The card whose tag field is open.
@@ -754,6 +782,8 @@ function Board({
   };
   const shiftTag = (i: number, by: -1 | 1) => edit((d) => ({ ...d, tags: shift(d.tags, i, by) }));
   const shiftStage = (i: number, by: -1 | 1) => edit((d) => ({ ...d, stages: shift(d.stages, i, by) }));
+  const changeSkill = (id: string, patch: Partial<Skill>) =>
+    edit((d) => ({ ...d, skills: d.skills.map((k) => (k.id === id ? { ...k, ...patch } : k)) }));
   const changeTag = (id: string, patch: Partial<Tag>) =>
     edit((d) => ({ ...d, tags: d.tags.map((t) => (t.id === id ? { ...t, ...patch } : t)) }));
 
@@ -846,7 +876,7 @@ function Board({
             onClick={() => {
               if (editing) return void saveDraft();
               setTagging(null);
-              setDraft({ stages: savedStages, tags: savedTags });
+              setDraft({ stages: savedStages, tags: savedTags, skills: savedSkills });
             }}
           >
             {saving && <Spinner />}
@@ -968,6 +998,62 @@ function Board({
               <Plus aria-hidden /> Add tag
             </Button>
           </form>
+        </section>
+      )}
+      {editing && draft && (
+        <section data-testid="kanban-skills" aria-label="Skills" className="space-y-2 border-b px-4 py-2">
+          <div className="flex flex-wrap items-baseline gap-2">
+            <h2 className="text-xs font-medium text-muted-foreground">Skills</h2>
+            <span className="text-xs text-muted-foreground">
+              Context every agent on this board gets as a skill: conventions, where things live, how to ship.
+            </span>
+          </div>
+          {draft.skills.map((k) => (
+            <div key={k.id} data-testid="kanban-skill" className="space-y-1 rounded border p-2">
+              <div className="flex items-center gap-2">
+                <input
+                  aria-label="Skill name"
+                  data-testid="kanban-skill-name"
+                  className={cn(inputClass, "min-w-0 flex-1 py-1 text-xs")}
+                  placeholder="Name, e.g. Release steps"
+                  maxLength={MAX_SKILL_NAME_CHARS}
+                  value={k.name}
+                  onChange={(e) => changeSkill(k.id, { name: e.currentTarget.value })}
+                />
+                {skillSlug(k.name) && (
+                  <code className="shrink-0 text-[11px] text-muted-foreground" title="The agent's name for it">
+                    {skillSlug(k.name)}
+                  </code>
+                )}
+                <Button
+                  size="icon-xs"
+                  variant="ghost"
+                  aria-label={`Delete ${k.name || "this skill"}`}
+                  onClick={() => edit((d) => ({ ...d, skills: d.skills.filter((x) => x.id !== k.id) }))}
+                >
+                  <Trash2 aria-hidden />
+                </Button>
+              </div>
+              <textarea
+                aria-label={`Text of ${k.name || "the skill"}`}
+                data-testid="kanban-skill-body"
+                className={cn(inputClass, "min-h-20 w-full py-1 font-mono text-xs")}
+                placeholder="Markdown the agent reads, e.g. Open PRs against develop, never main."
+                maxLength={MAX_SKILL_CHARS}
+                value={k.body}
+                onChange={(e) => changeSkill(k.id, { body: e.currentTarget.value })}
+              />
+            </div>
+          ))}
+          <Button
+            size="sm"
+            variant="outline"
+            data-testid="kanban-add-skill"
+            disabled={draft.skills.length >= MAX_BOARD_SKILLS}
+            onClick={() => edit((d) => ({ ...d, skills: [...d.skills, { id: newId(), name: "", body: "", position: 0 }] }))}
+          >
+            <Plus aria-hidden /> Add skill
+          </Button>
         </section>
       )}
       <div className="flex min-h-0 flex-1">

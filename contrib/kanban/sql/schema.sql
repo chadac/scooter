@@ -83,6 +83,20 @@ CREATE TABLE "kanban_card_tags" (
 );
 CREATE INDEX "ix_kanban_card_tags_tag_id" ON "kanban_card_tags" ("tag_id");
 
+-- A board's skills: short notes the user writes, which every agent on the board is given.
+CREATE TABLE "kanban_skills" (
+  "id"       character varying NOT NULL,
+  -- The board's folder id (kanban_boards.folder_id).
+  "board_id" character varying NOT NULL,
+  "name"     character varying NOT NULL,
+  -- Markdown, passed to the agent as it is.
+  "body"     text NOT NULL,
+  -- Order on the board and in what the agent is given.
+  "position" double precision NOT NULL,
+  PRIMARY KEY ("id")
+);
+CREATE INDEX "ix_kanban_skills_board_id" ON "kanban_skills" ("board_id");
+
 -- A card's description and priority, apart from kanban_cards so editing them isn't a move.
 CREATE TABLE "kanban_card_details" (
   -- kanban_cards.conversation_id; a card may have details before it has a status.
