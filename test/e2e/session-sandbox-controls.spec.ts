@@ -45,7 +45,8 @@ test("the Session tab shows resources, the size picker, and restart and stop", a
     timeout: 60_000,
   });
 
-  await expect(page.locator('[data-testid="sandbox-resources-limits"]')).toHaveText("1 CPU · 2Gi");
+  await expect(page.locator('[data-testid="sandbox-resources-cpu"]')).toHaveText("1 CPU");
+  await expect(page.locator('[data-testid="sandbox-resources-memory"]')).toHaveText("2Gi");
   await expect(page.locator('[data-testid="sandbox-update-banner"]')).toContainText("Update available");
   await page.locator('[data-testid="sandbox-update-hint"]').hover();
   await expect(page.getByRole("tooltip")).toContainText("A restart picks up");
@@ -56,7 +57,9 @@ test("the Session tab shows resources, the size picker, and restart and stop", a
   await expect(select).toHaveValue("small");
   await select.selectOption("large");
   await expect(page.locator('[data-testid="sandbox-size-pending"]')).toBeVisible();
-  await expect(page.locator('[data-testid="sandbox-resources-limits"]')).toHaveText("4 CPU · 8Gi · 1 GPU");
+  await expect(page.locator('[data-testid="sandbox-resources-cpu"]')).toHaveText("4 CPU");
+  await expect(page.locator('[data-testid="sandbox-resources-memory"]')).toHaveText("8Gi");
+  await expect(page.locator('[data-testid="sandbox-resources-gpu"]')).toHaveText("1 GPU");
   await page.locator('[data-testid="sandbox-size-hint"]').hover();
   await expect(page.getByRole("tooltip")).toContainText("For builds");
 

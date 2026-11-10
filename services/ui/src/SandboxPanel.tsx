@@ -5,7 +5,7 @@
  */
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { CircleHelp, RotateCw } from "lucide-react";
+import { CircleHelp, Cpu, Gpu, HardDrive, MemoryStick, RotateCw, type LucideIcon } from "lucide-react";
 
 import {
   resumeConversation,
@@ -154,16 +154,6 @@ function hasResources(r: SandboxResources | null | undefined): r is SandboxResou
   return sides.some((q) => q && (q.cpu !== undefined || q.memory !== undefined || q.gpu !== undefined));
 }
 
-/** Format one side (requests or limits) as "cpu · memory · N GPU", omitting absent fields. */
-function formatQuantity(q: SandboxResources["requests"]): string {
-  if (!q) return "";
-  const parts: string[] = [];
-  if (q.cpu) parts.push(`${q.cpu} CPU`);
-  if (q.memory) parts.push(q.memory);
-  if (q.gpu) parts.push(`${q.gpu} GPU`);
-  return parts.join(" · ");
-}
-
 /** The /workspace size, e.g. "10Gi (resizing to 20Gi)". */
 function formatWorkspace(w: WorkspaceVolume | null | undefined): string {
   if (!w) return "";
@@ -171,41 +161,38 @@ function formatWorkspace(w: WorkspaceVolume | null | undefined): string {
   return w.capacity && w.capacity !== w.requested ? `${size} (resizing to ${w.requested})` : size;
 }
 
-/** Requests (guaranteed), limits (ceiling) and the /workspace size. */
+/** One icon-labelled figure; the hover text names it. */
+function ResourceItem({ icon: Icon, value, label, testId }: { icon: LucideIcon; value: string; label: string; testId: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex items-center gap-1" tabIndex={0} aria-label={`${label}: ${value}`} data-testid={testId}>
+          <Icon className="size-3.5 text-muted-foreground" aria-hidden />
+          <span className="font-mono text-foreground">{value}</span>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top">{label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** The sandbox's limits and /workspace size on one line. */
 export function ResourcesSection({ resources, workspace }: { resources: SandboxResources | null | undefined; workspace?: WorkspaceVolume | null }) {
-  const requests = formatQuantity(resources?.requests);
-  const limits = formatQuantity(resources?.limits);
+  // Limits are the effective size; requests fill in an unset limit.
+  const pick = <K extends "cpu" | "memory" | "gpu">(k: K) => resources?.limits?.[k] ?? resources?.requests?.[k];
+  const cpu = pick("cpu");
+  const memory = pick("memory");
+  const gpu = pick("gpu");
   const disk = formatWorkspace(workspace);
   return (
-    <div data-testid="sandbox-resources">
-      <div className="mb-1 text-xs font-medium text-muted-foreground">Resources</div>
-      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs">
-        {requests && (
-          <>
-            <dt className="text-muted-foreground" title="Guaranteed — reserved for this sandbox">
-              Requested
-            </dt>
-            <dd data-testid="sandbox-resources-requests" className="font-mono text-foreground">{requests}</dd>
-          </>
-        )}
-        {limits && (
-          <>
-            <dt className="text-muted-foreground" title="Ceiling — the sandbox can burst up to this">
-              Limit
-            </dt>
-            <dd data-testid="sandbox-resources-limits" className="font-mono text-foreground">{limits}</dd>
-          </>
-        )}
-        {disk && (
-          <>
-            <dt className="text-muted-foreground" title="The /workspace volume's size">
-              Workspace
-            </dt>
-            <dd data-testid="sandbox-resources-workspace" className="font-mono text-foreground">{disk}</dd>
-          </>
-        )}
-      </dl>
-    </div>
+    <TooltipProvider delayDuration={150}>
+      <div data-testid="sandbox-resources" className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+        {cpu ? <ResourceItem icon={Cpu} value={`${cpu} CPU`} label="CPU limit" testId="sandbox-resources-cpu" /> : null}
+        {memory ? <ResourceItem icon={MemoryStick} value={memory} label="Memory limit" testId="sandbox-resources-memory" /> : null}
+        {gpu ? <ResourceItem icon={Gpu} value={`${gpu} GPU`} label="GPU limit" testId="sandbox-resources-gpu" /> : null}
+        {disk ? <ResourceItem icon={HardDrive} value={disk} label="/workspace storage" testId="sandbox-resources-workspace" /> : null}
+      </div>
+    </TooltipProvider>
   );
 }
 
@@ -324,12 +311,10 @@ function HelpTip({ text, testId }: { text: string; testId: string }) {
 /** The "Update available" banner with a restart button. */
 export function UpdateBanner({
   pending,
-  running,
   restarting,
   onRestart,
 }: {
   pending: PendingRestart;
-  running: boolean;
   restarting: boolean;
   onRestart?: () => void;
 }) {
@@ -345,13 +330,9 @@ export function UpdateBanner({
       <span className="text-sm font-medium">{update ? "Update available" : "Size change pending"}</span>
       <HelpTip
         testId="sandbox-update-hint"
-        text={
-          running
-            ? `A restart picks up ${what}. /workspace, installed modules and /nix/store builds persist; running processes, background jobs and web services stop.`
-            : `The sandbox picks up ${what} when it next starts.`
-        }
+        text={`A restart picks up ${what}. /workspace, installed modules and /nix/store builds persist; running processes, background jobs and web services stop.`}
       />
-      {running && onRestart ? (
+      {onRestart ? (
         <Button
           variant="default"
           size="xs"
@@ -439,7 +420,7 @@ export function SandboxPanelView({
         className={cn("flex items-center gap-2 rounded-lg border px-3 py-2.5", BANNER[state])}
       >
         <span className={cn("inline-block h-2.5 w-2.5 rounded-full", DOT[state])} aria-hidden />
-        <span className="text-sm font-medium" data-testid="sandbox-state" data-state={state}>
+        <span className="min-w-0 truncate text-sm font-medium" data-testid="sandbox-state" data-state={state}>
           {BANNER_TEXT[state]}
         </span>
         {(state === "suspended" || state === "starting") && (
@@ -449,9 +430,9 @@ export function SandboxPanelView({
             data-testid="sandbox-start"
             disabled={state === "starting"}
             onClick={onStartSandbox}
-            className="ml-auto"
+            className="ml-auto shrink-0"
           >
-            {state === "starting" ? "Starting…" : "Start sandbox"}
+            {state === "starting" ? "Starting…" : "Start"}
           </Button>
         )}
         {state === "running" && onRescanServices ? (
@@ -482,11 +463,10 @@ export function SandboxPanelView({
         ) : null}
       </div>
 
-      {/* Shown even when suspended; it applies on next start. */}
-      {pendingRestart && (pendingRestart.image || pendingRestart.env || pendingRestart.template?.length || pendingRestart.size) ? (
+      {/* Only while running: a stopped sandbox picks it up on start anyway. */}
+      {state === "running" && pendingRestart && (pendingRestart.image || pendingRestart.env || pendingRestart.template?.length || pendingRestart.size) ? (
         <UpdateBanner
           pending={pendingRestart}
-          running={state === "running"}
           restarting={!!restarting}
           onRestart={onRestartSandbox}
         />
@@ -497,16 +477,19 @@ export function SandboxPanelView({
         </p>
       ) : null}
 
-      {/* Hidden when unowned. */}
-      {owner ? (
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground" data-testid="sandbox-owner">
-          <span className="font-medium">Owner</span>
-          <span data-testid="sandbox-owner-value">{owner}</span>
+      {owner || hasResources(resources) || workspace ? (
+        <div className="flex flex-col gap-1.5">
+          {/* Hidden when unowned. */}
+          {owner ? (
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground" data-testid="sandbox-owner">
+              <span className="font-medium">Owner</span>
+              <span data-testid="sandbox-owner-value">{owner}</span>
+            </div>
+          ) : null}
+          {/* Shown while suspended too: the size applies to the next pod. */}
+          {hasResources(resources) || workspace ? <ResourcesSection resources={resources} workspace={workspace} /> : null}
         </div>
       ) : null}
-
-      {/* Shown regardless of running state, since the size is set even while suspended. */}
-      {hasResources(resources) || workspace ? <ResourcesSection resources={resources} workspace={workspace} /> : null}
 
       {/* Only when the deployment configured presets and a write path is wired. */}
       {sizes && Object.keys(sizes).length > 0 && onSelectSize ? (

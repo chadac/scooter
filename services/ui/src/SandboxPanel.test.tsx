@@ -36,7 +36,7 @@ describe("SandboxPanelView", () => {
     const html = renderToStaticMarkup(createElement(SandboxPanelView, { ...base, state: "suspended" }));
     expect(html).toContain('data-state="suspended"');
     expect(html).toContain('data-testid="sandbox-start"');
-    expect(html).toContain("Start sandbox");
+    expect(html).toMatch(/data-testid="sandbox-start"[^>]*>Start</);
     expect(html).not.toContain("service-list");
   });
 
@@ -70,7 +70,7 @@ describe("SandboxPanelView", () => {
     }
   });
 
-  it("shows the resource allotment (requests + limits) when present", () => {
+  it("shows the limits, falling back to requests for an unset limit", () => {
     const html = renderToStaticMarkup(
       createElement(SandboxPanelView, {
         ...base,
@@ -79,9 +79,9 @@ describe("SandboxPanelView", () => {
       }),
     );
     expect(html).toContain('data-testid="sandbox-resources"');
-    expect(html).toContain("500m CPU");
-    expect(html).toContain("1Gi"); // requested memory
-    expect(html).toContain("4Gi"); // limit memory
+    expect(html).toMatch(/data-testid="sandbox-resources-cpu"[\s\S]*>500m CPU</);
+    expect(html).toMatch(/data-testid="sandbox-resources-memory"[\s\S]*>4Gi</);
+    expect(html).not.toContain("1Gi");
   });
 
   it("shows resources even while SUSPENDED (the size applies to the next pod)", () => {
@@ -109,7 +109,7 @@ describe("SandboxPanelView", () => {
   it("shows the workspace size, and a resize in flight", () => {
     const at = (workspace: { requested: string; capacity?: string }) =>
       renderToStaticMarkup(createElement(SandboxPanelView, { ...base, state: "running", workspace }));
-    expect(at({ requested: "10Gi", capacity: "10Gi" })).toMatch(/data-testid="sandbox-resources-workspace"[^>]*>10Gi</);
+    expect(at({ requested: "10Gi", capacity: "10Gi" })).toMatch(/data-testid="sandbox-resources-workspace"[\s\S]*>10Gi</);
     expect(at({ requested: "20Gi", capacity: "10Gi" })).toContain("10Gi (resizing to 20Gi)");
   });
 });
@@ -327,12 +327,13 @@ describe("SandboxPanelView — pending restart", () => {
     expect(html).not.toContain("Update available");
   });
 
-  it("suspended: says the next start picks it up, with no Restart button", () => {
-    const html = renderToStaticMarkup(
-      createElement(SandboxPanelView, { ...base, state: "suspended", pendingRestart: pending, onRestartSandbox: noop }),
-    );
-    expect(html).toContain("when it next starts");
-    expect(html).not.toContain('data-testid="sandbox-restart"');
+  it("no banner unless running, since a start picks the update up", () => {
+    for (const state of ["suspended", "starting", "ended", "unknown"] as const) {
+      const html = renderToStaticMarkup(
+        createElement(SandboxPanelView, { ...base, state, pendingRestart: pending, onRestartSandbox: noop }),
+      );
+      expect(html).not.toContain("sandbox-update-banner");
+    }
   });
 
   it("disables Restart while a restart is in flight", () => {
