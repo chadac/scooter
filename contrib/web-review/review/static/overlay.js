@@ -265,8 +265,14 @@
       // The clone is the image root; margin would shift it.
       style: { margin: "0" },
     };
+    // A started preload="none" video's clone never loads; capture hangs.
+    const lazy = [...document.querySelectorAll("video[preload=none]")].filter((v) => v.currentSrc);
+    lazy.forEach((v) => (v.preload = "auto"));
     // Embedding fonts needs a <style>, which strict CSPs block.
-    const full = await ms.domToCanvas(body, opts).catch(() => ms.domToCanvas(body, { ...opts, font: false }));
+    const shot = ms.domToCanvas(body, opts).catch(() => ms.domToCanvas(body, { ...opts, font: false }));
+    // Never let one stuck resource block saving the note.
+    const late = new Promise((_, reject) => setTimeout(() => reject(new Error("timed out")), 15000));
+    const full = await Promise.race([shot, late]).finally(() => lazy.forEach((v) => (v.preload = "none")));
     const sx = (region.left - b.left) * scale, sy = (region.top - b.top) * scale;
     let w = region.width * scale, h = region.height * scale;
     const fit = Math.min(1, 1600 / w);
