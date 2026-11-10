@@ -10,8 +10,7 @@ import { Plus } from "lucide-react";
 import { ChildIcon } from "./ChildIcon.js";
 import { memberState } from "./ChatSwitcher.js";
 import { canStartSession, type FamilyMember } from "./family.js";
-import { StatusDot } from "./Sidebar.js";
-import { sessionStore, turnDot, useCurrentUser, useSessions } from "./sessions.js";
+import { sessionStore, useCurrentUser, useSessions } from "./sessions.js";
 import { removeSession, startSession } from "./sessionActions.js";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -42,45 +41,41 @@ export function ChatsPanelView({ members, currentId, onOpen, onStop, onNew }: Ch
         New session
       </Button>
       <ul className="flex flex-col gap-0.5" data-testid="chats-list">
-        {members.map(({ session: s, depth }) => {
-          const dot = turnDot(s);
-          return (
-            <li
-              key={s.id}
-              data-testid="chat-row"
-              data-kind={s.kind ?? "root"}
-              data-current={s.id === currentId ? "true" : undefined}
-              className={cn("group flex items-center gap-1.5 rounded-md py-1 pe-1 text-sm hover:bg-accent/50", s.id === currentId && "bg-accent/60")}
-              style={{ paddingInlineStart: `${0.375 + depth * 0.75}rem` }}
+        {members.map(({ session: s, depth }) => (
+          <li
+            key={s.id}
+            data-testid="chat-row"
+            data-kind={s.kind ?? "root"}
+            data-current={s.id === currentId ? "true" : undefined}
+            className={cn("group flex items-center gap-1.5 rounded-md py-1 pe-1 text-sm hover:bg-accent/50", s.id === currentId && "bg-accent/60")}
+            style={{ paddingInlineStart: `${0.375 + depth * 0.75}rem` }}
+          >
+            <ChildIcon session={s} />
+            <Button
+              variant="ghost"
+              size="sm"
+              className={cn("h-7 min-w-0 flex-1 justify-start truncate px-1", s.id === currentId && "font-medium")}
+              title={s.title}
+              onClick={() => onOpen(s.id)}
+              data-testid="chat-open"
             >
-              <span className="flex w-2 shrink-0 justify-center">{dot && <StatusDot dot={dot} />}</span>
-              <ChildIcon session={s} />
+              {s.title}
+            </Button>
+            <span className="shrink-0 text-xs text-muted-foreground group-hover:hidden max-md:hidden">{memberState(s)}</span>
+            {depth > 0 && s.status !== "ended" && (
               <Button
                 variant="ghost"
-                size="sm"
-                className={cn("h-7 min-w-0 flex-1 justify-start truncate px-1", s.id === currentId && "font-medium")}
-                title={s.title}
-                onClick={() => onOpen(s.id)}
-                data-testid="chat-open"
+                size="xs"
+                data-testid="chat-stop"
+                aria-label={`Stop ${s.title}`}
+                onClick={() => onStop(s.id)}
+                className="hidden shrink-0 text-muted-foreground group-hover:inline-flex max-md:inline-flex hover:bg-destructive/10 hover:text-destructive"
               >
-                {s.title}
+                Stop
               </Button>
-              <span className="shrink-0 text-xs text-muted-foreground group-hover:hidden max-md:hidden">{memberState(s)}</span>
-              {depth > 0 && s.status !== "ended" && (
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  data-testid="chat-stop"
-                  aria-label={`Stop ${s.title}`}
-                  onClick={() => onStop(s.id)}
-                  className="hidden shrink-0 text-muted-foreground group-hover:inline-flex max-md:inline-flex hover:bg-destructive/10 hover:text-destructive"
-                >
-                  Stop
-                </Button>
-              )}
-            </li>
-          );
-        })}
+            )}
+          </li>
+        ))}
       </ul>
     </div>
   );

@@ -8,7 +8,6 @@ import { DropdownMenu } from "radix-ui";
 
 import { ChildIcon } from "./ChildIcon.js";
 import { familyActivity, type FamilyMember } from "./family.js";
-import { StatusDot } from "./Sidebar.js";
 import { turnDot, type Session } from "./sessions.js";
 import { cn } from "@/lib/utils";
 
@@ -89,27 +88,23 @@ export function ChatSwitcher({ members, activeId, onSelect, onNew }: ChatSwitche
           data-testid="chat-switcher-menu"
           className="z-50 max-h-[70vh] w-[min(22rem,calc(100vw-1rem))] overflow-y-auto rounded-md border bg-popover p-1 text-sm text-popover-foreground shadow-md"
         >
-          {members.map(({ session: s, depth }) => {
-            const dot = turnDot(s);
-            return (
-              <DropdownMenu.Item
-                key={s.id}
-                data-testid="chat-switcher-item"
-                data-conversation-id={s.serverId ?? s.id}
-                data-active={s.id === activeId ? "true" : undefined}
-                onSelect={() => onSelect(s.id)}
-                className={cn(item, s.id === activeId && "font-medium")}
-                style={{ paddingInlineStart: `${0.5 + depth * 0.875}rem` }}
-              >
-                <span className="flex w-2 shrink-0 justify-center">{dot && <StatusDot dot={dot} />}</span>
-                <ChildIcon session={s} />
-                <span className="min-w-0 flex-1 truncate" title={s.title}>
-                  {s.title}
-                </span>
-                <span className="shrink-0 text-xs text-muted-foreground">{memberState(s)}</span>
-              </DropdownMenu.Item>
-            );
-          })}
+          {members.map(({ session: s, depth }) => (
+            <DropdownMenu.Item
+              key={s.id}
+              data-testid="chat-switcher-item"
+              data-conversation-id={s.serverId ?? s.id}
+              data-active={s.id === activeId ? "true" : undefined}
+              onSelect={() => onSelect(s.id)}
+              className={cn(item, s.id === activeId && "font-medium")}
+              style={{ paddingInlineStart: `${0.5 + depth * 0.875}rem` }}
+            >
+              <ChildIcon session={s} />
+              <span className="min-w-0 flex-1 truncate" title={s.title}>
+                {s.title}
+              </span>
+              <span className="shrink-0 text-xs text-muted-foreground">{memberState(s)}</span>
+            </DropdownMenu.Item>
+          ))}
           <DropdownMenu.Separator className="my-1 h-px bg-border" />
           <DropdownMenu.Item
             data-testid="chat-switcher-new"
