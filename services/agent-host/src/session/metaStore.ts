@@ -71,6 +71,7 @@ type MetaRow = {
   owner: string | null;
   parentId: string | null;
   kind?: string | null;
+  origin?: string | null;
   userTitled: boolean | null;
   starred: boolean | null;
   visibility?: string | null;
@@ -95,6 +96,7 @@ export function createPgMetaStore(config: PgMetaStoreConfig): MetaStore {
     ...(row.owner == null ? {} : { owner: row.owner }),
     ...(row.parentId == null ? {} : { parentId: row.parentId as SessionId }),
     ...(row.kind === "subagent" || row.kind === "session" ? { kind: row.kind } : {}),
+    ...(row.origin ? { origin: row.origin } : {}),
     ...(row.userTitled == null ? {} : { userTitled: row.userTitled }),
     ...(row.starred == null ? {} : { starred: row.starred }),
     ...(row.visibility === "private" ? { visibility: "private" as const } : {}),

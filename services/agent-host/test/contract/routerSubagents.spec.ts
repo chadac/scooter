@@ -64,9 +64,9 @@ describe("createRouterSubagentCreator", () => {
     const { calls, impl } = fetchStub(201, { id: "x" });
     const create = createRouterSubagentCreator({ url: "http://agent-host:8080", fetchImpl: impl });
 
-    await create("parent-1", { kind: "session" });
+    await create("parent-1", { kind: "session", origin: "web" });
 
-    expect(JSON.parse(String(calls[0].init.body))).toEqual({ kind: "session" });
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ kind: "session", origin: "web" });
   });
 
   it("sends NO owner and no id — the router infers both, so neither is spoofable from here", async () => {

@@ -149,7 +149,7 @@ export interface SandboxRestartResult {
 /** A subagent needs its task; a session starts idle. */
 export type SpawnChildArgs =
   | { kind?: undefined; prompt: string; title?: string; model?: string }
-  | { kind: "session"; title?: string; model?: string };
+  | { kind: "session"; title?: string; model?: string; origin?: string };
 
 /** Who chose a conversation's model. */
 export type ModelSetBy = "user" | "agent";
@@ -170,6 +170,8 @@ export interface ConversationMeta {
   parentId?: SessionId;
   /** Written by the router's insert, never by saveMeta. */
   kind?: ConversationKind;
+  /** Where a session was started from, e.g. "vscode"; router-written. */
+  origin?: string;
   /** The user renamed this conversation, so the agent's <title> marker no longer overwrites
    *  `title`. */
   userTitled?: boolean;
@@ -324,6 +326,8 @@ export interface Conversation {
   readonly parentId?: SessionId;
   /** "session": a person drives it; it never reports back. */
   readonly kind?: ConversationKind;
+  /** Where a session was started from, e.g. "vscode" or "web". */
+  readonly origin?: string;
   /** The title is user-set and locked against the agent's <title> marker. */
   readonly userTitled?: boolean;
   /** The user starred it. */
@@ -487,6 +491,7 @@ interface Entry {
   owner?: string;
   parentId?: SessionId;
   kind?: ConversationKind;
+  origin?: string;
   userTitled?: boolean;
   starred?: boolean;
   visibility?: Visibility;
@@ -576,6 +581,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
     owner: e.owner,
     parentId: e.parentId,
     kind: e.kind,
+    origin: e.origin,
     userTitled: e.userTitled,
     starred: e.starred,
     visibility: e.visibility,
@@ -628,6 +634,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       owner: m.owner,
       parentId: m.parentId,
       kind: m.kind,
+      origin: m.origin,
       userTitled: m.userTitled,
       starred: m.starred,
       pendingQueue: m.pendingQueue,
@@ -706,6 +713,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         owner: c.spec.owner,
         parentId: c.spec.parentId,
         kind: c.spec.kind,
+        origin: c.spec.origin,
         visibility: c.spec.visibility,
         ...(c.spec.sandboxRef ? { sandboxRef: c.spec.sandboxRef } : {}),
       };
@@ -832,6 +840,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       owner: e.owner,
       parentId: e.parentId,
       kind: e.kind,
+      origin: e.origin,
       userTitled: e.userTitled,
       starred: e.starred,
       visibility: e.visibility,
@@ -1288,6 +1297,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         owner: parent.owner,
         parentId,
         kind: args.kind ?? "subagent",
+        ...(args.kind === "session" && args.origin ? { origin: args.origin } : {}),
         // It shares the parent's pod, so it is exactly as private (the router's insert agrees).
         ...(parent.visibility === "private" ? { visibility: "private" as const } : {}),
       };
@@ -2004,6 +2014,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           owner: c.spec.owner,
           parentId: c.spec.parentId,
           kind: c.spec.kind,
+          origin: c.spec.origin,
           visibility: c.spec.visibility,
           ...(c.spec.sandboxRef ? { sandboxRef: c.spec.sandboxRef } : {}),
         };

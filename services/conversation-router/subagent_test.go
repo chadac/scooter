@@ -127,6 +127,30 @@ func TestSubagentCarriesSessionKind(t *testing.T) {
 	}
 }
 
+func TestSubagentCarriesSessionOrigin(t *testing.T) {
+	c := &fakeCreator{}
+	p := &fakeParents{rows: map[string]*ConversationRow{"parent-1": aParent("parent-1")}}
+	alice := map[string]string{"x-auth-user": "alice"}
+
+	if w := postSubagent(t, c, p, "parent-1", `{"kind":"session","origin":"web"}`, alice, nil); w.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d", w.Code)
+	}
+	if c.calls[0].spec["origin"] != "web" {
+		t.Errorf("origin must reach the row: %+v", c.calls[0].spec)
+	}
+	if w := postSubagent(t, c, p, "parent-1", `{"kind":"session"}`, alice, nil); w.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d", w.Code)
+	}
+	if _, ok := c.calls[1].spec["origin"]; ok {
+		t.Errorf("no origin asked, none stored: %+v", c.calls[1].spec)
+	}
+	for _, body := range []string{`{"origin":"web"}`, `{"kind":"session","origin":"Web Page"}`} {
+		if w := postSubagent(t, c, p, "parent-1", body, alice, nil); w.Code != http.StatusBadRequest {
+			t.Errorf("%s: want 400, got %d", body, w.Code)
+		}
+	}
+}
+
 // A stranger must not mint someone else's conversation.
 func TestSubagentRefusesAStrangerAndDoesNotLeakExistence(t *testing.T) {
 	c := &fakeCreator{}

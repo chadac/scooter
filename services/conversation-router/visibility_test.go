@@ -262,8 +262,8 @@ func TestConversationRowCarriesVisibility(t *testing.T) {
 	if row.Visibility == nil || *row.Visibility != VisibilityPrivate {
 		t.Fatalf("Visibility = %v", row.Visibility)
 	}
-	if got := len(row.args()); got != 9 {
-		t.Fatalf("args() has %d placeholders' worth, want 9", got)
+	if got := len(row.args()); got != 10 {
+		t.Fatalf("args() has %d placeholders' worth, want 10", got)
 	}
 }
 

@@ -2062,8 +2062,16 @@ describe("sessions routes (children a pod service such as VS Code drives)", () =
   it("a titlePrefix names the session '<prefix>: New chat' until the agent titles it", async () => {
     const { api, spawn } = setup();
     expect((await call(api, "POST", "/conversations/c1/sessions", { titlePrefix: "vscode" })).status).toBe(201);
-    expect(spawn).toHaveBeenCalledWith("c1", { kind: "session", title: "vscode: New chat" });
+    expect(spawn).toHaveBeenCalledWith("c1", { kind: "session", title: "vscode: New chat", origin: "vscode" });
     expect((await call(api, "POST", "/conversations/c1/sessions", { titlePrefix: "VS Code" })).status).toBe(400);
+  });
+
+  it("an origin is recorded without a title prefix", async () => {
+    const { api, spawn } = setup();
+    expect((await call(api, "POST", "/conversations/c1/sessions", { origin: "web" })).status).toBe(201);
+    expect(spawn).toHaveBeenCalledWith("c1", { kind: "session", origin: "web" });
+    expect((await call(api, "POST", "/conversations/c1/sessions", { origin: "Web UI" })).status).toBe(400);
+    expect(spawn).toHaveBeenCalledTimes(1);
   });
 
   it("rejects an unknown model and an unknown parent without spawning", async () => {

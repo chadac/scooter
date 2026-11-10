@@ -146,7 +146,7 @@ export function createSubagentManager(
       try {
         // The router mints the id, before any event.
         childThreadId = createChild
-          ? (await createChild(parentId, { title: args.title, model: args.model, kind: args.kind })).id
+          ? (await createChild(parentId, { title: args.title, model: args.model, kind: args.kind, ...(args.kind === "session" && args.origin ? { origin: args.origin } : {}) })).id
           : randomUUID();
         bump(parentId, -1);
         pending.set(childThreadId, parentId);

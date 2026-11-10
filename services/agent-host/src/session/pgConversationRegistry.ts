@@ -38,6 +38,7 @@ type RecordRow = {
   owner: string | null;
   parentId: string | null;
   kind: string | null;
+  origin: string | null;
   sandboxRef: string | null;
   creatorPod: string | null;
   phase: string | null;
@@ -52,6 +53,7 @@ const columns = {
   owner: conversations.owner,
   parentId: conversations.parentId,
   kind: conversations.kind,
+  origin: conversations.origin,
   sandboxRef: conversations.sandboxRef,
   creatorPod: conversations.creatorPod,
   phase: conversations.phase,
@@ -68,6 +70,7 @@ function toRecord(r: RecordRow): ConversationRecord {
       ...(r.owner ? { owner: r.owner } : {}),
       ...(r.parentId ? { parentId: r.parentId } : {}),
       ...(r.kind === "subagent" || r.kind === "session" ? { kind: r.kind } : {}),
+      ...(r.origin ? { origin: r.origin } : {}),
       ...(r.sandboxRef ? { sandboxRef: r.sandboxRef } : {}),
       ...(r.creatorPod ? { creatorPod: r.creatorPod } : {}),
       ...(r.visibility === "private" ? { visibility: "private" as const } : {}),

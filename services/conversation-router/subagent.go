@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,10 +26,15 @@ type subagentRequest struct {
 	Model string `json:"model"`
 	// KindSubagent (the default) or KindSession.
 	Kind string `json:"kind"`
+	// Where a session was started from, e.g. "vscode"; sessions only.
+	Origin string `json:"origin"`
 }
 
 // defaultSubagentTitle shows until the child emits its own <title>.
 const defaultSubagentTitle = "Subagent"
+
+// originRe matches the schema's conversations_origin_check.
+var originRe = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 
 // A child's kind: only a subagent reports to its parent.
 const (
@@ -78,6 +84,10 @@ func serveSubagentCreate(w http.ResponseWriter, r *http.Request, creator Convers
 		writeJSONError(w, http.StatusBadRequest, "invalid kind")
 		return
 	}
+	if req.Origin != "" && (req.Kind != KindSession || !originRe.MatchString(req.Origin)) {
+		writeJSONError(w, http.StatusBadRequest, "invalid origin")
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
@@ -116,6 +126,9 @@ func serveSubagentCreate(w http.ResponseWriter, r *http.Request, creator Convers
 	}
 
 	spec["kind"] = req.Kind
+	if req.Origin != "" {
+		spec["origin"] = req.Origin
+	}
 
 	title := req.Title
 	if title == "" {

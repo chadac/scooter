@@ -35,7 +35,7 @@ function fakeDb(): {
   // Column order matches lib/sql/agent_host/schema.sql because drizzle's bare .select() maps positionally.
   const ORDER = [
     "id", "thread_id", "title", "created_at", "last_activity_at",
-    "model", "model_set_by", "owner", "parent_id", "kind", "user_titled", "starred", "pending_queue",
+    "model", "model_set_by", "owner", "parent_id", "kind", "origin", "user_titled", "starred", "pending_queue",
   ] as const;
 
   const client = {

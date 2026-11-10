@@ -46,6 +46,8 @@ type listRow struct {
 	Visibility string `json:"visibility"`
 	// "subagent" or "session"; absent for a top-level conversation.
 	Kind *string `json:"kind,omitempty"`
+	// Where a session was started from, e.g. "vscode" or "web".
+	Origin *string `json:"origin,omitempty"`
 }
 
 // assembleList applies the visibility filter and enriches with links, preserving the order of metas that Store.Conversations establishes.
@@ -97,6 +99,7 @@ func makeListRow(m ConversationRow, ls []Link, now int64) listRow {
 		Visibility:     visibilityOf(m.Visibility),
 		ParentID:       m.ParentID,
 		Kind:           m.Kind,
+		Origin:         m.Origin,
 		UserTitled:     deref(m.UserTitled),
 		// The UI list ignores sandbox; the owner pod's GET /conversations/:id carries the live detail.
 		Sandbox:         sandboxProjection{Name: derefStr(m.SandboxRef), Namespace: ""},
