@@ -797,16 +797,16 @@ function Board({
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="kanban-board" data-folder-id={folder.id}>
-      <div className="flex flex-wrap items-center gap-2 border-b px-4 py-2">
-        <Button size="sm" variant="ghost" data-testid="kanban-all-boards" onClick={() => leave("")}>
-          <ArrowLeft aria-hidden /> Boards
+      <div className="flex flex-wrap items-center gap-2 border-b px-2 py-2 md:px-4">
+        <Button size="sm" variant="ghost" data-testid="kanban-all-boards" aria-label="Boards" onClick={() => leave("")}>
+          <ArrowLeft aria-hidden /> <span className="max-md:hidden">Boards</span>
         </Button>
         <select
           aria-label="Board"
           data-testid="kanban-switch-board"
           value={folder.id}
           onChange={(e) => leave(e.currentTarget.value)}
-          className={cn(inputClass, "py-1 font-semibold")}
+          className={cn(inputClass, "min-w-0 flex-1 py-1 font-semibold md:flex-none")}
         >
           {boards.map((b) => (
             <option key={b.id} value={b.id}>
@@ -814,7 +814,7 @@ function Board({
             </option>
           ))}
         </select>
-        <div className="ms-auto flex flex-wrap items-center gap-2">
+        <div className="ms-auto flex flex-wrap items-center gap-1 md:gap-2">
           <Button
             size="sm"
             variant="outline"
@@ -971,7 +971,13 @@ function Board({
         </section>
       )}
       <div className="flex min-h-0 flex-1">
-        <div className="flex min-h-0 min-w-0 flex-1 gap-3 overflow-x-auto p-4">
+        <div
+          className={cn(
+            "flex min-h-0 min-w-0 flex-1 gap-3 overflow-x-auto p-4 max-md:snap-x max-md:snap-mandatory max-md:scroll-px-4",
+            // Phones show the open card instead of the lanes.
+            showing && "max-md:hidden",
+          )}
+        >
           {stages.map((col, i) => (
             <section
               key={col.id}
@@ -992,7 +998,7 @@ function Board({
                 if (id) void move(id, col.id, dropAt?.column === col.id ? dropAt.before : undefined);
               }}
               className={cn(
-                "flex w-64 shrink-0 flex-col rounded-lg bg-muted/40",
+                "flex w-64 shrink-0 flex-col rounded-lg bg-muted/40 max-md:w-[85vw] max-md:snap-start",
                 dropAt?.column === col.id && !dropAt.before && "ring-2 ring-primary/50",
               )}
             >
@@ -1210,7 +1216,7 @@ function Board({
           {editing && (
             <form
               data-testid="kanban-add-stage"
-              className="flex w-64 shrink-0 flex-col gap-2 self-start rounded-lg border border-dashed p-3"
+              className="flex w-64 shrink-0 flex-col gap-2 self-start rounded-lg border border-dashed p-3 max-md:w-[85vw] max-md:snap-start"
               onSubmit={(e) => {
                 e.preventDefault();
                 const name = newStage.trim();
@@ -1234,7 +1240,7 @@ function Board({
           )}
         </div>
         {showing && (
-          <aside data-testid="kanban-chat" className="flex w-[min(42rem,50%)] shrink-0 flex-col border-s">
+          <aside data-testid="kanban-chat" className="flex w-full shrink-0 flex-col md:w-[min(42rem,50%)] md:border-s">
             <div className="flex items-center gap-1 border-b px-2 py-1.5 text-xs">
               <Button size="sm" variant="ghost" data-testid="kanban-prev" disabled={at <= 0} onClick={() => step(-1)}>
                 <ChevronLeft aria-hidden /> Previous
