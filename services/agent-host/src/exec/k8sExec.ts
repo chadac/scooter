@@ -147,6 +147,8 @@ export interface K8sExecOptions {
   podName?: string;
   /** Called once when the pod-readiness poll finds no pod at all, to resume a sandbox suspended out from under a live bridge; absent means no self-heal. */
   ensureRunning?: () => Promise<void>;
+  /** How long to wait for a Ready pod (ms); defaults to 90s. */
+  readyDeadlineMs?: number;
 }
 
 /** Resolves a SandboxRef to a connected pod-exec client. */
@@ -157,7 +159,7 @@ export async function connectSandbox(
   const kc = opts.kubeConfig ?? defaultKubeConfig();
   // Prefer a pod name the caller already knows (the controller names the pod after the
   // Sandbox, so ref.name is the pod name), which needs no `get/list pods` RBAC.
-  const podName = opts.podName ?? (ref.podIP ? ref.name : await resolvePodName(kc, ref, opts.ensureRunning));
+  const podName = opts.podName ?? (ref.podIP ? ref.name : await resolvePodName(kc, ref, opts.ensureRunning, opts.readyDeadlineMs));
   return createK8sSandboxApiClient(ref, { ...opts, kubeConfig: kc, podName });
 }
 
@@ -191,11 +193,59 @@ export function isReadyPod(p: Pod): boolean {
   );
 }
 
+/** One in-flight Ready-pod wait per sandbox, which every caller joins. */
+interface SharedPodWait {
+  pod: Promise<Pod>;
+  /** The latest deadline any joined caller asked for. */
+  until: number;
+  ensureRunning?: () => Promise<void>;
+  lastRunning?: Pod;
+  reason?: string;
+}
+
+const sharedPodWaits = new Map<string, SharedPodWait>();
+
+function noReadyPodError(ref: SandboxRef, reason: string | undefined): Error {
+  // The agent runs without the pod, so point it at the wait tool.
+  return new Error(
+    `no ready pod for sandbox ${ref.namespace}/${ref.name}${reason ? `: ${reason}` : ""}; ` +
+      "it may still be starting, so call wait_for_sandbox, then retry",
+  );
+}
+
+/** Wait for a Running and Ready pod, sharing one poll per sandbox; `deadlineMs` bounds this caller only. */
+export function pollForReadyPod(ref: SandboxRef, deps: ResolveReadyPodDeps): Promise<Pod> {
+  const key = `${ref.namespace}/${ref.name}`;
+  const until = Date.now() + (deps.deadlineMs ?? 90_000);
+  let w = sharedPodWaits.get(key);
+  if (w) {
+    w.until = Math.max(w.until, until);
+    w.ensureRunning ??= deps.ensureRunning;
+  } else {
+    const fresh = { until, ensureRunning: deps.ensureRunning } as SharedPodWait;
+    fresh.pod = pollShared(ref, deps, fresh).finally(() => {
+      if (sharedPodWaits.get(key) === fresh) sharedPodWaits.delete(key);
+    });
+    sharedPodWaits.set(key, (w = fresh));
+  }
+  const shared = w;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const mine = new Promise<Pod>((resolve, reject) => {
+    timer = setTimeout(() => {
+      // Not extended: the poll itself ends now, with the fuller answer.
+      if (Date.now() >= shared.until) return;
+      if (shared.lastRunning) resolve(shared.lastRunning);
+      else reject(noReadyPodError(ref, shared.reason));
+    }, Math.max(0, until - Date.now()));
+    timer.unref?.();
+  });
+  return Promise.race([shared.pod, mine]).finally(() => clearTimeout(timer));
+}
+
 /** Poll until a Running and Ready pod backs the sandbox, firing `ensureRunning` once if the first lookup finds no pod at all. */
-export async function pollForReadyPod(ref: SandboxRef, deps: ResolveReadyPodDeps): Promise<Pod> {
+async function pollShared(ref: SandboxRef, deps: ResolveReadyPodDeps, w: SharedPodWait): Promise<Pod> {
   const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
   const started = Date.now();
-  const deadline = started + (deps.deadlineMs ?? 90_000);
   let lastRunning: Pod | undefined;
   let healed = false; // ensureRunning is fired at most once
   let waitLogged = false; // one "waiting" line per call, not one per poll
@@ -204,7 +254,7 @@ export async function pollForReadyPod(ref: SandboxRef, deps: ResolveReadyPodDeps
   for (;;) {
     const candidates = await deps.listCandidates();
     // No pod at all: resume once so the controller recreates it, then keep polling.
-    if (candidates.length === 0 && deps.ensureRunning && !healed) {
+    if (candidates.length === 0 && w.ensureRunning && !healed) {
       healed = true;
       // Logged loudly because a resume fired against a just-suspended sandbox leaves a
       // pod running with no conversation attached.
@@ -213,7 +263,7 @@ export async function pollForReadyPod(ref: SandboxRef, deps: ResolveReadyPodDeps
         pod_name: ref.name,
       });
       try {
-        await deps.ensureRunning();
+        await w.ensureRunning();
       } catch (err) {
         // Expected refusal: stop polling and report why.
         if (err instanceof ResumeRefusedError) {
@@ -248,10 +298,11 @@ export async function pollForReadyPod(ref: SandboxRef, deps: ResolveReadyPodDeps
       }
       return ready;
     }
-    const expired = Date.now() > deadline;
+    const expired = Date.now() > w.until;
     if (deps.diagnose && (expired || Date.now() - diagnosedAt >= DIAGNOSE_EVERY_MS)) {
       diagnosedAt = Date.now();
       reason = await deps.diagnose(candidates).catch(() => reason);
+      w.reason = reason;
     }
     // Lets a command that times out here say it never started, and conversation_status say why.
     // An earlier failure stands until a Ready pod clears it.
@@ -269,6 +320,7 @@ export async function pollForReadyPod(ref: SandboxRef, deps: ResolveReadyPodDeps
       });
     }
     lastRunning = candidates.find((p) => p.status?.phase === "Running") ?? lastRunning;
+    w.lastRunning = lastRunning;
     if (expired) {
       // Fall back to any Running pod (or fail) rather than hang forever, warning once per sandbox.
       log.warnOnce(`ready-pod:${ref.namespace}/${ref.name}`, "ready-pod deadline expired", {
@@ -279,7 +331,7 @@ export async function pollForReadyPod(ref: SandboxRef, deps: ResolveReadyPodDeps
         reason,
       });
       if (lastRunning) return lastRunning;
-      throw new Error(`no ready pod for sandbox ${ref.namespace}/${ref.name}${reason ? `: ${reason}` : ""}`);
+      throw noReadyPodError(ref, reason);
     }
     await sleep(1500);
   }
@@ -341,8 +393,9 @@ async function resolvePodName(
   kc: KubeConfig,
   ref: SandboxRef,
   ensureRunning?: () => Promise<void>,
+  deadlineMs?: number,
 ): Promise<string> {
-  const pod = await resolveReadyPod(kc, ref, ensureRunning);
+  const pod = await resolveReadyPod(kc, ref, ensureRunning, deadlineMs);
   const name = pod.metadata?.name;
   if (!name) throw new Error(`ready pod for sandbox ${ref.namespace}/${ref.name} has no name`);
   return name;

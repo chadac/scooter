@@ -25,6 +25,7 @@ describe("pod readiness wait", () => {
       deadlineMs: -1,
     }).catch((e: Error) => e);
     expect(String(err)).toMatch(/no ready pod for sandbox agent-manager\/conv-nt4eo0/);
+    expect(String(err)).toMatch(/call wait_for_sandbox, then retry/);
     const w = podWaitStatus(REF);
     expect(w).toBeDefined();
     expect(formatPodWait(w!, w!.since + 12 * 60_000)).toBe("the sandbox pod has not been Ready for 12m");
