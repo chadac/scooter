@@ -63,6 +63,33 @@ export class K8sExecError extends Error {
     super(message, options);
     this.name = "K8sExecError";
   }
+
+  /** A refused upgrade's HTTP status; ws puts it only in the message. */
+  get httpStatus(): number | undefined {
+    const m = /Unexpected server response: (\d{3})/.exec((this.cause as Error | undefined)?.message ?? "");
+    return m ? Number(m[1]) : undefined;
+  }
+}
+
+/** Backoff between upgrades; a refused upgrade never ran its command. */
+const UPGRADE_RETRY_DELAYS_MS = [250, 1_000];
+
+/** Open an exec stream, retrying transient 5xx upgrade refusals. */
+export async function openExecWithRetry<T>(
+  open: () => Promise<T>,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await open();
+    } catch (e) {
+      const err = toExecError(e);
+      const status = err.httpStatus;
+      if (status === undefined || status < 500 || attempt >= UPGRADE_RETRY_DELAYS_MS.length) throw err;
+      log.info("exec upgrade refused; retrying", { http_status: status, attempt: attempt + 1 });
+      await sleep(UPGRADE_RETRY_DELAYS_MS[attempt]!);
+    }
+  }
 }
 
 const isStatus = (v: unknown): v is V1Status =>
@@ -388,8 +415,8 @@ export function createK8sSandboxApiClient(
         resolve({ stdout: out.text(), stderr: "aborted", exitCode: 130 });
         return;
       }
-      freshExec()
-        .exec(
+      openExecWithRetry(() =>
+        freshExec().exec(
           ref.namespace,
           podName,
           container,
@@ -401,7 +428,8 @@ export function createK8sSandboxApiClient(
           (s: V1Status) => {
             status = s;
           },
-        )
+        ),
+      )
         .then((ws) => {
           stage = "ws-open";
           log.debug("exec ws open", {
@@ -474,7 +502,10 @@ export function createK8sSandboxApiClient(
         .catch((e: unknown) => {
           settle();
           const err = toExecError(e, lastClose);
-          log.errorWith("exec() rejected", err, { status: err.status ?? null, ws_close: lastClose ?? null });
+          const fields = { status: err.status ?? null, http_status: err.httpStatus ?? null, ws_close: lastClose ?? null };
+          // 404: pod deleted; the disruption note tells the caller.
+          if (err.httpStatus === 404) log.info("exec() rejected: pod gone", { ...fields, pod_name: podName });
+          else log.errorWith("exec() rejected", err, fields);
           void withDisruptionNote(err, new Date(startedAt)).then(reject);
         });
     });
