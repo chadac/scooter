@@ -364,7 +364,20 @@ async def push_link(
                 json=body,
                 headers=_auth(),
             )
-            return resp.status_code in (200, 201)
+        if resp.status_code not in (200, 201):
+            logger.warning(
+                "push link rejected",
+                extra={
+                    **_C,
+                    "conversation_id": conversation_id,
+                    "source": source,
+                    "resource_type": resource_type,
+                    "status": resp.status_code,
+                    "body": resp.text[:200],
+                },
+            )
+            return False
+        return True
     except httpx.HTTPError as e:
         logger.warning(
             "push link failed",

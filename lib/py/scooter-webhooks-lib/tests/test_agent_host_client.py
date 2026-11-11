@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import httpx
 import pytest
 
@@ -531,3 +533,12 @@ async def test_every_agent_host_call_carries_the_service_token(monkeypatch):
         "/conversations/c1": "Bearer sa-token",
         "/users/by-email": "Bearer sa-token",
     }
+
+
+async def test_push_link_rejection_returns_false_and_warns(monkeypatch, caplog):
+    _patch_get(monkeypatch, lambda req: httpx.Response(409, json={"error": "resource is linked to another conversation"}))
+    with caplog.at_level(logging.WARNING, logger="webhooks.agent_host_client"):
+        ok = await ahc.push_link("c1", source="slack", resource_type="thread", ref={"channel": "C1", "threadTs": "1.2"})
+    assert ok is False
+    warned = [r for r in caplog.records if r.message == "push link rejected"]
+    assert warned and warned[0].status == 409
