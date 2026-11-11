@@ -209,10 +209,10 @@ test.describe("thread rendering details", () => {
     await chat.sendTurn("!echo tool card please");
     await expect(chat.toolCalls()).toHaveCount(1, { timeout: 45_000 });
     await chat.waitForIdle(); // sendTurn returns on the reply TEXT; the terminal event trails it
-    // The card shows the command it ran (not an empty shell).
-    const body = page.locator('[data-testid="provider-tool-body"]');
-    if (await body.count()) {
-      expect((await body.first().innerText()).trim().length, "the tool card must show its command").toBeGreaterThan(0);
+    // The folded card names the command it ran in its header (not an empty shell).
+    const preview = page.locator('[data-testid="provider-tool-preview"]');
+    if (await preview.count()) {
+      expect((await preview.first().innerText()).trim().length, "the tool card must show its command").toBeGreaterThan(0);
     }
     const s = await snapshot(page);
     assertConsistent(s, "after a tool call");

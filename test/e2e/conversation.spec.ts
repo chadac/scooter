@@ -28,11 +28,14 @@ test.describe("conversation happy path", () => {
 
     // This is the conversation's first turn, so on the full target it sits behind a cold pod boot.
     await expect(chat.toolCalls().first()).toBeVisible({ timeout: 90_000 });
-    // The tool card shows the command the agent ran, scoped to the card body so the echoed
-    // user message cannot satisfy it.
-    await expect(
-      page.locator('[data-testid="provider-tool-body"]').filter({ hasText: /echo zxcvbnm-marker/ }),
-    ).toBeVisible({ timeout: 90_000 });
+    // The folded tool card names the command the agent ran in its header, scoped to the card
+    // so the echoed user message cannot satisfy it; opening it shows the full command.
+    const trigger = page.locator('[data-testid="provider-tool-trigger"]').filter({ hasText: /echo zxcvbnm-marker/ });
+    await expect(trigger).toBeVisible({ timeout: 90_000 });
+    const body = page.locator('[data-testid="provider-tool-body"]').filter({ hasText: /echo zxcvbnm-marker/ });
+    await expect(body).toBeHidden();
+    await trigger.click();
+    await expect(body).toBeVisible();
     // The command output (echo's result) flows back into the reply.
     await expect(chat.assistantMessages().last()).toContainText(/zxcvbnm-marker/i, { timeout: 90_000 });
   });

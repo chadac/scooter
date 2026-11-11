@@ -10,7 +10,7 @@ import { describe, it, expect } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { ToolCallView } from "./ToolCallView.js";
+import { ToolCallView, commandPreview } from "./ToolCallView.js";
 import { InterruptContext, type InterruptContextValue } from "./RuntimeProvider.js";
 
 /** Render a tool card inside an InterruptContext with the given run state, to exercise the "still running" spinner. */
@@ -86,6 +86,37 @@ describe("ToolCallView", () => {
     expect(html).not.toContain('"type":"terminal"');
   });
 
+  it("folds a shell card by default: the header names the command, the body is hidden but in the DOM", () => {
+    const html = renderToStaticMarkup(
+      createElement(ToolCallView, part({
+        toolName: "Shell",
+        args: { command: "npm test -- --watch=false\n  && echo done" },
+        result: [{ type: "text", text: "42 passing" }],
+      })),
+    );
+    expect(html).toContain('data-state="closed"');
+    // The trigger is a button carrying the first line of the command, with a marker for the rest.
+    expect(html).toMatch(/<button[^>]*data-testid="provider-tool-trigger"[^>]*aria-expanded="false"/);
+    expect(html).toMatch(/data-testid="provider-tool-preview"[^>]*>\$ npm test -- --watch=false …</);
+    // The full command and the output stay in the DOM (find-in-page reaches them) inside the hidden region.
+    expect(html).toMatch(/<div hidden=""[^>]*data-testid="provider-tool-content"[^>]*>[\s\S]*\$ npm test -- --watch=false\n  &amp;&amp; echo done[\s\S]*42 passing/);
+  });
+
+  it("keeps a provider post card open: no trigger, nothing hidden", () => {
+    const html = renderToStaticMarkup(
+      createElement(ToolCallView, part({ toolName: "Scooter-env: Slack Respond", args: { text: "on it" } })),
+    );
+    expect(html).not.toContain("provider-tool-trigger");
+    expect(html).not.toContain("hidden=");
+    expect(html).toContain("on it");
+  });
+
+  it("previews a command by its first non-empty line", () => {
+    expect(commandPreview("ls -la")).toBe("ls -la");
+    expect(commandPreview("\n  cd /x\nmake\n")).toBe("cd /x …");
+    expect(commandPreview("")).toBe("");
+  });
+
   it("delegates to the generic ToolFallback for a tool we don't specialize", () => {
     const html = renderToStaticMarkup(
       createElement(ToolCallView, part({ toolName: "Search the web (DuckDuckGo)", argsText: '{"query":"x"}' })),
@@ -119,8 +150,8 @@ describe("ToolCallView", () => {
     expect(html).not.toContain("provider-tool-card");
     expect(html).toContain('data-slot="media-strip"');
     expect(html).toContain(url);
-    // The card stays collapsed: the result's text is not rendered until it is opened.
-    expect(html).not.toContain("[Image: source: x]");
+    // The card stays collapsed: the result's text sits in the hidden body (in the DOM for find-in-page), after the strip.
+    expect(html).toMatch(/data-slot="media-strip"[\s\S]*<div hidden=""[^>]*data-slot="tool-fallback-content"[\s\S]*\[Image: source: x\]/);
   });
 
   it("plays a show_video result inline while the card is collapsed", () => {
@@ -136,7 +167,7 @@ describe("ToolCallView", () => {
     expect(html).toContain('data-slot="media-video"');
     expect(html).toContain(`src="${url}"`);
     expect(html).toContain('type="video/mp4"');
-    expect(html).not.toContain("Showing /workspace/demo.mp4");
+    expect(html).toMatch(/data-slot="media-video"[\s\S]*<div hidden=""[^>]*data-slot="tool-fallback-content"[\s\S]*Showing \/workspace\/demo.mp4/);
   });
 
   it("shows a running spinner on a shell card while the turn is in flight and no result yet", () => {

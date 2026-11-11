@@ -25,6 +25,12 @@ test.describe("inline video", () => {
     // HAVE_METADATA or better: the browser fetched and parsed the clip.
     await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.readyState), { timeout: 15_000 }).toBeGreaterThanOrEqual(1);
     expect(await video.evaluate((v: HTMLVideoElement) => v.duration)).toBeGreaterThan(1);
-    await expect(page.getByText("Showing /workspace/demo.webm")).toHaveCount(0);
+    // The result's status text sits in the folded body: in the DOM (find-in-page reaches it)
+    // but hidden until the card is opened.
+    const status = page.getByText("Showing /workspace/demo.webm");
+    await expect(status).toHaveCount(1);
+    await expect(status).toBeHidden();
+    await page.locator('[data-slot="tool-fallback-trigger"]').last().click();
+    await expect(status).toBeVisible();
   });
 });

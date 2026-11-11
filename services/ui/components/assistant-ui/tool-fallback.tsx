@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useRef, useState } from "react";
+import { createContext, memo, useCallback, useContext, useId, useMemo, useRef, useState } from "react";
 import {
   AlertCircleIcon,
   CheckIcon,
@@ -15,23 +15,29 @@ import {
   type ToolCallMessagePartStatus,
   type ToolCallMessagePartComponent,
 } from "@assistant-ui/react";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { MediaStrip, MediaVideo } from "@/components/assistant-ui/media-gallery";
+import { FoldedContent } from "@/src/FoldedContent";
 import { splitResultImages } from "@/src/mediaRefs";
 
 const ANIMATION_DURATION = 200;
 /** The agent-host API base the assets route is served under ("" in prod). */
 const ASSET_BASE_URL = (import.meta.env.VITE_AGENT_HOST_URL ?? "").replace(/\/$/, "");
 
-export type ToolFallbackRootProps = Omit<
-  React.ComponentProps<typeof Collapsible>,
-  "open" | "onOpenChange"
-> & {
+/**
+ * The card's fold state, shared by Root (owner), Trigger (toggles it) and Content
+ * (hidden until-found while closed). Not a Radix Collapsible: that unmounts its content
+ * when closed, and the body has to stay in the DOM for find-in-page to reach it.
+ */
+const FoldContext = createContext<{ open: boolean; setOpen: (open: boolean) => void; contentId: string } | null>(null);
+
+function useFold() {
+  const ctx = useContext(FoldContext);
+  if (!ctx) throw new Error("ToolFallback parts must be rendered inside ToolFallback.Root");
+  return ctx;
+}
+
+export type ToolFallbackRootProps = Omit<React.ComponentProps<"div">, "onChange"> & {
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   defaultOpen?: boolean;
@@ -45,9 +51,10 @@ function ToolFallbackRoot({
   children,
   ...props
 }: ToolFallbackRootProps) {
-  const collapsibleRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
-  const lockScroll = useScrollLock(collapsibleRef, ANIMATION_DURATION);
+  const lockScroll = useScrollLock(rootRef, ANIMATION_DURATION);
+  const contentId = useId();
 
   const isControlled = controlledOpen !== undefined;
   const isOpen = isControlled ? controlledOpen : uncontrolledOpen;
@@ -63,25 +70,31 @@ function ToolFallbackRoot({
     [lockScroll, isControlled, controlledOnOpenChange],
   );
 
+  const fold = useMemo(
+    () => ({ open: isOpen, setOpen: handleOpenChange, contentId }),
+    [isOpen, handleOpenChange, contentId],
+  );
+
   return (
-    <Collapsible
-      ref={collapsibleRef}
-      data-slot="tool-fallback-root"
-      open={isOpen}
-      onOpenChange={handleOpenChange}
-      className={cn(
-        "aui-tool-fallback-root group/tool-fallback-root w-full",
-        className,
-      )}
-      style={
-        {
-          "--animation-duration": `${ANIMATION_DURATION}ms`,
-        } as React.CSSProperties
-      }
-      {...props}
-    >
-      {children}
-    </Collapsible>
+    <FoldContext.Provider value={fold}>
+      <div
+        ref={rootRef}
+        data-slot="tool-fallback-root"
+        data-state={isOpen ? "open" : "closed"}
+        className={cn(
+          "aui-tool-fallback-root group/tool-fallback-root w-full",
+          className,
+        )}
+        style={
+          {
+            "--animation-duration": `${ANIMATION_DURATION}ms`,
+          } as React.CSSProperties
+        }
+        {...props}
+      >
+        {children}
+      </div>
+    </FoldContext.Provider>
   );
 }
 
@@ -127,11 +140,13 @@ function ToolFallbackTrigger({
   toolName,
   status,
   className,
+  onClick,
   ...props
-}: React.ComponentProps<typeof CollapsibleTrigger> & {
+}: React.ComponentProps<"button"> & {
   toolName: string;
   status?: ToolCallMessagePartStatus;
 }) {
+  const { open, setOpen, contentId } = useFold();
   const statusType = status?.type ?? "complete";
   const isRunning = statusType === "running";
   const isCancelled =
@@ -141,12 +156,20 @@ function ToolFallbackTrigger({
   const label = isCancelled ? "Cancelled tool" : "Used tool";
 
   return (
-    <CollapsibleTrigger
+    <button
+      type="button"
       data-slot="tool-fallback-trigger"
+      data-state={open ? "open" : "closed"}
+      aria-expanded={open}
+      aria-controls={contentId}
       className={cn(
         "aui-tool-fallback-trigger group/trigger text-muted-foreground hover:text-foreground flex w-fit origin-left items-center gap-2 py-1.5 text-sm transition-[color,scale] active:scale-[0.98]",
         className,
       )}
+      onClick={(e) => {
+        onClick?.(e);
+        if (!e.defaultPrevented) setOpen(!open);
+      }}
       {...props}
     >
       <Icon
@@ -187,27 +210,29 @@ function ToolFallbackTrigger({
           "group-data-[state=open]/trigger:rotate-0",
         )}
       />
-    </CollapsibleTrigger>
+    </button>
   );
 }
 
+/**
+ * The card's body: args, result, error. Closed, it stays mounted under
+ * hidden="until-found" so find-in-page can land in a tool's output and open the card.
+ */
 function ToolFallbackContent({
   className,
   children,
   ...props
-}: React.ComponentProps<typeof CollapsibleContent>) {
+}: Omit<React.ComponentProps<"div">, "hidden">) {
+  const { open, setOpen, contentId } = useFold();
   return (
-    <CollapsibleContent
+    <FoldedContent
+      id={contentId}
+      open={open}
+      onReveal={() => setOpen(true)}
       data-slot="tool-fallback-content"
       className={cn(
         "aui-tool-fallback-content relative overflow-hidden text-sm outline-none",
         "group/collapsible-content ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:animate-none",
-        "data-[state=closed]:animate-collapsible-up",
-        "data-[state=open]:animate-collapsible-down",
-        "data-[state=closed]:fill-mode-forwards",
-        "data-[state=closed]:pointer-events-none",
-        "data-[state=open]:duration-(--animation-duration)",
-        "data-[state=closed]:duration-(--animation-duration)",
         className,
       )}
       {...props}
@@ -222,7 +247,7 @@ function ToolFallbackContent({
       >
         {children}
       </div>
-    </CollapsibleContent>
+    </FoldedContent>
   );
 }
 
