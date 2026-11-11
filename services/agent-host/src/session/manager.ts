@@ -218,6 +218,12 @@ export interface ConversationLink {
   };
 }
 
+/** A link not stored because another conversation already owns its resource. */
+export interface LinkClash {
+  /** Undefined when the owner could not be read back. */
+  ownerConversationId?: string;
+}
+
 /** Durable conversation store: event-log replay plus the goose state pointer. */
 export interface ConversationStore {
   appendEvent(id: SessionId, event: AguiEvent): Promise<void>;
@@ -279,7 +285,7 @@ export interface ConversationStore {
    *  hydrate(); optional. */
   removeConversation?(id: SessionId): Promise<void>;
   /** Record an external resource link for a conversation (deduped); optional. */
-  addLink?(id: SessionId, link: ConversationLink): Promise<void>;
+  addLink?(id: SessionId, link: ConversationLink): Promise<LinkClash | void>;
   /** The conversation's external resource links; optional. */
   listLinks?(id: SessionId): Promise<ConversationLink[]>;
   /** Append a background-job record so list_background survives a restart; optional. */
