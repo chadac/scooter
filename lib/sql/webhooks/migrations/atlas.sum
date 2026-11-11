@@ -1,4 +1,4 @@
-h1:guIgewLvTRBx7j0haFoN2pMocacIHzjN5y3uPgoIhWM=
+h1:vBYtRQLb88SQ8/TC+UI2Pfe6ng8Stl7xDy9CQ4Lw9RQ=
 20260827201645_baseline.sql h1:zNw15JekMclwgYbNG/qmgGf760GMymUkklSk9EKk56k=
 20260831175021_drop_credential_scopes.sql h1:iFGcXYyzpgn50++ZOnqD3dyMPPfCqG+NrbV97aKDFoI=
 20260831181922_drop_webhooks_remote_agents.sql h1:hhnZm5bjmu7udPrmr9u6mhequIn0zjg0UnhkHSTCz04=
@@ -9,3 +9,4 @@ h1:guIgewLvTRBx7j0haFoN2pMocacIHzjN5y3uPgoIhWM=
 20261102044526_add_identities_and_senders.sql h1:9hFD+2zwK+IULFcQn0ahmEca4zPF7Nzjh2FLjsM8MfQ=
 20261107201207_add_conversation_vars.sql h1:NvYrG3xoAhTbdsaxi3HIcb1QqIpBmCdAW0AG3vvPQ4U=
 20261108235924_add_resource_links_conversation_index.sql h1:cGdUg62AcTIwqiWMXg7rmXN+9HdxBhCXzra/c9kkUnI=
+20261111200000_repair_slack_thread_links.sql h1:gSNHPWRs5YV34HuzbfCgDRa4neAJBIsinS+vK1rYNiw=

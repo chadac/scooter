@@ -55,6 +55,9 @@ function fakeDb(): { db: NodePgDatabase; rows: Array<Record<string, unknown>> } 
         );
         if (existing) {
           if (!/DO UPDATE/i.test(text)) return { rows: [], rowCount: 0 };
+          // The upsert's WHERE leaves another conversation's row alone.
+          const guarded = /DO UPDATE[\s\S]*\bWHERE\b[\s\S]*conversation_id/i.test(text);
+          if (guarded && existing.conversation_id !== conv) return { rows: [], rowCount: 0 };
           // coalesce(excluded.x, existing.x): a sparser write must not blank a column.
           existing.url = url ?? existing.url;
           existing.title = title ?? existing.title;
@@ -188,19 +191,32 @@ describe("linked resources in Postgres", () => {
     expect(await store.listLinks(CONV)).toHaveLength(1);
   });
 
-  it("ENRICHES an existing link when a later post adds a ref", async () => {
-    // A Slack thread has nothing derivable from a url, so this exercises the enrich path alone.
-    const { db, rows } = fakeDb();
+  it("ENRICHES an existing link when a later post adds a title", async () => {
+    // A Slack thread has no url, so this exercises the enrich path alone.
+    const { db } = fakeDb();
     const store = createPgLinkStore({ db });
-    const thread = (over: Partial<ConversationLink> = {}): ConversationLink => ({
-      source: "slack", resourceType: "thread", title: "#eng thread", ...over,
-    });
-    await store.addLink(CONV, thread());
-    await store.addLink(CONV, thread({ ref: { channel: "C123", threadTs: "1700.5" } }));
+    const ref = { channel: "C123", threadTs: "1700.5" };
+    await store.addLink(CONV, { source: "slack", resourceType: "thread", ref });
+    await store.addLink(CONV, { source: "slack", resourceType: "thread", title: "C123 thread", ref });
 
     const listed = await store.listLinks(CONV);
     expect(listed).toHaveLength(1);
-    expect(listed[0].ref).toEqual({ channel: "C123", threadTs: "1700.5" });
+    expect(listed[0]).toMatchObject({ title: "C123 thread", ref });
+  });
+
+  it("two Slack threads in ONE channel are two links, one per conversation", async () => {
+    // Both carry the same channel-wide title, which must not be their identity.
+    const { db } = fakeDb();
+    const store = createPgLinkStore({ db });
+    const thread = (threadTs: string): ConversationLink => ({
+      source: "slack", resourceType: "thread", title: "C123 thread", ref: { channel: "C123", threadTs },
+    });
+    expect(await store.addLink("conv-a" as SessionId, thread("1700.1"))).toBeUndefined();
+    expect(await store.addLink("conv-b" as SessionId, thread("1700.2"))).toBeUndefined();
+
+    expect(await store.listLinks("conv-a" as SessionId)).toEqual([thread("1700.1")]);
+    expect(await store.listLinks("conv-b" as SessionId)).toEqual([thread("1700.2")]);
+    expect(await store.conversationForResource("slack", "thread", "C123:1700.2")).toBe("conv-b");
   });
 
   it("CANONICALISES resource_type, so the two spellings are ONE row", async () => {
@@ -255,6 +271,23 @@ describe("linked resources in Postgres", () => {
     expect(rows).toHaveLength(1);
     expect(await store.listLinks("conv-a" as SessionId)).toHaveLength(1);
     expect(await store.listLinks("conv-b" as SessionId)).toHaveLength(0);
+  });
+
+  it("REPORTS the clash, naming the owner, and leaves the owner's row as it was", async () => {
+    const { db, rows } = fakeDb();
+    const store = createPgLinkStore({ db });
+    await store.addLink("conv-a" as SessionId, pr());
+
+    const clash = await store.addLink("conv-b" as SessionId, pr({ title: "other writer" }));
+    expect(clash).toEqual({ ownerConversationId: "conv-a" });
+    expect(rows[0]).toMatchObject({ conversation_id: "conv-a", title: pr().title });
+  });
+
+  it("a re-post by the owner is not a clash", async () => {
+    const { db } = fakeDb();
+    const store = createPgLinkStore({ db });
+    await store.addLink(CONV, pr());
+    expect(await store.addLink(CONV, pr())).toBeUndefined();
   });
 });
 
@@ -361,6 +394,19 @@ describe("database failures degrade, never throw into a request", () => {
 describe("resourceIdOf — the dedupe identity", () => {
   it("prefers the url", () => {
     expect(resourceIdOf(pr())).toBe("https://github.com/example-org/example-app/pull/203");
+  });
+  it("names a url-less Slack thread by channel:threadTs, as conversation_map does", () => {
+    expect(
+      resourceIdOf({
+        source: "slack", resourceType: "thread", title: "C123 thread", ref: { channel: "C123", threadTs: "1700.5" },
+      }),
+    ).toBe("C123:1700.5");
+  });
+  it("still prefers a Slack permalink over the ref", () => {
+    const url = "https://example.slack.com/archives/C123/p17005";
+    expect(
+      resourceIdOf({ source: "slack", resourceType: "thread", url, ref: { channel: "C123", threadTs: "1700.5" } }),
+    ).toBe(url);
   });
   it("falls back to the title", () => {
     expect(resourceIdOf({ source: "slack", resourceType: "thread", title: "#eng-help" })).toBe(

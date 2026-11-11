@@ -1327,13 +1327,19 @@ export function createManagementApi(deps: ManagementDeps): Router {
     // materializes (the Slack webhook posts the thread link before /agui creates the
     // session), and the store keys by the full threadId the webhook posts.
     const id = (await resolveConvId(ctx.params.id)) ?? ctx.params.id;
-    await store.addLink?.(id, {
+    const clash = await store.addLink?.(id, {
       source: body.source,
       resourceType: body.resourceType,
       url: body.url,
       title: body.title,
       ref: body.ref,
     });
+    if (clash) {
+      return {
+        status: 409,
+        json: { error: "resource is linked to another conversation", conversationId: clash.ownerConversationId },
+      };
+    }
     return { status: 201, json: { ok: true } };
   });
 

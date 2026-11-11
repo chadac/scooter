@@ -787,6 +787,18 @@ describe("management API", () => {
     expect((json as any).links[0]).toMatchObject({ source: "github", resourceType: "pull_request" });
   });
 
+  it("POST /conversations/:id/links answers 409 when another conversation owns the resource", async () => {
+    const store = { ...fakeStore([]), addLink: async () => ({ ownerConversationId: "c0" }) };
+    const api = createManagementApi({ sessions: fakeSessions(), store, server: stubServer, answerInterrupt: async () => ({ ok: true }) });
+    const post = await call(api, "POST", "/conversations/c1/links", {
+      source: "slack",
+      resourceType: "thread",
+      ref: { channel: "C1", threadTs: "1.2" },
+    });
+    expect(post.status).toBe(409);
+    expect(post.json).toMatchObject({ conversationId: "c0" });
+  });
+
   it("POST /conversations/:id/links rejects a missing source/type", async () => {
     const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     const { status } = await call(api, "POST", "/conversations/c1/links", { url: "x" });
