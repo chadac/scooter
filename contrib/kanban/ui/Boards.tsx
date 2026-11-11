@@ -7,7 +7,8 @@
 // with POST /kanban/user/boards/<id>/cards and again when kanban pushes a change to them. Moving a card files the
 // conversation in the stage, then tells it as the user.
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ChevronLeft, ChevronRight, Lock, Pencil, Plus, ShieldCheck, Tag as TagIcon, Trash2, X } from "lucide-react";
+import { DropdownMenu } from "radix-ui";
+import { ArrowLeft, ChevronLeft, ChevronRight, Lock, MoreHorizontal, Pencil, Plus, ShieldCheck, Tag as TagIcon, Trash2, X } from "lucide-react";
 import {
   Button,
   ChatPanel,
@@ -899,6 +900,25 @@ function Board({
     }
   };
 
+  /** Opens Edit board, or saves and closes it. */
+  const toggleEditing = () => {
+    if (editing) return void saveDraft();
+    setTagging(null);
+    setDraft({ stages: savedStages, tags: savedTags, skills: savedSkills, gates: savedGates });
+  };
+
+  const renameBoard = () => {
+    const name = window.prompt("Rename the board", folder.name)?.trim();
+    if (name && name !== folder.name) {
+      rename(name).catch((e: unknown) => setError(`Could not rename the board: ${(e as Error).message}`));
+    }
+  };
+
+  const deleteBoard = () => {
+    const ok = window.confirm(`Delete the "${folder.name}" board and its stages? Its conversations stay, unfiled.`);
+    if (ok) remove().catch((e: unknown) => setError(`Could not delete the board: ${(e as Error).message}`));
+  };
+
   /** Goes to `path`, asking first when the board has unsaved edits. */
   const leave = (path: string) => (dirty ? setLeaving(path) : navigate(path));
 
@@ -911,7 +931,7 @@ function Board({
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="kanban-board" data-folder-id={folder.id}>
-      <div className="flex flex-wrap items-center gap-2 border-b px-2 py-2 md:px-4">
+      <div className="flex items-center gap-1 border-b px-2 py-1.5 md:gap-2 md:px-4 md:py-2">
         <Button size="sm" variant="ghost" data-testid="kanban-all-boards" aria-label="Boards" onClick={() => leave("")}>
           <ArrowLeft aria-hidden /> <span className="max-md:hidden">Boards</span>
         </Button>
@@ -928,22 +948,24 @@ function Board({
             </option>
           ))}
         </select>
-        <div className="ms-auto flex flex-wrap items-center gap-1 md:gap-2">
+        <div className="ms-auto flex items-center gap-1 md:gap-2">
           <Button
             size="sm"
             variant="outline"
             data-testid="kanban-new"
+            aria-label="New conversation"
             onClick={() => {
               // A stage made in the draft has no folder yet.
               newConversation({ folderId: first && !isNew(first) ? first : folder.id });
               setPanel(true);
             }}
           >
-            New conversation
+            <Plus aria-hidden className="md:hidden" />
+            <span className="max-md:hidden">New conversation</span>
           </Button>
           {dirty && (
             <>
-              <span data-testid="kanban-unsaved" className="text-xs text-muted-foreground">
+              <span data-testid="kanban-unsaved" className="text-xs text-muted-foreground max-md:hidden">
                 Unsaved changes
               </span>
               <Button size="sm" variant="ghost" data-testid="kanban-discard" disabled={saving} onClick={() => setDraft(null)}>
@@ -957,39 +979,50 @@ function Board({
             data-testid="kanban-edit-stages"
             aria-pressed={editing}
             disabled={saving}
-            onClick={() => {
-              if (editing) return void saveDraft();
-              setTagging(null);
-              setDraft({ stages: savedStages, tags: savedTags, skills: savedSkills, gates: savedGates });
-            }}
+            // Phones open Edit board from the menu.
+            className={cn(!editing && "max-md:hidden")}
+            onClick={toggleEditing}
           >
             {saving && <Spinner />}
-            {dirty ? "Save" : editing ? "Done editing" : "Edit board"}
+            {dirty ? (
+              "Save"
+            ) : editing ? (
+              <>
+                Done<span className="max-md:hidden"> editing</span>
+              </>
+            ) : (
+              "Edit board"
+            )}
           </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            data-testid="kanban-rename-board"
-            onClick={() => {
-              const name = window.prompt("Rename the board", folder.name)?.trim();
-              if (name && name !== folder.name) {
-                rename(name).catch((e: unknown) => setError(`Could not rename the board: ${(e as Error).message}`));
-              }
-            }}
-          >
+          <Button size="sm" variant="ghost" data-testid="kanban-rename-board" className="max-md:hidden" onClick={renameBoard}>
             Rename
           </Button>
-          <Button
-            size="sm"
-            variant="ghost"
-            data-testid="kanban-delete-board"
-            onClick={() => {
-              const ok = window.confirm(`Delete the "${folder.name}" board and its stages? Its conversations stay, unfiled.`);
-              if (ok) remove().catch((e: unknown) => setError(`Could not delete the board: ${(e as Error).message}`));
-            }}
-          >
+          <Button size="sm" variant="ghost" data-testid="kanban-delete-board" className="max-md:hidden" onClick={deleteBoard}>
             Delete board
           </Button>
+          <DropdownMenu.Root>
+            <DropdownMenu.Trigger asChild>
+              <Button size="sm" variant="ghost" data-testid="kanban-board-menu" aria-label="Board actions" className="md:hidden">
+                <MoreHorizontal aria-hidden />
+              </Button>
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Portal>
+              <DropdownMenu.Content align="end" sideOffset={4} className="z-50 min-w-36 rounded-md border bg-popover p-1 text-sm text-popover-foreground shadow-md">
+                {!editing && (
+                  <DropdownMenu.Item onSelect={toggleEditing} className="cursor-pointer rounded px-2 py-1 outline-none data-[highlighted]:bg-accent">
+                    Edit board
+                  </DropdownMenu.Item>
+                )}
+                {/* Deferred so the menu closes before the browser dialog opens. */}
+                <DropdownMenu.Item onSelect={() => setTimeout(renameBoard)} className="cursor-pointer rounded px-2 py-1 outline-none data-[highlighted]:bg-accent">
+                  Rename
+                </DropdownMenu.Item>
+                <DropdownMenu.Item onSelect={() => setTimeout(deleteBoard)} className="cursor-pointer rounded px-2 py-1 outline-none data-[highlighted]:bg-accent text-destructive">
+                  Delete board
+                </DropdownMenu.Item>
+              </DropdownMenu.Content>
+            </DropdownMenu.Portal>
+          </DropdownMenu.Root>
         </div>
       </div>
       {error && (

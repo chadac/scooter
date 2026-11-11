@@ -562,6 +562,34 @@ fastOnly("the kanban broker routes are stubbed in the browser")("kanban /boards 
     expect(left.folders.map((f) => f.id).filter((f) => gone.includes(f))).toEqual([]);
   });
 
+  test("on a phone the board header is one row, with its actions in a menu", async ({ page, request, baseURL }) => {
+    const base = baseURL ?? "http://localhost:5173";
+    const kanban = await serveKanban(page, request, base);
+    const name = `e2e-board-phone-${Date.now()}`;
+    const board = await kanban.board(name);
+    await page.setViewportSize({ width: 390, height: 844 });
+
+    await page.goto(`/boards/${board.folder}`);
+    await expect(page.getByTestId("kanban-board")).toBeVisible({ timeout: 20_000 });
+    for (const id of ["kanban-edit-stages", "kanban-rename-board", "kanban-delete-board"]) {
+      await expect(page.getByTestId(id)).toBeHidden();
+    }
+    const rowTop = async (id: string) => (await page.getByTestId(id).boundingBox())?.y;
+    const top = await rowTop("kanban-switch-board");
+    expect(await rowTop("kanban-new")).toBeCloseTo(top ?? -1, -1);
+    expect(await rowTop("kanban-board-menu")).toBeCloseTo(top ?? -1, -1);
+
+    page.once("dialog", (d) => void d.accept(`${name}-renamed`));
+    await page.getByTestId("kanban-board-menu").click();
+    await page.getByRole("menuitem", { name: "Rename" }).click();
+    await expect(page.getByTestId("kanban-switch-board").locator("option:checked")).toHaveText(`${name}-renamed`);
+
+    await page.getByTestId("kanban-board-menu").click();
+    await page.getByRole("menuitem", { name: "Edit board" }).click();
+    await expect(page.getByTestId("kanban-edit-stages")).toBeVisible();
+    await expect(page.getByTestId("kanban-tags")).toBeVisible();
+  });
+
   test("a blocked card shows how many cards it waits on", async ({ chat, page, request, baseURL }) => {
     const base = baseURL ?? "http://localhost:5173";
     const kanban = await serveKanban(page, request, base);
