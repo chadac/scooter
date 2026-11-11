@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import ssl
 from types import SimpleNamespace
 
@@ -97,8 +98,17 @@ def _forge(provider) -> ForgeHosts:
     return next(t for t in provider.transports if isinstance(t, ForgeHosts))
 
 
-def test_disabled_without_a_key():
-    assert gcp().enabled is False
+def test_disabled_without_a_key_logs_no_error(caplog):
+    with caplog.at_level(logging.INFO, logger="scooter_contrib_gcp"):
+        assert gcp().enabled is False
+    assert [r.levelno for r in caplog.records] == [logging.INFO]
+
+
+def test_a_key_that_is_not_json_logs_an_error(monkeypatch, caplog):
+    monkeypatch.setenv("GCP_SERVICE_ACCOUNT_JSON", "{not json")
+    with caplog.at_level(logging.INFO, logger="scooter_contrib_gcp"):
+        assert gcp().enabled is False
+    assert [r.levelno for r in caplog.records] == [logging.ERROR]
 
 
 def test_disabled_with_a_key_missing_fields(monkeypatch):

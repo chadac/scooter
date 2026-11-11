@@ -42,7 +42,8 @@ def gcp() -> Provider:
 
 def _load_key(raw: str) -> dict | None:
     if not raw.strip():
-        logger.error("GCP_SERVICE_ACCOUNT_JSON is empty; gcp provider disabled")
+        # Normal when unconfigured: published images ship gcp everywhere.
+        logger.info("GCP_SERVICE_ACCOUNT_JSON is not set; gcp provider disabled")
         return None
     try:
         info = json.loads(raw)
