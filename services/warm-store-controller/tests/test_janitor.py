@@ -156,11 +156,6 @@ def test_warm_pvcs_of_a_retired_tag_or_without_a_job_are_dropped():
     assert run(world(pvcs=[warm_pvc(created=NOW - 1000)]))[0] == [j.DeletePvc("warm-store-t-1", "warm-orphan")]
 
 
-def test_pvcs_from_the_old_pool_state_machine_are_deleted():
-    old = j.Pvc("warm-store-t-old", "Bound", "pv5", "pool", {j.LBL_LEGACY_POOL: "ready"})
-    assert run(world(pvcs=[old]))[0] == [j.DeletePvc("warm-store-t-old", "legacy-pool")]
-
-
 # --- warm PVs in flight still count (#973) -------------------------------------
 
 def test_a_promoting_warm_pvc_still_counts_as_warming():

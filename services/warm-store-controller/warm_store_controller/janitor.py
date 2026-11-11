@@ -17,8 +17,6 @@ WARM_PVC_PREFIX = "warm-store-"
 LBL_RELEASE = "scooter.io/release"            # "requested" on a suspended sandbox's overlay PVC
 LBL_WARM_SEED = "scooter.io/warm-seed"        # on a warm PVC
 LBL_MARKER_PVC = "scooter.io/marker-pvc"      # on a marker-check Job: the PVC it reads
-# TODO: drop with the legacy-pool sweep below, once no such PVCs remain.
-LBL_LEGACY_POOL = "scooter.io/pool-state"     # on a PVC from the retired pool state machine
 
 MarkerStatus = Literal["running", "clean", "dirty", "unknown"]
 JobStatus = Literal["running", "succeeded", "failed"]
@@ -194,10 +192,7 @@ def plan_upkeep(
             if _is_current_warm(pvc, cfg):
                 warming.append(_node_of(pvc, pv_by_name))
             continue
-        # TODO: remove once old pool-state PVCs are swept everywhere.
-        if LBL_LEGACY_POOL in pvc.labels:
-            actions.append(DeletePvc(pvc.name, "legacy-pool"))
-        elif pvc.labels.get(LBL_RELEASE) == "requested":
+        if pvc.labels.get(LBL_RELEASE) == "requested":
             a = _release_action(pvc, world, cfg, pv_by_name, marker_attempts)
             if a is not None:
                 actions.append(a)
