@@ -30,6 +30,9 @@ import {
 import { debug, debugError } from "../debug.js";
 import { filterCancelRequests } from "./cancelRequestFilter.js";
 import { installAcpSdkErrorLog } from "./sdkErrorLog.js";
+import { logger, type Logger } from "../log.js";
+
+const gooseLog = logger("acp");
 
 // --- Facade types (kept stable for the bridge + fake) -----------------------
 
@@ -245,15 +248,10 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
   child.on("error", (err) => {
     debugError(`[acp] goose spawn error (command="${deps.command}"):`, err);
   });
+  // Set by close(), so its SIGTERM isn't logged as a crash.
+  let stopping = false;
   child.on("exit", (code, signal) => {
-    if (code === 0) {
-      debug(`[acp] goose exited cleanly (code 0)`);
-      return;
-    }
-    debugError(
-      `[acp] goose exited unexpectedly (code=${code}, signal=${signal}). ` +
-        `Last stderr:\n${stderrTail.join("\n") || "(no stderr captured)"}`,
-    );
+    logGooseExit(gooseLog, { code, signal, stopping, stderrTail });
   });
 
   // Adapt the child's Node stdio to the Web streams ndJsonStream expects.
@@ -396,9 +394,28 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
       permissionHandler = handler;
     },
     async close() {
+      stopping = true;
       await closeChild(child);
     },
   };
+}
+
+/** Log a goose exit: error for a crash, info for a stop close() asked for. */
+export function logGooseExit(
+  log: Pick<Logger, "debug" | "info" | "error">,
+  exit: { code: number | null; signal: NodeJS.Signals | null; stopping: boolean; stderrTail: readonly string[] },
+): void {
+  const { code, signal, stopping } = exit;
+  if (code === 0) {
+    log.debug("goose exited cleanly", { code });
+    return;
+  }
+  if (code === null && stopping) {
+    log.info("goose stopped", { signal });
+    return;
+  }
+  // Tail as a field keeps each exit one log event.
+  log.error("goose exited unexpectedly", { code, signal, stopping, stderr_tail: exit.stderrTail });
 }
 
 /** Minimal shape of a child process `closeChild` needs (testable without spawning). */
