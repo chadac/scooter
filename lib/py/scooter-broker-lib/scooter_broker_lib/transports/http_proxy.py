@@ -30,6 +30,21 @@ _HOP_BY_HOP = frozenset({
 })
 
 
+def _upstream_failure(provider: str, outbound: httpx.Request, e: httpx.TransportError) -> JSONResponse:
+    """A 504 for an upstream timeout, else a 502, naming the provider and error class."""
+    status = 504 if isinstance(e, httpx.TimeoutException) else 502
+    url = str(outbound.url.copy_with(query=None))
+    logger.warning(
+        "http-proxy upstream failed",
+        extra={"provider": provider, "http_method": outbound.method, "url": url, "error": format_error(e)},
+    )
+    return JSONResponse(
+        {"message": f"{provider} upstream failed: {type(e).__name__}", "provider": provider, "error": type(e).__name__},
+        status_code=status,
+        headers={"X-Broker-Upstream-Url": url},
+    )
+
+
 @dataclass
 class HttpProxy(Transport):
     upstream: str = ""                  # e.g. "https://api.github.com"
@@ -78,7 +93,10 @@ class HttpProxy(Transport):
                 if credential_source is not None:
                     cred = await credential_source.get(identity, forge_req)
                     cred.inject(outbound)
-                upstream_resp = await client.send(outbound)
+                try:
+                    upstream_resp = await client.send(outbound)
+                except httpx.TransportError as e:
+                    return _upstream_failure(provider.name, outbound, e)
 
             # Best-effort auto-link that never affects the response the agent gets back.
             if self.link_rules and 200 <= upstream_resp.status_code < 300 and identity.conversation_id:
