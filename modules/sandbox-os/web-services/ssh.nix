@@ -44,8 +44,6 @@ in
         # A WebSocket for ssh clients, nothing to open in a browser.
         visibleInMenu = lib.mkDefault false;
         hint = lib.mkDefault "Connect with a ProxyCommand that opens the WebSocket (scooter-mode's `scooter tunnel`).";
-        # Root, like the terminal, so sessions own /workspace.
-        user = lib.mkDefault "root";
         command = lib.mkDefault "${pkgs.writeShellScript "ssh-web-service" ''
           set -euo pipefail
           # On the PVC, so the host key survives suspend/resume.

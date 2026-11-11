@@ -65,7 +65,6 @@ free until the service actually starts.
     enable = true;
     port = 2728;                       # in-pod port (unique per service)
     displayName = "notebooks";
-    user = "root";                     # writes notebooks to /workspace
     workingDirectory = "/workspace";
     # Serve UNDER the base path; --proxy makes absolute URLs correct.
     command = ''
@@ -79,6 +78,12 @@ free until the service actually starts.
   };
 }
 ```
+
+A service runs **as you** by default: your user, `HOME=/workspace`, and the
+environment your own shell sees, so git, `gh`, the SSH agent and cloud
+credentials work in it the same way. Its own `environment` still wins. Set
+`runAsAgent = false;` (with `user`, or none for a DynamicUser) for a service that
+must not hold your credentials.
 
 Key rules for the `command`:
 - Bind `--host 0.0.0.0` (the agent-host reaches the pod IP, not localhost).

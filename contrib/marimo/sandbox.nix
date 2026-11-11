@@ -70,13 +70,8 @@ in
     displayName = lib.mkDefault "marimo";
     visibleInMenu = lib.mkDefault false;
     extraConfig.partOf = [ "webservice-notebook.service" ];
-    # Root, like the agent's own exec'd shell, so notebooks land on the /workspace PVC.
-    user = lib.mkDefault "root";
     workingDirectory = lib.mkDefault "/workspace";
     environment = lib.mkDefault ({
-      # marimo's settings live in the agent's own ~/.config on the workspace PVC, not in
-      # root's home, which a pod rebuild discards. uv's cache stays out of the PVC.
-      XDG_CONFIG_HOME = "/workspace/.config";
       # Pin uv to a Nix-provided Python, since a downloaded CPython cannot exec on NixOS.
       UV_PYTHON = "${pkgs.python314}/bin/python3.14";
       UV_PYTHON_DOWNLOADS = "never";

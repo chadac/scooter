@@ -50,7 +50,7 @@ pkgs.testers.runNixOSTest {
     imports = [ sandboxModule ];
 
     # Unrecognised kernel cmdline args land on PID 1's environ but not in the systemd manager env, reproducing how the container runtime delivers CONVERSATION_ID in production.
-    boot.kernelParams = [ "CONVERSATION_ID=conv-test" ];
+    boot.kernelParams = [ "CONVERSATION_ID=conv-test" "SCOOTER_TEST_POD=from-pod" "SCOOTER_TEST_SHADOW=from-pod" ];
 
     # The built-in `terminal` is enabled to assert its declaration only; starting it would `nix build` ttyd inside the VM.
     webServices.terminal.enable = true;
@@ -68,6 +68,20 @@ pkgs.testers.runNixOSTest {
         serviceConfig.LimitNOFILE = 4242;
         wants = [ "webservice-backend.service" ];
       };
+    };
+
+    # Dumps the environment it was started with, as the agent and isolated.
+    webServices.agent-env = {
+      enable = true;
+      port = 9914;
+      environment = { SCOOTER_TEST_SHADOW = "from-unit"; PAGER = "cat"; };
+      command = "${pkgs.writeShellScript "agent-env" "id -un > /run/agent-env; env >> /run/agent-env; exec sleep infinity"}";
+    };
+    webServices.isolated-env = {
+      enable = true;
+      port = 9915;
+      runAsAgent = false;
+      command = "${pkgs.writeShellScript "isolated-env" "env > $RUNTIME_DIRECTORY/env; exec sleep infinity"}";
     };
 
     # An unlisted backend the demo starts, as marimo is to "marimo + chat" (notebook).
@@ -144,6 +158,21 @@ pkgs.testers.runNixOSTest {
     machine.succeed("scooter-service status backend | grep -q active")
     machine.succeed("scooter-service stop demo")
     machine.wait_until_succeeds("! systemctl is-active --quiet webservice-backend.service", timeout=30)
+
+    # 4d. A service runs as the agent: its user, HOME, pod env and session vars, under the unit's own.
+    machine.succeed("systemctl start webservice-agent-env.service")
+    machine.wait_until_succeeds("test -s /run/agent-env", timeout=30)
+    env = machine.succeed("cat /run/agent-env").splitlines()
+    assert env[0] == "root", env[0]
+    for line in ["HOME=/workspace", "SCOOTER_TEST_POD=from-pod", "SCOOTER_TEST_SHADOW=from-unit", "PAGER=cat", "__NIXOS_SET_ENVIRONMENT_DONE=1"]:
+        assert line in env, (line, env)
+    assert any(l.startswith("PATH=") and "/run/wrappers/bin" in l for l in env), env
+    # runAsAgent = false keeps the DynamicUser and none of the pod env.
+    machine.succeed("systemctl start webservice-isolated-env.service")
+    machine.wait_until_succeeds("test -s /run/webservice-isolated-env/env", timeout=30)
+    iso = machine.succeed("cat /run/webservice-isolated-env/env")
+    assert "SCOOTER_TEST_POD" not in iso and "HOME=/workspace" not in iso, iso
+    machine.succeed("systemctl show webservice-isolated-env.service -p DynamicUser --value | grep -qx yes")
 
     # 5. The built-in `terminal` is in the manifest and its unit runs ttyd + tmux under the /terminal base path.
     term = { s["name"]: s for s in data["services"] }["terminal"]

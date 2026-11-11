@@ -91,6 +91,8 @@ let
     };
 
     config = lib.mkIf (config.chatPage != null) {
+      # A static page needs none of the agent's credentials.
+      runAsAgent = lib.mkDefault false;
       stripBasePath = lib.mkDefault true;
       command = lib.mkDefault "${server name config}";
     };

@@ -17,8 +17,6 @@ in
   webServices.terminal = {
     port = lib.mkDefault 7681;
     displayName = lib.mkDefault "Terminal";
-    # Root, like the agent's own exec'd shell, so the shell operates on the /workspace PVC.
-    user = lib.mkDefault "root";
     workingDirectory = lib.mkDefault "/workspace";
     # `command` is types.str, so the derivation is interpolated to its store path for the re-converge eval.
     command = lib.mkDefault "${pkgs.writeShellScript "terminal-web-service" ''

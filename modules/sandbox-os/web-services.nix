@@ -19,6 +19,29 @@ let
 
   unitName = name: "webservice-${name}";
 
+  agentUser = "root";
+  agentHome = config.programs.scooterCarryOver.home;
+
+  # Execs its args with the agent's environment layered under the unit's own.
+  agentEnv = pkgs.writeShellScript "scooter-agent-env" ''
+    set -euo pipefail
+    unit_env=$(export -p)
+    while IFS= read -r -d "" kv; do
+      k=''${kv%%=*}
+      [[ $k =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+      [ -n "''${!k+x}" ] || export "$kv"
+    done < /proc/1/environ
+    set +u
+    . ${config.system.build.setEnvironment}
+    set -u
+    session_path=$PATH
+    eval "$unit_env"
+    export PATH="$PATH:$session_path"
+    # set-environment re-exports TERM, empty when the unit has none.
+    [ -n "''${TERM:-}" ] || unset TERM
+    exec "$@"
+  '';
+
   # The discovery manifest the agent-host WebServiceRegistry reads.
   manifestJSON = builtins.toJSON {
     services = lib.mapAttrsToList (name: s: {
@@ -293,10 +316,21 @@ let
         '';
       };
 
+      runAsAgent = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Run as the agent: its user, its HOME, and the environment its own shell sees
+          (the pod env, so the forge proxy, SSH agent, git identity and cloud
+          credentials work, plus the NixOS session variables). The unit's own
+          `environment` still wins. Set false to run as `user` instead, isolated.
+        '';
+      };
+
       user = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        description = "Run as this user; null => DynamicUser. Services needing a real HOME + the workspace set a concrete user.";
+        description = "With `runAsAgent = false`, run as this user; null => DynamicUser.";
       };
 
       workingDirectory = lib.mkOption {
@@ -386,12 +420,14 @@ in
             RuntimeDirectory = unitName name;
             ExecStartPre = "+${convEnvScript}";
             EnvironmentFile = "-/run/${unitName name}/conv.env";
-            ExecStart = s.command;
+            ExecStart = if s.runAsAgent then "${agentEnv} ${s.command}" else s.command;
             Restart = "on-failure";
           }
-          // (if s.user != null then { User = s.user; } else { DynamicUser = true; })
+          // (if s.runAsAgent then { User = agentUser; }
+              else if s.user != null then { User = s.user; }
+              else { DynamicUser = true; })
           // (lib.optionalAttrs (s.workingDirectory != null) { WorkingDirectory = s.workingDirectory; });
-          environment = s.environment;
+          environment = lib.optionalAttrs s.runAsAgent { HOME = agentHome; } // s.environment;
         };
       in
       lib.nameValuePair (unitName name) (lib.recursiveUpdate base s.extraConfig)
@@ -427,6 +463,10 @@ in
       # The router cannot reach the MCP range (network-policy.nix).
       assertion = s.port < mcpRange.first || s.port > mcpRange.last;
       message = "webServices.${name}: port ${toString s.port} is in the range reserved for mcpServers (${toString mcpRange.first}-${toString mcpRange.last}).";
+    }) enabled
+    ++ lib.mapAttrsToList (name: s: {
+      assertion = !s.runAsAgent || s.user == null || s.user == agentUser;
+      message = "webServices.${name}: set runAsAgent = false to run as user ${toString s.user}.";
     }) enabled;
   };
 }

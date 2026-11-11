@@ -123,8 +123,6 @@ in
     displayName = lib.mkDefault "Jupyter";
     command = lib.mkDefault "${labServer}";
     hint = lib.mkDefault hint;
-    # Root, like the agent's shell.
-    user = lib.mkDefault "root";
     workingDirectory = lib.mkDefault "/workspace";
     extraConfig = {
       wants = [ "mcp-jupyter.service" ];
@@ -133,7 +131,6 @@ in
         # Lab state survives pod rebuilds on the PVC.
         JUPYTER_CONFIG_DIR = "/workspace/.jupyter/config";
         JUPYTER_DATA_DIR = "/workspace/.jupyter/data";
-        HOME = "/root";
       };
     };
   };

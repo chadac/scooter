@@ -32,9 +32,6 @@ in
     enable = lib.mkDefault true;
     port = lib.mkDefault 7801;
     displayName = lib.mkDefault "Files";
-    # Root, like the agent's own exec'd shell, so the viewer sees the /workspace
-    # PVC exactly as the agent wrote it.
-    user = lib.mkDefault "root";
     workingDirectory = lib.mkDefault "/workspace";
 
     # stripBasePath stays at its default of false: the viewer is told its own

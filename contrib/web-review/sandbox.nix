@@ -131,8 +131,6 @@ in
     port = lib.mkDefault 2732;
     displayName = lib.mkDefault "Review app";
     visibleInMenu = lib.mkDefault false;
-    # Root: writes the workspace PVC.
-    user = lib.mkDefault "root";
     workingDirectory = lib.mkDefault "/workspace";
     environment = lib.mkDefault env;
     command = lib.mkDefault "${review}/bin/scooter-review proxy";
