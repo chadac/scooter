@@ -221,6 +221,8 @@ in
             };
             spec = {
               serviceAccountName = "agent-broker";
+              # Starts only once agent-db-migrate has applied this release.
+              initContainers = cfg.schemaGate.initContainers.broker or [ ];
               containers.agent-broker = {
                 name = "agent-broker";
                 image = bcfg.image;

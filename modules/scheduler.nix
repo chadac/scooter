@@ -215,6 +215,8 @@ in
             metadata.annotations."checksum/system-tasks" = builtins.hashString "sha256" systemTasksJson;
             spec = {
               serviceAccountName = "agent-scheduler";
+              # Starts only once agent-db-migrate has applied this release.
+              initContainers = cfg.schemaGate.initContainers.scheduler or [ ];
               containers.agent-scheduler = {
                 name = "agent-scheduler";
                 image = scfg.image;

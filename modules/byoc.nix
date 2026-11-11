@@ -133,6 +133,8 @@ in
             template = {
               metadata.labels."app.kubernetes.io/name" = "byoc-controller";
               spec = {
+                # Starts only once agent-db-migrate has applied this release.
+                initContainers = cfg.schemaGate.initContainers.byoc or [ ];
                 containers.byoc-controller = {
                   image = bcfg.image;
                   imagePullPolicy = "IfNotPresent";

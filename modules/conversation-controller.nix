@@ -393,6 +393,8 @@ in
             metadata.labels.app = "conversation-controller";
             spec = {
               serviceAccountName = "conversation-controller";
+              # Starts only once agent-db-migrate has applied this release.
+              initContainers = cfg.schemaGate.initContainers.conversation-controller or [ ];
               containers.controller = {
                 name = "controller";
                 image = ccfg.image;
@@ -483,6 +485,8 @@ in
             metadata.labels.app = "conversation-router";
             spec = {
               serviceAccountName = "conversation-router";
+              # Starts only once agent-db-migrate has applied this release.
+              initContainers = cfg.schemaGate.initContainers.conversation-router or [ ];
               containers.router = {
                 name = "router";
                 image = ccfg.routerImage;

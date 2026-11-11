@@ -52,6 +52,13 @@ let
   grants = lib.filterAttrs (svc: _: roleOf svc != null) pcfg.grants;
   needWait = readers != { } || grants != { };
 
+  # The schema gate (schema-gate.nix) reads Atlas revisions as this role.
+  revisionsGrant = db: role: lib.optionalString (cfg.schemaGate.versions ? ${db}) ''
+    wait_table "${db}" atlas_schema_revisions atlas_schema_revisions
+    psql -v ON_ERROR_STOP=1 -d "${db}" -c 'GRANT USAGE ON SCHEMA atlas_schema_revisions TO "${role}"'
+    psql -v ON_ERROR_STOP=1 -d "${db}" -c 'GRANT SELECT ON TABLE atlas_schema_revisions.atlas_schema_revisions TO "${role}"'
+  '';
+
   # The provisioning Job is a kubectl initContainer that writes each password to
   # /shared/<name>.pw and a psql container that creates the roles and databases.
 
@@ -94,9 +101,10 @@ let
   '' + lib.optionalString needWait ''
     # Reader tables come from agent-db-migrate, which runs alongside this Job, so
     # wait for each in-process rather than crash-looping through kubelet backoff.
+    # wait_table <db> <table> [schema]
     wait_table() {
       n=0
-      until [ "$(psql -d "$1" -tAc "SELECT to_regclass('public.\"$2\"') IS NOT NULL" 2>/dev/null)" = "t" ]; do
+      until [ "$(psql -d "$1" -tAc "SELECT to_regclass('\"''${3:-public}\".\"$2\"') IS NOT NULL" 2>/dev/null)" = "t" ]; do
         n=$((n + 1))
         if [ "$n" -ge 300 ]; then
           echo "[$1] table $2 still missing after ~10m (has agent-db-migrate run?), giving up" >&2
@@ -150,7 +158,7 @@ let
     # silently readable.
     psql -v ON_ERROR_STOP=1 -c 'GRANT CONNECT ON DATABASE "${g.db}" TO "${r.user}"'
     psql -v ON_ERROR_STOP=1 -d "${g.db}" -c 'GRANT USAGE ON SCHEMA public TO "${r.user}"'
-  '' + lib.concatMapStrings (t: ''
+  '' + revisionsGrant g.db r.user + lib.concatMapStrings (t: ''
     wait_table "${g.db}" "${t}"
     psql -v ON_ERROR_STOP=1 -d "${g.db}" -c 'GRANT SELECT ON TABLE public."${t}" TO "${r.user}"'
   '') g.tables + lib.concatMapStrings (t: ''
@@ -166,7 +174,7 @@ let
     # ---- grant ${svc}: role=${role} on ${g.db} ----
     psql -v ON_ERROR_STOP=1 -c 'GRANT CONNECT ON DATABASE "${g.db}" TO "${role}"'
     psql -v ON_ERROR_STOP=1 -d "${g.db}" -c 'GRANT USAGE ON SCHEMA public TO "${role}"'
-  '' + lib.concatMapStrings (t: ''
+  '' + revisionsGrant g.db role + lib.concatMapStrings (t: ''
     wait_table "${g.db}" "${t}"
     psql -v ON_ERROR_STOP=1 -d "${g.db}" -c 'GRANT SELECT ON TABLE public."${t}" TO "${role}"'
   '') g.tables + lib.concatMapStrings (t: ''

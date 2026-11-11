@@ -213,6 +213,8 @@ in
             metadata.labels.app = "agent-webhooks";
             spec = {
               serviceAccountName = "agent-webhooks";
+              # Starts only once agent-db-migrate has applied this release.
+              initContainers = cfg.schemaGate.initContainers.webhooks or [ ];
               containers.agent-webhooks = {
                 name = "agent-webhooks";
                 image = wcfg.image;

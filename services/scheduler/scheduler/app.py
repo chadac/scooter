@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.exc import DataError, DBAPIError, IntegrityError, ProgrammingError
 
 from .config import require_relay_key, settings
 from .cron import InvalidSchedule
@@ -158,6 +159,32 @@ async def _scheduler_loop(store: Store, metrics: MetricsSink, stop: asyncio.Even
             await asyncio.wait_for(stop.wait(), timeout=settings.tick_seconds)
 
 
+# Outlasts a postgres or pgbouncer restart during startup.
+STARTUP_DB_BUDGET_S = 60.0
+
+
+async def sync_with_retry(store: Store, specs, *, budget_s: float = STARTUP_DB_BUDGET_S, sleep=asyncio.sleep) -> None:
+    """Sync the system tasks, retrying an unreachable database with capped backoff until `budget_s` runs out."""
+    deadline = time.monotonic() + budget_s
+    delay = 0.5
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            await store.sync_system_tasks(specs)
+            return
+        except (OSError, DBAPIError) as err:
+            # Query and schema faults won't fix themselves.
+            if isinstance(err, (DataError, IntegrityError, ProgrammingError)) or time.monotonic() + delay > deadline:
+                raise
+            logger.warning(
+                "database not reachable at startup; retrying",
+                extra={"attempt": attempt, "retry_in_s": delay, "error": repr(err)},
+            )
+            await sleep(delay)
+            delay = min(delay * 2, 8.0)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     store = Store(settings.dsn)
@@ -167,7 +194,7 @@ async def lifespan(app: FastAPI):
     app.state.metrics = metrics
     
     # A list that does not parse fails startup; a task whose command is missing is skipped.
-    await store.sync_system_tasks(load_system_tasks(settings.system_tasks_path))
+    await sync_with_retry(store, load_system_tasks(settings.system_tasks_path))
     runner = Runner(
         store, metrics,
         concurrency=settings.system_task_concurrency,

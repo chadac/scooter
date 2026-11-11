@@ -413,6 +413,8 @@ let
     "db" "dbSpec" "sandboxPod" "approvals"
     # internal output of modules/contrib-db.nix, not a deployer setting
     "contribDbEnv"
+    # internal output of modules/schema-gate.nix
+    "schemaGate"
     # declared per-service module; a deployer overrides a ref, not the tree
     "images" "imagesContentTag"
     # the build itself; set only to patch a package
@@ -1077,6 +1079,32 @@ let
     (if initGrantIdx != [ ] then [ ] else [ "agent-postgres-init grants on no reader table — the wait_table check below is vacuous" ])
     ++ map (i: "agent-postgres-init grants before waiting for the table: ${nixpkgsLib.trim (builtins.elemAt initLines i)}")
       (builtins.filter (i: builtins.match ''[[:space:]]*wait_table .*'' (builtins.elemAt initLines (i - 1)) == null) initGrantIdx);
+  # Each Postgres Deployment gates on its databases' migrations.
+  gateOf = r: d:
+    let ics = r.deployments.${d}.spec.template.spec.initContainers or [ ];
+        m = builtins.filter (c: c.name == "wait-for-schema") ics;
+    in if m == [ ] then null else builtins.head m;
+  gateScriptOf = r: d: let g = gateOf r d; in if g == null then "" else nixpkgsLib.last g.command;
+  gateWaitsOn = r: d: db: builtins.match ".*-d \"${db}\" -tAc.*" (gateScriptOf r d) != null;
+  askUserOffRes = (evalPlatform {
+    module = { ... }: { imports = [ ./kubenix-config.nix ]; config = askUserOff; };
+  }).config.kubernetes.resources;
+  gateVersions = platform.config.scooter.schemaGate.versions;
+  schemaGateProblems =
+    builtins.concatMap (d: if gateOf res d != null then [ ] else [ "deployments.${d} has no wait-for-schema initContainer" ])
+      [ "agent-host" "conversation-router" "conversation-controller" "agent-scheduler" "agent-broker" "agent-webhooks" "byoc-controller" ]
+    ++ builtins.concatMap ({ d, db }: if gateWaitsOn res d db then [ ] else [ "deployments.${d}'s schema gate does not wait on ${db}" ])
+      [ { d = "agent-host"; db = "agent_host"; } { d = "conversation-router"; db = "agent_host"; }
+        { d = "conversation-router"; db = "contrib_ask_user"; } { d = "agent-broker"; db = "contrib_aws"; }
+        { d = "agent-scheduler"; db = "scheduler"; } ]
+    ++ (if builtins.match ".*-U \"conversation_router\".*" (gateScriptOf res "conversation-router") != null then [ ]
+        else [ "conversation-router's schema gate does not connect as its own role" ])
+    ++ (if builtins.match ".*>= '${gateVersions.agent_host or "none"}'.*" (gateScriptOf res "agent-host") != null then [ ]
+        else [ "agent-host's schema gate does not expect the newest agent_host migration" ])
+    ++ (if gateWaitsOn askUserOffRes "conversation-router" "contrib_ask_user"
+        then [ "conversation-router waits on contrib_ask_user while ask-user is disabled" ] else [ ])
+    ++ (if builtins.match ''.*GRANT SELECT ON TABLE atlas_schema_revisions[.]atlas_schema_revisions TO "conversation_router".*'' initScript != null then [ ]
+        else [ "agent-postgres-init does not let conversation_router read agent_host's Atlas revisions, so its schema gate never passes" ]);
   contribDbProblems =
     (if hasWord "contrib_aws:broker" (toString (contribEnvValue migrateEnv "DB_ENVS")) then [ ]
      else [ "migrate.env.DB_ENVS lacks contrib_aws:broker — aws's own database is never migrated, or not as the broker's role" ])
@@ -1767,7 +1795,7 @@ let
               (envOf bothAgents.config.kubernetes.resources "agent-host" "GOOSE_BIN") true)).success then [ ]
         else [ "agent.command with fakeAgent should fail the render" ]);
 
-  allProblems = commandProblems ++ packageProblems ++ uploadsProblems ++ sysTaskProblems ++ askUserProblems ++ hookProblems ++ providerProblems ++ disabledContribProblems ++ settingsTabProblems ++ uiManifestProblems ++ conversationUiProblems ++ mathProblems ++ contribApiProblems ++ dirSkillProblems ++ legacyRootProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ imagegenProblems ++ atProblems ++ googleProblems ++ ghOwnersProblems ++ sharesProblems ++ cfProblems ++ themeProblems ++ csProblems ++ dbProblems ++ poolerProblems ++ puProblems ++ mdProblems ++ ngProblems' ++ rolloutProblems ++ availabilityProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ contribCoverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ volumeProblems ++ approvalProblems ++ awaitingNotifyProblems ++ stage2Problems ++ contribDbProblems ++ contribGrantProblems ++ retireProblems ++ initGrantProblems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems ++ conversationServiceProblems ++ selfAccessProblems ++ npProblems ++ sandboxOriginProblems ++ enforceProblems ++ uaProblems ++ folderServiceProblems ++ k8sProblems;
+  allProblems = commandProblems ++ packageProblems ++ uploadsProblems ++ sysTaskProblems ++ askUserProblems ++ hookProblems ++ providerProblems ++ disabledContribProblems ++ settingsTabProblems ++ uiManifestProblems ++ conversationUiProblems ++ mathProblems ++ contribApiProblems ++ dirSkillProblems ++ legacyRootProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ imagegenProblems ++ atProblems ++ googleProblems ++ ghOwnersProblems ++ sharesProblems ++ cfProblems ++ themeProblems ++ csProblems ++ dbProblems ++ poolerProblems ++ puProblems ++ mdProblems ++ ngProblems' ++ rolloutProblems ++ availabilityProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ contribCoverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ volumeProblems ++ approvalProblems ++ awaitingNotifyProblems ++ stage2Problems ++ contribDbProblems ++ contribGrantProblems ++ retireProblems ++ initGrantProblems ++ schemaGateProblems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems ++ conversationServiceProblems ++ selfAccessProblems ++ npProblems ++ sandboxOriginProblems ++ enforceProblems ++ uaProblems ++ folderServiceProblems ++ k8sProblems;
 in
 if allProblems == [ ]
 then "ok: deployments = ${haveDeps}; datadog + airtable + brave + kagi + duckduckgo (three search providers, each with its own tool) + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every scooter.* namespace and every shipped contrib's own options; skills gated on the contrib being built; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; the renamed root (agentSandbox.*) fails the render; contribs reach the platform eval and configuring an unshipped one fails the render; deploy-time Jobs are spec-hash named; the stateless Deployments carry PDBs and soft topology spread; a scooter.packages override reaches exactly the images that use it; agent.command sets GOOSE_BIN to a wrapper the agent-host image ships\n"
