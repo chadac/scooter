@@ -4,6 +4,76 @@ Each release's section becomes its GitHub Release notes. Images keep their
 content tags and also gain `vX.Y.Z`; the flake is published to
 [FlakeHub](https://flakehub.com/flake/chadac-me/scooter).
 
+## v1.4.0
+
+### Features
+
+- **Kanban stage gates.** A board's stages can require the user's approval or a
+  passing command (e.g. the tests) before an agent moves its card on. When the
+  user moves a card past a command gate, the board offers to have the agent run
+  it. (#1297, #1303)
+- **Board skills.** Under Edit board, a board's skills (conventions, release
+  steps) are given to every conversation filed on it. (#1282)
+- **Kanban is easier to use**: click anywhere on a card to open its chat
+  (#1296), and the board fits phone screens (#1280).
+- **Review a web app beside the chat.** The new web-review contrib frames the
+  conversation next to the app under review, and notes pinned on the app wake
+  the agent. (#1262)
+- **JupyterLab with the chat in its sidebar**, an opt-in contrib driven through
+  jupyter-mcp-server, so the agent's edits reach the open tab live. (#1309)
+- **Sessions.** Sandbox services can start child conversations: each VS Code
+  chat gets its own (#1268, #1270), and the web can start sessions and switch
+  chats beside marimo (#1292). The "<app> + chat" page is shared as
+  `webServices.<name>.chatPage` (#1308), and `/chat/<id>` has a compact density
+  for narrow panes (#1311).
+- **Videos play inline in the chat**, through a new `show_video` tool. (#1258)
+- **Custom themes** from `scooter.ui.themes`, saved per account. (#1307)
+- **Attachments reach the agent.** Uploads in GitHub, GitLab and Jira bodies
+  and comments are forwarded as refs the agent can fetch (#1281, #1284), and
+  Slack lists any file it couldn't forward (#1274).
+- **GitLab MR pipeline results and state changes** reach the linked
+  conversation. (#1265)
+- **Conversations reopen faster.** The event stream resumes from the client's
+  cursor instead of replaying the whole log (#1260, #1261), and conversations
+  are cached in IndexedDB and painted while they sync (#1264).
+- **See why a private conversation is tainted, and clear it.** (#1275)
+- **Agents can grow their `/workspace` volume** with `expand_workspace`, online
+  and without a restart. (#1290)
+- **Open tabs are told when a new UI build is deployed.** (#1283)
+- **Agents reply to and resolve files-viewer review threads** with
+  `scooter-files`. (#1287)
+- **A compact Session tab**: one-line sandbox status and resources, one-row
+  services, and an Add service form that asks Scooter to build it. (#1299,
+  #1304)
+- **A Samples page** in the docs, with the scooter-demos videos. (#1300)
+
+### Bug fixes
+
+- **Webhooks answer forges before delivering**, ignore Scooter's own GitLab
+  notes (#1263), and keep serving deliveries until the ingress drops the pod
+  (#1291).
+- **A pending choice card stays answerable after its pod moves.** (#1305)
+- **BYOC sessions are offered the sandbox's MCP servers.** (#1310)
+- **The taint check** no longer taints a conversation for going private, only
+  for steering by someone other than the owner (#1272), and counts the user's
+  linked forge accounts as theirs (#1273).
+- **An agent writing `<title>` in prose no longer silences its replies.**
+  (#1277)
+- **The idle sweep can't suspend a conversation mid-turn**, and expected resume
+  refusals are quiet. (#1289)
+- **VS Code chat opens on the Scooter agent**, not Local. (#1266)
+- **The Session tab's resources, size picker, restart and stop are back.**
+  (#1294)
+- **Settings → Hooks works**: `/user-hooks` and `/sandbox-sizes` are proxied to
+  the agent-host. (#1306)
+- **PRs and issues created with `gh` are linked with their title.** (#1285)
+- **The Subagents panel's Stop ends and removes the child.** (#1278)
+- **A chat no longer steals focus** from another frame or window. (#1267)
+- **Sidebar**: titles truncate (#1279), the scroll position survives switching
+  conversations (#1286), and the hover + is gone (#1302).
+- **web-review screenshots no longer hang** on lazy-loaded videos. (#1301)
+- **Flaky e2e tests fixed.** (#1271, #1288)
+
 ## v1.3.0
 
 ### Features
