@@ -170,6 +170,70 @@
   }
 }
 
+/* Fenced code in the thread (components/assistant-ui/syntax-highlighter.tsx): highlight.js
+   token classes coloured from the theme's own accent set, so Warm Paper, Solarized and a
+   custom theme (scooter.ui.themes) each colour code in their palette. The mapping follows
+   the Solarized convention: keywords green, strings cyan, numbers/literals magenta, names
+   blue, types/attributes yellow, meta/preprocessor orange, comments the muted ink. */
+.aui-md .hljs-comment,
+.aui-md .hljs-quote {
+  color: var(--muted-foreground);
+  font-style: italic;
+}
+.aui-md .hljs-keyword,
+.aui-md .hljs-selector-tag,
+.aui-md .hljs-operator,
+.aui-md .hljs-template-tag {
+  color: var(--chart-3);
+}
+.aui-md .hljs-string,
+.aui-md .hljs-regexp,
+.aui-md .hljs-addition,
+.aui-md .hljs-char.escape_ {
+  color: var(--chart-2);
+}
+.aui-md .hljs-number,
+.aui-md .hljs-literal,
+.aui-md .hljs-symbol,
+.aui-md .hljs-bullet,
+.aui-md .hljs-link {
+  color: var(--status-question);
+}
+.aui-md .hljs-title,
+.aui-md .hljs-section,
+.aui-md .hljs-name,
+.aui-md .hljs-selector-id,
+.aui-md .hljs-selector-class,
+.aui-md .hljs-selector-pseudo {
+  color: var(--chart-1);
+}
+.aui-md .hljs-type,
+.aui-md .hljs-title.class_,
+.aui-md .hljs-built_in,
+.aui-md .hljs-attr,
+.aui-md .hljs-attribute,
+.aui-md .hljs-variable,
+.aui-md .hljs-template-variable,
+.aui-md .hljs-property,
+.aui-md .hljs-params {
+  color: var(--chart-4);
+}
+.aui-md .hljs-meta,
+.aui-md .hljs-doctag,
+.aui-md .hljs-deletion,
+.aui-md .hljs-subst {
+  color: var(--chart-5);
+}
+.aui-md .hljs-meta .hljs-string {
+  color: var(--chart-2);
+}
+.aui-md .hljs-emphasis {
+  font-style: italic;
+}
+.aui-md .hljs-strong {
+  font-weight: 600;
+}
+
 /* Compact density on /chat/<id> (density.ts): smaller text, tighter spacing, one-line
    reasoning and tool calls, for a chat framed as a narrow side pane. */
 [data-density="compact"] {

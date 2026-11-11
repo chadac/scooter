@@ -14,6 +14,7 @@ import { type FC, memo, useState } from "react";
 import { CheckIcon, CopyIcon, ImageOffIcon } from "lucide-react";
 
 import { MediaImage } from "@/components/assistant-ui/media-gallery";
+import { SyntaxHighlighter } from "@/components/assistant-ui/syntax-highlighter";
 import { classifyImageSrc, markdownUrlTransform, remoteImageConsent, useRemoteImageAllowed } from "@/src/markdownImagePolicy";
 
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
@@ -336,4 +337,6 @@ const baseComponents: Parameters<typeof memoizeMarkdownComponents>[0] = {
     );
   },
   CodeHeader,
+  // Fenced code with a language renders as highlight.js tokens (src/codeHighlight.ts).
+  SyntaxHighlighter,
 };

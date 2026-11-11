@@ -22,7 +22,7 @@ buildNpmPackage {
   };
   sourceRoot = "source/services/ui";
 
-  npmDepsHash = "sha256-DVPvkWQ9R8gqnh9YP9suoFHRzkMNn71mEfF2Ur6gJBI=";
+  npmDepsHash = "sha256-5AWmrCQteKDbDgoEtjyprAITPVE81ePCu2C6gXCoVQA=";
 
   # Same-origin: relative /agui + /sessions (reverse-proxied to the agent-host).
   VITE_AGENT_HOST_URL = "";
