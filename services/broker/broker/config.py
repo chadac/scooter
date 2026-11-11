@@ -15,6 +15,8 @@ if TYPE_CHECKING:  # import at runtime would pull sqlalchemy into every config i
 class BrokerSettings(ScooterBaseSettings):
     # Auth
     token_audience: str = "agent-broker"
+    # Seconds one TokenReview may take before the caller gets a 502.
+    token_review_timeout_s: float = 5.0
     sandbox_namespace: str = "agent-sandbox"
 
     # SA usernames admitted as non-sandbox callers acting for a user (CSV of

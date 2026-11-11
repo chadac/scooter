@@ -35,7 +35,7 @@ class _Result:
 
 class _Api:
     def __init__(self, username): self._u = username
-    def create_token_review(self, _review): return _Result(self._u)
+    def create_token_review(self, _review, **_kw): return _Result(self._u)
 
 
 def _request(conv_token: str | None = None) -> Request:
