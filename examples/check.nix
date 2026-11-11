@@ -159,6 +159,46 @@ let
     ++ (if (ahRolling.maxSurge or null) == 1 then [ ] else [ "agent-host.strategy.maxSurge != 1 (no new-pod-before-old-drains)" ])
     ++ (if (stateVol ? emptyDir) then [ ] else [ "agent-host `state` volume is not an emptyDir (a per-pod PVC blocks surge via Multi-Attach)" ]);
 
+  # A drain must not evict all of a Deployment's replicas.
+  renderedOf = p: kind: builtins.listToAttrs (map (o: { name = o.metadata.name; value = o; })
+    (builtins.filter (o: o.kind == kind) p.config.kubernetes.generated.items));
+  spreadKeys = dep: map (c: c.topologyKey)
+    (builtins.filter (c: c.whenUnsatisfiable == "ScheduleAnyway" && c.labelSelector == { matchLabels = dep.spec.selector.matchLabels; })
+      (dep.spec.template.spec.topologySpreadConstraints or [ ]));
+  noSpreadPlatform = evalPlatform {
+    module = { lib, ... }: {
+      imports = [ ./kubenix-config.nix ];
+      scooter.availability.deployments = lib.mkForce [ ];
+    };
+  };
+  unrenderedPlatform = evalPlatform {
+    module = { lib, ... }: {
+      imports = [ ./kubenix-config.nix ];
+      scooter.availability.deployments = lib.mkForce [ "agent-host" "not-rendered" ];
+    };
+  };
+  availabilityProblems =
+    let
+      deps = renderedOf platform "Deployment";
+      pdbs = renderedOf platform "PodDisruptionBudget";
+      spread = [ "agent-host" "conversation-router" "agent-broker" "agent-scheduler" "agent-webhooks" "ui" ];
+      single = [ "agent-shared-db" "warm-store-controller" "byoc-controller" ];
+    in
+    builtins.concatMap (n:
+      (if (pdbs.${n}.spec or { }) == { maxUnavailable = 1; selector.matchLabels = deps.${n}.spec.selector.matchLabels; } then [ ]
+       else [ "${n}: no PodDisruptionBudget with maxUnavailable 1 over its pods (a drain evicts every replica)" ])
+      ++ (if spreadKeys deps.${n} == [ "kubernetes.io/hostname" "topology.kubernetes.io/zone" ] then [ ]
+          else [ "${n}: no soft topology spread over hostname and zone (replicas share a node)" ]))
+      spread
+    ++ map (n: "${n}: a Recreate/singleton Deployment got a PDB or spread")
+      (builtins.filter (n: pdbs ? ${n} || spreadKeys deps.${n} != [ ]) single)
+    ++ (if builtins.attrNames (renderedOf unrenderedPlatform "PodDisruptionBudget") == [ "agent-host" ] then [ ]
+        else [ "availability: a listed but unrendered Deployment got a PDB" ])
+    ++ (if renderedOf noSpreadPlatform "PodDisruptionBudget" == { }
+          && builtins.all (d: !(d.spec.template.spec ? topologySpreadConstraints))
+            (builtins.attrValues (renderedOf noSpreadPlatform "Deployment")) then [ ]
+        else [ "availability.deployments = [ ] still renders PDBs or topology spread" ]);
+
   # The model catalog must render AGENT_MODELS_JSON and a derived GOOSE_MODEL into
   # the agent-host env, which the example's fakeAgent gates off, so render a non-fake
   # platform.
@@ -1727,8 +1767,8 @@ let
               (envOf bothAgents.config.kubernetes.resources "agent-host" "GOOSE_BIN") true)).success then [ ]
         else [ "agent.command with fakeAgent should fail the render" ]);
 
-  allProblems = commandProblems ++ packageProblems ++ uploadsProblems ++ sysTaskProblems ++ askUserProblems ++ hookProblems ++ providerProblems ++ disabledContribProblems ++ settingsTabProblems ++ uiManifestProblems ++ conversationUiProblems ++ mathProblems ++ contribApiProblems ++ dirSkillProblems ++ legacyRootProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ imagegenProblems ++ atProblems ++ googleProblems ++ ghOwnersProblems ++ sharesProblems ++ cfProblems ++ themeProblems ++ csProblems ++ dbProblems ++ poolerProblems ++ puProblems ++ mdProblems ++ ngProblems' ++ rolloutProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ contribCoverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ volumeProblems ++ approvalProblems ++ awaitingNotifyProblems ++ stage2Problems ++ contribDbProblems ++ contribGrantProblems ++ retireProblems ++ initGrantProblems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems ++ conversationServiceProblems ++ selfAccessProblems ++ npProblems ++ sandboxOriginProblems ++ enforceProblems ++ uaProblems ++ folderServiceProblems ++ k8sProblems;
+  allProblems = commandProblems ++ packageProblems ++ uploadsProblems ++ sysTaskProblems ++ askUserProblems ++ hookProblems ++ providerProblems ++ disabledContribProblems ++ settingsTabProblems ++ uiManifestProblems ++ conversationUiProblems ++ mathProblems ++ contribApiProblems ++ dirSkillProblems ++ legacyRootProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ imagegenProblems ++ atProblems ++ googleProblems ++ ghOwnersProblems ++ sharesProblems ++ cfProblems ++ themeProblems ++ csProblems ++ dbProblems ++ poolerProblems ++ puProblems ++ mdProblems ++ ngProblems' ++ rolloutProblems ++ availabilityProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ contribCoverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ volumeProblems ++ approvalProblems ++ awaitingNotifyProblems ++ stage2Problems ++ contribDbProblems ++ contribGrantProblems ++ retireProblems ++ initGrantProblems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems ++ conversationServiceProblems ++ selfAccessProblems ++ npProblems ++ sandboxOriginProblems ++ enforceProblems ++ uaProblems ++ folderServiceProblems ++ k8sProblems;
 in
 if allProblems == [ ]
-then "ok: deployments = ${haveDeps}; datadog + airtable + brave + kagi + duckduckgo (three search providers, each with its own tool) + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every scooter.* namespace and every shipped contrib's own options; skills gated on the contrib being built; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; the renamed root (agentSandbox.*) fails the render; contribs reach the platform eval and configuring an unshipped one fails the render; deploy-time Jobs are spec-hash named; a scooter.packages override reaches exactly the images that use it; agent.command sets GOOSE_BIN to a wrapper the agent-host image ships\n"
+then "ok: deployments = ${haveDeps}; datadog + airtable + brave + kagi + duckduckgo (three search providers, each with its own tool) + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every scooter.* namespace and every shipped contrib's own options; skills gated on the contrib being built; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; the renamed root (agentSandbox.*) fails the render; contribs reach the platform eval and configuring an unshipped one fails the render; deploy-time Jobs are spec-hash named; the stateless Deployments carry PDBs and soft topology spread; a scooter.packages override reaches exactly the images that use it; agent.command sets GOOSE_BIN to a wrapper the agent-host image ships\n"
 else builtins.throw "example manifests missing: ${builtins.concatStringsSep ", " allProblems}"

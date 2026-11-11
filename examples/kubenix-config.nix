@@ -146,6 +146,8 @@
     # retentionMaxAgeMs = 0 disables auto-reaping.
     replicas = 2;
     statelessReplicas = 2;
+    # Spread and a PDB keep these up through drains.
+    availability.maxUnavailable = 1;
     idleSuspendMs = 30 * 60 * 1000;
     sandboxUpdatePolicy = "deferred";
     retentionMaxAgeMs = 0;

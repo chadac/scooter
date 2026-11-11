@@ -308,7 +308,7 @@ in
   # ./testing.nix is absent on purpose (test-only overrides are opted into by a test
   # manifest), and the contribs arrive via `contribModules`, each declaring its own
   # `contribs.<name>` options and manifests with contrib/spec.nix as their schema.
-  imports = [ kubenix.modules.k8s ./images.nix ./scooter-packages.nix ./db-spec.nix ./postgres.nix ./db-migrate.nix ./contrib-db.nix ./contrib-env.nix ./contrib-approvals.nix ./broker.nix ./sandbox-pod.nix ./sandbox-volumes.nix ./webhooks.nix ./byoc.nix ./scheduler.nix ./conversation-controller.nix ./warm-store-controller.nix ./network-policy.nix ./legacy-state-migration.nix ./event-backfill.nix ./skills ]
+  imports = [ kubenix.modules.k8s ./images.nix ./availability.nix ./scooter-packages.nix ./db-spec.nix ./postgres.nix ./db-migrate.nix ./contrib-db.nix ./contrib-env.nix ./contrib-approvals.nix ./broker.nix ./sandbox-pod.nix ./sandbox-volumes.nix ./webhooks.nix ./byoc.nix ./scheduler.nix ./conversation-controller.nix ./warm-store-controller.nix ./network-policy.nix ./legacy-state-migration.nix ./event-backfill.nix ./skills ]
     ++ contribModules;
 
   # Declared only so a definition on the old root reaches `legacyRoot`'s message; no
