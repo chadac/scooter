@@ -1699,47 +1699,64 @@ function Board({
         </div>
         {showing && (
           <aside data-testid="kanban-chat" className="flex w-full shrink-0 flex-col md:w-[min(42rem,50%)] md:border-s">
-            <div className="flex items-center gap-1 border-b px-2 py-1.5 text-xs">
-              <Button size="sm" variant="ghost" data-testid="kanban-prev" disabled={at <= 0} onClick={() => step(-1)}>
-                <ChevronLeft aria-hidden /> Previous
+            <div className="flex items-center gap-1 border-b px-2 text-sm">
+              <div role="tablist" aria-label="Card" className="flex gap-1 self-stretch">
+                {(["chat", "details"] as const).map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    role="tab"
+                    data-testid={`kanban-tab-${t}`}
+                    aria-selected={shownTab === t}
+                    disabled={t === "details" && !openConv}
+                    onClick={() => setTab(t)}
+                    className={cn(
+                      "-mb-px border-b-2 px-2 py-2 disabled:opacity-50",
+                      shownTab === t ? "border-primary font-medium" : "border-transparent text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {t === "chat" ? "Chat" : "Details"}
+                  </button>
+                ))}
+              </div>
+              <span className="ms-auto" />
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                data-testid="kanban-prev"
+                aria-label="Previous card"
+                title="Previous card"
+                disabled={at <= 0}
+                onClick={() => step(-1)}
+              >
+                <ChevronLeft aria-hidden />
               </Button>
               <Button
-                size="sm"
+                size="icon-sm"
                 variant="ghost"
                 data-testid="kanban-next"
+                aria-label="Next card"
+                title="Next card"
                 disabled={at < 0 || at >= order.length - 1}
                 onClick={() => step(1)}
               >
-                Next <ChevronRight aria-hidden />
+                <ChevronRight aria-hidden />
               </Button>
-              <span className="ms-auto" />
               {openId && (
                 <Button size="sm" variant="ghost" data-testid="kanban-open-in-chat" onClick={() => openInChat(openId)}>
                   Open in chat
                 </Button>
               )}
-              <Button size="sm" variant="ghost" data-testid="kanban-close-chat" onClick={() => setPanel(false)}>
-                Close
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                data-testid="kanban-close-chat"
+                aria-label="Close"
+                title="Close"
+                onClick={() => setPanel(false)}
+              >
+                <X aria-hidden />
               </Button>
-            </div>
-            <div role="tablist" aria-label="Card" className="flex gap-1 border-b px-2 text-sm">
-              {(["chat", "details"] as const).map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  role="tab"
-                  data-testid={`kanban-tab-${t}`}
-                  aria-selected={shownTab === t}
-                  disabled={t === "details" && !openConv}
-                  onClick={() => setTab(t)}
-                  className={cn(
-                    "-mb-px border-b-2 px-2 py-1.5 disabled:opacity-50",
-                    shownTab === t ? "border-primary font-medium" : "border-transparent text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  {t === "chat" ? "Chat" : "Details"}
-                </button>
-              ))}
             </div>
             {/* Hidden, not unmounted, so the draft and scroll survive a switch. */}
             <div role="tabpanel" className={cn("min-h-0 flex-1", shownTab !== "chat" && "hidden")}>
