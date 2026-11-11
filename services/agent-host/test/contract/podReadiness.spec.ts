@@ -5,7 +5,7 @@
 
 import { describe, it, expect, beforeEach } from "vitest";
 
-import { formatPodWait, podWaitStatus, setPodWaitStatus } from "../../src/exec/podReadiness.js";
+import { failedPodWait, formatPodWait, podWaitStatus, setPodWaitStatus } from "../../src/exec/podReadiness.js";
 import { pollForReadyPod } from "../../src/exec/k8sExec.js";
 import type { SandboxRef } from "../../src/types.js";
 
@@ -56,5 +56,44 @@ describe("pod readiness wait", () => {
   it("forgets a wait not seen for 5 minutes", () => {
     setPodWaitStatus(REF, { since: Date.now(), checkedAt: Date.now() });
     expect(podWaitStatus(REF, Date.now() + 6 * 60_000)).toBeUndefined();
+  });
+});
+
+describe("failedPodWait", () => {
+  beforeEach(() => setPodWaitStatus(REF, undefined));
+  const ready = { metadata: { name: "p" }, status: { phase: "Running", containerStatuses: [{ ready: true }] } };
+
+  it("is unset while a wait is still inside its deadline", () => {
+    setPodWaitStatus(REF, { since: Date.now(), checkedAt: Date.now(), reason: "pod Pending" });
+    expect(failedPodWait(REF)).toBeUndefined();
+  });
+
+  it("names the reason once a wait hits its deadline, and keeps it through the next wait", async () => {
+    const fail = (deadlineMs: number) =>
+      pollForReadyPod(REF, {
+        listCandidates: async () => [pending as never],
+        sleep: async () => {},
+        deadlineMs,
+        diagnose: async () => "pod Pending (ContainerCreating)",
+      }).catch(() => {});
+    await fail(-1);
+    expect(failedPodWait(REF)).toBe("pod Pending (ContainerCreating)");
+
+    // An unexpired wait, cut short at its first sleep.
+    await pollForReadyPod(REF, {
+      listCandidates: async () => [pending as never],
+      sleep: async () => {
+        throw new Error("stop");
+      },
+      deadlineMs: 60_000,
+      diagnose: async () => "pod Pending (ImagePullBackOff)",
+    }).catch(() => {});
+    expect(failedPodWait(REF)).toBe("pod Pending (ImagePullBackOff)");
+  });
+
+  it("clears once the pod is Ready", async () => {
+    setPodWaitStatus(REF, { since: Date.now(), checkedAt: Date.now(), failedAt: Date.now() });
+    await pollForReadyPod(REF, { listCandidates: async () => [ready as never], sleep: async () => {} });
+    expect(failedPodWait(REF)).toBeUndefined();
   });
 });

@@ -80,10 +80,20 @@ export function errorText(err: unknown): string {
       const json = JSON.stringify(err);
       if (json && json !== "{}") return json;
     } catch {
-      // Circular: fall through to String().
+      // Circular: described below.
     }
+    // Opaque object: describe a wrapped error, else name its type.
+    const inner = (err as { error?: unknown; cause?: unknown }).error ?? (err as { cause?: unknown }).cause;
+    if (inner !== undefined && inner !== err) return errorText(inner);
+    return `${err.constructor?.name ?? "object"} with no message`;
   }
   return String(err);
+}
+
+/** A thrown value's code (JSON-RPC, errno, k8s), if it has one. */
+export function errorCode(err: unknown): string | number | undefined {
+  const code = (err as { code?: unknown } | null | undefined)?.code;
+  return typeof code === "string" || typeof code === "number" ? code : undefined;
 }
 
 export function formatError(err: unknown): Record<string, unknown> {

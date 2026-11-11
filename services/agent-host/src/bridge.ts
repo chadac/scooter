@@ -29,7 +29,7 @@ import { buildHistoryPreamble } from "./agent/transcript.js";
 import { modelAllowedFor, defaultFor, type ModelCatalog } from "./agent/models.js";
 import { fingerprintOffered, type OfferedMcpServer } from "./agent/mcpServerRegistry.js";
 
-import { errorText, formatError, logger } from "./log.js";
+import { errorCode, errorText, formatError, logger } from "./log.js";
 import type { HookEvent, HookFolder, HookOutcome, HookRunner } from "./hooks/types.js";
 import { USER_RELAY_SOURCES } from "./acp/remoteAgentRegistry.js";
 import { inlineImage, replaceInlineImages, toImageRef, type StageAsset } from "./session/mediaRefs.js";
@@ -455,6 +455,8 @@ export interface BridgeDeps {
   modelCatalog?: ModelCatalog;
   /** Gates start() on provisioning; a rejection fails the run. */
   sandboxReady?: () => Promise<void>;
+  /** Why the pod wait failed; retries can't help while set. */
+  sandboxNotReady?: () => string | undefined;
   /** The ACP client, or an async factory that creates one on first start(), wrapped into a
    *  one-entry provider registry; mutually exclusive with `acpProviders`. */
   acpClient?: AcpClient | (() => Promise<AcpClient>);
@@ -1542,7 +1544,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
           const lostContainer = /unknown session|not connected|disconnected/i.test(raw);
           // One resume per turn; a waiting message continues instead.
           const willResume = lostContainer && !replaySafe && !noSandbox && !resumeInputs.has(input) && queue.length === 0;
-          log.warn("acp prompt rejected", { run_id: runId, error: raw, saw_activity: st.sawActivity === true, retry: replaySafe });
+          log.warn("acp prompt rejected", { run_id: runId, error: { message: raw, code: errorCode(err) }, saw_activity: st.sawActivity === true, retry: replaySafe });
           emit({
             type: "RUN_ERROR",
             message: noSandbox
@@ -1646,7 +1648,11 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     // Count runs performed, and distinguish a closed bridge from a spent budget.
     let attempts = 1;
     let abandoned = false;
+    let notReady: string | undefined;
     for (let attempt = 1; res.retryable && attempt <= RETRY_MAX; attempt++) {
+      // Each retry would wait out the same pod deadline.
+      notReady = deps.sandboxNotReady?.();
+      if (notReady) break;
       const delayMs = Math.min(RETRY_BASE_MS * 2 ** (attempt - 1), RETRY_CAP_MS);
       // Logged so a run that fails and then succeeds on retry leaves a trace.
       log.warn("retrying a wedged run", { attempt, max: RETRY_MAX, delay_ms: delayMs });
@@ -1660,7 +1666,16 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       attempts++;
     }
     if (res.retryable) {
-      if (abandoned) {
+      if (notReady) {
+        log.error("run FAILED: sandbox not ready", { attempts, reason: notReady });
+        emit({
+          type: "RUN_ERROR",
+          message:
+            `The sandbox is not ready: ${notReady}. The run was not retried; ` +
+            "send the message again once the sandbox is up, or restart it.",
+          code: "sandbox_not_ready",
+        });
+      } else if (abandoned) {
         log.warn("abandoned a wedged run: the bridge closed during the retry backoff", {
           attempts,
           max: RETRY_MAX,

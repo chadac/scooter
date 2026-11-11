@@ -227,7 +227,8 @@ export async function pollForReadyPod(ref: SandboxRef, deps: ResolveReadyPodDeps
       reason = await deps.diagnose(candidates).catch(() => reason);
     }
     // Lets a command that times out here say it never started, and conversation_status say why.
-    setPodWaitStatus(ref, { since: started, checkedAt: Date.now(), reason });
+    // An earlier failure stands until a Ready pod clears it.
+    setPodWaitStatus(ref, { since: started, checkedAt: Date.now(), reason, failedAt: expired ? Date.now() : podWaitStatus(ref)?.failedAt });
     if (!waitLogged) {
       waitLogged = true;
       log.info("waiting for a ready pod", {

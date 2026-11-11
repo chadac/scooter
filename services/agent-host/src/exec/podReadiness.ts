@@ -15,6 +15,8 @@ export interface PodWaitStatus {
   checkedAt: number;
   /** Why the pod isn't Ready, e.g. "pod Pending (ContainerCreating); FailedAttachVolume: …". */
   reason?: string;
+  /** Deadline hit with no Ready pod; cleared by a Ready one. */
+  failedAt?: number;
 }
 
 /** A failed wait is kept this long for conversation_status, then forgotten. */
@@ -34,6 +36,12 @@ export function podWaitStatus(
     return undefined;
   }
   return w;
+}
+
+/** Why `ref`'s last pod wait failed; undefined if none did. */
+export function failedPodWait(ref: Pick<SandboxRef, "namespace" | "name">): string | undefined {
+  const w = podWaitStatus(ref);
+  return w?.failedAt === undefined ? undefined : (w.reason ?? "no Ready pod before the deadline");
 }
 
 export function setPodWaitStatus(ref: Pick<SandboxRef, "namespace" | "name">, status: PodWaitStatus | undefined): void {

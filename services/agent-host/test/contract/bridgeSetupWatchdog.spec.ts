@@ -5,7 +5,7 @@ import { describe, it, expect } from "vitest";
 import { createSessionBridge, type AguiEvent } from "../../src/bridge.js";
 import type { AcpClient } from "../../src/acp/client.js";
 import type { Skill } from "../../src/agent/skills.js";
-import { errorText } from "../../src/log.js";
+import { errorCode, errorText } from "../../src/log.js";
 import { createFakeAcpAgent } from "../fakes/fakeAcpAgent.js";
 import { createFakeSandboxApi } from "../fakes/fakeSandboxApi.js";
 import { createSandboxExecBackend } from "../../src/exec/sandboxExec.js";
@@ -148,5 +148,23 @@ describe("errorText", () => {
     expect(errorText({ message: "Internal error", data: { reason: "busy" } })).toBe('Internal error: {"reason":"busy"}');
     expect(errorText({ code: 7 })).toBe('{"code":7}');
     expect(errorText("plain")).toBe("plain");
+  });
+
+  it("never renders an object as [object Object]", () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    expect(errorText(circular)).toBe("Object with no message");
+    const wrapped = Object.defineProperty({}, "error", { value: new Error("socket hang up"), enumerable: false });
+    expect(errorText(wrapped)).toBe("socket hang up");
+  });
+});
+
+describe("errorCode", () => {
+  it("reads a JSON-RPC or errno code, and nothing else", () => {
+    expect(errorCode({ code: -32603, message: "Internal error" })).toBe(-32603);
+    expect(errorCode(Object.assign(new Error("x"), { code: "ECONNRESET" }))).toBe("ECONNRESET");
+    expect(errorCode({ code: { nested: 1 } })).toBeUndefined();
+    expect(errorCode("plain")).toBeUndefined();
+    expect(errorCode(null)).toBeUndefined();
   });
 });

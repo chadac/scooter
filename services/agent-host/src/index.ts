@@ -67,7 +67,7 @@ import { createAcpClient, type BlockingTool } from "./acp/client.js";
 import { createRecorder } from "./transcript/recorder.js";
 import { createSandboxExecBackend, connectSandbox } from "./exec/sandboxExec.js";
 import { bumpSandboxEpoch, createEpochConnector, sandboxEpoch } from "./exec/deferredConnect.js";
-import { formatPodWait, podWaitStatus } from "./exec/podReadiness.js";
+import { failedPodWait, formatPodWait, podWaitStatus } from "./exec/podReadiness.js";
 import { createLocalSandboxApiClient } from "./exec/localExec.js";
 import { resolvePodTarget, sandboxPodReady, waitForSandboxPod } from "./exec/k8sExec.js";
 import { createWake, createWebServiceProxy } from "./proxy/webServiceProxy.js";
@@ -2443,6 +2443,7 @@ export async function main(
     const bridge = createSessionBridge({
       conversationId,
       sandboxReady,
+      sandboxNotReady: () => failedPodWait(sandbox),
       config: {
         cwd,
         skillsDir: config.skillsDir,
