@@ -80,7 +80,7 @@ def test_vouches_only_for_the_asserted_user(approver, ok):
 
 
 class _Api:
-    def create_token_review(self, _review):
+    def create_token_review(self, _review, **_kw):
         user = type("U", (), {"username": HOST})()
         status = type("S", (), {"authenticated": True, "user": user})()
         return type("R", (), {"status": status})()

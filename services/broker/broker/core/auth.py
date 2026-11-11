@@ -3,6 +3,7 @@ SA username `system:serviceaccount:{ns}:sandbox-{conversationId}` into an Identi
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import HTTPException, Request
@@ -34,7 +35,10 @@ async def _kube_review(token: str) -> Review:
     review = client.V1TokenReview(
         spec=client.V1TokenReviewSpec(token=token, audiences=[settings.token_audience])
     )
-    status = _api().create_token_review(review).status
+    # Off the loop and bounded, so a stalled apiserver can't freeze /health.
+    status = (await asyncio.to_thread(
+        _api().create_token_review, review, _request_timeout=settings.token_review_timeout_s
+    )).status
     if not status or not status.authenticated:
         return Review(ok=False)
     return Review(ok=True, username=status.user.username if status.user else "")
