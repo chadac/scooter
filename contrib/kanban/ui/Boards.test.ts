@@ -4,7 +4,7 @@
 
 import { describe, it, expect } from "vitest";
 
-import { gatesOnTheWay, pageLane, skillSlug } from "./Boards.js";
+import { gatesOnTheWay, pageLane, skillSlug, userTodos } from "./Boards.js";
 
 const card = (id: string, lastActivityAt: number) => ({ id, lastActivityAt });
 
@@ -58,5 +58,53 @@ describe("gatesOnTheWay", () => {
     expect(gatesOnTheWay(stages, gates, "review", "design")).toEqual([]);
     expect(gatesOnTheWay(stages, gates, "build", "build")).toEqual([]);
     expect(gatesOnTheWay(stages, gates, "gone", "done")).toEqual([]);
+  });
+});
+
+describe("userTodos", () => {
+  type Conv = Parameters<typeof userTodos>[0][number];
+  const conv = (id: string, at: number, more: Partial<Conv> = {}): Conv => ({ id, title: id, lastActivityAt: at, links: [], ...more });
+  const pr = (url: string, title = "") => ({ source: "github", resourceType: "pull_request", url, title });
+  const none = { done: () => false, awaiting: () => [] };
+
+  it("lists approvals, then questions, then PRs, newest first within each", () => {
+    const convs = [
+      conv("old-pr", 1, { links: [pr("https://g/1", "Fix it")] }),
+      conv("asks", 2, { dot: "question" }),
+      conv("gated", 3),
+      conv("new-pr", 4, { links: [pr("https://g/2")] }),
+    ];
+    const todos = userTodos(convs, { done: () => false, awaiting: (id) => (id === "gated" ? ["Design OK", "Ship it"] : []) });
+    expect(todos.map((t) => [t.kind, t.id])).toEqual([
+      ["approval", "gated"],
+      ["question", "asks"],
+      ["review", "new-pr"],
+      ["review", "old-pr"],
+    ]);
+    expect(todos[0].detail).toBe("Design OK, Ship it");
+    expect(todos[3]).toMatchObject({ detail: "Fix it", url: "https://g/1" });
+    // An untitled PR shows its URL.
+    expect(todos[2].detail).toBe("https://g/2");
+  });
+
+  it("leaves out PRs on done cards, links that aren't PRs or MRs, and repeats", () => {
+    const convs = [
+      conv("done", 1, { links: [pr("https://g/1")] }),
+      conv("mixed", 2, {
+        links: [
+          { source: "jira", resourceType: "issue", url: "https://j/1" },
+          { source: "gitlab", resourceType: "merge_request", url: "https://l/1" },
+          pr("https://g/3"),
+          pr("https://g/3"),
+          { source: "github", resourceType: "pull_request" },
+        ],
+      }),
+    ];
+    const todos = userTodos(convs, { ...none, done: (id) => id === "done" });
+    expect(todos.map((t) => t.url)).toEqual(["https://l/1", "https://g/3"]);
+  });
+
+  it("is empty when nothing waits on the user", () => {
+    expect(userTodos([conv("a", 1, { dot: "active" }), conv("b", 2, { dot: "unread" })], none)).toEqual([]);
   });
 });

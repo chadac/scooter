@@ -8,7 +8,23 @@
 // conversation in the stage, then tells it as the user.
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { DropdownMenu } from "radix-ui";
-import { ArrowLeft, ChevronLeft, ChevronRight, Lock, MoreHorizontal, Pencil, Plus, ShieldCheck, Tag as TagIcon, Trash2, X } from "lucide-react";
+import {
+  ArrowLeft,
+  ChevronLeft,
+  ChevronRight,
+  ExternalLink,
+  GitPullRequest,
+  Inbox,
+  Lock,
+  MessageCircleQuestion,
+  MoreHorizontal,
+  Pencil,
+  Plus,
+  ShieldCheck,
+  Tag as TagIcon,
+  Trash2,
+  X,
+} from "lucide-react";
 import {
   Button,
   ChatPanel,
@@ -312,6 +328,48 @@ export function pageLane<C extends { id: string; lastActivityAt: number }>(
     .sort((a, b) => recent(b) - recent(a))
     .slice(0, limit)
     .sort((a, b) => position(a.id) - position(b.id) || b.lastActivityAt - a.lastActivityAt);
+}
+
+/** Something on the board waiting on the user. */
+export interface Todo {
+  kind: "approval" | "question" | "review";
+  /** The card's conversation id. */
+  id: string;
+  title: string;
+  /** The gates to approve, or the PR's title. */
+  detail: string;
+  /** The PR or MR to review. */
+  url?: string;
+}
+
+const REVIEWABLE = new Set(["pull_request", "merge_request"]);
+
+/**
+ * What the board waits on the user for: approvals the agents asked for, then agents waiting on
+ * an answer, then PRs and MRs on cards short of the last stage. Newest first within each.
+ */
+export function userTodos(
+  convs: Array<Pick<ViewConversation, "id" | "title" | "lastActivityAt" | "dot" | "links">>,
+  { done, awaiting }: { done(id: string): boolean; awaiting(id: string): string[] },
+): Todo[] {
+  const recent = [...convs].sort((a, b) => b.lastActivityAt - a.lastActivityAt);
+  const approvals = recent.flatMap((c): Todo[] => {
+    const gates = awaiting(c.id);
+    return gates.length ? [{ kind: "approval", id: c.id, title: c.title, detail: gates.join(", ") }] : [];
+  });
+  const questions = recent.flatMap((c): Todo[] =>
+    c.dot === "question" ? [{ kind: "question", id: c.id, title: c.title, detail: "Waiting on your answer" }] : [],
+  );
+  const reviews = recent.flatMap((c): Todo[] => {
+    if (done(c.id)) return [];
+    const seen = new Set<string>();
+    return c.links.flatMap((l): Todo[] => {
+      if (!REVIEWABLE.has(l.resourceType) || !l.url || seen.has(l.url)) return [];
+      seen.add(l.url);
+      return [{ kind: "review", id: c.id, title: c.title, detail: l.title || l.url, url: l.url }];
+    });
+  });
+  return [...approvals, ...questions, ...reviews];
 }
 
 /** A position strictly between two neighbours; either may be missing. */
@@ -680,23 +738,50 @@ function Board({
     },
     [pending, stages, first],
   );
-  // Each lane's cards, the most recent LANE_PAGE (or more once scrolled) shown.
+  const todos = useMemo(() => {
+    const done = new Set(conversations.filter((c) => stageOf(c) === last).map((c) => c.id));
+    const gateName = new Map(savedGates.map((g) => [g.id, g.name]));
+    return userTodos(conversations, {
+      done: (id) => done.has(id),
+      awaiting: (id) => (cards[id]?.awaiting ?? []).flatMap((g) => (gateName.has(g) ? [gateName.get(g)!] : [])),
+    });
+  }, [conversations, cards, savedGates, stageOf, last]);
+  const todosOf = useMemo(() => {
+    const by = new Map<string, Todo[]>();
+    for (const t of todos) by.set(t.id, [...(by.get(t.id) ?? []), t]);
+    return by;
+  }, [todos]);
+  // The For you filter, kept per board; editing shows every card.
+  const forYouKey = `kanban.forYou.${folder.id}`;
+  const [forYou, setForYou] = useState(() => readFlag(forYouKey));
+  useEffect(() => setForYou(readFlag(forYouKey)), [forYouKey]);
+  const toggleForYou = () => {
+    writeFlag(forYouKey, !forYou);
+    setForYou(!forYou);
+  };
+  const filtering = forYou && !editing;
+  // Each lane's cards, the most recent LANE_PAGE (or more once scrolled) shown; under the
+  // For you filter, every card waiting on the user and nothing else.
   const { lanes, counts } = useMemo(() => {
     const all: Record<string, ViewConversation[]> = Object.fromEntries(stages.map((s) => [s.id, []]));
-    for (const conv of conversations) all[stageOf(conv)]?.push(conv);
+    for (const conv of conversations) if (!filtering || todosOf.has(conv.id)) all[stageOf(conv)]?.push(conv);
     const recent = (c: ViewConversation) => rank.current.get(c.id) ?? c.lastActivityAt;
     const pos = (id: string) => cards[id]?.card?.position ?? 0;
     const lanes: Record<string, ViewConversation[]> = {};
     const counts: Record<string, number> = {};
     for (const [id, lane] of Object.entries(all)) {
       counts[id] = lane.length;
-      lanes[id] = pageLane(lane, limits[id] ?? LANE_PAGE, recent, pos);
+      lanes[id] = pageLane(lane, filtering ? lane.length : (limits[id] ?? LANE_PAGE), recent, pos);
     }
     return { lanes, counts };
-  }, [stages, conversations, cards, stageOf, limits]);
+  }, [stages, conversations, cards, stageOf, limits, filtering, todosOf]);
 
-  // Read each shown card once; pushes re-read the cards they name.
-  const shown = useMemo(() => Object.values(lanes).flat().map((c) => c.id), [lanes]);
+  // Read each shown card once, and every card short of the last stage for its to-dos;
+  // pushes re-read the cards they name.
+  const shown = useMemo(
+    () => [...new Set([...Object.values(lanes).flat(), ...conversations.filter((c) => stageOf(c) !== last)].map((c) => c.id))],
+    [lanes, conversations, stageOf, last],
+  );
   const read = useRef(new Set<string>());
   const shownKey = shown.join(",");
   useEffect(() => {
@@ -725,6 +810,12 @@ function Board({
     if (showing && openId) setThreadInUrl(openId);
     else if (!panel) setThreadInUrl(null);
   }, [showing, openId, panel]);
+  // A card opens its chat, or its Details when the filter shows it for an approval.
+  const openCard = (id: string) => {
+    openConversation(id);
+    if (filtering && todosOf.get(id)?.some((t) => t.kind === "approval")) setTab("details");
+    setPanel(true);
+  };
   const step = (by: -1 | 1) => {
     const next = order[at + by];
     if (next) openConversation(next.id);
@@ -949,6 +1040,25 @@ function Board({
           ))}
         </select>
         <div className="ms-auto flex items-center gap-1 md:gap-2">
+          {!editing && (
+            <Button
+              size="sm"
+              variant={forYou ? "secondary" : "ghost"}
+              data-testid="kanban-for-you"
+              aria-pressed={forYou}
+              aria-label="For you"
+              title="Show only the cards waiting on you: approvals, questions and open PRs"
+              onClick={toggleForYou}
+            >
+              <Inbox aria-hidden />
+              <span className="max-md:hidden">For you</span>
+              {todosOf.size > 0 && (
+                <span data-testid="kanban-for-you-count" className="rounded-full bg-primary/10 px-1.5 text-xs tabular-nums">
+                  {todosOf.size}
+                </span>
+              )}
+            </Button>
+          )}
           <Button
             size="sm"
             variant="outline"
@@ -1025,6 +1135,11 @@ function Board({
           </DropdownMenu.Root>
         </div>
       </div>
+      {filtering && todos.length === 0 && (
+        <p data-testid="kanban-for-you-empty" className="px-4 pt-2 text-xs text-muted-foreground">
+          Nothing on this board is waiting on you.
+        </p>
+      )}
       {error && (
         <p role="alert" className="px-4 pt-2 text-xs text-destructive">
           {error}
@@ -1426,8 +1541,7 @@ function Board({
                       // Card opens its chat; inner controls keep their clicks.
                       onClick={(e) => {
                         if (tagging === conv.id || (e.target as HTMLElement).closest("button, input, a, [role=listbox]")) return;
-                        openConversation(conv.id);
-                        setPanel(true);
+                        openCard(conv.id);
                       }}
                       onDragStart={(e) => {
                         e.dataTransfer.setData(CARD_MIME, conv.id);
@@ -1455,10 +1569,7 @@ function Board({
                       <div className="flex items-start gap-1">
                         <button
                           type="button"
-                          onClick={() => {
-                            openConversation(conv.id);
-                            setPanel(true);
-                          }}
+                          onClick={() => openCard(conv.id)}
                           className="flex min-w-0 flex-1 items-start gap-2 text-start"
                           title={conv.title}
                         >
@@ -1475,6 +1586,15 @@ function Board({
                               className="inline-flex shrink-0 items-center gap-0.5 rounded bg-amber-500/15 px-1 text-[10px] font-semibold uppercase leading-4 text-amber-700 dark:text-amber-300"
                             >
                               <ShieldCheck aria-hidden className="size-3" /> Approve
+                            </span>
+                          )}
+                          {filtering && conv.dot === "question" && (
+                            <span
+                              data-testid="kanban-card-question"
+                              title="Waiting on your answer"
+                              className="inline-flex shrink-0 items-center gap-0.5 rounded bg-red-500/15 px-1 text-[10px] font-semibold uppercase leading-4 text-red-700 dark:text-red-300"
+                            >
+                              <MessageCircleQuestion aria-hidden className="size-3" /> Answer
                             </span>
                           )}
                         </button>
@@ -1514,6 +1634,7 @@ function Board({
                           close={() => setTagging(null)}
                         />
                       )}
+                      {filtering && <ReviewLinks todos={todosOf.get(conv.id) ?? []} />}
                       {card?.note && (
                         <p data-testid="kanban-card-note" className="mt-1 line-clamp-3 text-xs text-muted-foreground">
                           {card.note}
@@ -1691,6 +1812,49 @@ function Board({
       )}
     </div>
   );
+}
+
+/** A card's PRs and MRs to review, each linking out. */
+function ReviewLinks({ todos }: { todos: Todo[] }) {
+  const reviews = todos.filter((t) => t.kind === "review");
+  if (reviews.length === 0) return null;
+  return (
+    <ul data-testid="kanban-card-reviews" aria-label="To review" className="mt-1 flex flex-col gap-0.5">
+      {reviews.map((t) => (
+        <li key={t.url} className="min-w-0">
+          <a
+            href={t.url}
+            target="_blank"
+            rel="noreferrer"
+            data-testid="kanban-card-review"
+            className="inline-flex max-w-full items-center gap-1 text-xs font-medium text-blue-700 hover:underline dark:text-blue-300"
+          >
+            <GitPullRequest aria-hidden className="size-3 shrink-0" />
+            <span className="truncate">Review {t.detail}</span>
+            <ExternalLink aria-hidden className="size-3 shrink-0" />
+          </a>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** A saved on/off setting; off when storage is unavailable. */
+function readFlag(key: string): boolean {
+  try {
+    return localStorage.getItem(key) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeFlag(key: string, on: boolean) {
+  try {
+    if (on) localStorage.setItem(key, "1");
+    else localStorage.removeItem(key);
+  } catch {
+    // Not kept past this page.
+  }
 }
 
 /** A move the user asked for that passes command gates, waiting on whether to run them. */

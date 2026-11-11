@@ -56,6 +56,8 @@ async function serveKanban(page: Page, request: APIRequestContext, base: string)
   const puts: Array<{ id: string; body: { column: string } }> = [];
   const blockers: Record<string, string[]> = {};
   const details: Record<string, { description: string; priority: string }> = {};
+  // Approval gates each card's agent asked the user for.
+  const awaiting: Record<string, string[]> = {};
   // Every board save and card-tag PUT, to count the requests.
   const saves: unknown[] = [];
   const tagPuts: Array<{ tags: string[]; create?: string[] }> = [];
@@ -66,6 +68,7 @@ async function serveKanban(page: Page, request: APIRequestContext, base: string)
     blockers: related(blockers[id] ?? []),
     tags: cardTags[id] ?? [],
     priority: details[id]?.priority ?? "none",
+    awaiting: awaiting[id] ?? [],
   });
   // The conversation ids of each board read.
   const reads: string[][] = [];
@@ -176,7 +179,7 @@ async function serveKanban(page: Page, request: APIRequestContext, base: string)
       body: JSON.stringify({ ...row, updated_by: "user", updated_at: "", blocked_by: related(blockers[id] ?? []), blocking: related(blocking) }),
     });
   });
-  return { boards, cards, cardTags, puts, board, blockers, details, saves, tagPuts, reads, cardReads };
+  return { boards, cards, cardTags, puts, board, blockers, details, awaiting, saves, tagPuts, reads, cardReads };
 }
 
 const threadId = (page: Page) => new URL(page.url()).searchParams.get("thread");
@@ -621,6 +624,64 @@ fastOnly("the kanban broker routes are stubbed in the browser")("kanban /boards 
     // The board reads all its cards at once, never one by one.
     expect(kanban.reads.flat()).toEqual(expect.arrayContaining([schema, api]));
     expect(kanban.cardReads).toEqual([]);
+  });
+
+  test("the For you filter shows only the cards waiting on the user, and an approval opens on Details", async ({ chat, page, request, baseURL }) => {
+    const base = baseURL ?? "http://localhost:5173";
+    const kanban = await serveKanban(page, request, base);
+    const board = await kanban.board(`e2e-board-todos-${Date.now()}`);
+    const review = board.stages[2].id;
+    const done = board.stages[3].id;
+    board.gates = [approvalGate(review)];
+    const ids: string[] = [];
+    for (const text of ["needs review", "already shipped"]) {
+      await chat.open();
+      await page.locator('[data-testid="new-session"]').click();
+      await chat.send(text);
+      await chat.waitForReply(/dummy agent/i);
+      await expect.poll(() => threadId(page)).not.toBe(ids.at(-1) ?? null);
+      ids.push(threadId(page)!);
+    }
+    const [open, shipped] = ids;
+    for (const [id, stage, n] of [[open, review, 1], [shipped, done, 2]] as const) {
+      await request.put(`${base}/conversations/${id}/folder`, { data: { folderId: stage } });
+      const url = `https://github.com/example-org/example-app/pull/${n}`;
+      const r = await request.post(`${base}/conversations/${id}/links`, {
+        data: { source: "github", resourceType: "pull_request", url, title: `example-app #${n}` },
+      });
+      expect(r.ok()).toBeTruthy();
+    }
+    kanban.awaiting[open] = [approvalGate(review).id];
+
+    await page.goto(`/boards/${board.folder}`);
+    const card = (id: string) => page.locator(`[data-testid="kanban-card"][data-conversation-id="${id}"]`);
+    const filter = page.getByTestId("kanban-for-you");
+    // One card waits on an approval and a PR; the shipped card's PR is done, so it doesn't count.
+    await expect(filter.getByTestId("kanban-for-you-count")).toHaveText("1", { timeout: 30_000 });
+    await expect(filter).toHaveAttribute("aria-pressed", "false");
+    await expect(card(shipped)).toBeVisible();
+
+    await filter.click();
+    await expect(filter).toHaveAttribute("aria-pressed", "true");
+    await expect(card(open)).toBeVisible();
+    await expect(card(shipped)).toHaveCount(0);
+    await expect(page.getByTestId("kanban-card")).toHaveCount(1);
+    await expect(card(open).getByTestId("kanban-card-awaiting")).toBeVisible();
+    await expect(card(open).getByTestId("kanban-card-review")).toHaveAttribute("href", "https://github.com/example-org/example-app/pull/1");
+
+    // A card waiting on an approval opens on its Details, where it is answered.
+    await card(open).locator("button").first().click();
+    await expect(page.getByTestId("kanban-chat")).toBeVisible();
+    await expect(page.getByTestId("kanban-tab-details")).toHaveAttribute("aria-selected", "true");
+    await expect.poll(() => threadId(page)).toBe(open);
+
+    // The filter is kept for the board, and turns off again.
+    await page.reload();
+    await expect(page.getByTestId("kanban-for-you")).toHaveAttribute("aria-pressed", "true", { timeout: 30_000 });
+    await expect(card(open)).toBeVisible();
+    await expect(card(shipped)).toHaveCount(0);
+    await page.getByTestId("kanban-for-you").click();
+    await expect(card(shipped)).toBeVisible();
   });
 
   test("the Details tab edits a card's priority, description and blockers, and keeps the chat", async ({ chat, page, request, baseURL }) => {

@@ -78,4 +78,11 @@ command gate, the board first offers to **Ask the agent**: the card's agent is a
 the move itself, so its gates run as for its own moves, and the card moves once they pass. If
 they fail, the agent says why in the chat. **Move anyway** moves it now without them, and counts
 as the approval for that stage.
+
+**For you**, in the board's header, filters the lanes to the cards waiting on you: an approval
+gate an agent has asked you for, an agent waiting on an answer to a question, or a pull or
+merge request linked to a card that hasn't reached the last stage. Its count says how many
+cards that is. Under the filter each card says what it waits on, a PR links out to the PR, and a
+card waiting on an approval opens on its Details tab. The board remembers the filter.
+
 Setup is in [Setting up contribs](../tutorial/contribs.md#kanban-boards).
