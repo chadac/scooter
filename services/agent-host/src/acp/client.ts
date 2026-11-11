@@ -28,6 +28,7 @@ import {
   type UnsupportedSessionUpdate,
 } from "./sessionUpdateFilter.js";
 import { debug, debugError } from "../debug.js";
+import { filterCancelRequests } from "./cancelRequestFilter.js";
 import { installAcpSdkErrorLog } from "./sdkErrorLog.js";
 
 // --- Facade types (kept stable for the bridge + fake) -----------------------
@@ -328,7 +329,9 @@ export async function createAcpClient(deps: AcpClientDeps): Promise<AcpClient> {
   // Strip session/update variants the pinned SDK's closed zod union would reject with
   // -32602, salvaging the ones we can use on the way past.
   const stream = filterUnsupportedSessionUpdates(
-    rawStream,
+    filterCancelRequests(rawStream, (requestId) =>
+      debug(`[acp] agent cancelled request ${String(requestId)}`),
+    ),
     handleDroppedSessionUpdate({
       emit: (sessionId, norm) => {
         deps.recordRaw?.(norm);
