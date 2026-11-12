@@ -59,8 +59,8 @@ Comment on Scooter's design doc and it revises in place.
 
 Pin notes on your app and Scooter edits it live.
 
-<video class="only-light" src="https://chadac-me.github.io/scooter-demos/webservice-light.mp4" poster="https://chadac-me.github.io/scooter-demos/webservice-light.png" muted loop playsinline preload="none"></video>
-<video class="only-dark" src="https://chadac-me.github.io/scooter-demos/webservice-dark.mp4" poster="https://chadac-me.github.io/scooter-demos/webservice-dark.png" muted loop playsinline preload="none"></video>
+<video class="only-light" src="https://chadac-me.github.io/scooter-demos/web-review-light.mp4" poster="https://chadac-me.github.io/scooter-demos/web-review-light.png" muted loop playsinline preload="none"></video>
+<video class="only-dark" src="https://chadac-me.github.io/scooter-demos/web-review-dark.mp4" poster="https://chadac-me.github.io/scooter-demos/web-review-dark.png" muted loop playsinline preload="none"></video>
 
 </div>
 
