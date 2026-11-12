@@ -181,9 +181,9 @@ forwarded.
      label trigger is hardcoded to "openhands" rather than labelTrigger. Fix those,
      then update this section. -->
 
-1. **Add keys to the Secret:** `JIRA_ENABLED=true` (there's no Nix option for it yet), and
-   `JIRA_BOT_ACCOUNT_ID`, the Atlassian account id the agent comments as, so its own
-   comments are ignored.
+1. **Turn it on** with `contribs.atlassian.jira.webhooksEnabled = true`, and add
+   `JIRA_BOT_ACCOUNT_ID` to the Secret: the Atlassian account id the agent comments as,
+   so its own comments are ignored.
 
 2. **Add the webhook** in Jira: Settings → System → WebHooks → Create.
 

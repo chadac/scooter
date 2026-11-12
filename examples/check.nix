@@ -781,6 +781,7 @@ let
       contribs.ssh = lib.mkForce { enable = false; };
       contribs.mcpservers = lib.mkForce { enable = false; };
       contribs.gcp = lib.mkForce { enable = false; };
+      contribs.atlassian = lib.mkForce { enable = false; };
       contribs.github.userAuth.enable = lib.mkForce false;
       contribs.gitlab.userAuth.enable = lib.mkForce false;
     };
@@ -883,6 +884,41 @@ let
             ctrs = if off == null then [ ] else builtins.filter (c: c.name == "sandbox") off.containers;
         in if !(builtins.any (c: hasName (c.env or [ ]) "CLOUDSDK_AUTH_ACCESS_TOKEN_FILE") ctrs) then [ ]
         else [ "gcp-off: sandboxPod.extraEnv still sets CLOUDSDK_AUTH_ACCESS_TOKEN_FILE — contrib/gcp/deployment.nix is not gated on the contrib" ]);
+
+  # Atlassian: one OAuth app reaches the broker and Jira's webhooks, the product
+  # toggles reach the forge proxy, and contribs.jira only ships through it.
+  atlassianProblems =
+    let
+      envOf = e: d: builtins.concatMap (c: c.env or [ ])
+        (builtins.attrValues (e.config.kubernetes.resources.deployments.${d}.spec.template.spec.containers or { }));
+      valueOf = env: n: builtins.head (map (e: e.value or null) (builtins.filter (e: e.name == n) env) ++ [ null ]);
+      secretOf = env: n: builtins.head (map (e: e.valueFrom.secretKeyRef or null) (builtins.filter (e: e.name == n) env) ++ [ null ]);
+      jiraOff = evalPlatform {
+        module = { lib, ... }: { imports = [ ./kubenix-config.nix ]; contribs.atlassian.jira.enable = lib.mkForce false; };
+      };
+      offCtrs = let off = contribOverlayOf awsOffPlatform; in
+        if off == null then [ ] else builtins.filter (c: c.name == "sandbox") off.containers;
+    in
+    (if secretOf brokerEnv "ATLASSIAN_CLIENT_SECRET" == { name = "atlassian-oauth"; key = "ATLASSIAN_CLIENT_SECRET"; } then [ ]
+     else [ "broker.env.ATLASSIAN_CLIENT_SECRET is not the atlassian-oauth secret — the atlassian provider stays disabled" ])
+    ++ (if valueOf brokerEnv "ATLASSIAN_PRODUCTS" == "jira confluence" then [ ]
+        else [ "broker.env.ATLASSIAN_PRODUCTS is not \"jira confluence\" with both products on by default" ])
+    ++ (if valueOf brokerEnv "JIRA_SITE_URL" == "https://example.atlassian.net" then [ ]
+        else [ "broker.env.JIRA_SITE_URL missing — contribs.atlassian did not ship and configure contribs.jira" ])
+    ++ (if secretOf (envOf platform "agent-webhooks") "ATLASSIAN_CLIENT_ID" != null then [ ]
+        else [ "webhooks.env.ATLASSIAN_CLIENT_ID missing — Jira's webhook replies have no OAuth client" ])
+    ++ (if contribCtr != null && hasName (contribCtr.env or [ ]) "ATLASSIAN_CLOUD_ID" then [ ]
+        else [ "sandboxPod.extraEnv ATLASSIAN_CLOUD_ID missing with atlassian on — the skill's URLs have no cloud id" ])
+    ++ (let env = envOf jiraOff "agent-broker"; in
+        if valueOf env "ATLASSIAN_PRODUCTS" == "confluence" && !(hasName env "JIRA_SITE_URL") then [ ]
+        else [ "atlassian.jira.enable = false still proxies Jira or ships contribs.jira" ])
+    ++ (if !(hasName awsOffBrokerEnv "ATLASSIAN_PRODUCTS") && !(hasName awsOffBrokerEnv "JIRA_SITE_URL") then [ ]
+        else [ "atlassian-off: the broker still gets Atlassian or Jira env" ])
+    ++ (if !(builtins.any (c: hasName (c.env or [ ]) "ATLASSIAN_CLOUD_ID") offCtrs) then [ ]
+        else [ "atlassian-off: sandboxPod.extraEnv still sets ATLASSIAN_CLOUD_ID — contrib/atlassian/deployment.nix is not gated on the contrib" ])
+    ++ (if renders { contribs.atlassian = nixpkgsLib.mkForce { enable = false; }; contribs.jira.enable = true; }
+        then [ "contribs.jira.enable = true rendered without contribs.atlassian — an old config ships Jira with no OAuth client and no error" ]
+        else [ ]);
 
   # scooter.sandbox.volumes reaches the provisioner as SANDBOX_VOLUME_CLAIMS: defaults keep the
   # overlay claim on the warm pool, an override and the renamed workspaceStorageClass land on
@@ -1795,7 +1831,7 @@ let
               (envOf bothAgents.config.kubernetes.resources "agent-host" "GOOSE_BIN") true)).success then [ ]
         else [ "agent.command with fakeAgent should fail the render" ]);
 
-  allProblems = commandProblems ++ packageProblems ++ uploadsProblems ++ sysTaskProblems ++ askUserProblems ++ hookProblems ++ providerProblems ++ disabledContribProblems ++ settingsTabProblems ++ uiManifestProblems ++ conversationUiProblems ++ mathProblems ++ contribApiProblems ++ dirSkillProblems ++ legacyRootProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ imagegenProblems ++ atProblems ++ googleProblems ++ ghOwnersProblems ++ sharesProblems ++ cfProblems ++ themeProblems ++ csProblems ++ dbProblems ++ poolerProblems ++ puProblems ++ mdProblems ++ ngProblems' ++ rolloutProblems ++ availabilityProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ contribCoverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ volumeProblems ++ approvalProblems ++ awaitingNotifyProblems ++ stage2Problems ++ contribDbProblems ++ contribGrantProblems ++ retireProblems ++ initGrantProblems ++ schemaGateProblems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems ++ conversationServiceProblems ++ selfAccessProblems ++ npProblems ++ sandboxOriginProblems ++ enforceProblems ++ uaProblems ++ folderServiceProblems ++ k8sProblems;
+  allProblems = commandProblems ++ packageProblems ++ uploadsProblems ++ sysTaskProblems ++ askUserProblems ++ hookProblems ++ providerProblems ++ disabledContribProblems ++ settingsTabProblems ++ uiManifestProblems ++ conversationUiProblems ++ mathProblems ++ contribApiProblems ++ dirSkillProblems ++ legacyRootProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ imagegenProblems ++ atProblems ++ googleProblems ++ ghOwnersProblems ++ sharesProblems ++ cfProblems ++ themeProblems ++ csProblems ++ dbProblems ++ poolerProblems ++ puProblems ++ mdProblems ++ ngProblems' ++ rolloutProblems ++ availabilityProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ contribCoverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ atlassianProblems ++ volumeProblems ++ approvalProblems ++ awaitingNotifyProblems ++ stage2Problems ++ contribDbProblems ++ contribGrantProblems ++ retireProblems ++ initGrantProblems ++ schemaGateProblems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems ++ conversationServiceProblems ++ selfAccessProblems ++ npProblems ++ sandboxOriginProblems ++ enforceProblems ++ uaProblems ++ folderServiceProblems ++ k8sProblems;
 in
 if allProblems == [ ]
 then "ok: deployments = ${haveDeps}; datadog + airtable + brave + kagi + duckduckgo (three search providers, each with its own tool) + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every scooter.* namespace and every shipped contrib's own options; skills gated on the contrib being built; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; the renamed root (agentSandbox.*) fails the render; contribs reach the platform eval and configuring an unshipped one fails the render; deploy-time Jobs are spec-hash named; the stateless Deployments carry PDBs and soft topology spread; a scooter.packages override reaches exactly the images that use it; agent.command sets GOOSE_BIN to a wrapper the agent-host image ships\n"

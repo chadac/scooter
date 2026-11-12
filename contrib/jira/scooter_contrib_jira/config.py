@@ -6,7 +6,7 @@ from scooter_lib.settings import ScooterBaseSettings
 
 
 class JiraSettings(ScooterBaseSettings):
-    # The broker proxies /jira/* with a token minted from these.
+    # contribs.atlassian's OAuth app, shared with every Atlassian product.
     atlassian_client_id: str = ""
     atlassian_client_secret: str = ""
     atlassian_cloud_id: str = ""

@@ -52,8 +52,8 @@ async def jira_comment(body: str, ctx: ToolContext = ToolContextDep) -> ToolResu
     if target is None:
         return ToolResult.error(
             "Could not determine the Jira issue for this conversation — it has no jira "
-            "link with an issue key. Use the broker's /jira proxy with an explicit key "
-            "instead."
+            "link with an issue key. POST to the issue's /comment endpoint on "
+            "api.atlassian.com with an explicit key instead (see scooter-atlassian)."
         )
     # REST v2 accepts a plain-text `body` where v3 requires ADF; the upstream already includes /ex/jira/{cloud_id}.
     path = f"rest/api/2/issue/{quote(target.issue_key, safe='')}/comment"

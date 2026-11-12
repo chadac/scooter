@@ -1,66 +1,25 @@
-"""Jira's broker half: the Atlassian OAuth source and the auto-link rule."""
+"""Jira's broker half: the tools' provider, gated on the shared Atlassian client."""
 
 from __future__ import annotations
 
-import time
-
-import httpx
-import pytest
-
-from scooter_broker_lib.autolink import Link
-from scooter_broker_lib.types import Identity
-
+from scooter_broker_lib.transports.mcp_tools import McpTools
 from scooter_contrib_jira.atlassian_oauth import AtlassianOAuthSource
-from scooter_contrib_jira.broker_provider import _JIRA_LINK_RULES
+from scooter_contrib_jira.broker_provider import jira
 
 
-def _identity() -> Identity:
-    return Identity("conv1", "agent-sandbox", "system:serviceaccount:agent-sandbox:sandbox-conv1")
+def test_tools_call_the_cloud_api_with_the_shared_client(monkeypatch):
+    monkeypatch.setenv("ATLASSIAN_CLIENT_ID", "cid")
+    monkeypatch.setenv("ATLASSIAN_CLIENT_SECRET", "sec")
+    monkeypatch.setenv("ATLASSIAN_CLOUD_ID", "c1")
+    p = jira()
+    assert p.enabled
+    (t,) = p.transports
+    assert isinstance(t, McpTools) and t.upstream == "https://api.atlassian.com/ex/jira/c1"
+    assert isinstance(p.credential, AtlassianOAuthSource)
+    assert (p.credential.client_id, p.credential.client_secret) == ("cid", "sec")
 
 
-def _match(rules, method: str, path: str):
-    return next((r for r in rules if r.matches(method, path)), None)
-
-
-@pytest.mark.asyncio
-async def test_atlassian_oauth_source_mints_and_caches(monkeypatch):
-    calls = {"n": 0}
-
-    async def fake_post(self, url, **kwargs):  # noqa: ANN001
-        calls["n"] += 1
-        assert "oauth/token" in url
-        assert kwargs["json"]["grant_type"] == "client_credentials"
-        return httpx.Response(
-            200,
-            json={"access_token": "atl_token", "expires_in": 3600},
-            request=httpx.Request("POST", url),
-        )
-
-    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
-
-    src = AtlassianOAuthSource(client_id="cid", client_secret="sec", cloud_id="cloud")
-    cred = await src.get(_identity())
-    assert cred.value == "atl_token"
-    assert cred.expires_at and cred.expires_at > time.time()
-
-    await src.get(_identity())
-    assert calls["n"] == 1
-
-
-def test_jira_issue_rule_builds_browse_url(monkeypatch):
-    monkeypatch.setenv("JIRA_SITE_URL", "https://acme.atlassian.net")
-    r = _match(_JIRA_LINK_RULES, "POST", "rest/api/3/issue")
-    link = r.extract({"key": "PROJ-12", "self": "https://api.atlassian.com/.../issue/10001"})
-    assert link.url == "https://acme.atlassian.net/browse/PROJ-12"
-    assert link.resource_type == "issue"
-
-
-def test_without_a_site_url_the_api_self_link_is_used():
-    # With no site configured the API `self` URL is used rather than a guessed host.
-    r = _match(_JIRA_LINK_RULES, "POST", "rest/api/2/issue")
-    link = r.extract({"key": "PROJ-12", "self": "https://api.atlassian.com/x/issue/10001"})
-    assert link == Link("jira", "issue", "https://api.atlassian.com/x/issue/10001", "PROJ-12")
-
-
-def test_bulk_create_is_excluded():
-    assert _match(_JIRA_LINK_RULES, "POST", "rest/api/3/issue/bulk") is None
+def test_disabled_without_a_cloud_id(monkeypatch):
+    monkeypatch.setenv("ATLASSIAN_CLIENT_ID", "cid")
+    monkeypatch.delenv("ATLASSIAN_CLOUD_ID", raising=False)
+    assert not jira().enabled

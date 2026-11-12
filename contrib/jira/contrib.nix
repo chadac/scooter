@@ -1,29 +1,49 @@
+# Jira's tools, webhooks, issue links and UI. Configured through
+# contribs.atlassian.jira (contrib/atlassian), which owns the OAuth client and
+# the forge proxy; nothing here is set by a deployment directly.
 { lib, ... }:
 {
   contribs.jira = { config, ... }: {
+    options.fromAtlassian = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      internal = true;
+      description = "Set by contribs.atlassian when it enables this contrib.";
+    };
+
     options.siteUrl = lib.mkOption {
       type = lib.types.str;
       default = "";
-      example = "https://acme.atlassian.net";
-      description = ''
-        The Jira SITE base URL, used to build a human /browse/{KEY} link when the
-        broker auto-links an issue an agent creates via the Jira proxy (the
-        create-issue API response carries no human URL). Empty -> auto-link uses
-        the API `self` URL instead.
-      '';
+      internal = true;
+      description = "From contribs.atlassian.siteUrl: builds the human /browse/{KEY} link.";
     };
 
     options.webhooksEnabled = lib.mkOption {
       type = lib.types.bool;
       default = false;
-      description = "Enable webhooks.";
+      internal = true;
+      description = "From contribs.atlassian.jira.webhooksEnabled.";
     };
 
     config = {
       src = ./.;
       links.typeAliases = lib.importJSON ./scooter_contrib_jira/link_type_aliases.json;
       services.broker = {
-        enable = true;
+        # A throw, since kubenix has no `assertions` option.
+        enable = config.fromAtlassian || throw ''
+          contribs.jira is configured through contribs.atlassian now, which also
+          holds the OAuth client Jira used to read from extraEnv:
+
+            contribs.atlassian = {
+              enable = true;
+              credentialsSecret.name = "atlassian-oauth";  # ATLASSIAN_CLIENT_ID / _SECRET
+              cloudId = "…";
+              siteUrl = "https://acme.atlassian.net";      # was contribs.jira.siteUrl
+              jira.webhooksEnabled = true;                 # was contribs.jira.webhooksEnabled
+            };
+
+          and drop contribs.jira.* (jira.enable defaults true under atlassian).
+        '';
         env.JIRA_SITE_URL = lib.mkIf (config.siteUrl != "") config.siteUrl;
       };
       services.webhooks = {
