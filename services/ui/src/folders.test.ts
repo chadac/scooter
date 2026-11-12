@@ -7,6 +7,7 @@ import {
   canMoveInto,
   currentBranch,
   effectiveLifetime,
+  expiryOf,
   folderOf,
   folderPath,
   folderStore,
@@ -360,6 +361,23 @@ describe("nested folders", () => {
       JSON.stringify({ conversationLifetimeHours: null }),
     ]);
     expect(await folderStore.setLifetime(DESIGN.id, 24)).toBe(false);
+  });
+
+  it("a conversation expires by its folder's lifetime, else the default", async () => {
+    await load({ c1: UI.id, c2: DESIGN.id });
+    await folderStore.setLifetime(WORK.id, 24);
+    folderStore.setDefaultLifetime(720);
+    const conv = (serverId: string | undefined, over: Partial<Session> = {}): Session => ({ id: `k-${serverId}`, serverId, title: "t", createdAt: 0, lastActivityAt: 1000, ...over });
+    expect(expiryOf(conv("c1"))).toEqual({ at: 1000 + 24 * 3_600_000, hours: 24 });
+    expect(expiryOf(conv("c9"))).toEqual({ at: 1000 + 720 * 3_600_000, hours: 720 });
+    // Forever, starred, subagents and drafts never expire.
+    expect(expiryOf(conv("c2"))).toBeUndefined();
+    expect(expiryOf(conv("c9", { starred: true }))).toBeUndefined();
+    expect(expiryOf(conv("c9", { parentId: "c1" }))).toBeUndefined();
+    expect(expiryOf(conv(undefined))).toBeUndefined();
+    folderStore.setDefaultLifetime(0);
+    expect(expiryOf(conv("c9"))).toBeUndefined();
+    folderStore.setDefaultLifetime(undefined);
   });
 
   it("locked folders can't be renamed, moved or deleted", async () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { LIFETIMES, lifetimeChoices, lifetimeLabel, parseLifetime, splitLifetime } from "./retention.js";
+import { LIFETIMES, lifetimeChoices, lifetimeLabel, parseLifetime, splitLifetime, timeLeft } from "./retention.js";
 
 describe("retention", () => {
   it("labels a lifetime in its largest even unit", () => {
@@ -33,5 +33,22 @@ describe("retention", () => {
     expect(parseLifetime("87600", "hours")).toEqual({ hours: 87600 });
     for (const bad of ["", "0", "-1", "1.5", "abc"]) expect(parseLifetime(bad, "days")).toHaveProperty("error");
     expect(parseLifetime("522", "weeks")).toEqual({ error: "At most 10 years" });
+  });
+
+  it("shows time left only inside the warning window", () => {
+    const H = 3_600_000;
+    // 30 days: the window is 3 days.
+    const month = { at: 720 * H, hours: 720 };
+    expect(timeLeft(month, 0)).toBeUndefined();
+    expect(timeLeft(month, 720 * H - 73 * H)).toBeUndefined();
+    expect(timeLeft(month, 720 * H - 72 * H)).toBe("3d");
+    expect(timeLeft(month, 720 * H - 47 * H)).toBe("1d");
+    expect(timeLeft(month, 720 * H - 5.5 * H)).toBe("5h");
+    expect(timeLeft(month, 720 * H - 0.5 * H)).toBe("<1h");
+    // Past due waits for the next sweep.
+    expect(timeLeft(month, 721 * H)).toBe("<1h");
+    // Short lifetimes still warn a day ahead.
+    expect(timeLeft({ at: 24 * H, hours: 24 }, 0)).toBe("1d");
+    expect(timeLeft({ at: 24 * H, hours: 24 }, 1)).toBe("23h");
   });
 });

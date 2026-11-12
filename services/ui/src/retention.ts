@@ -43,3 +43,17 @@ export function parseLifetime(amount: string, unit: LifetimeUnit): { hours: numb
   if (hours > MAX_LIFETIME_HOURS) return { error: "At most 10 years" };
   return { hours };
 }
+
+const HOUR_MS = 3_600_000;
+
+/** When a conversation is due for deletion, and its lifetime. */
+export type Expiry = { at: number; hours: number };
+
+/** Time left as "2d", "5h" or "<1h", only inside the warning window. */
+export function timeLeft(expiry: Expiry, now: number): string | undefined {
+  const left = expiry.at - now;
+  // The window: 10% of the lifetime, at least a day.
+  if (left > Math.max(expiry.hours * HOUR_MS * 0.1, 24 * HOUR_MS)) return undefined;
+  const hours = Math.floor(left / HOUR_MS);
+  return hours < 1 ? "<1h" : hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
+}

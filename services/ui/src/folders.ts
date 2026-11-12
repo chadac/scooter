@@ -11,6 +11,7 @@ import {
   type ConversationFolder,
 } from "./client.js";
 import { agentHostConfig } from "./config.js";
+import type { Expiry } from "./retention.js";
 import { serverIdOf } from "./sessionActions.js";
 import { serverKeyOf, sessionStore, type Session, type SidebarRow } from "./sessions.js";
 
@@ -279,6 +280,15 @@ export const folderOf = (s: Session): string | null => {
   const f = state.placements[serverKeyOf(s)] ?? state.drafts[s.id];
   return f && state.folders.some((x) => x.id === f) ? f : null;
 };
+
+/** When the retention sweep may delete `s`; undefined if never. */
+export function expiryOf(s: Session): Expiry | undefined {
+  // Subagents go with their parent; drafts and starred never expire.
+  if (s.parentId || s.serverId === undefined || s.starred) return undefined;
+  const folder = folderOf(s);
+  const hours = (folder ? effectiveLifetime(folder)?.hours : undefined) ?? state.defaultLifetimeHours;
+  return hours ? { at: s.lastActivityAt + hours * 3_600_000, hours } : undefined;
+}
 
 /** A folder's name with its ancestors, like "Work / Scooter". */
 export function folderPath(id: string, folders = state.folders): string {

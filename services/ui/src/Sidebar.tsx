@@ -6,19 +6,20 @@
  * new-session.
  */
 
-import { memo, useEffect, useLayoutEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type DragEvent, type ReactNode } from "react";
 import { Bot, Check, ChevronRight, CornerDownRight, FolderPlus, Hourglass, InfinityIcon, Lock, MoreHorizontal, Plus, Star } from "lucide-react";
 import { DropdownMenu, Popover } from "radix-ui";
 
 import { FolderGlyph, IconPicker } from "./FolderGlyph.js";
 import { CustomLifetimeForm } from "./RetentionForm.js";
-import { lifetimeChoices, lifetimeLabel } from "./retention.js";
+import { lifetimeChoices, lifetimeLabel, timeLeft } from "./retention.js";
 import {
   allRows,
   buildFolders,
   canMoveInto,
   currentBranch,
   effectiveLifetime,
+  expiryOf,
   folderPath,
   folderStore,
   MAX_FOLDER_DEPTH,
@@ -124,6 +125,46 @@ function SessionLabel({ session: s, mode }: { session: import("./sessions.js").S
   return link ? <LinkText link={link} /> : <span className="truncate">{sessionLabel(s, mode)}</span>;
 }
 
+// One shared minute tick for every row's expiry hint.
+const minuteListeners = new Set<() => void>();
+let minute = Date.now();
+let minuteTimer: ReturnType<typeof setInterval> | undefined;
+function subscribeMinute(l: () => void) {
+  minuteListeners.add(l);
+  minuteTimer ??= setInterval(() => {
+    minute = Date.now();
+    for (const x of minuteListeners) x();
+  }, 60_000);
+  return () => {
+    minuteListeners.delete(l);
+    if (minuteListeners.size > 0) return;
+    clearInterval(minuteTimer);
+    minuteTimer = undefined;
+  };
+}
+const readMinute = () => minute;
+
+/** An hourglass and the time left, for a row near its retention lifetime. */
+function ExpiryHint({ session }: { session: import("./sessions.js").Session }) {
+  useFolders();
+  const now = useSyncExternalStore(subscribeMinute, readMinute);
+  const expiry = expiryOf(session);
+  const left = expiry && timeLeft(expiry, now);
+  if (!expiry || !left) return null;
+  const why = `Deleted in ${left}: it has been idle for most of its ${lifetimeLabel(expiry.hours)} retention. Use, star or move it to keep it.`;
+  return (
+    <span
+      data-testid="session-expiry"
+      title={why}
+      aria-label={why}
+      className="flex shrink-0 items-center gap-0.5 text-[11px] tabular-nums text-muted-foreground"
+    >
+      <Hourglass className="size-3" aria-hidden />
+      {left}
+    </span>
+  );
+}
+
 /** One conversation row: select only. Star / rename / delete live beside the title in the
  *  header (HeaderConversationTitle), away from the tap target that switches conversations.
  *  memo()'d so a stream merge, which reuses an unchanged Session object, does not re-render it. */
@@ -206,6 +247,8 @@ const SessionRow = memo(function SessionRow({
           </span>
         )}
       </Button>
+
+      {depth === 0 && <ExpiryHint session={s} />}
 
       {/* Provider link plates for linked external resources. */}
       {s.sources && s.sources.length > 0 && (
