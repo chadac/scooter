@@ -224,7 +224,7 @@ field, including `allowed_policy` (the ceiling on what can ever be granted) and
 `ruleSets` (what's granted without approval; secret reads always need one by
 default).
 
-## Jira and Airtable
+## Atlassian (Jira and Confluence) and Airtable
 
 ```nix
 contribs = {
@@ -233,27 +233,23 @@ contribs = {
     tokenSecret.name = "airtable-token";     # key defaults to AIRTABLE_TOKEN
   };
 
-  jira = {
+  atlassian = {
     enable = true;
-    siteUrl = "https://acme.atlassian.net";  # for human-facing /browse links
+    # One OAuth app (client credentials) for every product; keys default to
+    # ATLASSIAN_CLIENT_ID and ATLASSIAN_CLIENT_SECRET.
+    credentialsSecret.name = "atlassian-oauth";
+    cloudId = "…";                           # https://<site>/_edge/tenant_info
+    siteUrl = "https://acme.atlassian.net";  # also proxy the site's /rest and /wiki
+    # jira.enable and confluence.enable default to true.
   };
 };
 ```
 
-<!-- TODO: the Jira broker reads ATLASSIAN_CLIENT_ID / ATLASSIAN_CLIENT_SECRET /
-     ATLASSIAN_CLOUD_ID, but contribs.jira declares no options for them, so today they
-     have to be passed through scooter.broker.extraEnv. Add secret options to the
-     contrib, then document them here. -->
-
-Jira authenticates with an Atlassian OAuth client, which the contrib doesn't have
-options for yet. Until it does, pass the client through the broker's environment:
-
-```nix
-scooter.broker.extraEnv = map (name: {
-  inherit name;
-  valueFrom.secretKeyRef = { name = "atlassian-oauth"; key = name; };
-}) [ "ATLASSIAN_CLIENT_ID" "ATLASSIAN_CLIENT_SECRET" "ATLASSIAN_CLOUD_ID" ];
-```
+The broker's forge proxy intercepts `api.atlassian.com` and injects the app's
+token into each enabled product's paths, so `curl` in the sandbox works against
+the real URLs. Turning a product off stops the proxy authenticating it; the
+app's scopes are still the upper limit. `jira.enable` also ships Jira's agent
+tools, issue links and UI. Configure them here, not under `contribs.jira`.
 
 To start conversations from Jira comments, see the [Jira webhook](webhooks.md#jira).
 

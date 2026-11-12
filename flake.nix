@@ -124,7 +124,7 @@
 
           # What the test renders ship
           testContribs = lib.genAttrs
-            [ "aws" "jira" "kagi" "duckduckgo" ]
+            [ "atlassian" "aws" "kagi" "duckduckgo" ]
             (_: { enable = true; });
 
           # E2E/cluster-test render (`nix build .#platform-manifests`)
@@ -430,6 +430,7 @@
             contrib-echo = contribsWithExamples.packages.echo.broker;
             contrib-echo-webhooks = contribsWithExamples.packages.echo.webhooks;
             contrib-airtable = contribs.packages.airtable.broker;
+            contrib-atlassian = contribs.packages.atlassian.broker;
             contrib-brave = contribs.packages.brave.broker;
             contrib-datadog = contribs.packages.datadog.broker;
             contrib-duckduckgo = contribs.packages.duckduckgo.broker;
@@ -641,6 +642,7 @@
             contrib-echo = contribsWithExamples.packages.echo.broker;
             contrib-echo-webhooks = contribsWithExamples.packages.echo.webhooks;
             contrib-airtable = contribs.packages.airtable.broker;
+            contrib-atlassian = contribs.packages.atlassian.broker;
             contrib-brave = contribs.packages.brave.broker;
             contrib-datadog = contribs.packages.datadog.broker;
             contrib-duckduckgo = contribs.packages.duckduckgo.broker;

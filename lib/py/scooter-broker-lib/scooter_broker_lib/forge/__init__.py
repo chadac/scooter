@@ -1,6 +1,6 @@
 """Forge access without handing the agent a token: the policy hook, request parsing and the forge-proxy transport."""
 
-from .hosts import ForgeHost, ForgeHosts, GraphQLLinkRule, api_forge_request, find_forge_hosts
+from .hosts import ForgeHost, ForgeHosts, GraphQLLinkRule, Rewrite, api_forge_request, find_forge_hosts
 from .parse import (
     Classified,
     ForgeDialect,
@@ -41,6 +41,7 @@ __all__ = [
     "GraphQLOperation",
     "PushHeadReader",
     "RefUpdate",
+    "Rewrite",
     "audit",
     "denial_message",
     "classify",

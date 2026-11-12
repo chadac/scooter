@@ -184,13 +184,12 @@ screenshot is often the point of the report.
   URL from a search result, a PR/issue link, or docs. (It refuses
   internal/cluster/metadata addresses.)
 
-## Beyond a comment: the broker proxy (Jira, GitHub, GitLab APIs)
+## Beyond a comment: the broker proxy (GitHub, GitLab APIs)
 
 The `*_comment` tools only *comment on the triggering resource*. For any OTHER
-provider API work — query a Jira issue, run a JQL search, transition a ticket,
-read a PR's files, list MRs — go through the **broker proxy**, which is already
-configured in your sandbox. You do NOT need to find tokens, cloud ids, or base
-URLs; the broker injects them. Don't rediscover this each time — it's fixed:
+provider API work — read a PR's files, list MRs — go through the **broker
+proxy**, which is already configured in your sandbox. You do NOT need to find
+tokens or base URLs; the broker injects them. Don't rediscover this each time — it's fixed:
 
 ```
 $BROKER_URL/<provider>/<the provider's own API path>
@@ -198,24 +197,12 @@ $BROKER_URL/<provider>/<the provider's own API path>
 authenticated with a Bearer token read from `$BROKER_TOKEN_PATH`. Both env vars
 are always set in your sandbox.
 
-**Jira** (Atlassian Cloud REST v2/v3 — the broker maps `/jira/*` onto your site's
-`/ex/jira/<cloud-id>/*`, so you just use the normal Jira REST paths):
+**Jira and Confluence** don't go through `$BROKER_URL`. Call the real
+`https://api.atlassian.com/ex/jira/$ATLASSIAN_CLOUD_ID/rest/api/3/…` (or
+`…/ex/confluence/$ATLASSIAN_CLOUD_ID/wiki/api/v2/…`) with no token: the forge
+proxy injects it. The `scooter-atlassian` skill has the details.
 
-```bash
-TOKEN=$(cat "$BROKER_TOKEN_PATH")
-# Read an issue:
-curl -s -H "Authorization: Bearer $TOKEN" \
-  "$BROKER_URL/jira/rest/api/2/issue/ENG-123"
-# JQL search:
-curl -s -H "Authorization: Bearer $TOKEN" \
-  "$BROKER_URL/jira/rest/api/2/search?jql=project=ENG+AND+status=Open"
-# Transition an issue (POST):
-curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
-  -X POST "$BROKER_URL/jira/rest/api/2/issue/ENG-123/transitions" \
-  -d '{"transition":{"id":"31"}}'
-```
-
-The same shape works for **`$BROKER_URL/github/...`** (paths under
+The `$BROKER_URL` shape works for **`$BROKER_URL/github/...`** (paths under
 api.github.com) and **`$BROKER_URL/gitlab/...`** (paths under gitlab.com — use the
 FULL API path, e.g. `$BROKER_URL/gitlab/api/v4/projects/123/merge_requests`, just
 as you would against GitLab directly). Each provider proxy is transparent: the

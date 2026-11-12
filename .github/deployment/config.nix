@@ -7,6 +7,8 @@
   contribs = {
     airtable.enable = true;
     ask-user.enable = true;
+    # Ships Jira (contribs.jira) too; a deployment adds the OAuth app.
+    atlassian.enable = true;
     aws.enable = true;
     brave.enable = true;
     code-server.enable = true;
@@ -28,7 +30,6 @@
       enable = true;
       backends.bedrock.enable = true;
     };
-    jira.enable = true;
     k8s.enable = true;
     kagi.enable = true;
     kanban.enable = true;

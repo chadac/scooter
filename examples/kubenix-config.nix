@@ -213,6 +213,7 @@
   # --- Contribs: each integration's own options ---
   contribs = {
     # Opt in: `enable` defaults false, so a deployment names what it ships.
+    atlassian.enable = true;
     aws.enable = true;
     ask-user.enable = true;
     airtable.enable = true;
@@ -225,7 +226,6 @@
     google.enable = true;
     grafana.enable = true;
     imagegen.enable = true;
-    jira.enable = true;
     kagi.enable = true;
     # Static shares: agents publish bundles the broker serves at /s/<uuid>/.
     shares.enable = true;
@@ -294,10 +294,15 @@
     kagi.apiKeySecret = { name = "kagi-search-key"; key = "KAGI_API_KEY"; };
     # duckduckgo is keyless, so shipping it is the whole config.
 
-    # siteUrl only builds the human /browse/{KEY} link.
-    jira.siteUrl = "https://example.atlassian.net";
-    # Turns on /webhooks/jira; needs JIRA_WEBHOOK_SECRET in the webhooks Secret.
-    jira.webhooksEnabled = true;
+    # One OAuth app for Jira and Confluence, injected by the forge proxy.
+    atlassian = {
+      credentialsSecret.name = "atlassian-oauth";
+      cloudId = "00000000-0000-0000-0000-000000000000";
+      # Also intercepts the site, rewriting /rest and /wiki onto api.atlassian.com.
+      siteUrl = "https://example.atlassian.net";
+      # Turns on /webhooks/jira; needs JIRA_WEBHOOK_SECRET in the webhooks Secret.
+      jira.webhooksEnabled = true;
+    };
 
     # Mounts only when url and token both resolve.
     grafana = {

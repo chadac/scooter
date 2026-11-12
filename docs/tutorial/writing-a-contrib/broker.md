@@ -61,7 +61,7 @@ source can mint short-lived tokens or choose one per conversation.
 |---|---|
 | A fixed bearer token | `StaticTokenSource(token=…)` |
 | A fixed token in a custom header | `StaticTokenSource(token=…, kind="header", header_name="PRIVATE-TOKEN")` (as `contrib/gitlab` does) |
-| Tokens minted on demand | Your own `CredentialSource`. `contrib/github` mints GitHub App installation tokens and `contrib/jira` runs an OAuth client-credentials flow |
+| Tokens minted on demand | Your own `CredentialSource`. `contrib/github` mints GitHub App installation tokens and `scooter_broker_lib.sources.client_credentials` runs an OAuth client-credentials flow (`contrib/atlassian`) |
 
 `identity` is the caller the broker verified from the sandbox's signed token: its
 `conversation_id`, `owner` and service account. Use it for per-user decisions. Never trust

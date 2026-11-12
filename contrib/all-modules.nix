@@ -8,6 +8,7 @@
 
     ./airtable/contrib.nix
     ./ask-user/contrib.nix
+    ./atlassian/contrib.nix
     ./aws/contrib.nix
     ./brave/contrib.nix
     ./code-server/contrib.nix

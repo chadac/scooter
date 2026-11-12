@@ -87,6 +87,13 @@ def build_routes(providers: list[Provider]) -> dict[str, Route]:
                         f"forge host {name!r} is claimed by both {routes[name].provider.name!r} and {provider.name!r}"
                     )
                 routes[name] = Route(provider, transport, host)
+            own = {h.host.lower() for h in transport.hosts}
+            for host in transport.hosts:
+                for rw in host.rewrites:
+                    if rw.upstream_host.lower() not in own:
+                        raise ValueError(
+                            f"forge host {host.host!r} rewrites to {rw.upstream_host!r}, not a host of {provider.name!r}"
+                        )
     return routes
 
 
@@ -216,7 +223,13 @@ class ForgeProxy:
         if not target.startswith("/"):
             await io.send_simple(400, "origin-form request target required")
             return False
-        path, _, query = target.partition("?")
+        path, sep, query = target.partition("?")
+        # Canonicalise first: policy, gating and links see one form.
+        rewritten = route.host.rewrite(path)
+        if rewritten is not None:
+            host, path = rewritten
+            target = path + sep + query
+            route = self.routes[host.lower()]
         headers = [(k.decode("latin-1").lower(), v.decode("latin-1")) for k, v in event.headers]
         hmap = dict(headers)
         forge = route.forge
