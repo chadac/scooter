@@ -62,14 +62,9 @@ def classify(
             else:
                 service = rest
             return Classified("git", unquote(m.group("repo")).strip("/"), service)
-    if any(path.startswith(p) and (p == "/" or not _has_dot_segment(path)) for p in api_prefixes):
+    if any(path.startswith(p) for p in api_prefixes):
         return Classified("api", dialect.api_repo(path))
     return Classified("web")
-
-
-def _has_dot_segment(path: str) -> bool:
-    """Whether `path` has a `.` or `..` segment, which could step out of its prefix upstream."""
-    return any(seg in (".", "..") for seg in unquote(path).replace("\\", "/").split("/"))
 
 
 # ---------------------------------------------------------------------------

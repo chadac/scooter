@@ -13,7 +13,7 @@ from broker.forge import proxy as proxy_mod
 from broker.forge.ca import LeafIssuer, ca_hosts, generate_ca
 from broker.forge.proxy import ForgeProxy, ProxyAuthError, build_routes
 from scooter_broker_lib.autolink import Link, rule
-from scooter_broker_lib.forge import Decision, ForgeHost, ForgeHosts, Rewrite
+from scooter_broker_lib.forge import Decision, ForgeHost, ForgeHosts
 from scooter_broker_lib.sources.static_token import StaticTokenSource
 from scooter_broker_lib.types import Identity, Provider
 
@@ -40,7 +40,7 @@ class _GitLabish:
     def is_graphql(self, path):
         return path == "/api/graphql"
 
-HOSTS = ["acme.atl.example", "api.atl.example", "api.github.com", "github.com", "gitlab.com"]
+HOSTS = ["api.github.com", "github.com", "gitlab.com"]
 IDENT = Identity(conversation_id="conv-1", namespace="ns", service_account="system:serviceaccount:ns:sandbox-conv-1")
 A, B = "a" * 40, "b" * 40
 
@@ -98,8 +98,6 @@ def world(ca, monkeypatch):
         upstream_seen.append((request, body))
         if request.url.path == "/graphql":
             return _streamed(200, json_body={"data": {"createPullRequest": {"pullRequest": {"url": "https://github.com/o/r/pull/7", "title": "T"}}}})
-        if request.url.path.endswith("/rest/api/3/issue"):
-            return _streamed(201, json_body={"key": "ENG-9"})
         if request.url.path.endswith("/merge_requests"):
             return _streamed(201, json_body={"web_url": "https://gitlab.com/g/p/-/merge_requests/3", "title": "MR"})
         return _streamed(200, content=b"upstream:" + body, headers={"x-up": "1"})
@@ -132,26 +130,13 @@ def world(ca, monkeypatch):
         forge_policy=gl_policy,
     )
 
-    atlassian = Provider(
-        name="atlassian",
-        credential=StaticTokenSource(token="atl_real", kind="bearer"),
-        transports=[ForgeHosts(
-            hosts=[
-                ForgeHost("api.atl.example", api_prefixes=("/ex/jira/c1/",)),
-                ForgeHost("acme.atl.example", rewrites=(Rewrite("/rest/", "api.atl.example", "/ex/jira/c1/rest/"),)),
-            ],
-            link_rules=[rule("POST", r"^ex/jira/[^/]+/rest/api/3/issue/?$", lambda r: Link("jira", "issue", r["key"]))],
-        )],
-        forge_policy=Recorder(),
-    )
-
     async def authenticate(token: str) -> Identity:
         if token != "good-sa-token":
             raise ProxyAuthError(407, "token not authenticated")
         return IDENT
 
     proxy = ForgeProxy(
-        build_routes([github, gitlab, atlassian]), LeafIssuer(ca), authenticate,
+        build_routes([github, gitlab]), LeafIssuer(ca), authenticate,
         upstream=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         agent_host_url="http://agent-host",
     )
@@ -292,33 +277,6 @@ async def test_web_paths_get_no_credential(running, ca):
     assert policy.seen[0].kind == "web"
 
 
-async def test_site_host_is_rewritten_before_classifying(running, ca):
-    proxy, seen, links, _, _ = running
-    async with _client(proxy, ca) as c:
-        r = await c.get("https://acme.atl.example/rest/api/3/myself?expand=groups")
-        assert r.status_code == 200
-        r = await c.post("https://acme.atl.example/rest/api/3/issue", json={"fields": {}})
-        assert r.json() == {"key": "ENG-9"}
-    assert [str(req.url) for req, _ in seen] == [
-        "https://api.atl.example/ex/jira/c1/rest/api/3/myself?expand=groups",
-        "https://api.atl.example/ex/jira/c1/rest/api/3/issue",
-    ]
-    assert all(req.headers["authorization"] == "Bearer atl_real" for req, _ in seen)
-    fr = proxy.routes["api.atl.example"].provider.forge_policy.seen[0]
-    assert (fr.host, fr.path, fr.kind) == ("api.atl.example", "/ex/jira/c1/rest/api/3/myself", "api")
-    assert links == [Link("jira", "issue", "ENG-9")]
-
-
-async def test_paths_outside_a_scoped_prefix_get_no_credential(running, ca):
-    proxy, seen, _, _, _ = running
-    async with _client(proxy, ca) as c:
-        await c.get("https://api.atl.example/ex/confluence/c1/wiki/api/v2/pages")
-        await c.get("https://api.atl.example/ex/jira/other-cloud/rest/api/3/myself")
-        await c.get("https://acme.atl.example/browse/ENG-9", headers={"Authorization": "Bearer x"})
-    assert [str(req.url) for req, _ in seen][-1] == "https://acme.atl.example/browse/ENG-9"
-    assert all("authorization" not in req.headers for req, _ in seen)
-
-
 async def test_denied_request_never_reaches_upstream(running, ca):
     proxy, seen, _, policy, _ = running
     policy.deny = lambda fr: fr.is_push
@@ -353,15 +311,6 @@ def test_two_providers_cannot_claim_one_host():
     a = Provider(name="a", transports=[ForgeHosts(hosts=[ForgeHost("h.example")])])
     b = Provider(name="b", transports=[ForgeHosts(hosts=[ForgeHost("h.example")])])
     with pytest.raises(ValueError):
-        build_routes([a, b])
-
-
-def test_a_rewrite_must_target_the_same_provider():
-    a = Provider(name="a", transports=[ForgeHosts(hosts=[ForgeHost("h.example")])])
-    b = Provider(name="b", transports=[ForgeHosts(hosts=[
-        ForgeHost("site.example", rewrites=(Rewrite("/", "h.example", "/"),)),
-    ])])
-    with pytest.raises(ValueError, match="not a host of 'b'"):
         build_routes([a, b])
 
 

@@ -298,7 +298,7 @@
     atlassian = {
       credentialsSecret.name = "atlassian-oauth";
       cloudId = "00000000-0000-0000-0000-000000000000";
-      # Also intercepts the site, rewriting /rest and /wiki onto api.atlassian.com.
+      # Builds /browse/{KEY} links for issues the agent creates.
       siteUrl = "https://example.atlassian.net";
       # Turns on /webhooks/jira; needs JIRA_WEBHOOK_SECRET in the webhooks Secret.
       jira.webhooksEnabled = true;

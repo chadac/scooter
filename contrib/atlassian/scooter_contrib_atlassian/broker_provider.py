@@ -2,21 +2,22 @@
 
 Mounts no routes. Requests to `api.atlassian.com/ex/<product>/<cloud id>/` get
 the token when that product is enabled; any other path there is forwarded with
-none. With a site URL, `<site>/rest/…` and `<site>/wiki/…` are rewritten onto
-those API paths first, so both URL forms work and policy sees one.
+none.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+from urllib.parse import unquote
 
 from scooter_broker_lib.autolink import Link, rule
-from scooter_broker_lib.forge import ForgeHost, ForgeHosts, Rewrite, load_policy
+from scooter_broker_lib.forge import Decision, ForgeHost, ForgeHosts, ForgePolicy, ForgeRequest, load_policy
 from scooter_broker_lib.registry import register_provider
-from scooter_broker_lib.sources.client_credentials import ClientCredentialsSource
 from scooter_broker_lib.types import Provider
+from scooter_contrib_jira.atlassian_oauth import AtlassianOAuthSource
 
-from .config import API_HOST, PRODUCTS, TOKEN_URL, AtlassianSettings
+from .config import API_HOST, PRODUCTS, AtlassianSettings
 
 logger = logging.getLogger(__name__)
 
@@ -28,38 +29,40 @@ def atlassian() -> Provider:
     cloud_id = settings.atlassian_cloud_id
     try:
         products = settings.products
-        site = settings.site_host
     except ValueError as e:
         logger.error("%s; atlassian provider disabled", e)
-        products, site = [], None
+        products = []
     configured = bool(settings.atlassian_client_id and settings.atlassian_client_secret and cloud_id)
     if not configured:
         # Normal when unconfigured: published images ship this contrib everywhere.
         logger.info("Atlassian OAuth client or cloud id not set; atlassian provider disabled")
     return Provider(
         name="atlassian",
-        credential=ClientCredentialsSource(
-            token_url=TOKEN_URL,
+        credential=AtlassianOAuthSource(
             client_id=settings.atlassian_client_id,
             client_secret=settings.atlassian_client_secret,
+            cloud_id=cloud_id,
         ),
         transports=[ForgeHosts(
-            hosts=forge_hosts(cloud_id, products, site),
+            hosts=[ForgeHost(API_HOST, api_prefixes=tuple(PRODUCTS[p].format(cloud_id=cloud_id) for p in products))],
             link_rules=_link_rules(settings.atlassian_site_url) if "jira" in products else [],
         )],
         enabled=configured and bool(products),
-        forge_policy=load_policy(settings.atlassian_forge_policy),
+        forge_policy=StayInProduct(load_policy(settings.atlassian_forge_policy)),
     )
 
 
-def forge_hosts(cloud_id: str, products: list[str], site: str | None) -> list[ForgeHost]:
-    roots = {p: PRODUCTS[p][0].format(cloud_id=cloud_id) for p in products}
-    hosts = [ForgeHost(API_HOST, api_prefixes=tuple(roots.values()))]
-    if site and site != API_HOST:
-        hosts.append(ForgeHost(site, rewrites=tuple(
-            Rewrite(PRODUCTS[p][1], API_HOST, roots[p] + PRODUCTS[p][1].lstrip("/")) for p in products
-        )))
-    return hosts
+@dataclass
+class StayInProduct:
+    """Denies API paths with `.`/`..` segments, which upstream could resolve into a disabled product."""
+
+    inner: ForgePolicy
+
+    async def check(self, request: ForgeRequest) -> Decision:
+        segments = unquote(request.path).replace("\\", "/").split("/")
+        if request.kind == "api" and any(seg in (".", "..") for seg in segments):
+            return Decision.deny("dot segments in an Atlassian API path")
+        return await self.inner.check(request)
 
 
 def _link_rules(site_url: str) -> list:

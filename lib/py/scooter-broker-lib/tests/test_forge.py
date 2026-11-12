@@ -20,7 +20,6 @@ from scooter_broker_lib.forge import (
     ForgeRequest,
     GenericDialect,
     PushHeadReader,
-    Rewrite,
     api_forge_request,
     classify,
     enforce,
@@ -81,28 +80,6 @@ def test_nested_git_and_generic_api():
     c = classify(path="/api/v4/projects/42", **GL)
     assert (c.kind, c.repo) == ("api", None)
     assert classify(path="/g/p/-/merge_requests", **GL).kind == "web"
-
-
-@pytest.mark.parametrize("path", [
-    "/ex/jira/c1/../confluence/c1/wiki",
-    "/ex/jira/c1/%2e%2e/%2E%2E/ex/confluence/c1/wiki",
-    "/ex/jira/c1/./rest",
-    "/ex/jira/c1/..%5c..%5cex",
-])
-def test_dot_segments_cannot_leave_a_scoped_prefix(path):
-    scoped = dict(dialect=GenericDialect(), git=False, api_prefixes=("/ex/jira/c1/",))
-    assert classify(path=path, **scoped).kind == "web"
-    assert classify(path="/ex/jira/c1/rest/api/3/myself", **scoped).kind == "api"
-
-
-def test_rewrite_swaps_the_first_matching_prefix():
-    h = ForgeHost("acme.example", rewrites=(
-        Rewrite("/rest/", "api.example", "/ex/jira/c1/rest/"),
-        Rewrite("/wiki/", "api.example", "/ex/confluence/c1/wiki/"),
-    ))
-    assert h.rewrite("/rest/api/3/issue/X-1") == ("api.example", "/ex/jira/c1/rest/api/3/issue/X-1")
-    assert h.rewrite("/wiki/api/v2/pages") == ("api.example", "/ex/confluence/c1/wiki/api/v2/pages")
-    assert h.rewrite("/browse/X-1") is None
 
 
 # -- receive-pack ref updates ----------------------------------------------

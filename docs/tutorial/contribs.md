@@ -239,7 +239,7 @@ contribs = {
     # ATLASSIAN_CLIENT_ID and ATLASSIAN_CLIENT_SECRET.
     credentialsSecret.name = "atlassian-oauth";
     cloudId = "…";                           # https://<site>/_edge/tenant_info
-    siteUrl = "https://acme.atlassian.net";  # also proxy the site's /rest and /wiki
+    siteUrl = "https://acme.atlassian.net";  # for /browse/{KEY} links
     # jira.enable and confluence.enable default to true.
   };
 };

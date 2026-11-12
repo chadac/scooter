@@ -26,15 +26,6 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
-class Rewrite:
-    """Requests under `prefix` go to `upstream_host`, with `prefix` replaced by `upstream_prefix`."""
-
-    prefix: str
-    upstream_host: str
-    upstream_prefix: str
-
-
-@dataclass(frozen=True)
 class ForgeHost:
     """One intercepted host: whether it serves git smart-HTTP, and which path prefixes are its API."""
 
@@ -42,15 +33,6 @@ class ForgeHost:
     git: bool = False
     # Paths that get the API credential; ("/",) for an API-only host.
     api_prefixes: tuple[str, ...] = ()
-    # Applied before classifying; targets must be this ForgeHosts' hosts.
-    rewrites: tuple[Rewrite, ...] = ()
-
-    def rewrite(self, path: str) -> tuple[str, str] | None:
-        """The (host, path) a request for `path` goes to instead, or None to send it here unchanged."""
-        for r in self.rewrites:
-            if path.startswith(r.prefix):
-                return r.upstream_host, r.upstream_prefix + path[len(r.prefix):]
-        return None
 
 
 # A GraphQL mutation's top-level field -> the created resource, from its `data` entry and the request's variables.

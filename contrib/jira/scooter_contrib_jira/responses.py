@@ -5,7 +5,7 @@ import time
 
 import httpx
 
-from .config import TOKEN_URL, settings
+from .config import settings
 from scooter_lib.logging_config import format_error
 
 logger = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ async def _get_access_token() -> str | None:
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(
-                TOKEN_URL,
+                "https://auth.atlassian.com/oauth/token",
                 json={
                     "grant_type": "client_credentials",
                     "client_id": settings.atlassian_client_id,

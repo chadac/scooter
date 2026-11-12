@@ -15,8 +15,7 @@ triggers:
 # Jira and Confluence: the Atlassian REST APIs (scooter-atlassian)
 
 `curl` and scripts in this sandbox reach Atlassian Cloud without a credential of
-yours. The broker's forge proxy intercepts `api.atlassian.com` (and the site,
-`$ATLASSIAN_SITE_URL`) and injects a token for the deployment's Atlassian app.
+yours. The broker's forge proxy intercepts `api.atlassian.com` and injects a token for the deployment's Atlassian app.
 Send no `Authorization` header; the proxy replaces any you send. There is no
 token to look for and no login to run.
 
@@ -30,23 +29,22 @@ call; report its message.
 ```bash
 echo "$ATLASSIAN_PRODUCTS"   # the products the proxy authenticates: jira, confluence
 echo "$ATLASSIAN_CLOUD_ID"   # the site's cloud id
-echo "$ATLASSIAN_SITE_URL"   # e.g. https://acme.atlassian.net; may be empty
 ```
 
 A product missing from `$ATLASSIAN_PRODUCTS` gets no token, so its calls come back 401.
 
 ## URL shapes
 
-Both forms work and are the same request:
+Use the `api.atlassian.com` form. The site's own API URLs
+(`https://acme.atlassian.net/rest/…`) are not intercepted and get no token.
 
-| Product | API root | Site form (needs `$ATLASSIAN_SITE_URL`) |
-|---|---|---|
-| Jira | `https://api.atlassian.com/ex/jira/$ATLASSIAN_CLOUD_ID/rest/api/3/…` | `$ATLASSIAN_SITE_URL/rest/api/3/…` |
-| Confluence | `https://api.atlassian.com/ex/confluence/$ATLASSIAN_CLOUD_ID/wiki/api/v2/…` | `$ATLASSIAN_SITE_URL/wiki/api/v2/…` |
+| Product | API root |
+|---|---|
+| Jira | `https://api.atlassian.com/ex/jira/$ATLASSIAN_CLOUD_ID/rest/api/3/…` |
+| Confluence | `https://api.atlassian.com/ex/confluence/$ATLASSIAN_CLOUD_ID/wiki/api/v2/…` |
 
 Jira Software (`/rest/agile/1.0`) and Service Management (`/rest/servicedeskapi`)
-sit under the Jira root. Other site paths (`/browse/…`, `/secure/…`) are web
-pages and get no token.
+sit under the Jira root.
 
 ```bash
 JIRA="https://api.atlassian.com/ex/jira/$ATLASSIAN_CLOUD_ID/rest/api/3"

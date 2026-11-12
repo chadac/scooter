@@ -1,4 +1,4 @@
-"""OAuth 2.0 client-credentials source: a short-lived token minted from a client id and secret, cached and refreshed early."""
+"""Atlassian OAuth credential source: client credentials exchanged for a short-lived access token, cached and refreshed early."""
 
 from __future__ import annotations
 
@@ -7,14 +7,16 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from ..types import Credential, CredentialSource, Identity
+from scooter_broker_lib.types import Credential, CredentialSource, Identity
+
+TOKEN_URL = "https://auth.atlassian.com/oauth/token"
 
 
 @dataclass
-class ClientCredentialsSource(CredentialSource):
-    token_url: str
+class AtlassianOAuthSource(CredentialSource):
     client_id: str
     client_secret: str
+    cloud_id: str
 
     _cache: tuple[str, float] | None = field(default=None, repr=False)
 
@@ -25,7 +27,7 @@ class ClientCredentialsSource(CredentialSource):
 
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(
-                self.token_url,
+                TOKEN_URL,
                 json={
                     "grant_type": "client_credentials",
                     "client_id": self.client_id,

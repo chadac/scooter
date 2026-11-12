@@ -7,11 +7,11 @@ issues the agent creates.
 from __future__ import annotations
 
 from scooter_broker_lib.registry import register_provider
-from scooter_broker_lib.sources.client_credentials import ClientCredentialsSource
 from scooter_broker_lib.transports.mcp_tools import McpTools
 from scooter_broker_lib.types import Provider
 
-from .config import TOKEN_URL, JiraSettings
+from .atlassian_oauth import AtlassianOAuthSource
+from .config import JiraSettings
 from .mcp_tools import jira_mcp_server
 
 
@@ -22,10 +22,10 @@ def jira() -> Provider:
     cloud_id = settings.atlassian_cloud_id
     return Provider(
         name="jira",
-        credential=ClientCredentialsSource(
-            token_url=TOKEN_URL,
+        credential=AtlassianOAuthSource(
             client_id=settings.atlassian_client_id,
             client_secret=settings.atlassian_client_secret,
+            cloud_id=cloud_id,
         ),
         transports=[
             McpTools(server=jira_mcp_server(), upstream=f"https://api.atlassian.com/ex/jira/{cloud_id}"),

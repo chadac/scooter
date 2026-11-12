@@ -1,11 +1,18 @@
-"""Atlassian provider: product gating, the site rewrite, enable gating and the Jira issue link."""
+"""Atlassian provider: product gating, the dot-segment guard, enable gating and the Jira issue link."""
 
 from __future__ import annotations
 
+import time
+
+import httpx
 import pytest
 
-from scooter_broker_lib.forge import ForgeHosts, Rewrite
-from scooter_contrib_atlassian.broker_provider import atlassian, forge_hosts
+from scooter_broker_lib.forge import ForgeHosts, ForgeRequest
+from scooter_broker_lib.types import Identity
+from scooter_contrib_atlassian.broker_provider import atlassian
+from scooter_contrib_jira.atlassian_oauth import AtlassianOAuthSource
+
+IDENT = Identity(conversation_id="c", namespace="ns", service_account="sa")
 
 
 @pytest.fixture
@@ -26,29 +33,18 @@ def _forge(provider) -> ForgeHosts:
     return t
 
 
-def test_every_enabled_product_and_the_site_are_intercepted(env):
+def test_only_the_api_host_is_intercepted_for_each_enabled_product(env):
     p = atlassian()
     assert p.enabled
-    api, site = _forge(p).hosts
+    (api,) = _forge(p).hosts
     assert api.host == "api.atlassian.com"
     assert api.api_prefixes == ("/ex/jira/c1/", "/ex/confluence/c1/")
-    assert site.host == "acme.atlassian.net" and site.api_prefixes == ()
-    assert site.rewrites == (
-        Rewrite("/rest/", "api.atlassian.com", "/ex/jira/c1/rest/"),
-        Rewrite("/wiki/", "api.atlassian.com", "/ex/confluence/c1/wiki/"),
-    )
 
 
-def test_a_disabled_product_gets_no_prefix_and_no_rewrite():
-    api, site = forge_hosts("c1", ["confluence"], "acme.atlassian.net")
+def test_a_disabled_product_gets_no_prefix(env):
+    env.setenv("ATLASSIAN_PRODUCTS", "confluence")
+    (api,) = _forge(atlassian()).hosts
     assert api.api_prefixes == ("/ex/confluence/c1/",)
-    assert site.rewrite("/rest/api/3/myself") is None
-    assert site.rewrite("/wiki/api/v2/pages") == ("api.atlassian.com", "/ex/confluence/c1/wiki/api/v2/pages")
-
-
-def test_without_a_site_only_the_api_host_is_intercepted(env):
-    env.delenv("ATLASSIAN_SITE_URL")
-    assert [h.host for h in _forge(atlassian()).hosts] == ["api.atlassian.com"]
 
 
 @pytest.mark.parametrize("unset", ["ATLASSIAN_CLIENT_ID", "ATLASSIAN_CLIENT_SECRET", "ATLASSIAN_CLOUD_ID"])
@@ -62,14 +58,27 @@ def test_no_products_disables_the_provider(env):
     assert not atlassian().enabled
 
 
-@pytest.mark.parametrize("var,value", [
-    ("ATLASSIAN_PRODUCTS", "jira bitbucket"),
-    ("ATLASSIAN_SITE_URL", "http://acme.atlassian.net"),
-    ("ATLASSIAN_SITE_URL", "https://acme.atlassian.net/jira"),
-])
-def test_bad_config_disables_the_provider(env, var, value):
-    env.setenv(var, value)
+def test_unknown_product_disables_the_provider(env):
+    env.setenv("ATLASSIAN_PRODUCTS", "jira bitbucket")
     assert not atlassian().enabled
+
+
+def _req(path: str, kind: str = "api") -> ForgeRequest:
+    return ForgeRequest(identity=IDENT, provider="atlassian", via="forge-proxy", method="GET",
+                        host="api.atlassian.com", path=path, kind=kind)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", [
+    "/ex/jira/c1/../../ex/confluence/c1/wiki",
+    "/ex/jira/c1/%2e%2e/%2E%2E/ex/confluence/c1/wiki",
+    "/ex/jira/c1/./rest",
+    "/ex/jira/c1/..%5c..%5cex",
+])
+async def test_dot_segments_cannot_leave_a_product(env, path):
+    policy = atlassian().forge_policy
+    assert not (await policy.check(_req(path))).allowed
+    assert (await policy.check(_req("/ex/jira/c1/rest/api/3/myself"))).allowed
 
 
 def _issue_rule(provider):
@@ -99,3 +108,21 @@ def test_without_a_site_the_issue_link_is_the_api_self_url(env):
 def test_no_issue_link_rule_with_jira_off(env):
     env.setenv("ATLASSIAN_PRODUCTS", "confluence")
     assert _forge(atlassian()).link_rules == []
+
+
+@pytest.mark.asyncio
+async def test_oauth_source_mints_and_caches(monkeypatch):
+    calls = []
+
+    async def fake_post(self, url, **kwargs):  # noqa: ANN001
+        calls.append((url, kwargs["json"]))
+        return httpx.Response(200, json={"access_token": "tok", "expires_in": 3600}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    src = AtlassianOAuthSource(client_id="cid", client_secret="sec", cloud_id="c1")
+    cred = await src.get(IDENT)
+    assert (cred.kind, cred.value) == ("bearer", "tok")
+    assert cred.expires_at and cred.expires_at > time.time()
+    await src.get(IDENT)
+    assert calls == [("https://auth.atlassian.com/oauth/token",
+                      {"grant_type": "client_credentials", "client_id": "cid", "client_secret": "sec"})]

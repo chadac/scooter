@@ -45,11 +45,8 @@ in
       default = "";
       example = "https://acme.atlassian.net";
       description = ''
-        The site root. When set, the forge proxy also intercepts this host and
-        rewrites `/rest/…` (Jira) and `/wiki/…` (Confluence) onto the
-        `api.atlassian.com` paths, so links copied from the browser work in the
-        sandbox. Also builds the human /browse/{KEY} link for issues the agent
-        creates. Other paths on the site are forwarded with no token.
+        The site root, for the human /browse/{KEY} link of issues the agent
+        creates. The proxy intercepts only `api.atlassian.com`.
       '';
     };
 
@@ -59,9 +56,8 @@ in
       example = "my_scooter_policies.atlassian:policy";
       description = ''
         A `module:attr` naming a ForgePolicy (scooter_broker_lib.forge) the broker
-        checks on every proxied Atlassian request before injecting the token. It
-        sees the canonical `api.atlassian.com` path, so the product is in
-        `path`. Empty allows everything the app's scopes allow.
+        checks on every proxied Atlassian request before injecting the token.
+        The product is in `path`. Empty allows everything the app's scopes allow.
       '';
     };
 
@@ -97,6 +93,8 @@ in
           ATLASSIAN_SITE_URL = lib.mkIf (config.siteUrl != "") config.siteUrl;
           ATLASSIAN_FORGE_POLICY = lib.mkIf (config.forgePolicy != "") config.forgePolicy;
         };
+        # Mints with jira's Atlassian OAuth source.
+        pythonDeps = ps: [ ps.scooterContrib.jira ];
       };
       skills."scooter-atlassian.md" = ./skills/scooter-atlassian.md;
     };
