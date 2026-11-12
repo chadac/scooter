@@ -190,6 +190,8 @@ export interface ManagementDeps {
   sandboxMcpHandler?: (req: IncomingMessage, res: ServerResponse, body: unknown, name: string) => Promise<void>;
   /** Upload caps served to the UI in /whoami's `limits` block (scooter.uploads). */
   uploadLimits?: { maxFileBytes: number; maxFilesPerMessage: number };
+  /** Unfiled conversations' idle lifetime in hours, 0 forever; for /whoami. */
+  defaultLifetimeHours?: number;
   /** Resolves the caller's identity per request; defaults to the env-configured resolver. */
   resolveUser?: ResolveUser;
   /** Whether a request is a trusted in-cluster caller (webhooks/scheduler) allowed to set a body `owner`; absent means a body owner is never honored. */
@@ -503,6 +505,7 @@ export function createManagementApi(deps: ManagementDeps): Router {
       email: ctx.user.email ?? null,
       anonymous: ctx.user.anonymous,
       ...(deps.uploadLimits ? { limits: { ...deps.uploadLimits } } : {}),
+      ...(deps.defaultLifetimeHours !== undefined ? { retention: { defaultLifetimeHours: deps.defaultLifetimeHours } } : {}),
     },
   }));
 

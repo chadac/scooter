@@ -11,6 +11,8 @@ import { Bot, Check, ChevronRight, CornerDownRight, FolderPlus, Hourglass, Infin
 import { DropdownMenu, Popover } from "radix-ui";
 
 import { FolderGlyph, IconPicker } from "./FolderGlyph.js";
+import { CustomLifetimeForm } from "./RetentionForm.js";
+import { lifetimeChoices, lifetimeLabel } from "./retention.js";
 import {
   allRows,
   buildFolders,
@@ -271,22 +273,6 @@ function DropZone({
   );
 }
 
-/** Lifetimes offered in a folder's menu, in hours. */
-const LIFETIMES: Array<[number, string]> = [
-  [0, "Never"],
-  [24, "1 day"],
-  [168, "1 week"],
-  [720, "30 days"],
-];
-
-/** "1 day", "3 days", "12 hours" or "never". */
-function lifetimeLabel(hours: number): string {
-  if (hours === 0) return "never";
-  if (hours === 168) return "1 week";
-  if (hours % 24 === 0) return hours === 24 ? "1 day" : `${hours / 24} days`;
-  return hours === 1 ? "1 hour" : `${hours} hours`;
-}
-
 const menuItem =
   "cursor-pointer rounded px-2 py-1 outline-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[highlighted]:bg-accent data-[state=open]:bg-accent";
 const menuContent = "z-50 min-w-36 rounded-md border bg-popover p-1 text-sm text-popover-foreground shadow-md";
@@ -321,6 +307,7 @@ function FolderSectionView({
   const [addingSub, setAddingSub] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [picking, setPicking] = useState(false);
+  const [customizing, setCustomizing] = useState(false);
   const [drop, setDrop] = useState<{ place: DropPlace; ok: boolean } | null>(null);
   // A cancelled drag never fires dragleave here, so clear on dragend.
   useEffect(() => {
@@ -338,6 +325,12 @@ function FolderSectionView({
   const rollup = DOT_RANK.find((d) => dots.includes(d));
   const nestable = !f.locked && f.depth < MAX_FOLDER_DEPTH;
   const inherited = parent && effectiveLifetime(parent.id);
+  const lifetime = f.conversationLifetimeHours ?? undefined;
+  const fallback = inherited
+    ? `Same as ${parent!.name} (${lifetimeLabel(inherited.hours)})`
+    : fstate.defaultLifetimeHours !== undefined
+      ? `Default (${lifetimeLabel(fstate.defaultLifetimeHours)})`
+      : "Default";
   const moveTargets = fstate.folders.filter(
     (x) => x.kind === "user" && x.id !== parent?.id && canMoveInto(f.id, x.id),
   );
@@ -470,6 +463,25 @@ function FolderSectionView({
             )}
           </button>
           {!open && rollup && <StatusDot dot={rollup} />}
+          <Popover.Root open={customizing} onOpenChange={setCustomizing}>
+            <Popover.Anchor className="self-stretch" />
+            <Popover.Portal>
+              <Popover.Content
+                align="end"
+                sideOffset={6}
+                className="z-50 rounded-md border bg-popover p-2.5 text-popover-foreground shadow-md"
+              >
+                <CustomLifetimeForm
+                  initialHours={lifetime}
+                  onSave={(hours) => {
+                    void folderStore.setLifetime(f.id, hours);
+                    setCustomizing(false);
+                  }}
+                  onCancel={() => setCustomizing(false)}
+                />
+              </Popover.Content>
+            </Popover.Portal>
+          </Popover.Root>
           {/* Count and actions share a slot, so dots line up. */}
           <span className="relative flex w-5 shrink-0 justify-end">
             <span
@@ -516,12 +528,12 @@ function FolderSectionView({
                     </DropdownMenu.Item>
                     <DropdownMenu.Sub>
                       <DropdownMenu.SubTrigger className={cn(menuItem, "flex justify-between gap-3")}>
-                        Delete conversations after <ChevronRight className="size-3.5" aria-hidden />
+                        Conversation retention policy <ChevronRight className="size-3.5" aria-hidden />
                       </DropdownMenu.SubTrigger>
                       <DropdownMenu.Portal>
                         <DropdownMenu.SubContent sideOffset={4} className={menuContent}>
                           <DropdownMenu.RadioGroup
-                            value={f.conversationLifetimeHours === undefined ? "inherit" : String(f.conversationLifetimeHours)}
+                            value={lifetime === undefined ? "inherit" : String(lifetime)}
                             onValueChange={(v) => void folderStore.setLifetime(f.id, v === "inherit" ? null : Number(v))}
                           >
                             <DropdownMenu.RadioItem value="inherit" className={cn(menuItem, "flex gap-2")}>
@@ -530,9 +542,9 @@ function FolderSectionView({
                                   <Check className="size-3.5" />
                                 </DropdownMenu.ItemIndicator>
                               </span>
-                              {inherited ? `Same as ${parent!.name} (${lifetimeLabel(inherited.hours)})` : "Default"}
+                              {fallback}
                             </DropdownMenu.RadioItem>
-                            {LIFETIMES.map(([h, label]) => (
+                            {lifetimeChoices(lifetime).map(([h, label]) => (
                               <DropdownMenu.RadioItem key={h} value={String(h)} className={cn(menuItem, "flex gap-2")}>
                                 <span className="w-3.5">
                                   <DropdownMenu.ItemIndicator>
@@ -543,6 +555,12 @@ function FolderSectionView({
                               </DropdownMenu.RadioItem>
                             ))}
                           </DropdownMenu.RadioGroup>
+                          <DropdownMenu.Item
+                            onSelect={() => setTimeout(() => setCustomizing(true))}
+                            className={cn(menuItem, "ps-7.5")}
+                          >
+                            Custom…
+                          </DropdownMenu.Item>
                           <p className="max-w-52 px-2 pb-1 pt-1.5 text-xs text-muted-foreground">
                             Conversations idle longer than this are deleted.
                           </p>

@@ -1849,6 +1849,8 @@ export async function main(
   server.use(
     createManagementApi({
     uploadLimits,
+    // Rounded up, so a sub-hour default never reads as "forever".
+    defaultLifetimeHours: Math.ceil(config.retentionMaxAgeMs / 3_600_000),
     subagents: subagentManager,
     accessCheck,
     authEnforced: process.env.AUTH_ENFORCE === "true",

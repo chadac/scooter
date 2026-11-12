@@ -50,6 +50,7 @@ void loadWhoami({ baseUrl: BASE_URL }).then((me) => {
   void conversationCache.setUser(me.id);
   // The upload caps come from the deployment (scooter.uploads), not the image.
   setUploadLimits(me.limits);
+  folderStore.setDefaultLifetime(me.retention?.defaultLifetimeHours);
 });
 
 // The account's choice wins; this browser's seeds an unset one.

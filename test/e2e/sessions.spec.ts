@@ -320,13 +320,33 @@ test.describe("session selector & titles", () => {
     await page.keyboard.press("Escape");
 
     // A lifetime shows on the header and reaches the server.
-    await page.locator(folders.folder(a)).getByRole("button", { name: /folder actions/ }).first().click();
-    await page.getByRole("menuitem", { name: /Delete conversations after/ }).hover();
+    const retention = async () => {
+      await page.locator(folders.folder(a)).getByRole("button", { name: /folder actions/ }).first().click();
+      await page.getByRole("menuitem", { name: /Conversation retention policy/ }).hover();
+    };
+    await retention();
+    // The fake stack keeps unfiled conversations forever.
+    await expect(page.getByRole("menuitemradio", { name: "Default (never)" })).toBeVisible();
     await page.getByRole("menuitemradio", { name: "1 day" }).click();
     await expect(head(a).getByTestId("folder-lifetime")).toBeVisible();
     const list = async () =>
       ((await (await request.get(`${base}/folders`)).json()) as { folders: Array<{ id: string; parentId?: string; conversationLifetimeHours?: number }> }).folders;
     await expect.poll(async () => (await list()).find((f) => f.id === a)?.conversationLifetimeHours).toBe(24);
+
+    // A custom lifetime outside the presets.
+    await retention();
+    await page.getByRole("menuitem", { name: "Custom…" }).click();
+    const form = page.getByTestId("custom-lifetime");
+    await form.getByRole("textbox").fill("0");
+    await expect(form.getByRole("alert")).toBeVisible();
+    await form.getByRole("textbox").fill("2");
+    await form.getByLabel("Unit").selectOption("weeks");
+    await form.getByRole("button", { name: "Save" }).click();
+    await expect.poll(async () => (await list()).find((f) => f.id === a)?.conversationLifetimeHours).toBe(336);
+    await retention();
+    await expect(page.getByRole("menuitemradio", { name: "2 weeks" })).toHaveAttribute("aria-checked", "true");
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Escape");
 
     // Deleting b keeps what's inside: c and d join a.
     await page.locator(folders.folder(b)).getByRole("button", { name: /folder actions/ }).first().click();

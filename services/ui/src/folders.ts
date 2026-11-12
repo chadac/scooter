@@ -29,6 +29,8 @@ export type FolderState = {
   collapsed: Record<string, boolean>;
   /** Unsent conversation key → the folder it was started in. */
   drafts: Record<string, string>;
+  /** The deployment's lifetime for unfiled conversations; undefined until known. */
+  defaultLifetimeHours?: number;
 };
 
 /** Where a dragged folder lands relative to a target. */
@@ -145,6 +147,11 @@ export const folderStore = {
     if (!isOpen(byId(id))) return Promise.resolve(false);
     const i = icon.trim();
     return write({ ...state, folders: patched(id, { icon: i || undefined }) }, () => updateFolder(agentHostConfig, id, { icon: i }));
+  },
+
+  /** Record the default lifetime from /whoami. */
+  setDefaultLifetime(hours: number | undefined) {
+    if (state.defaultLifetimeHours !== hours) set({ ...state, defaultLifetimeHours: hours });
   },
 
   /** Set idle lifetime hours; 0 is forever, null inherits. */

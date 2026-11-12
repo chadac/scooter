@@ -536,6 +536,8 @@ export interface Whoami {
   email: string | null;
   anonymous: boolean;
   limits?: { maxFileBytes?: number; maxFilesPerMessage?: number };
+  /** Unfiled conversations' idle lifetime in hours, 0 forever. */
+  retention?: { defaultLifetimeHours?: number };
 }
 
 /** Fetch the caller's identity, falling back to anonymous if unreachable. */

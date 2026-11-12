@@ -465,6 +465,18 @@ describe("management API", () => {
     });
   });
 
+  it("GET /whoami carries the default conversation lifetime", async () => {
+    const api = createManagementApi({
+      sessions: fakeSessions(),
+      store: fakeStore([]),
+      server: stubServer,
+      answerInterrupt: async () => ({ ok: true }),
+      defaultLifetimeHours: 720,
+    });
+    const me = await call(api, "GET", "/whoami", undefined, { "x-auth-user": "alice" });
+    expect(me.json).toMatchObject({ retention: { defaultLifetimeHours: 720 } });
+  });
+
   // --- GET /users/by-email (external-user identity mapping) --------------------
 
   const fakeIdentity = (byEmail: Record<string, string>) =>
