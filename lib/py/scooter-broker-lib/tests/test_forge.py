@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from scooter_broker_lib.forge import (
     ALLOW_ALL,
     DENY_HEADER,
+    Classified,
     Decision,
     ForgeHost,
     ForgeHosts,
@@ -80,6 +81,29 @@ def test_nested_git_and_generic_api():
     c = classify(path="/api/v4/projects/42", **GL)
     assert (c.kind, c.repo) == ("api", None)
     assert classify(path="/g/p/-/merge_requests", **GL).kind == "web"
+
+
+@pytest.mark.parametrize("path", [
+    "/api/../../other/thing",
+    "/api/v4/./projects/42",
+    "/api/v4/%2e%2e/%2E%2E/other",
+    "/api/v4/projects/g%2F..%2F..%2Fother",
+    "/api/v4/.%2e/other",
+    "/api/v4/..\\other",
+    "/api/v4/projects/..",
+    "/g/../o/p.git/git-receive-pack",
+])
+def test_dot_segments_never_match_a_scoped_prefix_or_repo(path):
+    assert classify(path=path, **GL) == Classified("web")
+
+
+def test_dot_segments_get_no_repo_on_a_root_prefix():
+    assert classify(path="/repos/o/r/../../x/y/pulls", **GH_API) == Classified("web")
+
+
+@pytest.mark.parametrize("path", ["/api/v4/projects/g%2F.github", "/api/v4/projects/42/files/a..b", "/api/v4/.../x"])
+def test_dotted_names_are_not_dot_segments(path):
+    assert classify(path=path, **GL).kind == "api"
 
 
 # -- receive-pack ref updates ----------------------------------------------

@@ -277,6 +277,17 @@ async def test_web_paths_get_no_credential(running, ca):
     assert policy.seen[0].kind == "web"
 
 
+async def test_dot_segments_escaping_a_scoped_prefix_get_no_credential(running, ca):
+    proxy, seen, _, _, policy = running
+    async with _client(proxy, ca) as c:
+        await c.get("https://gitlab.com/api/%2e%2e/%2e%2e/g/p/-/raw/main/x",
+                    headers={"PRIVATE-TOKEN": "scooter-forge-proxy"})
+    req, _ = seen[0]
+    assert "private-token" not in req.headers
+    assert req.url.raw_path == b"/api/%2e%2e/%2e%2e/g/p/-/raw/main/x"
+    assert policy.seen[0].kind == "web"
+
+
 async def test_denied_request_never_reaches_upstream(running, ca):
     proxy, seen, _, policy, _ = running
     policy.deny = lambda fr: fr.is_push

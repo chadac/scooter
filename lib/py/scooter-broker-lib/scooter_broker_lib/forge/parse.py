@@ -51,6 +51,9 @@ def classify(
     *, dialect: ForgeDialect, git: bool, api_prefixes: tuple[str, ...], path: str, query: str = ""
 ) -> Classified:
     """Classify one request on a forge host from its path; `git`/`api_prefixes` say what the host serves."""
+    # Upstream resolves dot segments, escaping the matched prefix or repo.
+    if any(seg in (".", "..") for seg in re.split(r"[/\\]", unquote(path))):
+        return Classified("web")
     if git:
         m = _GIT_PATH.match(path)
         if m:
