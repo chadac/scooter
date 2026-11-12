@@ -5,8 +5,10 @@ issue or MR creates one, and any comment on a resource with an active conversati
 is auto-forwarded, as are a linked MR's pipeline results and state changes.
 """
 
+import asyncio
 import hmac
 import logging
+from typing import Any
 
 import httpx
 from fastapi import APIRouter, Header, HTTPException, Request
@@ -18,7 +20,7 @@ from scooter_webhooks_lib import store as db
 from scooter_webhooks_lib.store import PENDING_CONVERSATION_ID, is_pending
 from scooter_webhooks_lib.vars import ConversationVars
 
-from . import attachments
+from . import attachments, merge_readiness
 from .config import settings
 from scooter_webhooks_lib.agent_host_client import (
     SendOutcome, conversation_url, create_conversation, deliver_message, push_link, send_message,
@@ -449,6 +451,50 @@ async def _forward_once(conversation: str, res_id: str, message: str, key: str, 
     )
 
 
+async def _merge_blockers(project_id: int | str, iid: int) -> list[merge_readiness.Blocker] | None:
+    """What holds an open MR's merge, or None when it is closed or unreadable."""
+    if not settings.gitlab_token or not project_id or not iid:
+        return None
+    project = f"{GITLAB_API}/projects/{project_id}"
+    base = f"{project}/merge_requests/{iid}"
+    try:
+        async with httpx.AsyncClient(timeout=15, headers={"PRIVATE-TOKEN": settings.gitlab_token}) as client:
+            mr, settings_resp, approvals, discussions = await asyncio.gather(
+                client.get(base), client.get(project), client.get(f"{base}/approvals"),
+                client.get(f"{base}/discussions", params={"per_page": 100}),
+            )
+            mr.raise_for_status()
+            data = mr.json()
+    except (httpx.HTTPError, ValueError) as e:
+        logger.warning(
+            "merge-blocker lookup failed; forwarding without it",
+            extra={**_C, "source": "gitlab", "error": format_error(e)},
+        )
+        return None
+    if data.get("state") != "opened":
+        return None
+    # Webhooks read as the deployment token, not the agent's identity.
+    return merge_readiness.blockers(
+        data, project=_body(settings_resp), approvals=_body(approvals), discussions=_body(discussions),
+    )
+
+
+def _body(resp: httpx.Response) -> Any:
+    """A successful response's JSON, else None."""
+    if not resp.is_success:
+        return None
+    try:
+        return resp.json()
+    except ValueError:
+        return None
+
+
+async def _merge_note(project_id: int | str, iid: int) -> str:
+    """The required blockers as a message tail; "" when they can't be read."""
+    found = await _merge_blockers(project_id, iid)
+    return "" if found is None else "\n\n" + merge_readiness.note(found)
+
+
 _MR_STATE_ACTIONS = {
     "merge": "was MERGED",
     "close": "was CLOSED WITHOUT MERGING",
@@ -488,6 +534,7 @@ async def _handle_mr_state(payload: dict) -> None:
     message = (
         f"MR !{iid} in {repo} {_MR_STATE_ACTIONS[action]} by @{user}{into}{commit}.\n\n---\n\n"
         + _MR_STATE_HINTS[action].format(target=target)
+        + (await _merge_note(payload.get("project", {}).get("id"), iid) if action == "approved" else "")
     )
     # updated_at tells a repeated delivery from a second reopen or approval.
     await _forward_once(
@@ -540,11 +587,13 @@ async def _handle_pipeline(payload: dict) -> None:
     ]
     for iid in iids:
         res_id = _resource_id(repo, "merge_request", iid)
-        await _forward_pipeline(res_id, web_url, iid, branch, pipeline_id, status, url, failed)
+        await _forward_pipeline(
+            res_id, web_url, payload.get("project", {}).get("id"), iid, branch, pipeline_id, status, url, failed,
+        )
 
 
 async def _forward_pipeline(
-    res_id: str, web_url: str | None, iid: int, branch: str,
+    res_id: str, web_url: str | None, project_id: int | None, iid: int, branch: str,
     pipeline_id: int, status: str, url: str, failed: list[str],
 ) -> None:
     conversation = await _linked_conversation(res_id, web_url)
@@ -562,6 +611,7 @@ async def _forward_pipeline(
             f"CI is GREEN: pipeline #{pipeline_id} passes on `{branch}` (MR !{iid}).\n\n{url}\n\n---\n\n"
             "The previous pipeline failed, so this unblocks the MR. "
             "No action needed unless you were waiting to do something after CI."
+            + await _merge_note(project_id, iid)
         )
     else:
         listed = "\n".join(f"- {j}" for j in failed) if failed else "- (job names unavailable)"

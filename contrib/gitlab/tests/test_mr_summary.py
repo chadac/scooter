@@ -47,12 +47,19 @@ JOBS = [
 ]
 
 
-def _responses(mr=MR, approvals=None, discussions=None, jobs=None):
+PROJECT = {"only_allow_merge_if_all_discussions_are_resolved": True,
+           "only_allow_merge_if_pipeline_succeeds": True}
+ME = {"id": 7, "username": "scooter"}
+
+
+def _responses(mr=MR, approvals=None, discussions=None, jobs=None, project=None, me=None):
     return [
         httpx.Response(200, json=mr),
         approvals or httpx.Response(200, json=APPROVALS),
         discussions or httpx.Response(200, json=DISCUSSIONS),
-        jobs or httpx.Response(200, json=JOBS),
+        *([jobs or httpx.Response(200, json=JOBS)] if mr.get("head_pipeline") else []),
+        project or httpx.Response(200, json=PROJECT),
+        me or httpx.Response(200, json=ME),
     ]
 
 
@@ -74,6 +81,7 @@ async def test_defaults_to_the_linked_mr_and_reads_everything():
     base = "api/v4/projects/g%2Fp/merge_requests/3"
     assert [c["path"] for c in ctx.upstream.calls] == [
         base, f"{base}/approvals", f"{base}/discussions", "api/v4/projects/g%2Fp/pipelines/99/jobs",
+        "api/v4/projects/g%2Fp", "api/v4/user",
     ]
 
 
@@ -121,7 +129,7 @@ async def test_no_pipeline_skips_the_jobs_read():
     mr = copy.deepcopy(MR)
     mr["head_pipeline"] = None
     res, ctx = await _summary(mr)
-    assert len(ctx.upstream.calls) == 3
+    assert len(ctx.upstream.calls) == 5
     assert "CI (abcdef12): no pipeline" in res.text
 
 
@@ -145,10 +153,36 @@ async def test_the_summary_covers_every_section():
 
 async def test_blockers_name_everything_in_the_way():
     res, _ = await _summary()
-    assert res.text.splitlines()[-1] == (
-        "Blockers: draft, merge conflicts, pipeline failed (1 failing job(s)), "
-        "1 approval(s) needed, 1 unresolved thread(s)"
+    lines = res.text.splitlines()
+    at = lines.index("Blockers (5 blocking merge):")
+    assert lines[at + 1:] == [
+        "  ✗ draft → mark it ready (remove the Draft: prefix) [you]",
+        "  ✗ merge conflicts with `main` → rebase on `main` and push [you]",
+        "  ✗ pipeline failed: lint → read the failing job's log, fix and push [you]",
+        "  ✗ needs 1 more approval(s) → ask an eligible approver to approve [a reviewer]",
+        "  ✗ 1 unresolved thread(s); the project REQUIRES all threads resolved"
+        " → reply to each (and push any fix), then resolve it with gitlab_resolve_discussion [you]",
+    ]
+
+
+async def test_the_headline_case_an_approved_mr_held_only_by_required_thread_resolution():
+    mr = copy.deepcopy(MR)
+    mr.update(draft=False, has_conflicts=False, detailed_merge_status="discussions_not_resolved")
+    mr["head_pipeline"]["status"] = "success"
+    discussions = copy.deepcopy(DISCUSSIONS)
+    discussions[2]["notes"][1]["author"]["id"] = ME["id"]
+    res, _ = await _summary(
+        mr,
+        approvals=httpx.Response(200, json={**APPROVALS, "approved": True, "approvals_left": 0}),
+        discussions=httpx.Response(200, json=discussions),
+        jobs=httpx.Response(200, json=[JOBS[2]]),
     )
+    assert res.text.splitlines()[-2:] == [
+        "Blockers (1 blocking merge):",
+        "  ✗ 1 unresolved thread(s); the project REQUIRES all threads resolved"
+        " → you answered each last: resolve them with gitlab_resolve_discussion [you]",
+    ]
+    assert "2 note(s), you replied last)" in res.text
 
 
 async def test_a_clean_mr_has_no_blockers():

@@ -159,3 +159,39 @@ async def test_our_own_merge_is_not_forwarded(deliver, linked):
 async def test_an_mr_update_without_the_label_forwards_nothing(deliver, linked):
     await gitlab_h._handle_merge_request(_mr_event("update"))
     deliver.assert_not_awaited()
+
+
+THREADS = [gitlab_h.merge_readiness.Blocker("2 unresolved thread(s)", "resolve them", "you")]
+
+
+async def test_an_approval_names_what_still_blocks(deliver, linked, monkeypatch):
+    lookup = AsyncMock(return_value=THREADS)
+    monkeypatch.setattr(gitlab_h, "_merge_blockers", lookup)
+    await gitlab_h._handle_merge_request(_mr_event("approved"))
+    lookup.assert_awaited_once_with(9, 313)
+    assert "Still blocking merge:\n  ✗ 2 unresolved thread(s) → resolve them [you]" in deliver.await_args.args[1]
+
+
+async def test_a_green_pipeline_after_red_carries_the_note(deliver, linked, monkeypatch):
+    monkeypatch.setattr(gitlab_h, "_merge_blockers", AsyncMock(return_value=[]))
+    await gitlab_h._handle_pipeline(_pipeline("failed", 100))
+    await gitlab_h._handle_pipeline(_pipeline("success", 101))
+    assert deliver.await_args.args[1].endswith("Merge: nothing blocks it.")
+
+
+async def test_other_state_changes_skip_the_lookup(deliver, linked, monkeypatch):
+    lookup = AsyncMock(return_value=THREADS)
+    monkeypatch.setattr(gitlab_h, "_merge_blockers", lookup)
+    await gitlab_h._handle_merge_request(_mr_event("merge"))
+    lookup.assert_not_awaited()
+
+
+async def test_the_blocker_lookup_fails_open(monkeypatch):
+    monkeypatch.setattr(settings, "gitlab_token", "t")
+
+    def boom(*a, **kw):
+        raise gitlab_h.httpx.ConnectError("down")
+
+    monkeypatch.setattr(gitlab_h.httpx.AsyncClient, "get", boom)
+    assert await gitlab_h._merge_blockers(9, 313) is None
+    assert await gitlab_h._merge_note(9, 313) == ""
