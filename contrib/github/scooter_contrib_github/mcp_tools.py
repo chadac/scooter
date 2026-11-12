@@ -1,4 +1,4 @@
-"""GitHub's agent tools: comment on the conversation's PR or issue, summarise a PR, and fetch an attachment."""
+"""GitHub's agent tools: comment on the conversation's PR or issue, resolve its review threads, summarise a PR, and fetch an attachment."""
 
 from __future__ import annotations
 
@@ -118,46 +118,56 @@ async def _github_attached(ctx: ToolContext) -> bool:
     return bool(await github_targets(ctx))
 
 
+_THREADS_QUERY = """query($owner:String!,$repo:String!,$number:Int!){
+  repository(owner:$owner,name:$repo){
+    pullRequest(number:$number){
+      reviewThreads(first:100){ nodes {
+        id isResolved viewerCanResolve
+        comments(first:100){ nodes { databaseId } }
+        last: comments(last:1){ nodes { viewerDidAuthor author { login } } }
+      } }
+    }
+  }
+}"""
+
+
+async def _review_threads(ctx: ToolContext, target: GithubTarget) -> httpx.Response:
+    """The PR's review threads, over GraphQL since REST does not expose them."""
+    return await ctx.upstream.request(
+        "POST",
+        "graphql",
+        json={
+            "query": _THREADS_QUERY,
+            "variables": {"owner": target.owner, "repo": target.repo, "number": target.number},
+        },
+    )
+
+
+def _thread_with(response: httpx.Response, comment_id: int) -> dict | None:
+    """The thread in a `_review_threads` response that contains `comment_id`."""
+    threads = (
+        ((((response.json() or {}).get("data") or {}).get("repository") or {}).get("pullRequest") or {})
+        .get("reviewThreads", {})
+        .get("nodes")
+        or []
+    )
+    for thread in threads:
+        ids = [c.get("databaseId") for c in (thread.get("comments", {}).get("nodes") or [])]
+        if comment_id in ids:
+            return thread
+    return None
+
+
 async def _thread_is_resolved(
     ctx: ToolContext, target: GithubTarget, comment_id: int
 ) -> bool:
-    """Whether the review thread containing `comment_id` is resolved, via GraphQL since REST does not expose it; fails open so the reply still posts."""
-    query = """query($owner:String!,$repo:String!,$number:Int!){
-      repository(owner:$owner,name:$repo){
-        pullRequest(number:$number){
-          reviewThreads(first:100){ nodes { isResolved comments(first:100){ nodes { databaseId } } } }
-        }
-      }
-    }"""
+    """Whether the review thread containing `comment_id` is resolved; fails open so the reply still posts."""
     try:
-        response = await ctx.upstream.request(
-            "POST",
-            "graphql",
-            json={
-                "query": query,
-                "variables": {
-                    "owner": target.owner,
-                    "repo": target.repo,
-                    "number": target.number,
-                },
-            },
-        )
+        response = await _review_threads(ctx, target)
         if not 200 <= response.status_code < 300:
             return False
-        threads = (
-            (response.json() or {})
-            .get("data", {})
-            .get("repository", {})
-            .get("pullRequest", {})
-            .get("reviewThreads", {})
-            .get("nodes")
-            or []
-        )
-        for thread in threads:
-            ids = [c.get("databaseId") for c in (thread.get("comments", {}).get("nodes") or [])]
-            if comment_id in ids:
-                return thread.get("isResolved") is True
-        return False
+        thread = _thread_with(response, comment_id)
+        return thread is not None and thread.get("isResolved") is True
     except Exception:
         logger.warning(
             "could not check whether the review thread is resolved; posting anyway",
@@ -205,6 +215,72 @@ async def github_comment(
     return ToolResult.from_upstream(response, success_text=_posted_text(resolved, response))
 
 
+_RESOLVE = """mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}"""
+
+
+@gate(_github_attached)
+@mcp.tool
+async def github_resolve_thread(
+    comment_id: int,
+    ctx: ToolContext = ToolContextDep,
+) -> ToolResult:
+    """Resolve a review thread on one of THIS conversation's PRs, once you've answered it.
+
+    Branch rules often REQUIRE every thread resolved before merging, even after an
+    approval; github_pr_summary says when. `comment_id` is any comment in the thread
+    (github_pr_summary lists them). Only a thread whose LAST comment is yours can be
+    resolved: reply first (and push the fix), so the reviewer sees the answer. A thread
+    where the reviewer spoke last is theirs to resolve.
+    """
+    target = await _comment_target(ctx, None, comment_id)
+    if isinstance(target, str):
+        return ToolResult.error(target)
+    response = await _review_threads(ctx, target)
+    if not 200 <= response.status_code < 300:
+        return ToolResult.from_upstream(response, success_text="")
+    thread = _thread_with(response, comment_id)
+    if thread is None:
+        return ToolResult.error(
+            f"No review thread on {_name(target)} contains comment {comment_id}. "
+            "github_pr_summary lists each thread's comment_id."
+        )
+    if thread.get("isResolved"):
+        return ToolResult.ok(f"The thread with comment {comment_id} is already resolved.")
+    last = ((thread.get("last") or {}).get("nodes") or [{}])[0]
+    if last.get("viewerDidAuthor") is not True:
+        who = ((last.get("author") or {}).get("login")) or "the reviewer"
+        return ToolResult.error(
+            f"Not resolved: @{who} has the last word in that thread, so it is theirs to "
+            f"resolve. Reply with github_comment(body, in_reply_to={comment_id}) (and push "
+            "any fix it asks for), then resolve it, or ask them to."
+        )
+    if not thread.get("viewerCanResolve"):
+        return ToolResult.error(
+            "Not resolved: GitHub does not let this identity resolve that thread. "
+            "Ask the reviewer or a maintainer to resolve it."
+        )
+    response = await ctx.upstream.request(
+        "POST", "graphql", json={"query": _RESOLVE, "variables": {"id": thread.get("id")}}
+    )
+    errors = _graphql_errors(response)
+    if errors:
+        return ToolResult.error(f"GitHub refused to resolve the thread: {errors}")
+    return ToolResult.from_upstream(
+        response, success_text=f"Resolved the thread with comment {comment_id} on {_name(target)}."
+    )
+
+
+def _graphql_errors(response: httpx.Response) -> str:
+    """A 200 GraphQL response's error messages, joined; "" when there are none."""
+    if not 200 <= response.status_code < 300:
+        return ""
+    try:
+        errors = (response.json() or {}).get("errors") or []
+    except ValueError:
+        return ""
+    return "; ".join(e.get("message", "") for e in errors)
+
+
 _PR_TYPES = ("pr", "pull", "pulls", "pull_request", "pull_requests")
 _ISSUE_TYPES = ("issue", "issues")
 
@@ -234,7 +310,9 @@ async def github_pr_summary(
     review decision (who approved, who requested changes, who is still requested), CI
     on the head commit (failing and pending checks named), the comment count, and
     review threads. Each UNRESOLVED thread is listed with its comment_id, which
-    github_comment takes as `in_reply_to`. The last line lists what blocks the merge.
+    github_comment takes as `in_reply_to`. It ends with the Blockers: each says
+    whether the branch rules require it, how to clear it, and who can. Clear the
+    ones marked [you], e.g. resolve answered threads with github_resolve_thread.
 
     Use it to keep track of your own PRs: before marking a draft ready for review,
     before saying a PR is done or green, and when picking work back up.

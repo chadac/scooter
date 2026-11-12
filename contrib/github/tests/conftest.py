@@ -28,3 +28,14 @@ def trigger_policy() -> TriggerPolicy:
     cfg = TriggerPolicy()
     policy.init(cfg)
     return cfg
+
+
+@pytest.fixture(autouse=True)
+def no_merge_blocker_lookup():
+    """Handlers would read GitHub for the merge note; tests opt in by patching it."""
+    from unittest.mock import AsyncMock, patch
+
+    from scooter_contrib_github import webhooks_handler as gh
+
+    with patch.object(gh, "_merge_blockers", new=AsyncMock(return_value=None)) as lookup:
+        yield lookup

@@ -7,50 +7,11 @@ from typing import Any
 from scooter_broker_lib.mcp import ToolResult, UpstreamCaller
 from scooter_broker_lib.refs import GithubTarget
 
+from . import merge_readiness
+
 # Unresolved threads listed by name; the rest are counted.
 MAX_LISTED_THREADS = 20
 MAX_LISTED_CHECKS = 15
-
-QUERY = """query($owner:String!,$repo:String!,$number:Int!){
-  repository(owner:$owner,name:$repo){
-    pullRequest(number:$number){
-      title url state isDraft merged mergedAt closedAt
-      mergeable mergeStateStatus reviewDecision
-      author{login}
-      baseRefName headRefName headRefOid
-      additions deletions changedFiles
-      autoMergeRequest{mergeMethod}
-      labels(first:20){nodes{name}}
-      comments{totalCount}
-      latestOpinionatedReviews(first:50){nodes{state author{login}}}
-      reviewRequests(first:20){nodes{requestedReviewer{
-        __typename
-        ... on User{login} ... on Bot{login} ... on Mannequin{login} ... on Team{slug}
-      }}}
-      reviewThreads(first:100){
-        totalCount
-        nodes{
-          isResolved isOutdated path line
-          comments(first:1){totalCount nodes{databaseId body author{login}}}
-        }
-      }
-      commits(last:1){nodes{commit{statusCheckRollup{
-        state
-        contexts(first:100){
-          totalCount
-          nodes{
-            __typename
-            ... on CheckRun{name status conclusion detailsUrl}
-            ... on StatusContext{context state targetUrl}
-          }
-        }
-      }}}}
-    }
-  }
-}"""
-
-_PASSED = {"SUCCESS"}
-_SKIPPED = {"NEUTRAL", "SKIPPED"}
 
 
 async def fetch_pr_summary(upstream: UpstreamCaller, target: GithubTarget) -> ToolResult:
@@ -59,7 +20,7 @@ async def fetch_pr_summary(upstream: UpstreamCaller, target: GithubTarget) -> To
         "POST",
         "graphql",
         json={
-            "query": QUERY,
+            "query": merge_readiness.QUERY,
             "variables": {"owner": target.owner, "repo": target.repo, "number": target.number},
         },
     )
@@ -92,16 +53,11 @@ def render(target: GithubTarget, pr: dict[str, Any]) -> str:
     is_open = pr.get("state") == "OPEN"
     if is_open:
         merge = f"Merge: {pr.get('mergeable')} (merge state {pr.get('mergeStateStatus')})"
-        auto = pr.get("autoMergeRequest")
-        if auto:
-            merge += f"; auto-merge on ({auto.get('mergeMethod', '').lower()})"
-        lines.append(merge)
+        queue = merge_readiness.queue_state(pr)
+        lines.append(merge + (f"; {queue}" if queue else ""))
 
-    review_line, changes_requested, approved = _reviews(pr)
-    lines.append(review_line)
-
-    checks = _checks(pr)
-    lines.extend(checks.lines(head))
+    lines.append(_reviews(pr))
+    lines.extend(_check_lines(merge_readiness.Checks(pr), head))
 
     threads = _threads(pr)
     lines.extend(threads.lines(pr))
@@ -111,27 +67,7 @@ def render(target: GithubTarget, pr: dict[str, Any]) -> str:
         lines.append(f"Labels: {', '.join(labels)}")
 
     if is_open:
-        blockers = []
-        if pr.get("isDraft"):
-            blockers.append("draft")
-        if pr.get("mergeable") == "CONFLICTING":
-            blockers.append("merge conflicts")
-        if pr.get("mergeStateStatus") == "BEHIND":
-            blockers.append("behind base branch")
-        if checks.failed:
-            blockers.append(f"{len(checks.failed)} failing check(s)")
-        if checks.pending:
-            blockers.append(f"{len(checks.pending)} pending check(s)")
-        if changes_requested:
-            blockers.append("changes requested")
-        elif pr.get("reviewDecision") == "REVIEW_REQUIRED":
-            blockers.append("review required")
-        elif pr.get("mergeStateStatus") == "BLOCKED":
-            # Rulesets leave reviewDecision null, so BLOCKED is the only signal.
-            blockers.append("blocked by branch rules" + ("" if approved else " (likely a required approval)"))
-        if threads.unresolved:
-            blockers.append(f"{len(threads.unresolved)} unresolved thread(s)")
-        lines.append(f"Blockers: {', '.join(blockers) if blockers else 'none'}")
+        lines.extend(merge_readiness.render(merge_readiness.blockers(pr)))
     return "\n".join(line for line in lines if line)
 
 
@@ -151,7 +87,7 @@ def _state(pr: dict[str, Any]) -> str:
     return "OPEN, DRAFT" if pr.get("isDraft") else "OPEN, ready for review"
 
 
-def _reviews(pr: dict[str, Any]) -> tuple[str, bool, bool]:
+def _reviews(pr: dict[str, Any]) -> str:
     by_state: dict[str, list[str]] = {}
     for review in (pr.get("latestOpinionatedReviews") or {}).get("nodes") or []:
         by_state.setdefault(review.get("state", ""), []).append("@" + _login(review.get("author")))
@@ -167,67 +103,29 @@ def _reviews(pr: dict[str, Any]) -> tuple[str, bool, bool]:
         parts.append(f"awaiting {', '.join(awaiting)}")
     elif not by_state:
         parts.append("no reviewers requested")
-    return "; ".join(parts), bool(by_state.get("CHANGES_REQUESTED")), bool(by_state.get("APPROVED"))
+    return "; ".join(parts)
 
 
-class _Checks:
-    def __init__(self, rollup: dict[str, Any] | None):
-        self.rollup = rollup
-        self.passed: list[str] = []
-        self.skipped: list[str] = []
-        self.failed: list[str] = []
-        self.pending: list[str] = []
-        self.total = 0
-        if not rollup:
-            return
-        contexts = rollup.get("contexts") or {}
-        self.total = contexts.get("totalCount") or 0
-        for node in contexts.get("nodes") or []:
-            if node.get("__typename") == "StatusContext":
-                name, url, state = node.get("context"), node.get("targetUrl"), node.get("state")
-                bucket = (
-                    self.passed if state == "SUCCESS"
-                    else self.pending if state in ("PENDING", "EXPECTED")
-                    else self.failed
-                )
-            else:
-                name, url = node.get("name"), node.get("detailsUrl")
-                status, conclusion = node.get("status"), node.get("conclusion")
-                state = conclusion if status == "COMPLETED" else status
-                bucket = (
-                    self.pending if status != "COMPLETED"
-                    else self.passed if conclusion in _PASSED
-                    else self.skipped if conclusion in _SKIPPED
-                    else self.failed
-                )
-            bucket.append(f"{name} ({state})" + (f" {url}" if url and bucket is self.failed else ""))
-
-    def lines(self, head: str) -> list[str]:
-        if not self.rollup:
-            return [f"CI ({head}): no checks reported"]
-        counts = ", ".join(
-            f"{len(group)} {label}"
-            for label, group in (
-                ("failed", self.failed), ("pending", self.pending),
-                ("passed", self.passed), ("skipped", self.skipped),
-            )
-            if group
+def _check_lines(checks: merge_readiness.Checks, head: str) -> list[str]:
+    if not checks.rollup:
+        return [f"CI ({head}): no checks reported"]
+    counts = ", ".join(
+        f"{len(group)} {label}"
+        for label, group in (
+            ("failed", checks.failed), ("pending", checks.pending),
+            ("passed", checks.passed), ("skipped", checks.skipped),
         )
-        out = [f"CI ({head}): {self.rollup.get('state')}. {self.total} checks: {counts}"]
-        seen = len(self.passed) + len(self.skipped) + len(self.failed) + len(self.pending)
-        if self.total > seen:
-            out[0] += f" (first {seen} classified)"
-        for label, group in (("failed", self.failed), ("pending", self.pending)):
-            out.extend(f"  {label}: {item}" for item in group[:MAX_LISTED_CHECKS])
-            if len(group) > MAX_LISTED_CHECKS:
-                out.append(f"  ...and {len(group) - MAX_LISTED_CHECKS} more {label}")
-        return out
-
-
-def _checks(pr: dict[str, Any]) -> _Checks:
-    commits = (pr.get("commits") or {}).get("nodes") or []
-    commit = (commits[0].get("commit") if commits else None) or {}
-    return _Checks(commit.get("statusCheckRollup"))
+        if group
+    )
+    out = [f"CI ({head}): {checks.rollup.get('state')}. {checks.total} checks: {counts}"]
+    seen = len(checks.passed) + len(checks.skipped) + len(checks.failed) + len(checks.pending)
+    if checks.total > seen:
+        out[0] += f" (first {seen} classified)"
+    for label, group in (("failed", checks.failed), ("pending", checks.pending)):
+        out.extend(f"  {label}: {item}" for item in group[:MAX_LISTED_CHECKS])
+        if len(group) > MAX_LISTED_CHECKS:
+            out.append(f"  ...and {len(group) - MAX_LISTED_CHECKS} more {label}")
+    return out
 
 
 class _Threads:
@@ -270,7 +168,8 @@ def _thread_line(thread: dict[str, Any]) -> str:
     if len(body) > 100:
         body = body[:97] + "..."
     outdated = ", outdated" if thread.get("isOutdated") else ""
+    answered = ", you replied last" if merge_readiness.viewer_spoke_last(thread) else ""
     return (
         f"{where} @{_login(first.get('author'))} (comment_id {first.get('databaseId')}, "
-        f"{comments.get('totalCount', 0)} comment(s){outdated}): \"{body}\""
+        f"{comments.get('totalCount', 0)} comment(s){outdated}{answered}): \"{body}\""
     )

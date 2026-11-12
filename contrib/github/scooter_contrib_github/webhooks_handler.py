@@ -20,8 +20,9 @@ from scooter_webhooks_lib.vars import ConversationVars
 
 from scooter_lib.attachments import MAX_IMAGE_BYTES, AttachmentRef, inline_images, refs_block
 
-from . import attachments
+from . import attachments, merge_readiness
 from .config import settings
+from .forge import graphql_url
 from scooter_webhooks_lib.agent_host_client import (
     SendOutcome, conversation_url, create_conversation, deliver_message, push_link, send_message,
 )
@@ -376,7 +377,7 @@ async def _handle_review(payload: dict):
     # The individual line comments arrive as their own events.
     if state == "approved":
         head = f"@{user} APPROVED PR #{number} in {owner}/{repo}."
-        tail = "No action needed unless the body asks for something."
+        tail = "No action needed unless the body asks for something." + await _merge_note(owner, repo, number)
     elif state == "changes_requested":
         head = f"@{user} requested CHANGES on PR #{number} in {owner}/{repo}."
         tail = (
@@ -485,6 +486,7 @@ async def _handle_workflow_run(payload: dict):
             f"CI is GREEN: **{name}** passes on `{branch}` (PR #{number}).\n\n"
             f"{url}\n\n---\n\n{why}, so this unblocks the PR. "
             f"No action needed unless you were waiting to do something after CI."
+            + await _merge_note(owner, repo, number)
         )
     else:
         failed = await _failed_jobs(owner, repo, run.get("id"))
@@ -519,6 +521,40 @@ async def _failed_jobs(owner: str, repo: str, run_id) -> list[str]:
         )
         return []
     return [j.get("name", "?") for j in jobs if j.get("conclusion") == "failure"]
+
+
+async def _merge_blockers(owner: str, repo: str, number: int) -> list[merge_readiness.Blocker] | None:
+    """What holds an open PR's merge, or None when it is closed or unreadable."""
+    try:
+        from .responses import _headers_for_repo
+
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(
+                graphql_url(settings.github_host),
+                headers=await _headers_for_repo(owner, repo),
+                json={
+                    "query": merge_readiness.QUERY,
+                    "variables": {"owner": owner, "repo": repo, "number": number},
+                },
+            )
+            resp.raise_for_status()
+            pr = ((resp.json().get("data") or {}).get("repository") or {}).get("pullRequest")
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "merge-blocker lookup failed; forwarding without it",
+            extra={**_C, "source": "github", "error": str(e)},
+        )
+        return None
+    if not pr or pr.get("state") != "OPEN":
+        return None
+    # Webhooks read as the App, not the agent's identity.
+    return merge_readiness.blockers(pr, split_threads=False)
+
+
+async def _merge_note(owner: str, repo: str, number: int) -> str:
+    """The required blockers as a message tail; "" when they can't be read."""
+    found = await _merge_blockers(owner, repo, number)
+    return "" if found is None else "\n\n" + merge_readiness.note(found)
 
 
 async def _handle_issue_event(payload: dict):
@@ -613,6 +649,31 @@ async def _handle_pr_dequeued(payload: dict):
         f"PR #{number} in {owner}/{repo} was REMOVED FROM THE MERGE QUEUE "
         f"(reason: {reason}, by @{sender}).\n\n---\n\n"
         f"{hint} It must be queued again to merge."
+        + await _merge_note(owner, repo, number)
+    )
+    await _forward_or_ignore(_resource_id(owner, repo, number), message, actor_on(payload, pr))
+
+
+_QUEUED = {
+    "auto_merge_enabled": "AUTO-MERGE was enabled",
+    "enqueued": "was ADDED TO THE MERGE QUEUE",
+}
+
+
+async def _handle_pr_queued(payload: dict):
+    """auto_merge_enabled / enqueued: speak up only when something the agent can act on holds the merge."""
+    pr = payload.get("pull_request", {})
+    number = pr.get("number")
+    repo_data = payload.get("repository", {})
+    owner = repo_data.get("owner", {}).get("login", "")
+    repo = repo_data.get("name", "")
+    found = await _merge_blockers(owner, repo, number)
+    if not found or not any(b.required and b.owner != merge_readiness.WAIT for b in found):
+        return
+    sender = payload.get("sender", {}).get("login", "unknown")
+    message = (
+        f"PR #{number} in {owner}/{repo}: {_QUEUED[payload['action']]} by @{sender}, "
+        f"but it can't merge yet.\n\n---\n\n{merge_readiness.note(found)}"
     )
     await _forward_or_ignore(_resource_id(owner, repo, number), message, actor_on(payload, pr))
 
@@ -702,7 +763,7 @@ async def _handle_push(payload: dict):
 
 
 async def _handle_pr_event(payload: dict):
-    """Handle pull_request event (labeled, closed, dequeued, synchronize)."""
+    """Handle pull_request event (labeled, closed, dequeued, auto-merge/enqueue, synchronize)."""
     action = payload.get("action", "")
     if action == "synchronize":
         pr = payload.get("pull_request", {})
@@ -716,6 +777,9 @@ async def _handle_pr_event(payload: dict):
         return
     if action == "dequeued":
         await _handle_pr_dequeued(payload)
+        return
+    if action in _QUEUED:
+        await _handle_pr_queued(payload)
         return
     if action != "labeled":
         return

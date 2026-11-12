@@ -30,6 +30,11 @@ def api_base(host: str) -> str:
     return "https://api.github.com" if host == DOTCOM else f"https://{host}/api/v3"
 
 
+def graphql_url(host: str) -> str:
+    """The GraphQL endpoint for github.com or a GHES host."""
+    return "https://api.github.com/graphql" if host == DOTCOM else f"https://{host}/api/graphql"
+
+
 def forge_hosts(host: str) -> list[ForgeHost]:
     """github.com splits git, API and uploads; GHES uses one host."""
     # Lazy: webhooks imports this module but doesn't ship the broker lib.

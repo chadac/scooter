@@ -6,7 +6,11 @@ import httpx
 
 import pytest
 
+from scooter_contrib_github import merge_readiness as mr
 from scooter_contrib_github import webhooks_handler as gh
+
+# Captured before the autouse fixture stubs it.
+_REAL_MERGE_BLOCKERS = gh._merge_blockers
 
 
 def _repo():
@@ -275,3 +279,74 @@ class TestPrDequeued:
     async def test_leaving_the_queue_by_merging_is_not_a_drop(self, forwarded):
         await gh._handle_pr_event(self._dequeued("merged"))
         assert not forwarded.called
+
+
+class TestMergeBlockerNote:
+    """Events where merging is next carry what still holds the merge."""
+
+    THREADS = mr.Blocker("2 unresolved review thread(s)", "resolve them", mr.AGENT)
+    WAITING = mr.Blocker("check(s) still running: e2e", "wait for them", mr.WAIT)
+
+    def _approval(self):
+        return {
+            "action": "submitted",
+            "review": {"state": "approved", "body": "please queue", "user": {"login": "chadac"}},
+            "pull_request": {"number": 431}, "repository": _repo(),
+        }
+
+    def _queued(self, action):
+        return {
+            "action": action, "pull_request": {"number": 431},
+            "repository": _repo(), "sender": {"login": "chadac"},
+        }
+
+    @pytest.mark.asyncio
+    async def test_an_approval_names_what_still_blocks(self, forwarded, no_merge_blocker_lookup):
+        no_merge_blocker_lookup.return_value = [self.THREADS]
+        await gh._handle_review(self._approval())
+        msg = forwarded.call_args[0][1]
+        assert "APPROVED" in msg
+        assert "Still blocking merge:\n  ✗ 2 unresolved review thread(s) → resolve them [you]" in msg
+        no_merge_blocker_lookup.assert_awaited_once_with("chadac-me", "scooter", 431)
+
+    @pytest.mark.asyncio
+    async def test_an_approval_with_nothing_in_the_way_says_so(self, forwarded, no_merge_blocker_lookup):
+        no_merge_blocker_lookup.return_value = []
+        await gh._handle_review(self._approval())
+        assert forwarded.call_args[0][1].endswith("Merge: nothing blocks it.")
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_lookup_still_forwards_the_event(self, forwarded):
+        await gh._handle_review(self._approval())
+        msg = forwarded.call_args[0][1]
+        assert "APPROVED" in msg and "blocking merge" not in msg
+
+    @pytest.mark.asyncio
+    async def test_a_dequeue_carries_the_note(self, forwarded, no_merge_blocker_lookup):
+        no_merge_blocker_lookup.return_value = [self.THREADS]
+        await gh._handle_pr_event({**self._queued("dequeued"), "reason": "MANUAL"})
+        assert "Still blocking merge" in forwarded.call_args[0][1]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("action", ["auto_merge_enabled", "enqueued"])
+    async def test_queueing_a_held_pr_reaches_the_agent(self, forwarded, no_merge_blocker_lookup, action):
+        no_merge_blocker_lookup.return_value = [self.THREADS, self.WAITING]
+        await gh._handle_pr_event(self._queued(action))
+        msg = forwarded.call_args[0][1]
+        assert "can't merge yet" in msg and "unresolved review thread" in msg
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("found", [None, [], [WAITING]])
+    async def test_queueing_is_quiet_unless_the_agent_can_act(self, forwarded, no_merge_blocker_lookup, found):
+        no_merge_blocker_lookup.return_value = found
+        await gh._handle_pr_event(self._queued("auto_merge_enabled"))
+        assert not forwarded.called
+
+
+@pytest.mark.asyncio
+async def test_the_blocker_lookup_fails_open():
+    from scooter_contrib_github import responses
+
+    with patch.object(gh, "_merge_blockers", new=_REAL_MERGE_BLOCKERS), \
+         patch.object(responses, "_headers_for_repo", new=AsyncMock(side_effect=RuntimeError("no token"))):
+        assert await gh._merge_blockers("o", "r", 1) is None

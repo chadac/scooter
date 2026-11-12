@@ -148,11 +148,35 @@ async def test_the_summary_covers_every_section():
 
 async def test_blockers_name_everything_in_the_way():
     res, _ = await _summary()
-    blockers = res.text.splitlines()[-1]
-    assert blockers == (
-        "Blockers: draft, merge conflicts, 1 failing check(s), 1 pending check(s), "
-        "changes requested, 1 unresolved thread(s)"
-    )
+    lines = res.text.splitlines()
+    at = lines.index("Blockers (5 blocking merge):")
+    assert lines[at + 1:] == [
+        "  ✗ draft → mark it ready for review (gh pr ready) [you]",
+        "  ✗ merge conflicts with `main` → rebase on `main` and push [you]",
+        "  ✗ failing check(s): lint → read the failing log, fix and push [you]",
+        "  ✗ check(s) still running: e2e → wait for them [nobody (wait)]",
+        "  ✗ changes requested by @carol → address the comments, push, then ask for a re-review [a reviewer]",
+        "  · 1 unresolved review thread(s); Scooter can't read whether the rules require resolving them"
+        " → reply to each (and push any fix), then resolve it with github_resolve_thread [you]",
+    ]
+
+
+async def test_the_headline_case_an_approved_pr_held_only_by_required_thread_resolution():
+    pr = copy.deepcopy(PR)
+    pr.update(isDraft=False, mergeable="MERGEABLE", mergeStateStatus="BLOCKED", reviewDecision="APPROVED")
+    pr["latestOpinionatedReviews"]["nodes"] = [{"state": "APPROVED", "author": {"login": "bob"}}]
+    pr["commits"]["nodes"][0]["commit"]["statusCheckRollup"] = None
+    pr["reviewThreads"]["nodes"][1]["last"] = {"nodes": [{"viewerDidAuthor": True}]}
+    pr["baseRef"] = {"refUpdateRule": None, "rules": {"nodes": [
+        {"type": "PULL_REQUEST", "parameters": {"requiredReviewThreadResolution": True}}]}}
+    res, _ = await _summary(pr)
+    lines = res.text.splitlines()
+    assert lines[-2:] == [
+        "Blockers (1 blocking merge):",
+        "  ✗ 1 unresolved review thread(s); the branch rules REQUIRE conversation resolution"
+        " → you answered each last: resolve them with github_resolve_thread [you]",
+    ]
+    assert "outdated, you replied last)" in res.text
 
 
 async def test_a_clean_pr_has_no_blockers():
@@ -185,12 +209,31 @@ async def test_no_checks_is_said_plainly():
     assert "CI (abcdef1): no checks reported" in res.text
 
 
-async def test_a_ruleset_block_shows_though_review_decision_is_null():
-    # Shape seen live: ruleset needs an approval, reviewDecision stays null.
-    pr = copy.deepcopy(PR)
+def _blocked_with_nothing_else(pr):
     pr.update(isDraft=False, mergeable="MERGEABLE", mergeStateStatus="BLOCKED", reviewDecision=None)
     pr["latestOpinionatedReviews"]["nodes"] = []
+    pr["reviewThreads"]["nodes"][1]["isResolved"] = True
+    pr["commits"]["nodes"][0]["commit"]["statusCheckRollup"] = None
+
+
+async def test_a_ruleset_approval_shows_though_review_decision_is_null():
+    # Shape seen live: ruleset needs an approval, reviewDecision stays null.
+    pr = copy.deepcopy(PR)
+    _blocked_with_nothing_else(pr)
+    pr["baseRef"] = {"refUpdateRule": None, "rules": {"nodes": [
+        {"type": "PULL_REQUEST", "parameters": {"requiredApprovingReviewCount": 1}}]}}
     res, _ = await _summary(pr)
     assert "Reviews: no decision reported" in res.text
-    assert "no review required" not in res.text
-    assert "blocked by branch rules (likely a required approval)" in res.text.splitlines()[-1]
+    assert res.text.splitlines()[-1] == (
+        "  ✗ needs 1 approval(s), has 0 → request a review from someone who can approve [a reviewer]"
+    )
+
+
+async def test_an_unexplained_block_says_so_instead_of_guessing():
+    pr = copy.deepcopy(PR)
+    _blocked_with_nothing_else(pr)
+    res, _ = await _summary(pr)
+    assert res.text.splitlines()[-1] == (
+        "  ✗ blocked by branch rules Scooter can't read → ask a maintainer what is blocking it; "
+        "don't guess [an admin]"
+    )
