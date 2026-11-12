@@ -420,7 +420,7 @@ export class IntegrityAgent extends AbstractAgent {
         this.historyCursor = body.done ? 1 : (body.fromSeq ?? 1);
         if (older.length === 0) return 0;
         this.recordMessageTimes(older);
-        this.setMessages([...older, ...this.messages] as never);
+        this.olderMessages = [...older, ...this.olderMessages];
         this.notifyMessages();
         return older.length;
       } catch {
@@ -431,6 +431,15 @@ export class IntegrityAgent extends AbstractAgent {
     })();
     this.olderInFlight = run;
     return run;
+  }
+
+  /** Paged-in history, kept apart because the applier overwrites `messages` per event. */
+  private olderMessages: unknown[] = [];
+
+  /** Paged-in history followed by the live fold: the list to paint. */
+  visibleMessages(): unknown[] {
+    const live = this.messages as unknown[];
+    return this.olderMessages.length === 0 ? live : [...this.olderMessages, ...live];
   }
 
   /** True from restoreFold() until the stream first reaches `synced`. */
@@ -444,7 +453,7 @@ export class IntegrityAgent extends AbstractAgent {
     if (!this.cursor || this.replaying) return undefined;
     return {
       cursor: this.cursor,
-      messages: this.messages as unknown[],
+      messages: this.visibleMessages(),
       historyCursor: this.historyCursor,
       pendingApprovals: [...this.pendingApprovals.values()],
       running: this.running,
@@ -480,6 +489,8 @@ export class IntegrityAgent extends AbstractAgent {
     this.messageImages = new Map(s.messageImages);
     this.messageTimes = new Map(s.messageTimes);
     this.fromCache = true;
+    // Cached pages join the fold, which the applier copies on subscribe.
+    this.olderMessages = [];
     this.setMessages(s.messages as never);
   }
 
@@ -772,6 +783,7 @@ export class IntegrityAgent extends AbstractAgent {
             this.queued = [];
             // The new replay's snapshot carries its own window start.
             this.historyCursor = 1;
+            this.olderMessages = [];
             // System messages and their anchor are re-derived from the replayed log too.
             this.systemMessages = [];
             this.lastMessageId = null;

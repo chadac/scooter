@@ -409,7 +409,7 @@ function ConversationRuntime({
         if (cur.length === 0) return cur;
         const queuedTexts = new Set(serverQueue.map((q) => q.text));
         const loggedUserTexts = new Set(
-          (agent.messages as unknown as Array<{ role?: string; content?: unknown }>)
+          (agent.visibleMessages() as Array<{ role?: string; content?: unknown }>)
             .filter((m) => m.role === "user")
             .map((m) => (typeof m.content === "string"
               ? m.content
@@ -421,7 +421,7 @@ function ConversationRuntime({
         return next.length === cur.length ? cur : next;
       });
 
-      const folded = agent.messages as unknown as unknown[];
+      const folded = agent.visibleMessages();
       if (!foldGate.current.accept(agent.foldGeneration(), folded.length)) {
         // A suppression looks like a frozen transcript, so leave a breadcrumb.
         const convId = agent.currentConversationId();

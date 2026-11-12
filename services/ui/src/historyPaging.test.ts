@@ -43,7 +43,7 @@ function applySnapshot(
 }
 
 const ids = (agent: ReturnType<typeof createIntegrityAgent>) =>
-  (agent.messages as unknown as Array<{ id: string }>).map((m) => m.id);
+  (agent.visibleMessages() as Array<{ id: string }>).map((m) => m.id);
 
 function makeAgent(pages: Page[]) {
   const { impl, calls } = pagingFetch(pages);
@@ -140,5 +140,56 @@ describe("older-history paging", () => {
     expect(agent.hasOlderHistory(), "a failed page must not end the walk").toBe(true);
     expect(await agent.loadOlderHistory()).toBe(1);
     expect(ids(agent)).toEqual(["old1", "new1"]);
+  });
+});
+
+const frame = (f: unknown) => new TextEncoder().encode(`data: ${JSON.stringify(f)}\n\n`);
+
+// The applier rewrites `messages` per event, so paged-in history must live elsewhere.
+describe("older history during a live stream", () => {
+  it("keeps prepended pages after the next live event", async () => {
+    let push: ((f: unknown) => void) | undefined;
+    const impl = vi.fn(async (url: string) => {
+      const u = String(url);
+      if (u.includes("/tail")) return new Response(JSON.stringify({ events: [] }), { status: 200 });
+      if (u.includes("/messages?before=")) {
+        return new Response(
+          JSON.stringify({ messages: [msg("old1"), msg("old2")], fromSeq: 1, done: true }),
+          { status: 200 },
+        );
+      }
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          push = (f) => c.enqueue(frame(f));
+          push({ kind: "event", event: { type: "MESSAGES_SNAPSHOT", messages: [msg("new1")], fromSeq: 500 } });
+          push({ kind: "synced" });
+        },
+      });
+      return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+
+    const agent = createIntegrityAgent({ baseUrl: "http://host", conversationId: "c1", fetchImpl: impl });
+    const stop = agent.renderPump();
+    try {
+      await vi.waitFor(() => expect(agent.visibleMessages()).toHaveLength(1));
+      expect(await agent.loadOlderHistory()).toBe(2);
+      expect(agent.visibleMessages().map((m) => (m as { id: string }).id)).toEqual(["old1", "old2", "new1"]);
+
+      push?.({ kind: "event", event: { type: "TEXT_MESSAGE_START", messageId: "new2", role: "assistant" } });
+      push?.({ kind: "event", event: { type: "TEXT_MESSAGE_CONTENT", messageId: "new2", delta: "hi" } });
+      push?.({ kind: "event", event: { type: "TEXT_MESSAGE_END", messageId: "new2" } });
+
+      await vi.waitFor(() =>
+        expect(agent.visibleMessages().map((m) => (m as { id: string }).id)).toEqual([
+          "old1",
+          "old2",
+          "new1",
+          "new2",
+        ]),
+      );
+    } finally {
+      stop();
+      agent.dispose();
+    }
   });
 });
