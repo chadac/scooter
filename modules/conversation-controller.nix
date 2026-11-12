@@ -114,7 +114,7 @@ in
     scaleDownCooldownSeconds = mkOption {
       type = types.int;
       default = 300;
-      description = "Wait this long between scale-DOWNs (hysteresis; scale-up is immediate).";
+      description = "Scale-down window: the agent-host scales down only to the highest target seen over this many seconds, and a new leader waits this long before its first scale-down. Scale-up is immediate.";
     };
     metricsPort = mkOption {
       type = types.int;

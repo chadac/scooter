@@ -293,10 +293,13 @@ def reconcile_once(k8s, cap: int, rows) -> list[tuple[str, str]]:
 
 
 class AutoscaleState:
-    """Mutable cooldown state the caller owns across ticks (scale-down hysteresis)."""
+    """Scale-down hysteresis the caller owns across ticks; reset it on becoming leader."""
 
     def __init__(self) -> None:
-        self.last_scale_down: float = 0.0
+        # When this state began observing; no scale-down until a full window is seen.
+        self.since: float | None = None
+        # (time, target) per tick within the last window.
+        self.targets: list[tuple[float, int]] = []
 
 
 def autoscale_once(k8s, cfg, state: AutoscaleState, now: float, rows) -> dict:
@@ -324,6 +327,12 @@ def autoscale_once(k8s, cfg, state: AutoscaleState, now: float, rows) -> dict:
     target = desired_replicas(demand, cfg.pod_cap, cfg.min_replicas, cfg.max_replicas)
     per_pod = (demand / ready_pods) if ready_pods else float(demand)
 
+    window = cfg.scale_down_cooldown_seconds
+    if state.since is None:
+        state.since = now
+    state.targets = [(t, n) for t, n in state.targets if now - t < window] + [(now, target)]
+    # Scale down to the window's highest target, so a brief dip does not drop a pod.
+    settled = max(n for _, n in state.targets)
     if target > current:
         # Scale up immediately, since a Pending conversation is a user waiting for a slot.
         k8s.set_agent_host_replicas(target)
@@ -331,15 +340,12 @@ def autoscale_once(k8s, cfg, state: AutoscaleState, now: float, rows) -> dict:
             "autoscale up",
             extra={**_C, "from_replicas": current, "to_replicas": target, "demand": demand, "pod_cap": cfg.pod_cap},
         )
-    elif target < current:
-        # Scale down only after the cooldown so a brief dip does not drop a pod.
-        if now - state.last_scale_down >= cfg.scale_down_cooldown_seconds:
-            k8s.set_agent_host_replicas(target)
-            state.last_scale_down = now
-            logger.info(
-                "autoscale down",
-                extra={**_C, "from_replicas": current, "to_replicas": target, "demand": demand, "pod_cap": cfg.pod_cap},
-            )
+    elif settled < current and now - state.since >= window:
+        k8s.set_agent_host_replicas(settled)
+        logger.info(
+            "autoscale down",
+            extra={**_C, "from_replicas": current, "to_replicas": settled, "demand": demand, "pod_cap": cfg.pod_cap},
+        )
 
     return {"demand": demand, "current": current, "target": target, "ready_pods": ready_pods, "per_pod": per_pod}
 

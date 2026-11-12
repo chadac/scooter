@@ -377,15 +377,46 @@ def test_autoscale_subagents_do_not_count():
     assert m["demand"] == 1
 
 
-def test_autoscale_scale_down_waits_for_cooldown():
-    # The first scale-down lands; a second one 100s later is held by the cooldown.
+def _set_convs(k, convs):
+    k._convs = {c["metadata"]["name"]: c for c in convs}
+
+
+def test_autoscale_scale_down_waits_a_full_window():
+    # A fresh state (a new leader) holds the fleet until it has watched a whole window.
     k = FakeK8s([Pod("a", True)], [], replicas=5)
     st = AutoscaleState()
     autoscale_once(k, _Cfg(pod_cap=1, cooldown=300.0), st, now=1000.0, rows=FakeRows(k))
+    autoscale_once(k, _Cfg(pod_cap=1, cooldown=300.0), st, now=1299.0, rows=FakeRows(k))
+    assert k.scale_calls == []
+    autoscale_once(k, _Cfg(pod_cap=1, cooldown=300.0), st, now=1300.0, rows=FakeRows(k))
     assert k.scale_calls == [2]
-    k._replicas = 4
-    autoscale_once(k, _Cfg(pod_cap=1, cooldown=300.0), st, now=1100.0, rows=FakeRows(k))
-    assert k.scale_calls == [2]
+
+
+def test_autoscale_brief_dip_does_not_drop_a_pod():
+    # Demand was 5 within the window, so a momentary 0 keeps all five pods.
+    convs = [_cr_a(f"c{i}") for i in range(5)]
+    k = FakeK8s([Pod("a", True)], convs, replicas=5)
+    st = AutoscaleState()
+    autoscale_once(k, _Cfg(pod_cap=1, cooldown=300.0), st, now=0.0, rows=FakeRows(k))
+    autoscale_once(k, _Cfg(pod_cap=1, cooldown=300.0), st, now=400.0, rows=FakeRows(k))
+    _set_convs(k, [])
+    autoscale_once(k, _Cfg(pod_cap=1, cooldown=300.0), st, now=401.0, rows=FakeRows(k))
+    assert k.scale_calls == []
+
+
+def test_autoscale_scales_down_to_the_windows_highest_target():
+    # Targets 4, 3, 2 at t=0, 100, 300: each scale-down goes to the highest still in the window.
+    k = FakeK8s([Pod("a", True)], [_cr_a(f"c{i}") for i in range(4)], replicas=5)
+    st = AutoscaleState()
+    autoscale_once(k, _Cfg(pod_cap=1, cooldown=300.0), st, now=0.0, rows=FakeRows(k))
+    _set_convs(k, [_cr_a(f"c{i}") for i in range(3)])
+    autoscale_once(k, _Cfg(pod_cap=1, cooldown=300.0), st, now=100.0, rows=FakeRows(k))
+    _set_convs(k, [])
+    autoscale_once(k, _Cfg(pod_cap=1, cooldown=300.0), st, now=300.0, rows=FakeRows(k))
+    assert k.scale_calls == [3]
+    k._replicas = 3
+    autoscale_once(k, _Cfg(pod_cap=1, cooldown=300.0), st, now=400.0, rows=FakeRows(k))
+    assert k.scale_calls == [3, 2]
 
 
 def test_autoscale_noop_when_target_equals_current():

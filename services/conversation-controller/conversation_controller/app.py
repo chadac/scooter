@@ -38,6 +38,8 @@ def run(cfg: Config, stop: threading.Event) -> None:
             if leader:
                 if not was_leader:
                     logger.info("became leader", extra={**_C, "identity": cfg.identity})
+                    # A new leader has seen no demand yet, so it may not scale down at once.
+                    autoscale_state = AutoscaleState()
                 reconcile_once(k8s, cfg.pod_cap, rows=rows)
                 # Guarded separately so a reaper failure does not abort assignment.
                 if cfg.reap_orphans:

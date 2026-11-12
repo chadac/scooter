@@ -185,7 +185,7 @@ def desired_replicas(
     min_replicas: int,
     max_replicas: int,
 ) -> int:
-    """The target agent-host replica count, ceil(demand / cap) clamped to [min_replicas, max_replicas]; the caller applies the scale-down cooldown."""
+    """The target agent-host replica count, ceil(demand / cap) clamped to [min_replicas, max_replicas]; the caller applies the scale-down window."""
     if cap < 1:
         cap = 1
     need = math.ceil(demand / cap) if demand > 0 else 0
