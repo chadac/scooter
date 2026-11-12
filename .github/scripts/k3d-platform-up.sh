@@ -186,9 +186,16 @@ done \
       while [ $retry -lt $max_retries ]; do
         # copyTo bundles a substitutable skopeo, and the batched `nix build` above
         # has already realised the graph, so this evaluation is a cache hit.
-        if "${DEPS}/${attr}.copyTo/bin/copy-to" "docker://${push_ref}" --dest-tls-verify=false; then
+        out=$(mktemp)
+        if "${DEPS}/${attr}.copyTo/bin/copy-to" "docker://${push_ref}" --dest-tls-verify=false 2>&1 | tee "$out"; then
           echo "✓ $attr pushed successfully"
           exit 0
+        fi
+        # Pooled /nix volumes can hold valid paths missing layer tars.
+        broken=$(grep -oE "open /nix/store/[^/: ]+/[^:]*: no such file" "$out" | head -n1 | cut -d/ -f1-4 | cut -c6-)
+        if [ -n "$broken" ]; then
+          echo "::warning title=corrupt store path::$broken is missing files; repairing it from the cache"
+          nix store repair "$broken" || true
         fi
         retry=$((retry + 1))
         if [ $retry -lt $max_retries ]; then
