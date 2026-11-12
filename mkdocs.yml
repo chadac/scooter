@@ -61,6 +61,7 @@ nav:
           - Overview: tutorial/deploying/index.md
           - Using the published images: tutorial/deploying/published-images.md
           - Custom images: tutorial/deploying/custom-images.md
+          - Local deployments: tutorial/deploying/local.md
       - Customizing skills: tutorial/skills.md
       - Setting up contribs: tutorial/contribs.md
       - Configuring webhooks: tutorial/webhooks.md

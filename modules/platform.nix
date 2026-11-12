@@ -163,16 +163,24 @@ let
 
   # agent.env is set on the agent-host and, with agent.envPassthrough, forwarded to goose;
   # a name the platform already sets would be silently shadowed by k8s, so it throws.
-  agentPassthrough = lib.unique (cfg.agent.envPassthrough ++ lib.attrNames cfg.agent.env);
+  agentEnvNames = lib.attrNames cfg.agent.env ++ lib.attrNames cfg.agent.secretEnv;
+  agentPassthrough = lib.unique (cfg.agent.envPassthrough ++ agentEnvNames);
   withAgentEnv = base:
     let
-      clashes = lib.filter (n: builtins.any (e: e.name == n) base) (lib.attrNames cfg.agent.env);
+      clashes = lib.filter (n: builtins.any (e: e.name == n) base) agentEnvNames;
+      both = lib.attrNames (builtins.intersectAttrs cfg.agent.env cfg.agent.secretEnv);
     in
     if clashes != [ ] then
       throw "scooter.agent.env sets ${lib.concatStringsSep ", " clashes}, which the platform already sets on the agent-host; use the dedicated option instead."
+    else if both != [ ] then
+      throw "scooter.agent.env and scooter.agent.secretEnv both set ${lib.concatStringsSep ", " both}; a name takes one source."
     else
       base
       ++ lib.mapAttrsToList (name: value: { inherit name value; }) cfg.agent.env
+      ++ lib.mapAttrsToList (name: ref: {
+        inherit name;
+        valueFrom.secretKeyRef = { name = ref.secret; inherit (ref) key; };
+      }) cfg.agent.secretEnv
       ++ lib.optional (agentPassthrough != [ ])
         { name = "AGENT_ENV_PASSTHROUGH"; value = lib.concatStringsSep "," agentPassthrough; };
 
@@ -914,6 +922,32 @@ in
           agent-host's env (provider, model, AWS credentials, GOOSE_CONTEXT_LIMIT,
           …); every name here is added to it. A name the platform already sets on
           the agent-host is an error.
+        '';
+      };
+      secretEnv = mkOption {
+        type = types.attrsOf (types.submodule {
+          options = {
+            secret = mkOption {
+              type = types.str;
+              description = "Name of the Secret, in the platform namespace.";
+            };
+            key = mkOption {
+              type = types.str;
+              description = "The key in that Secret holding the value.";
+            };
+          };
+        });
+        default = { };
+        example = literalExpression ''
+          { ANTHROPIC_API_KEY = { secret = "agent-anthropic-key"; key = "api-key"; }; }
+        '';
+        description = ''
+          As `env`, with each value read from a Secret (a `secretKeyRef` on the
+          agent-host container): the API key of a goose provider such as
+          `anthropic` or `openai`. Every name is forwarded to goose like `env`'s.
+          Create the Secret out-of-band; it is referenced without `optional`, so a
+          missing Secret or key fails container creation instead of starting the
+          agent without its credential.
         '';
       };
       command = mkOption {

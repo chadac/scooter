@@ -9,6 +9,11 @@ published.
 This guide takes you from an empty cluster to a running deployment, then walks through
 the options most deployments change.
 
+!!! tip "Just want to try it?"
+    [Local deployments](tutorial/deploying/local.md): `nix run github:chadac-me/scooter#local -- up`
+    brings up a throwaway cluster on your laptop and deploys Scooter into it. Nothing
+    below is needed until you deploy for other people.
+
 ## Prerequisites
 
 - **A Kubernetes cluster** (k3s, kind, EKS, …) with the
