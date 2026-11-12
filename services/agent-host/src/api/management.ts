@@ -52,6 +52,7 @@ import type { HookDef } from "../hooks/types.js";
 import type { UserHookSettingsStore } from "../hooks/userHookSettingsStore.js";
 import { BUILTIN_THEME_ID, isThemeId, loadDefaultThemeId, loadThemes } from "../theme/themes.js";
 import { isThemeMode, type UserTheme, type UserThemeStore } from "../theme/userThemeStore.js";
+import { isLifetimeHours, type UserRetentionStore } from "../retention/userRetentionStore.js";
 
 const log = logger("agent-host");
 
@@ -192,6 +193,8 @@ export interface ManagementDeps {
   uploadLimits?: { maxFileBytes: number; maxFilesPerMessage: number };
   /** Unfiled conversations' idle lifetime in hours, 0 forever; for /whoami. */
   defaultLifetimeHours?: number;
+  /** Per-user overrides of that default; absent hides the setting. */
+  userRetention?: UserRetentionStore;
   /** Resolves the caller's identity per request; defaults to the env-configured resolver. */
   resolveUser?: ResolveUser;
   /** Whether a request is a trusted in-cluster caller (webhooks/scheduler) allowed to set a body `owner`; absent means a body owner is never honored. */
@@ -498,16 +501,31 @@ export function createManagementApi(deps: ManagementDeps): Router {
     r.del("/sandbox-mcp/:name", route as never);
   }
 
+  /** The caller's own default lifetime; a failed read falls back to the deployment's. */
+  const userLifetime = async (user: { id: string; anonymous: boolean }): Promise<number | undefined> => {
+    if (!deps.userRetention || user.anonymous) return undefined;
+    try {
+      return await deps.userRetention.get(user.id);
+    } catch (err) {
+      log.warn("user retention read failed; using the deployment default", { error: (err as Error).message });
+      return undefined;
+    }
+  };
+
   // The caller per the trusted ingress identity header (anonymous when none).
-  r.get("/whoami", (ctx) => ({
-    json: {
-      id: ctx.user.id,
-      email: ctx.user.email ?? null,
-      anonymous: ctx.user.anonymous,
-      ...(deps.uploadLimits ? { limits: { ...deps.uploadLimits } } : {}),
-      ...(deps.defaultLifetimeHours !== undefined ? { retention: { defaultLifetimeHours: deps.defaultLifetimeHours } } : {}),
-    },
-  }));
+  r.get("/whoami", async (ctx) => {
+    const own = await userLifetime(ctx.user);
+    const lifetime = own ?? deps.defaultLifetimeHours;
+    return {
+      json: {
+        id: ctx.user.id,
+        email: ctx.user.email ?? null,
+        anonymous: ctx.user.anonymous,
+        ...(deps.uploadLimits ? { limits: { ...deps.uploadLimits } } : {}),
+        ...(lifetime !== undefined ? { retention: { defaultLifetimeHours: lifetime } } : {}),
+      },
+    };
+  });
 
   // --- Bring-your-own-Claude: connect a personal Claude agent ------------------
   // Owner-scoped (ctx.user.id); 404 when BYO is not enabled so the UI hides the section,
@@ -1749,6 +1767,29 @@ export function createManagementApi(deps: ManagementDeps): Router {
     if (picked !== undefined) next.themeId = picked;
     await deps.userThemes.set(owner, next);
     return { json: next };
+  });
+
+  // --- Conversation retention policy (settings page) ----------------------------
+  r.get("/user-retention", async (ctx) => {
+    const own = await userLifetime(ctx.user);
+    return {
+      json: {
+        configurable: deps.userRetention !== undefined && !ctx.user.anonymous,
+        deploymentLifetimeHours: deps.defaultLifetimeHours ?? 0,
+        ...(own !== undefined ? { lifetimeHours: own } : {}),
+      },
+    };
+  });
+
+  r.patch("/user-retention", async (ctx) => {
+    if (!deps.userRetention) return { status: 501, json: { error: "retention settings not configured" } };
+    // Anonymous callers share one id, so one can't set everyone's default.
+    if (ctx.user.anonymous) return { status: 401, json: { error: "sign in to set a retention policy" } };
+    const { lifetimeHours } = await ctx.body<{ lifetimeHours?: unknown }>();
+    if (lifetimeHours !== null && !isLifetimeHours(lifetimeHours))
+      return { status: 400, json: { error: "lifetimeHours must be null (default) or 0 (forever) to 87600" } };
+    await deps.userRetention.set(ctx.user.id, lifetimeHours);
+    return { json: { lifetimeHours } };
   });
 
   // --- Contrib settings-tab API -------------------------------------------------

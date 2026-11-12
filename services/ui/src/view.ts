@@ -34,6 +34,7 @@ export const SETTINGS_TABS = [
   { id: "hooks", label: "Hooks", order: 25 },
   { id: "claude", label: "Bring Your Own Claude", order: 30 },
   { id: "appearance", label: "Appearance", order: 35 },
+  { id: "conversations", label: "Conversations", order: 37 },
   { id: "admin", label: "Admin Area", order: 50 },
 ] as const;
 

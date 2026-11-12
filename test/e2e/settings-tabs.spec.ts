@@ -22,6 +22,7 @@ const TABS = [
   { id: "skills", label: "Skills" },
   { id: "claude", label: "Bring Your Own Claude" },
   { id: "appearance", label: "Appearance" },
+  { id: "conversations", label: "Conversations" },
   { id: "admin", label: "Admin Area" },
 ];
 

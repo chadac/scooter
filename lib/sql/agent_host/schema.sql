@@ -256,6 +256,14 @@ CREATE TABLE "user_ui_settings" (
   "updated_at" bigint NOT NULL
 );
 
+-- Each user's idle lifetime for unfiled conversations; no row uses the
+-- deployment default. 0 keeps them forever.
+CREATE TABLE "user_retention_settings" (
+  "owner"                  text NOT NULL PRIMARY KEY,
+  "default_lifetime_hours" integer NOT NULL CHECK ("default_lifetime_hours" BETWEEN 0 AND 87600),
+  "updated_at"             bigint NOT NULL
+);
+
 -- One account in one system, keyed by that system's stable id so a rename keeps
 -- what was granted to it. Created the first time a message names it; `handle`
 -- is refreshed from each one. `scooter_user` is set once the account is linked.

@@ -99,6 +99,15 @@ export const userUiSettings = pgTable("user_ui_settings", {
 	check("user_ui_settings_theme_mode_check", sql`theme_mode = ANY (ARRAY['light'::text, 'dark'::text, 'system'::text])`),
 ]);
 
+export const userRetentionSettings = pgTable("user_retention_settings", {
+	owner: text().primaryKey().notNull(),
+	defaultLifetimeHours: integer("default_lifetime_hours").notNull(),
+	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
+	updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+}, (table) => [
+	check("user_retention_settings_default_lifetime_hours_check", sql`(default_lifetime_hours >= 0) AND (default_lifetime_hours <= 87600)`),
+]);
+
 export const identities = pgTable("identities", {
 	id: text().primaryKey().notNull(),
 	provider: text().notNull(),

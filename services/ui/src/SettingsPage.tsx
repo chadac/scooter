@@ -39,6 +39,7 @@ import { viewStore, useSettingsTab, settingsTabList, resolveTab, isBuiltinTab, t
 import { contribSettingsTabs } from "./contribManifest.js";
 import { ContribTabBody } from "./contribTabs.js";
 import { AppearanceSection } from "./AppearanceSection.js";
+import { RetentionSection } from "./RetentionSection.js";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -1087,6 +1088,7 @@ const TAB_BODIES: Record<BuiltinTab, FC> = {
   hooks: HooksSection,
   claude: ClaudeAgentSection,
   appearance: AppearanceSection,
+  conversations: RetentionSection,
   admin: AdminAreaSection,
 };
 

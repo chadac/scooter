@@ -191,6 +191,18 @@ class UserHookSettings(Base):
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
 
 
+class UserRetentionSettings(Base):
+    __tablename__ = 'user_retention_settings'
+    __table_args__ = (
+        CheckConstraint('default_lifetime_hours >= 0 AND default_lifetime_hours <= 87600', name='user_retention_settings_default_lifetime_hours_check'),
+        PrimaryKeyConstraint('owner', name='user_retention_settings_pkey')
+    )
+
+    owner: Mapped[str] = mapped_column(Text, primary_key=True)
+    default_lifetime_hours: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
 class UserSkills(Base):
     __tablename__ = 'user_skills'
     __table_args__ = (

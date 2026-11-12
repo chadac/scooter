@@ -1634,6 +1634,12 @@ in
             Each user's UI theme and light/dark/system mode, set from the settings page or the
             header toggle and read back by the UI on load.'';
         };
+        user_retention_settings = {
+          writers = [ "agent-host" ];
+          note = ''
+            Each user's idle lifetime for their unfiled conversations, set from the settings
+            page and read by the retention sweep and /whoami.'';
+        };
         identities = {
           writers = [ "agent-host" ];
           note = ''

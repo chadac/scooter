@@ -1070,6 +1070,41 @@ export async function loadUserTheme(config: AgentHostConfig): Promise<{ configur
   }
 }
 
+/** The caller's retention default, and the deployment's it overrides. */
+export interface UserRetention {
+  configurable: boolean;
+  /** 0 keeps unfiled conversations forever. */
+  deploymentLifetimeHours: number;
+  /** Absent: the deployment's applies. */
+  lifetimeHours?: number;
+}
+
+export async function loadUserRetention(config: AgentHostConfig): Promise<UserRetention | null> {
+  try {
+    const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/user-retention`, { headers: authHeaders(config) });
+    return res.ok ? ((await res.json()) as UserRetention) : null;
+  } catch (e) {
+    console.warn("[client] loadUserRetention failed:", e);
+    return null;
+  }
+}
+
+/** Set the caller's default lifetime; null restores the deployment's. */
+export async function saveUserRetention(config: AgentHostConfig, lifetimeHours: number | null): Promise<string | null> {
+  try {
+    const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/user-retention`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", ...authHeaders(config) },
+      body: JSON.stringify({ lifetimeHours }),
+    });
+    if (res.ok) return null;
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    return body.error ?? `request failed (${res.status})`;
+  } catch (e) {
+    return (e as Error).message;
+  }
+}
+
 /** Save part of the caller's theme choice to their account. */
 export async function saveUserTheme(config: AgentHostConfig, choice: Partial<ThemeChoice>): Promise<void> {
   const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/user-theme`, {

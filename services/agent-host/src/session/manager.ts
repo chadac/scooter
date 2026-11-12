@@ -261,7 +261,7 @@ export interface ConversationStore {
   saveMeta?(meta: ConversationMeta): Promise<void>;
   /** The router-owned star and title as persisted; optional. */
   readRouterMeta?(id: SessionId): Promise<Partial<RouterMeta> | undefined>;
-  /** Folder lifetimes in hours, 0 = forever, for filed `ids`. */
+  /** Lifetimes in hours from folders, else the owner's default; 0 = forever. */
   readLifetimes?(ids: SessionId[]): Promise<Map<SessionId, number>>;
   /** Set the visibility of `rootId` and every descendant in one write; optional. */
   setVisibility?(rootId: SessionId, visibility: Visibility): Promise<void>;

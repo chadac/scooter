@@ -65,7 +65,7 @@ describe("settings path building", () => {
 
 describe("tab declaration", () => {
   it("declares the expected tabs in sidebar order", () => {
-    expect(SETTINGS_TABS.map((t) => t.id)).toEqual(["tasks", "skills", "hooks", "claude", "appearance", "admin"]);
+    expect(SETTINGS_TABS.map((t) => t.id)).toEqual(["tasks", "skills", "hooks", "claude", "appearance", "conversations", "admin"]);
   });
 
   it("gives every tab a human label", () => {
@@ -86,7 +86,7 @@ describe("tab list and resolution", () => {
       "echo-b": { ...ECHO, order: 15 },
       "echo-a": { ...ECHO, order: 15 },
     }).map((t) => t.id);
-    expect(ids).toEqual(["tasks", "echo-a", "echo-b", "skills", "hooks", "claude", "appearance", "admin", "echo"]);
+    expect(ids).toEqual(["tasks", "echo-a", "echo-b", "skills", "hooks", "claude", "appearance", "conversations", "admin", "echo"]);
   });
 
   it("never lets a contrib row shadow a built-in", () => {

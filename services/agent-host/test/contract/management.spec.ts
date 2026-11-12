@@ -16,6 +16,7 @@ import { UserSkillError, type UserSkillStore } from "../../src/session/userSkill
 import { createMemoryUserHookSettingsStore, type UserHookSettingsStore } from "../../src/hooks/userHookSettingsStore.js";
 import type { HookDef } from "../../src/hooks/types.js";
 import { createMemoryUserThemeStore, type UserThemeStore } from "../../src/theme/userThemeStore.js";
+import { createMemoryUserRetentionStore, type UserRetentionStore } from "../../src/retention/userRetentionStore.js";
 import { parseContribUserApi } from "../../src/api/contribApi.js";
 import { shortId } from "../../src/session/manager.js";
 import { createMemoryIdentityRegistry } from "../../src/session/identityRegistry.js";
@@ -2116,6 +2117,47 @@ describe("theme routes (settings page and header toggle)", () => {
     const api = mk();
     expect((await call(api, "GET", "/user-theme", undefined, alice)).json).toEqual({ configurable: false });
     expect((await call(api, "PATCH", "/user-theme", { mode: "dark" }, alice)).status).toBe(501);
+  });
+});
+
+describe("retention routes (settings page)", () => {
+  const alice = { "x-auth-user": "alice" };
+  const mk = (userRetention?: UserRetentionStore) =>
+    createManagementApi({
+      sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }),
+      defaultLifetimeHours: 720, userRetention,
+    });
+
+  it("saves, reads and clears each user's default", async () => {
+    const api = mk(createMemoryUserRetentionStore());
+    expect((await call(api, "GET", "/user-retention", undefined, alice)).json).toEqual({ configurable: true, deploymentLifetimeHours: 720 });
+    expect((await call(api, "PATCH", "/user-retention", { lifetimeHours: 72 }, alice)).json).toEqual({ lifetimeHours: 72 });
+    expect((await call(api, "GET", "/user-retention", undefined, alice)).json).toEqual({ configurable: true, deploymentLifetimeHours: 720, lifetimeHours: 72 });
+    expect((await call(api, "GET", "/whoami", undefined, alice)).json).toMatchObject({ retention: { defaultLifetimeHours: 72 } });
+    // Another user still gets the deployment's.
+    expect((await call(api, "GET", "/whoami", undefined, { "x-auth-user": "bob" })).json).toMatchObject({ retention: { defaultLifetimeHours: 720 } });
+    await call(api, "PATCH", "/user-retention", { lifetimeHours: null }, alice);
+    expect((await call(api, "GET", "/whoami", undefined, alice)).json).toMatchObject({ retention: { defaultLifetimeHours: 720 } });
+  });
+
+  it("keeps forever as 0, and rejects out-of-range values", async () => {
+    const api = mk(createMemoryUserRetentionStore());
+    expect((await call(api, "PATCH", "/user-retention", { lifetimeHours: 0 }, alice)).status).toBe(200);
+    for (const bad of [-1, 1.5, 87601, "24", undefined]) {
+      expect((await call(api, "PATCH", "/user-retention", { lifetimeHours: bad }, alice)).status).toBe(400);
+    }
+  });
+
+  it("refuses anonymous callers and deployments without a database", async () => {
+    expect((await call(mk(createMemoryUserRetentionStore()), "PATCH", "/user-retention", { lifetimeHours: 24 })).status).toBe(401);
+    expect((await call(mk(createMemoryUserRetentionStore()), "GET", "/user-retention")).json).toMatchObject({ configurable: false });
+    expect((await call(mk(), "GET", "/user-retention", undefined, alice)).json).toEqual({ configurable: false, deploymentLifetimeHours: 720 });
+    expect((await call(mk(), "PATCH", "/user-retention", { lifetimeHours: 24 }, alice)).status).toBe(501);
+  });
+
+  it("/whoami falls back to the deployment default when the read fails", async () => {
+    const broken: UserRetentionStore = { get: async () => { throw new Error("db down"); }, set: async () => {}, close: async () => {} };
+    expect((await call(mk(broken), "GET", "/whoami", undefined, alice)).json).toMatchObject({ retention: { defaultLifetimeHours: 720 } });
   });
 });
 

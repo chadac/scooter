@@ -55,6 +55,9 @@ user_conversation_metadata = { writers = ["conversation-router"], readers = ["br
 # Per-user opt-outs from deployment hooks marked `userCanDisable`, set in the settings
 # page and read when a conversation's bridge is built.
 user_hook_settings         = { writers = ["agent-host"], readers = [] }
+# Each user's idle lifetime for their unfiled conversations, set from the settings
+# page and read by the retention sweep and /whoami.
+user_retention_settings    = { writers = ["agent-host"], readers = [] }
 # Per-user skills authored in the settings page, injected into that user's conversations
 # next to the deployment-wide `agent-skills` ConfigMap. agent-host both serves the CRUD
 # and reads them at conversation start, so it is the only writer and there are no
