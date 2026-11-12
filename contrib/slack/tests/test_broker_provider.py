@@ -85,9 +85,36 @@ async def test_files_host_is_a_read_only_forge_host(monkeypatch):
     forge = next(t for t in provider.transports if isinstance(t, ForgeHosts))
     assert [h.host for h in forge.hosts] == ["files.slack.com"]
 
-    def req(method):
+    def req(method, host="files.slack.com"):
         return ForgeRequest(identity=_identity(), provider="slack", via="forge-proxy", method=method,
-                            host="files.slack.com", path="/files-pri/T1-F1/doc.pdf", query="", kind="api")
+                            host=host, path="/files-pri/T1-F1/doc.pdf", query="", kind="api")
 
     assert (await provider.forge_policy.check(req("GET"))).allowed
     assert not (await provider.forge_policy.check(req("POST"))).allowed
+    assert (await provider.forge_policy.check(req("POST", host="slack.com"))).allowed
+
+
+def test_the_proxy_posts_to_slack_api_despite_the_files_policy(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-123")
+    sent: list[httpx.Request] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        sent.append(req)
+        return httpx.Response(200, json={"ok": True, "ts": "1.0"})
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: real(*a, transport=httpx.MockTransport(handler), **kw))
+
+    async def sandbox() -> Identity:
+        return _identity()
+
+    provider = slack()
+    app = FastAPI()
+    proxy = next(t for t in provider.transports if isinstance(t, HttpProxy))
+    app.include_router(proxy.routes(provider, authed=sandbox), prefix="/slack")
+    r = TestClient(app).post("/slack/chat.postMessage", json={"channel": "C1", "text": "hi"})
+    assert r.status_code == 200, r.text
+    assert [str(s.url) for s in sent] == ["https://slack.com/api/chat.postMessage"]

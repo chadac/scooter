@@ -21,10 +21,11 @@ FILES_HOST = "files.slack.com"
 
 
 class ReadOnly:
-    """Allow downloads only; uploads go through files.slack.com too."""
+    """Allow only downloads from files.slack.com; slack.com/api is untouched."""
 
     async def check(self, request: ForgeRequest) -> Decision:
-        if request.is_mutation:
+        # The broker runs this on every slack.com/api call too.
+        if request.host == FILES_HOST and request.is_mutation:
             return Decision.deny(f"{FILES_HOST} is read-only through Scooter")
         return Decision.allow()
 
