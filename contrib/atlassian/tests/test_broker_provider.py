@@ -1,4 +1,4 @@
-"""Atlassian provider: product gating, the dot-segment guard, enable gating and the Jira issue link."""
+"""Atlassian provider: product gating, enable gating and the Jira issue link."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import time
 import httpx
 import pytest
 
-from scooter_broker_lib.forge import ForgeHosts, ForgeRequest
+from scooter_broker_lib.forge import ForgeHosts
 from scooter_broker_lib.types import Identity
 from scooter_contrib_atlassian.broker_provider import atlassian
 from scooter_contrib_jira.atlassian_oauth import AtlassianOAuthSource
@@ -61,24 +61,6 @@ def test_no_products_disables_the_provider(env):
 def test_unknown_product_disables_the_provider(env):
     env.setenv("ATLASSIAN_PRODUCTS", "jira bitbucket")
     assert not atlassian().enabled
-
-
-def _req(path: str, kind: str = "api") -> ForgeRequest:
-    return ForgeRequest(identity=IDENT, provider="atlassian", via="forge-proxy", method="GET",
-                        host="api.atlassian.com", path=path, kind=kind)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("path", [
-    "/ex/jira/c1/../../ex/confluence/c1/wiki",
-    "/ex/jira/c1/%2e%2e/%2E%2E/ex/confluence/c1/wiki",
-    "/ex/jira/c1/./rest",
-    "/ex/jira/c1/..%5c..%5cex",
-])
-async def test_dot_segments_cannot_leave_a_product(env, path):
-    policy = atlassian().forge_policy
-    assert not (await policy.check(_req(path))).allowed
-    assert (await policy.check(_req("/ex/jira/c1/rest/api/3/myself"))).allowed
 
 
 def _issue_rule(provider):

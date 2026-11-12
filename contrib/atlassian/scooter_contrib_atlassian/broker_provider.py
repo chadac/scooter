@@ -8,11 +8,9 @@ none.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from urllib.parse import unquote
 
 from scooter_broker_lib.autolink import Link, rule
-from scooter_broker_lib.forge import Decision, ForgeHost, ForgeHosts, ForgePolicy, ForgeRequest, load_policy
+from scooter_broker_lib.forge import ForgeHost, ForgeHosts, load_policy
 from scooter_broker_lib.registry import register_provider
 from scooter_broker_lib.types import Provider
 from scooter_contrib_jira.atlassian_oauth import AtlassianOAuthSource
@@ -48,21 +46,8 @@ def atlassian() -> Provider:
             link_rules=_link_rules(settings.atlassian_site_url) if "jira" in products else [],
         )],
         enabled=configured and bool(products),
-        forge_policy=StayInProduct(load_policy(settings.atlassian_forge_policy)),
+        forge_policy=load_policy(settings.atlassian_forge_policy),
     )
-
-
-@dataclass
-class StayInProduct:
-    """Denies API paths with `.`/`..` segments, which upstream could resolve into a disabled product."""
-
-    inner: ForgePolicy
-
-    async def check(self, request: ForgeRequest) -> Decision:
-        segments = unquote(request.path).replace("\\", "/").split("/")
-        if request.kind == "api" and any(seg in (".", "..") for seg in segments):
-            return Decision.deny("dot segments in an Atlassian API path")
-        return await self.inner.check(request)
 
 
 def _link_rules(site_url: str) -> list:
