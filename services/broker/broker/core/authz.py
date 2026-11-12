@@ -24,16 +24,6 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 
-def _is_duplicate_tuple_error(exc: Exception) -> bool:
-    """True if an OpenFGA write error is the idempotent "tuple already exists" case, matched on the message so the SDK need not be imported."""
-    text = f"{getattr(exc, 'body', '')} {exc}".lower()
-    return (
-        "write_failed_due_to_invalid_input" in text
-        or "already exists" in text
-        or "duplicate" in text
-    )
-
-
 class FgaAuthorizer:
     """OpenFGA-backed authorizer, importing the SDK lazily so it is only needed when FGA is enabled."""
 
@@ -71,23 +61,20 @@ class FgaAuthorizer:
             return False
 
     async def grant(self, *, user: str, relation: str, obj: str) -> None:
-        from openfga_sdk.client.models import ClientTuple, ClientWriteRequest
+        from openfga_sdk.client.models import (
+            ClientTuple,
+            ClientWriteRequest,
+            ClientWriteRequestOnDuplicateWrites,
+            ConflictOptions,
+        )
 
-        client = self._ensure_client()
-        try:
-            await client.write(
-                ClientWriteRequest(writes=[ClientTuple(user=user, relation=relation, object=obj)])
-            )
-        except Exception as exc:
-            # A duplicate tuple is a no-op; every other write failure propagates, since
-            # check() fails closed and a swallowed write would lock the approver out.
-            if _is_duplicate_tuple_error(exc):
-                logger.debug(
-                    "OpenFGA grant is a no-op; tuple exists",
-                    extra={"fga_object": obj, "relation": relation, "fga_user": user},
-                )
-                return
-            raise
+        # Ignore duplicates server-side; startup re-seeding rewrites existing tuples.
+        await self._ensure_client().write(
+            ClientWriteRequest(writes=[ClientTuple(user=user, relation=relation, object=obj)]),
+            options={"conflict": ConflictOptions(
+                on_duplicate_writes=ClientWriteRequestOnDuplicateWrites.IGNORE,
+            )},
+        )
 
 
 def authorizer_from_settings(settings) -> Authorizer:

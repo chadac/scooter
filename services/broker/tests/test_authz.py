@@ -64,31 +64,47 @@ from broker.core.authz import FgaAuthorizer  # noqa: E402
 
 
 class _FakeWriteClient:
-    """Stand-in for OpenFgaClient whose write() raises a chosen exception."""
+    """Stand-in for OpenFgaClient that records write() calls, optionally raising."""
 
-    def __init__(self, exc: Exception):
+    def __init__(self, exc: Exception | None = None):
         self._exc = exc
+        self.calls: list[tuple] = []
 
-    async def write(self, *_a, **_k):
-        raise self._exc
+    async def write(self, body, options=None):
+        self.calls.append((body, options))
+        if self._exc is not None:
+            raise self._exc
 
 
-def _fga_with_write_error(exc: Exception) -> FgaAuthorizer:
+def _fga_with_client(client: _FakeWriteClient) -> FgaAuthorizer:
     a = FgaAuthorizer(api_url="http://fga:8080", store_id="s", model_id="m")
-    a._client = _FakeWriteClient(exc)  # bypass _ensure_client
+    a._client = client  # bypass _ensure_client
     return a
+
+
+async def test_grant_writes_with_on_duplicate_ignore():
+    """Re-granting an existing tuple must not make OpenFGA log a 2017 write error."""
+    from openfga_sdk.client.models import ClientWriteRequestOnDuplicateWrites
+
+    client = _FakeWriteClient()
+    await _fga_with_client(client).grant(user="user:alice", relation="approver", obj="aws_account:dev")
+
+    (body, options), = client.calls
+    assert [(t.user, t.relation, t.object) for t in body.writes] == [
+        ("user:alice", "approver", "aws_account:dev")
+    ]
+    assert options["conflict"].on_duplicate_writes == ClientWriteRequestOnDuplicateWrites.IGNORE
 
 
 async def test_grant_reraises_real_write_failure():
     """A real write error must propagate, since check() fails closed and the approver would be silently locked out."""
-    a = _fga_with_write_error(RuntimeError("connection refused"))
+    a = _fga_with_client(_FakeWriteClient(RuntimeError("connection refused")))
     with pytest.raises(RuntimeError, match="connection refused"):
         await a.grant(user="user:alice", relation="approver", obj="aws_account:dev")
 
 
-async def test_grant_swallows_duplicate_tuple():
-    """A duplicate-tuple write is an idempotent no-op."""
-    a = _fga_with_write_error(
-        Exception("write_failed_due_to_invalid_input: tuple already exists")
-    )
-    await a.grant(user="user:alice", relation="approver", obj="aws_account:dev")
+async def test_grant_reraises_invalid_input():
+    """An invalid tuple must surface, not pass as an idempotent duplicate."""
+    a = _fga_with_client(_FakeWriteClient(Exception("write_failed_due_to_invalid_input: unknown relation")))
+    with pytest.raises(Exception, match="unknown relation"):
+        await a.grant(user="user:alice", relation="aproover", obj="aws_account:dev")
