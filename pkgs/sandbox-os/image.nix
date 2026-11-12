@@ -207,6 +207,10 @@ let
       WorkingDir = "/workspace";
     };
   };
+  # Local-only push scripts, so image JSON and layers match.
+  image' = image // lib.genAttrs
+    [ "copyTo" "copyToDockerDaemon" "copyToRegistry" "copyToPodman" ]
+    (attr: image.${attr}.overrideAttrs { allowSubstitutes = false; });
 in
 # Not only an image: the contrib-sandbox check reads nixos too.
-{ inherit toplevel nixos image; }
+{ inherit toplevel nixos; image = image'; }
