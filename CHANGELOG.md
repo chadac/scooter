@@ -4,6 +4,43 @@ Each release's section becomes its GitHub Release notes. Images keep their
 content tags and also gain `vX.Y.Z`; the flake is published to
 [FlakeHub](https://flakehub.com/flake/chadac-me/scooter).
 
+## v1.4.1
+
+### Features
+
+- **Kanban "For you".** The board header's For you narrows the lanes to what
+  waits on the user: approval gates agents asked for, agents waiting on an
+  answer, and linked PRs/MRs on cards short of the last stage. (#1314)
+- **Kanban fits phones better**: the board header (#1313) and the card panel's
+  tabs and nav (#1316) each fit on one row.
+- **Code blocks in the thread are syntax-highlighted**, colouring as they
+  stream. (#1329)
+- **Shell and tool cards start folded**, with the command named in the header,
+  and Ctrl-F still finds text inside them. (#1330)
+- **Web services run as the agent, with its environment**, so the web terminal,
+  Jupyter, marimo and VS Code reach the forge proxy, the SSH agent and cloud
+  credentials, and keep their state across pod rebuilds. (#1331)
+
+### Bug fixes
+
+- **Releases hold app pods until their migrations are applied**, so readers no
+  longer hit missing tables during a rollout. (#1326)
+- **Stateless Deployments have PodDisruptionBudgets and topology spread**, so a
+  node drain no longer evicts every agent-host replica at once. (#1320)
+- **Cold starts**: tool calls wait out a cold start on one shared pod wait
+  instead of failing after 90s (#1322), and a run isn't retried once its
+  sandbox's pod wait has failed (#1323).
+- **Sandbox exec retries a 5xx upgrade**, and logs a 404 (pod gone) at info.
+  (#1318)
+- **The broker stays healthy**: TokenReview runs off the event loop with a
+  timeout (#1327), and http-proxy upstream timeouts and transport errors return
+  504 and 502 instead of a bare 500 (#1319).
+- **Each Slack thread gets its own link**, not one per channel. (#1332)
+- **Quieter logs**: goose's `$/cancel_request` is dropped before the ACP SDK
+  (#1324), a requested goose stop logs at info (#1321), an unset GCP key logs at
+  info (#1317), and a link agent-host rejects is now logged (#1333).
+- **The warm-store controller drops the legacy pool-state PVC sweep.** (#1315)
+
 ## v1.4.0
 
 ### Features
