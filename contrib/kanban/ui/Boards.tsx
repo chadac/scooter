@@ -74,20 +74,19 @@ interface Skill {
   position: number;
 }
 
-/** A check a card must pass before its agent moves it on from `stage`. */
+/** A check a card must pass as its agent moves it out of `stage` (`leave`) or into it (`enter`). */
 interface Gate {
   id: string;
   /** The stage's id. */
   stage: string;
-  kind: "approval" | "command";
+  direction: "leave" | "enter";
+  kind: "approval" | "prompt";
   name: string;
   position: number;
-  command: string;
-  /** A directory under /workspace, e.g. "scooter". */
-  workdir: string;
-  /** Run on a clean checkout of the last commit. */
-  clean: boolean;
-  timeout_seconds: number;
+  /** prompt: what the agent must do, and what counts as passing. */
+  prompt: string;
+  /** prompt: the id of a board skill it follows, or "". */
+  skill: string;
 }
 
 interface BoardRow {
@@ -132,6 +131,9 @@ const MAX_SKILL_NAME_CHARS = 60;
 const MAX_SKILL_CHARS = 4000;
 const MAX_BOARD_GATES = 20;
 const MAX_GATE_NAME_CHARS = 60;
+const MAX_GATE_PROMPT_CHARS = 4000;
+/** What a gate of each kind is called until the user names it. */
+const GATE_NAMES: Record<Gate["kind"], string> = { approval: "Your approval", prompt: "" };
 // `tagging` while the Details tab's tag field is open.
 const DETAILS_TAGS = "details";
 // Cards a lane shows at first, and adds per scroll.
@@ -374,16 +376,23 @@ export function userTodos(
 
 /** A position strictly between two neighbours; either may be missing. */
 /**
- * The gates a move from stage `from` to `to` passes, as the broker counts them: every
- * gate on the stages it leaves behind, so a jump past a stage owes that stage's too. A
- * move back, or within a stage, passes none.
+ * The gates a move from stage `from` to `to` passes, as the broker counts them: the
+ * leaving gates of every stage it leaves behind and the entering gates of every stage it
+ * enters, so a jump past a stage owes that stage's too. A move back, or within a stage,
+ * passes none.
  */
-export function gatesOnTheWay<G extends { stage: string }>(stages: Array<{ id: string }>, gates: G[], from: string, to: string): G[] {
+export function gatesOnTheWay<G extends { stage: string; direction?: "leave" | "enter" }>(
+  stages: Array<{ id: string }>,
+  gates: G[],
+  from: string,
+  to: string,
+): G[] {
   const at = stages.findIndex((s) => s.id === from);
   const until = stages.findIndex((s) => s.id === to);
   if (at < 0 || until <= at) return [];
   const left = new Set(stages.slice(at, until).map((s) => s.id));
-  return gates.filter((g) => left.has(g.stage));
+  const entered = new Set(stages.slice(at + 1, until + 1).map((s) => s.id));
+  return gates.filter((g) => (g.direction === "enter" ? entered : left).has(g.stage));
 }
 
 function between(before?: number, after?: number): number {
@@ -429,12 +438,13 @@ const draftBody = ({ stages, tags, skills, gates }: Draft) => ({
   // A gate goes with its stage, and a new stage gets gates once saved.
   gates: gates
     .filter((g) => stages.some((s) => s.id === g.stage && !isNew(s.id)))
-    .map(({ id, stage, kind, name, command, workdir, clean, timeout_seconds }) => ({
+    .map(({ id, stage, direction, kind, name, prompt, skill }) => ({
       ...(isNew(id) ? {} : { id }),
       stage,
+      direction,
       kind,
       name,
-      ...(kind === "command" ? { command, workdir, clean, timeout_seconds } : {}),
+      ...(kind === "prompt" ? { prompt, skill } : {}),
     })),
 });
 
@@ -875,27 +885,28 @@ function Board({
     [cards, pending, lanes, stages, first, folder.name, conversations, stageOf],
   );
 
-  // The user's move is never gated, but a move past command gates (e.g. the tests) asks
-  // first whether the card's agent should make it instead, so its gate hook runs them.
+  // The user's move is never gated, but a move past prompt gates (e.g. the tests) asks
+  // first whether the card's agent should make it instead, so it carries them out.
   const [checking, setChecking] = useState<CheckAsk | null>(null);
   const requestMove = useCallback(
     (id: string, column: string, before?: string) => {
       const conv = conversations.find((c) => c.id === id);
       const from = conv ? stageOf(conv) : first;
       const owed = gatesOnTheWay(savedStages, savedGates, from, column);
-      const commands = owed.filter((g) => g.kind === "command");
-      if (commands.length === 0) return void move(id, column, before);
+      const prompts = owed.filter((g) => g.kind === "prompt");
+      if (prompts.length === 0) return void move(id, column, before);
       setChecking({
         id,
         column,
         before,
         title: conv?.title || "This card",
         stage: stages.find((s) => s.id === column)?.label ?? column,
-        commands,
+        prompts,
         approvals: owed.filter((g) => g.kind === "approval"),
+        skills: savedSkills,
       });
     },
-    [conversations, stageOf, first, savedStages, savedGates, stages, move],
+    [conversations, stageOf, first, savedStages, savedGates, savedSkills, stages, move],
   );
 
   const tagsOf = useCallback(
@@ -949,14 +960,17 @@ function Board({
     edit((d) => ({ ...d, skills: d.skills.map((k) => (k.id === id ? { ...k, ...patch } : k)) }));
   const changeGate = (id: string, patch: Partial<Gate>) =>
     edit((d) => ({ ...d, gates: d.gates.map((g) => (g.id === id ? { ...g, ...patch } : g)) }));
-  const addGate = (stage: string, kind: Gate["kind"]) =>
+  // A gate sits on a saved stage; a new stage gets its gates once the board is saved.
+  const gateStages = draft?.stages.filter((s) => !isNew(s.id)) ?? [];
+  const gateSkills = draft?.skills.filter((k) => !isNew(k.id)) ?? [];
+  const addGate = (stage: string) =>
     edit((d) => ({
       ...d,
       gates: [
         ...d.gates,
         {
-          id: newId(), stage, kind, name: kind === "approval" ? "Your approval" : "", position: 0,
-          command: "", workdir: "", clean: true, timeout_seconds: 600,
+          id: newId(), stage, direction: "leave", kind: "approval", name: GATE_NAMES.approval, position: 0,
+          prompt: "", skill: "",
         },
       ],
     }));
@@ -1293,115 +1307,106 @@ function Board({
           <div className="flex flex-wrap items-baseline gap-2">
             <h2 className="text-xs font-medium text-muted-foreground">Gates</h2>
             <span className="text-xs text-muted-foreground">
-              What a card must pass before its agent moves it on from a stage. Commands run in the card's sandbox on its
-              last commit; approvals ask you. Your own moves skip them.
+              What a card must pass as its agent moves it out of a stage, or into one. A prompt asks the agent to do
+              something and say how it went; an approval asks you. Your own moves skip them.
             </span>
           </div>
-          {draft.stages.map((st) => {
-            const mine = draft.gates.filter((g) => g.stage === st.id);
-            return (
-              <div key={st.id} data-testid="kanban-stage-gates" data-stage={st.label} className="space-y-1 rounded border p-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-xs font-medium">Leaving {st.label || "this stage"}</span>
-                  {isNew(st.id) ? (
-                    <span className="text-[11px] text-muted-foreground">Save the board to add gates to a new stage.</span>
-                  ) : (
-                    <>
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        data-testid="kanban-add-approval-gate"
-                        disabled={draft.gates.length >= MAX_BOARD_GATES}
-                        onClick={() => addGate(st.id, "approval")}
-                      >
-                        <Plus aria-hidden /> Approval
-                      </Button>
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        data-testid="kanban-add-command-gate"
-                        disabled={draft.gates.length >= MAX_BOARD_GATES}
-                        onClick={() => addGate(st.id, "command")}
-                      >
-                        <Plus aria-hidden /> Command
-                      </Button>
-                    </>
-                  )}
-                </div>
-                {mine.map((g) => (
-                  <div key={g.id} data-testid="kanban-gate-edit" data-gate-kind={g.kind} className="space-y-1 rounded bg-muted/40 p-1.5">
-                    <div className="flex items-center gap-2">
-                      <span className="shrink-0 text-[11px] text-muted-foreground">{g.kind === "approval" ? "Approval" : "Command"}</span>
-                      <input
-                        aria-label="Gate name"
-                        data-testid="kanban-gate-name"
-                        className={cn(inputClass, "min-w-0 flex-1 py-1 text-xs")}
-                        placeholder={g.kind === "approval" ? "Name, e.g. Design approved" : "Name, e.g. Unit tests"}
-                        maxLength={MAX_GATE_NAME_CHARS}
-                        value={g.name}
-                        onChange={(e) => changeGate(g.id, { name: e.currentTarget.value })}
-                      />
-                      <Button
-                        size="icon-xs"
-                        variant="ghost"
-                        aria-label={`Delete ${g.name || "this gate"}`}
-                        onClick={() => edit((d) => ({ ...d, gates: d.gates.filter((x) => x.id !== g.id) }))}
-                      >
-                        <Trash2 aria-hidden />
-                      </Button>
-                    </div>
-                    {g.kind === "command" && (
-                      <>
-                        <textarea
-                          aria-label={`Command for ${g.name || "the gate"}`}
-                          data-testid="kanban-gate-command"
-                          className={cn(inputClass, "min-h-12 w-full py-1 font-mono text-xs")}
-                          placeholder="nix develop -c just test"
-                          value={g.command}
-                          onChange={(e) => changeGate(g.id, { command: e.currentTarget.value })}
-                        />
-                        <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                          <label className="flex items-center gap-1">
-                            /workspace/
-                            <input
-                              aria-label="Directory"
-                              data-testid="kanban-gate-workdir"
-                              className={cn(inputClass, "w-32 py-0.5 text-xs")}
-                              placeholder="repo"
-                              value={g.workdir}
-                              onChange={(e) => changeGate(g.id, { workdir: e.currentTarget.value })}
-                            />
-                          </label>
-                          <label className="flex items-center gap-1">
-                            <input
-                              type="checkbox"
-                              data-testid="kanban-gate-clean"
-                              checked={g.clean}
-                              onChange={(e) => changeGate(g.id, { clean: e.currentTarget.checked })}
-                            />
-                            Clean checkout of the last commit
-                          </label>
-                          <label className="flex items-center gap-1">
-                            Timeout
-                            <input
-                              type="number"
-                              aria-label="Timeout in seconds"
-                              className={cn(inputClass, "w-20 py-0.5 text-xs")}
-                              min={10}
-                              max={3600}
-                              value={g.timeout_seconds}
-                              onChange={(e) => changeGate(g.id, { timeout_seconds: Math.round(Number(e.currentTarget.value) || 0) })}
-                            />
-                            s
-                          </label>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                ))}
+          {draft.gates.map((g) => (
+            <div key={g.id} data-testid="kanban-gate-edit" data-gate-kind={g.kind} className="space-y-1 rounded bg-muted/40 p-1.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  aria-label={`Direction of ${g.name || "the gate"}`}
+                  data-testid="kanban-gate-direction"
+                  className={cn(inputClass, "w-auto shrink-0 py-1 text-xs")}
+                  value={g.direction}
+                  onChange={(e) => changeGate(g.id, { direction: e.currentTarget.value as Gate["direction"] })}
+                >
+                  <option value="leave">Leaving</option>
+                  <option value="enter">Entering</option>
+                </select>
+                <select
+                  aria-label={`Stage of ${g.name || "the gate"}`}
+                  data-testid="kanban-gate-stage"
+                  className={cn(inputClass, "w-auto shrink-0 py-1 text-xs")}
+                  value={g.stage}
+                  onChange={(e) => changeGate(g.id, { stage: e.currentTarget.value })}
+                >
+                  {gateStages.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.label}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  aria-label={`Kind of ${g.name || "the gate"}`}
+                  data-testid="kanban-gate-kind"
+                  className={cn(inputClass, "w-auto shrink-0 py-1 text-xs")}
+                  value={g.kind === "prompt" && g.skill ? `skill:${g.skill}` : g.kind}
+                  onChange={(e) => {
+                    const picked = e.currentTarget.value;
+                    const kind: Gate["kind"] = picked === "approval" ? "approval" : "prompt";
+                    const skill = picked.startsWith("skill:") ? picked.slice("skill:".length) : "";
+                    // A name the user hasn't touched follows the kind.
+                    changeGate(g.id, { kind, skill, name: g.name === GATE_NAMES[g.kind] ? GATE_NAMES[kind] : g.name });
+                  }}
+                >
+                  <option value="approval">asks your approval</option>
+                  <option value="prompt">asks the agent</option>
+                  {gateSkills.map((k) => (
+                    <option key={k.id} value={`skill:${k.id}`}>
+                      asks the agent to follow {k.name}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  aria-label="Gate name"
+                  data-testid="kanban-gate-name"
+                  className={cn(inputClass, "min-w-0 flex-1 py-1 text-xs")}
+                  placeholder={g.kind === "approval" ? "Name, e.g. Design approved" : "Name, e.g. Unit tests"}
+                  maxLength={MAX_GATE_NAME_CHARS}
+                  value={g.name}
+                  onChange={(e) => changeGate(g.id, { name: e.currentTarget.value })}
+                />
+                <Button
+                  size="icon-xs"
+                  variant="ghost"
+                  aria-label={`Delete ${g.name || "this gate"}`}
+                  onClick={() => edit((d) => ({ ...d, gates: d.gates.filter((x) => x.id !== g.id) }))}
+                >
+                  <Trash2 aria-hidden />
+                </Button>
               </div>
-            );
-          })}
+              {g.kind === "prompt" && (
+                <textarea
+                  aria-label={`Prompt for ${g.name || "the gate"}`}
+                  data-testid="kanban-gate-prompt"
+                  className={cn(inputClass, "min-h-12 w-full py-1 text-xs")}
+                  placeholder={
+                    g.skill
+                      ? "Anything more, e.g. what counts as passing"
+                      : "What the agent must do, and what counts as passing, e.g. Run the tests in /workspace/scooter on a clean checkout of your last commit; pass if they all do."
+                  }
+                  maxLength={MAX_GATE_PROMPT_CHARS}
+                  value={g.prompt}
+                  onChange={(e) => changeGate(g.id, { prompt: e.currentTarget.value })}
+                />
+              )}
+            </div>
+          ))}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="xs"
+              variant="ghost"
+              data-testid="kanban-add-gate"
+              disabled={!gateStages.length || draft.gates.length >= MAX_BOARD_GATES}
+              onClick={() => addGate(gateStages[0].id)}
+            >
+              <Plus aria-hidden /> Add gate
+            </Button>
+            {draft.stages.some((s) => isNew(s.id)) && (
+              <span className="text-[11px] text-muted-foreground">Save the board to put gates on a new stage.</span>
+            )}
+          </div>
         </section>
       )}
       <div className="flex min-h-0 flex-1">
@@ -1874,7 +1879,7 @@ function writeFlag(key: string, on: boolean) {
   }
 }
 
-/** A move the user asked for that passes command gates, waiting on whether to run them. */
+/** A move the user asked for that passes prompt gates, waiting on whether the agent should make it. */
 interface CheckAsk {
   id: string;
   column: string;
@@ -1882,8 +1887,10 @@ interface CheckAsk {
   title: string;
   /** The stage it would move to, by name. */
   stage: string;
-  commands: Gate[];
+  prompts: Gate[];
   approvals: Gate[];
+  /** The board's skills, to name the one a prompt follows. */
+  skills: Skill[];
 }
 
 type CheckPhase =
@@ -1894,9 +1901,9 @@ type CheckPhase =
   | { at: "failed"; text: string };
 
 /**
- * Asks, before the user's move past command gates, whether the card's agent should run them.
- * Ask the agent messages it to make the move itself: its kanban_set_status runs kanban's gate
- * hook in its sandbox, and the card moves once they pass. Move anyway moves it now, ungated.
+ * Asks, before the user's move past prompt gates, whether the card's agent should carry them out.
+ * Ask the agent messages it to make the move itself: its kanban_set_status owes the gates, it
+ * answers each, and the card moves once they pass. Move anyway moves it now, ungated.
  */
 function RunChecks({ ask, move, cancel }: { ask: CheckAsk; move(): void; cancel(): void }) {
   const title = useId();
@@ -1935,21 +1942,25 @@ function RunChecks({ ask, move, cancel }: { ask: CheckAsk; move(): void; cancel(
           Run checks before moving to {ask.stage}?
         </h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          To move on, <span className="font-medium text-foreground">{ask.title}</span> must pass {names(ask.commands)}. The
-          card's agent can run {ask.commands.length === 1 ? "it" : "them"} in its sandbox and move the card once{" "}
-          {ask.commands.length === 1 ? "it passes" : "they pass"}.
+          To move on, <span className="font-medium text-foreground">{ask.title}</span> must pass {names(ask.prompts)}. The
+          card's agent can carry {ask.prompts.length === 1 ? "it" : "them"} out and move the card once{" "}
+          {ask.prompts.length === 1 ? "it passes" : "they pass"}.
           {ask.approvals.length > 0 && <> Moving it anyway counts as the approval for {names(ask.approvals)}.</>}
         </p>
         <ul className="mt-2 space-y-1 text-xs" data-testid="kanban-run-checks-gates">
-          {ask.commands.map((g) => (
-            <li key={g.id} className="truncate">
-              <span className="font-medium">{g.name}</span>{" "}
-              <code className="text-muted-foreground">
-                {g.command}
-                {g.workdir ? ` in ${g.workdir}` : ""}
-              </code>
-            </li>
-          ))}
+          {ask.prompts.map((g) => {
+            const skill = ask.skills.find((k) => k.id === g.skill)?.name;
+            return (
+              <li key={g.id} className="truncate">
+                <span className="font-medium">{g.name}</span>{" "}
+                <span className="text-muted-foreground">
+                  {skill ? `follows ${skill}` : ""}
+                  {skill && g.prompt ? ": " : ""}
+                  {g.prompt}
+                </span>
+              </li>
+            );
+          })}
         </ul>
         {phase.at === "asked" && (
           <p className="mt-3 text-sm" role="status" data-testid="kanban-run-checks-asked">

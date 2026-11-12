@@ -25,16 +25,20 @@ telling the truth.
   stage but `kanban_set_status` won't move it to a later one. Do what you can there,
   say what you're waiting on, and end your turn: a message comes when the blockers
   reach the last stage. Don't poll for it.
-- **A stage can have gates** the card must pass before you move it on from that stage;
-  the hook and `kanban_get_status` list them. A *command* gate (e.g. the tests) runs in
-  your sandbox on a clean checkout of your last commit when you call
-  `kanban_set_status`, so commit first; uncommitted edits don't count. If it fails, the
-  call is refused with the output: fix it, commit, and call again. An *approval* gate asks
-  the user once every command passes: tell them what to look at (the PR, a preview, the
-  doc), then end your turn. A message comes when they approve, so move the card on then,
-  or when they reject it, with their comment, so address it and ask again. Don't poll,
-  and don't try to get around a gate. Only the user can change gates, under Edit board;
-  if one looks wrong, or the user asks for gates you can't set, tell them what to put.
+- **A stage can have gates** the card must pass as you move it on: for *leaving* that
+  stage, or for *entering* it. A jump over stages owes the gates of every stage it
+  leaves and enters; moving back owes none. The hook and `kanban_get_status` list what
+  the next move owes. A *prompt* gate asks you to do something (run the tests, review
+  the diff, follow one of the board's skills) and say how it went: carry it out, then
+  `kanban_answer_gate(gate, passed, note)` with a one-line note the user sees ("97 tests
+  pass on abc123"). Answer what you found, not what you'd like; a failed answer is fine.
+  `kanban_set_status` lists what the move still owes and refuses it until every prompt
+  has passed. An *approval* gate then asks the user: tell them what to look at (the PR,
+  a preview, the doc), then end your turn. A message comes when they approve, so move
+  the card on then, or when they reject it, with their comment, so address it and ask
+  again. Don't poll, and don't try to get around a gate. Only the user can change gates,
+  under Edit board; if one looks wrong, or the user asks for gates you can't set, tell
+  them what to put.
 - **When planning work as several cards**, start each one (e.g. with `handoff_spawn`),
   put it on the board with `kanban_add_card(conversation, blocked_by)`, and order the
   cards with `kanban_set_blockers`. `kanban_list_cards` shows the cards and their ids.

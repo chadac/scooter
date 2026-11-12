@@ -42,7 +42,7 @@ describe("skillSlug", () => {
 
 describe("gatesOnTheWay", () => {
   const stages = [{ id: "design" }, { id: "build" }, { id: "review" }, { id: "done" }];
-  const gate = (id: string, stage: string) => ({ id, stage });
+  const gate = (id: string, stage: string, direction: "leave" | "enter" = "leave") => ({ id, stage, direction });
   const gates = [gate("plan-ok", "design"), gate("tests", "build"), gate("lint", "build"), gate("signoff", "review")];
   const ids = (gs: Array<{ id: string }>) => gs.map((g) => g.id);
 
@@ -50,8 +50,15 @@ describe("gatesOnTheWay", () => {
     expect(ids(gatesOnTheWay(stages, gates, "build", "review"))).toEqual(["tests", "lint"]);
   });
 
-  it("owes every skipped stage's gates on a jump, but not the target's", () => {
+  it("owes every skipped stage's gates on a jump, but not the target's leaving gates", () => {
     expect(ids(gatesOnTheWay(stages, gates, "design", "review"))).toEqual(["plan-ok", "tests", "lint"]);
+  });
+
+  it("owes the entering gates of the target and of every stage jumped over, not the one left", () => {
+    const entering = [gate("ready", "build", "enter"), gate("pr-up", "review", "enter"), gate("was-in", "design", "enter")];
+    expect(ids(gatesOnTheWay(stages, entering, "design", "build"))).toEqual(["ready"]);
+    expect(ids(gatesOnTheWay(stages, entering, "design", "review"))).toEqual(["ready", "pr-up"]);
+    expect(ids(gatesOnTheWay(stages, [...gates, ...entering], "build", "review"))).toEqual(["tests", "lint", "pr-up"]);
   });
 
   it("owes nothing moving back, within a stage, or from a stage it doesn't know", () => {

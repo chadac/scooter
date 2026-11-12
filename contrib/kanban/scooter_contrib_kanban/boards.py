@@ -12,14 +12,15 @@ import json
 import logging
 import re
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
 
 import httpx
 
 from .filed import Filings
 from .folders import Conversation, FolderError, Folders
 from .messages import Send
-from .store import GATE_KINDS, PRIORITIES, Card, Details, Gate, GateResult, KanbanStore, Place, Skill, Stage, Tag
+from .store import (
+    GATE_DIRECTIONS, GATE_KINDS, PRIORITIES, Card, Details, Gate, GateResult, KanbanStore, Place, Skill, Stage, Tag,
+)
 
 MAX_TAG_CHARS = 24
 MAX_BOARD_TAGS = 20
@@ -33,12 +34,9 @@ SKILL_PREFIX = "board-"
 # A board's gates, and what one may hold.
 MAX_BOARD_GATES = 20
 MAX_GATE_NAME_CHARS = 60
-MAX_GATE_COMMAND_CHARS = 4_000
-MIN_GATE_TIMEOUT, MAX_GATE_TIMEOUT = 10, 3_600
-# How long a command gate's pass, recorded by the gate hook, lets the card move on.
-COMMAND_PASS_TTL = timedelta(minutes=15)
-# How much of a failed command's output the agent is shown.
-FAILURE_TAIL_CHARS = 2_000
+MAX_GATE_PROMPT_CHARS = 4_000
+# How much of the agent's note on a gate its next refusal repeats.
+NOTE_CLIP_CHARS = 400
 # Palette keys; the board maps each to its own classes.
 TAG_COLORS = ("gray", "red", "orange", "yellow", "green", "teal", "blue", "purple")
 # Router lookups a board load runs at once.
@@ -107,11 +105,22 @@ def skill_file(skill: Skill) -> dict:
     return {"name": name, "content": content}
 
 
-def gate_line(g: Gate, r: GateResult | None) -> str:
-    """One gate as the agent reads it, e.g. `Unit tests` (command: just test) — passed on abc123."""
-    what = f"command `{g.command}`" + (f" in {g.workdir}" if g.workdir else "") if g.kind == "command" else "the user's approval"
-    state = f" — {r.state}" + (f" on {r.commit[:12]}" if r.commit else "") if r else ""
-    return f'"{g.name}" ({what}){state}'
+def gate_ask(g: Gate, skill: str = "") -> str:
+    """What a prompt gate asks of the agent, e.g. `asks you to follow the skill board-release: tag, then deploy`."""
+    follow = f" to follow the skill `{skill}`" if skill else ""
+    return f"asks you{follow}" + (f": {g.prompt}" if g.prompt else "")
+
+
+def gate_line(g: Gate, r: GateResult | None, stage: str = "", skill: str = "") -> str:
+    """One gate as the agent reads it, e.g. `"Unit tests" (leaving Design; asks you: run the tests) — passed`.
+
+    `skill` is the agent's name for the board skill a prompt gate follows, if it does.
+    """
+    what = gate_ask(g, skill) if g.kind == "prompt" else "the user's approval"
+    when = f"{'entering' if g.direction == 'enter' else 'leaving'} {stage}; " if stage else ""
+    said = f' ("{r.detail[:NOTE_CLIP_CHARS]}")' if r and r.detail else ""
+    state = f" — {r.state}{said}" if r else ""
+    return f'"{g.name}" ({when}{what}){state}'
 
 
 def parse_priority(name: str) -> int:
@@ -257,8 +266,10 @@ class Boards:
         if skills is not None:
             skills = self._check_skills(skills, {k.id for k in await self.store.skills(board)})
         if gates is not None:
+            kept = skills if skills is not None else await self.store.skills(board)
             gates = self._check_gates(
-                gates, {s.folder for s in stages if s.folder}, {g.id for g in await self.store.gates(board)}
+                gates, {s.folder for s in stages if s.folder}, {g.id for g in await self.store.gates(board)},
+                {k.id for k in kept if k.id},
             )
         at = positions([have[s.folder].position if s.folder else None for s in stages])
 
@@ -373,11 +384,11 @@ class Boards:
         return out
 
     @staticmethod
-    def _check_gates(gates: list[Gate], stages: set[str], have: set[str]) -> list[Gate]:
+    def _check_gates(gates: list[Gate], stages: set[str], have: set[str], skills: set[str]) -> list[Gate]:
         """The gates a save asks for, cleaned up, or the BoardError refusing them.
 
-        A gate sits on one of the board's saved stages; a stage new in this save gets its
-        gates once it is saved.
+        A gate sits on one of the board's saved stages, and follows one of its saved skills
+        if any; a stage or skill new in this save gets gates once it is saved.
         """
         if len(gates) > MAX_BOARD_GATES:
             raise BoardError(409, f"a board has at most {MAX_BOARD_GATES} gates")
@@ -390,26 +401,24 @@ class Boards:
                 raise BoardError(400, "a gate must be on one of this board's saved stages")
             if g.kind not in GATE_KINDS:
                 raise BoardError(400, f"a gate's kind is one of {', '.join(GATE_KINDS)}")
+            if g.direction not in GATE_DIRECTIONS:
+                raise BoardError(400, f"a gate's direction is one of {', '.join(GATE_DIRECTIONS)}")
             name = g.name.strip()
             if not name:
                 raise BoardError(400, "a gate needs a name")
             if len(name) > MAX_GATE_NAME_CHARS:
                 raise BoardError(400, f"a gate name is at most {MAX_GATE_NAME_CHARS} characters")
-            command, workdir = g.command.strip(), g.workdir.strip().strip("/")
-            if g.kind == "command":
-                if not command:
-                    raise BoardError(400, f"the gate `{name}` needs a command")
-                if len(command) > MAX_GATE_COMMAND_CHARS:
-                    raise BoardError(400, f"a gate's command is at most {MAX_GATE_COMMAND_CHARS} characters")
-                if workdir.startswith("~") or ".." in workdir.split("/") or not re.fullmatch(r"[A-Za-z0-9._/-]*", workdir):
-                    raise BoardError(400, f"the gate `{name}` needs a directory under /workspace, like `scooter`")
-                if not MIN_GATE_TIMEOUT <= g.timeout_seconds <= MAX_GATE_TIMEOUT:
-                    raise BoardError(
-                        400, f"a gate's timeout is {MIN_GATE_TIMEOUT} to {MAX_GATE_TIMEOUT} seconds"
-                    )
+            prompt = g.prompt.strip()
+            if g.kind == "prompt":
+                if not prompt and not g.skill:
+                    raise BoardError(400, f"the gate `{name}` needs a prompt, or a skill of this board to follow")
+                if len(prompt) > MAX_GATE_PROMPT_CHARS:
+                    raise BoardError(400, f"a gate's prompt is at most {MAX_GATE_PROMPT_CHARS} characters")
+                if g.skill and g.skill not in skills:
+                    raise BoardError(400, f"the gate `{name}` follows a skill this board doesn't have")
+                out.append(replace(g, name=name, prompt=prompt))
             else:
-                command, workdir = "", ""
-            out.append(replace(g, name=name, command=command, workdir=workdir))
+                out.append(replace(g, name=name, prompt="", skill=""))
         return out
 
     async def create(self, owner: str, name: str) -> str:
@@ -483,8 +492,7 @@ class Boards:
                     f"or earlier until they reach \"{last.name}\". Do what you can here, then end your turn: "
                     "a message comes when they are done",
                 )
-        crossed = self._crossed(where.stages, where.stage, to)
-        gates = [g for g in await self.store.gates(board) if g.stage in crossed]
+        gates = self._owed(where.stages, where.stage, to, await self.store.gates(board))
         if gates:
             await self._pass_gates(key, where, gates)
         if to.folder != where.folder:
@@ -525,8 +533,8 @@ class Boards:
     async def user_request_move(self, key: str, owner: str, column: str) -> Stage:
         """The user asks the card's agent to move it to `column`, so its gates run on the way.
 
-        The agent's kanban_set_status runs the gate hook in its sandbox, as for its own moves;
-        the card moves only if they pass. Nothing changes here until it does.
+        The agent's kanban_set_status owes the gates as for its own moves; the card moves only
+        once it has passed them. Nothing changes here until it does.
         """
         if self.send is None:
             raise BoardError(503, "kanban can't message this conversation's agent")
@@ -541,8 +549,9 @@ class Boards:
             await self.send(
                 conv.id,
                 f'The user wants this card moved to "{to.name}" on the kanban board, once its gates pass. '
-                f'Call kanban_set_status with column "{to.name}" now: the gate hook runs the checks. If one '
-                "fails, fix what you can, commit, and try again, or tell the user what's in the way.",
+                f'Call kanban_set_status with column "{to.name}" now: it lists what the move owes. Carry each '
+                "prompt out, answer it with kanban_answer_gate, and call kanban_set_status again; if something "
+                "is in the way, tell the user what.",
             )
         except httpx.HTTPError as e:
             logger.warning("kanban move request failed", extra={"conversation_id": conv.id, "error": str(e)})
@@ -550,48 +559,47 @@ class Boards:
         return to
 
     @staticmethod
-    def _crossed(stages: list[Stage], at: Stage, to: Stage) -> set[str]:
-        """The stages a move from `at` to `to` leaves, whose gates it must pass; none going back."""
+    def _owed(stages: list[Stage], at: Stage, to: Stage, gates: list[Gate]) -> list[Gate]:
+        """The gates a move from `at` to `to` must pass: for leaving each stage it leaves and
+        entering each it enters, the stages it jumps over included; none going back."""
         i, j = stages.index(at), stages.index(to)
-        return {s.folder for s in stages[i:j]}
+        left = {s.folder for s in stages[i:j]}
+        entered = {s.folder for s in stages[i + 1 : j + 1]}
+        return [g for g in gates if g.stage in (entered if g.direction == "enter" else left)]
+
+    @staticmethod
+    def _in_order(stages: list[Stage], gates: list[Gate]) -> list[Gate]:
+        """Gates in the order a move meets them: leaving a stage, then entering the next."""
+        order = {s.folder: i for i, s in enumerate(stages)}
+        return sorted(gates, key=lambda g: (order.get(g.stage, 0) * 2 - (g.direction == "enter"), g.position))
 
     async def _pass_gates(self, key: str, where: Located, gates: list[Gate]) -> None:
         """Raise the BoardError holding the card back, unless it has passed every gate.
 
-        Commands go first: their passes are recorded by the gate hook, which runs them in the
-        sandbox just before the agent's kanban_set_status. Approvals come last, so the user is
-        asked once the rest passes; asking records a pending request the board shows.
+        Prompts go first: the agent carries each out and answers it with kanban_answer_gate,
+        then moves. Approvals come last, so the user is asked once the rest passes; asking
+        records a pending request the board shows.
         """
         results = await self.store.gate_results(key)
-        now = datetime.now(timezone.utc)
-        order = {s.folder: i for i, s in enumerate(where.stages)}
-        gates = sorted(gates, key=lambda g: (g.kind != "command", order.get(g.stage, 0), g.position))
-        problems: list[str] = []
-        for g in (g for g in gates if g.kind == "command"):
+        skills = {k.id: skill_slug(k.name) for k in await self.store.skills(where.place.board)}
+        names = {s.folder: s.name for s in where.stages}
+        gates = sorted(self._in_order(where.stages, gates), key=lambda g: g.kind != "prompt")
+        todo: list[str] = []
+        for g in (g for g in gates if g.kind == "prompt"):
             r = results.get(g.id)
-            fresh = False
-            if r is not None and r.updated_by == "hook":
-                try:
-                    fresh = now - datetime.fromisoformat(r.updated_at) <= COMMAND_PASS_TTL
-                except ValueError:
-                    fresh = False
-            if r is not None and fresh and r.state == "passed":
+            if r is not None and r.state == "passed":
                 continue
-            if r is not None and fresh and r.state == "failed":
-                tail = r.detail[-FAILURE_TAIL_CHARS:].strip()
-                on = f" on {r.commit[:12]}" if r.commit else ""
-                problems.append(f'the gate "{g.name}" failed{on}:\n{tail}' if tail else f'the gate "{g.name}" failed{on}')
-            else:
-                problems.append(
-                    f'the gate "{g.name}" has no passing run from the last {int(COMMAND_PASS_TTL.total_seconds() // 60)} '
-                    "minutes. The kanban gate hook runs it in your sandbox when you call kanban_set_status; if it "
-                    "didn't run (e.g. the sandbox wasn't ready), call again, and if that keeps happening, tell the user"
-                )
-        if problems:
+            line = gate_line(g, None, names.get(g.stage, ""), skills.get(g.skill, ""))
+            if r is not None and r.state == "failed":
+                said = f' ("{r.detail[:NOTE_CLIP_CHARS]}")' if r.detail else ""
+                line += f" — you answered that it failed{said}; address that, then answer it again"
+            todo.append(line)
+        if todo:
             raise BoardError(
                 409,
-                f"this card can't leave \"{where.stage.name}\" yet: " + "\n\n".join(problems)
-                + "\n\nFix what failed, commit, and call kanban_set_status again",
+                f"this card can't move on from \"{where.stage.name}\" until it passes:\n- " + "\n- ".join(todo)
+                + "\n\nCarry each out, answer it with kanban_answer_gate(gate, passed, note), and call "
+                "kanban_set_status again",
             )
         waiting: list[Gate] = []
         for g in (g for g in gates if g.kind == "approval"):
@@ -611,47 +619,38 @@ class Boards:
                 "or reject it",
             )
 
-    async def gate_view(self, key: str, board: str, stage: Stage) -> list[tuple[Gate, GateResult | None]]:
-        """The gates on the card's stage, each with where the card stands on it."""
-        gates = [g for g in await self.store.gates(board) if g.stage == stage.folder]
+    async def gate_view(
+        self, key: str, board: str, stages: list[Stage], stage: Stage
+    ) -> list[tuple[Gate, GateResult | None]]:
+        """The gates the card's move to the next stage owes, each with where the card stands on it."""
+        i = stages.index(stage)
+        if i + 1 >= len(stages):
+            return []
+        gates = self._in_order(stages, self._owed(stages, stage, stages[i + 1], await self.store.gates(board)))
         results = await self.store.gate_results(key) if gates else {}
         return [(g, results.get(g.id)) for g in gates]
 
-    async def gates_to_run(self, key: str, stage: str) -> tuple[Located, list[Gate]]:
-        """The command gates the agent's move to `stage` must pass, for the gate hook to run.
+    async def answer(self, key: str, gate: str, *, passed: bool, note: str = "") -> tuple[Located, Gate, GateResult]:
+        """The agent answers one of its board's prompt gates, by name or id, with a note the user sees.
 
-        None when the move goes nowhere new or back, or the card's blockers hold it anyway.
+        Any prompt gate of the board may be answered, so a move can be prepared ahead; the
+        pass is used up by the move, as any gate's is.
         """
         where = await self.locate(key)
-        want = stage.strip().casefold()
-        to = next((s for s in where.stages if want in (s.name.casefold(), s.folder.casefold())), None)
-        if to is None:
-            return where, []
-        crossed = self._crossed(where.stages, where.stage, to)
-        if not crossed:
-            return where, []
-        owner, board = where.conversation.owner, where.place.board
-        if any(not b.done for b in await self.blockers(key, owner, board)):
-            return where, []
-        order = {s.folder: i for i, s in enumerate(where.stages)}
-        gates = [g for g in await self.store.gates(board) if g.kind == "command" and g.stage in crossed]
-        return where, sorted(gates, key=lambda g: (order.get(g.stage, 0), g.position))
-
-    async def record_runs(self, key: str, runs: list[dict]) -> list[GateResult]:
-        """The gate hook records its runs: each {gate, passed, output, commit}, for a command gate on the card's board."""
-        where = await self.locate(key)
-        gates = {g.id: g for g in await self.store.gates(where.place.board) if g.kind == "command"}
-        out: list[GateResult] = []
-        for run in runs:
-            if run["gate"] not in gates:
-                raise BoardError(404, f"`{run['gate']}` is not a command gate on this card's board")
-        for run in runs:
-            out.append(await self.store.put_result(
-                key, run["gate"], state="passed" if run["passed"] else "failed", by="hook",
-                detail=run.get("output", ""), commit=run.get("commit", ""),
-            ))
+        want = gate.strip().casefold()
+        prompts = [g for g in await self.store.gates(where.place.board) if g.kind == "prompt"]
+        found = [g for g in prompts if want in (g.id.casefold(), g.name.casefold())]
+        if not found:
+            names = ", ".join(f'"{g.name}"' for g in prompts) or "there are none"
+            raise BoardError(404, f"`{gate}` is not a prompt gate on this card's board ({names})")
+        if len(found) > 1:
+            raise BoardError(409, f'several gates are called "{found[0].name}"; answer by id: ' + ", ".join(g.id for g in found))
+        g = found[0]
+        result = await self.store.put_result(
+            key, g.id, state="passed" if passed else "failed", by="agent", detail=note.strip()
+        )
         await self.changed(where.conversation.owner, where.conversation.id)
-        return out
+        return where, g, result
 
     async def decide(self, owner: str, key: str, gate_id: str, *, approve: bool, comment: str = "") -> GateResult:
         """The user approves or rejects one of a card's approval gates, and its agent is told."""
@@ -687,14 +686,14 @@ class Boards:
         await self.changed(owner, conv.id)
         return result
 
-    async def stage_of_card(self, key: str, owner: str) -> tuple[str, Stage] | None:
-        """The board and stage `owner` filed the card on; None off every board."""
+    async def stage_of_card(self, key: str, owner: str) -> tuple[str, list[Stage], Stage] | None:
+        """The board, its stages and the stage `owner` filed the card on; None off every board."""
         on = await self._board_of(key, owner)
         if on is None:
             return None
         conv, board, placements = on
         found = await self.at(placements.get(conv.id) or "")
-        return (board, found[2]) if found else None
+        return (board, found[1], found[2]) if found else None
 
     async def _conversation(self, ref: str) -> Conversation | None:
         try:

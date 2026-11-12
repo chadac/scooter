@@ -36,13 +36,12 @@ interface Skill {
 interface Gate {
   id: string;
   stage: string;
-  kind: "approval" | "command";
+  direction: "leave" | "enter";
+  kind: "approval" | "prompt";
   name: string;
   position: number;
-  command: string;
-  workdir: string;
-  clean: boolean;
-  timeout_seconds: number;
+  prompt: string;
+  skill: string;
 }
 
 // Board folders this file made, deleted after each test so the sidebar stays short.
@@ -110,6 +109,7 @@ async function serveKanban(page: Page, request: APIRequestContext, base: string)
         stages: Array<{ id?: string; name: string }>;
         tags: Array<{ id?: string; name: string; color: string }>;
         skills?: Array<{ id?: string; name: string; body: string }>;
+        gates?: Array<Partial<Gate> & { stage: string; direction: Gate["direction"]; kind: Gate["kind"]; name: string }>;
       };
       saves.push(want);
       const keep = new Set(want.stages.map((x) => x.id));
@@ -126,7 +126,12 @@ async function serveKanban(page: Page, request: APIRequestContext, base: string)
       const skills = want.skills
         ? want.skills.map((k, i) => ({ id: k.id ?? `skill-${Date.now()}-${i}`, name: k.name, body: k.body, position: i + 1 }))
         : row.skills;
-      Object.assign(row, { stages, tags, skills });
+      const gates = want.gates
+        ? want.gates.map((g, i) => ({
+            prompt: "", skill: "", ...g, id: g.id ?? `gate-${Date.now()}-${i}`, position: i + 1,
+          }))
+        : row.gates;
+      Object.assign(row, { stages, tags, skills, gates });
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ board: row }) });
       return;
     }
@@ -545,6 +550,49 @@ fastOnly("the kanban broker routes are stubbed in the browser")("kanban /boards 
     expect(kanban.saves).toHaveLength(2);
   });
 
+  test("the user adds a board's gates in Edit board: Add gate, then pick the stage, direction and kind", async ({ page, request, baseURL }) => {
+    const base = baseURL ?? "http://localhost:5173";
+    const kanban = await serveKanban(page, request, base);
+    const board = await kanban.board(`e2e-board-gates-${Date.now()}`);
+    const [design, inProgress] = board.stages;
+    board.skills.push({ id: "sk-release", name: "Release steps", body: "Tag, then deploy.", position: 1 });
+
+    await page.goto(`/boards/${board.folder}`);
+    await expect(page.getByTestId("kanban-board")).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId("kanban-gates")).toHaveCount(0);
+    await page.getByTestId("kanban-edit-stages").click();
+    const gates = page.getByTestId("kanban-gates").getByTestId("kanban-gate-edit");
+    await page.getByTestId("kanban-add-gate").click();
+    // A new gate asks the user's approval to leave the first stage, and is named for it.
+    const first = gates.first();
+    await expect(first.getByTestId("kanban-gate-name")).toHaveValue("Your approval");
+    await expect(first.getByTestId("kanban-gate-stage")).toHaveValue(design.id);
+    await first.getByTestId("kanban-gate-stage").selectOption(inProgress.id);
+    await first.getByTestId("kanban-gate-direction").selectOption("enter");
+    await first.getByTestId("kanban-gate-name").fill("Plan approved");
+    await page.getByTestId("kanban-add-gate").click();
+    const second = gates.nth(1);
+    await second.getByTestId("kanban-gate-kind").selectOption("prompt");
+    // The kind took the placeholder name with it.
+    await expect(second.getByTestId("kanban-gate-name")).toHaveValue("");
+    await second.getByTestId("kanban-gate-name").fill("Unit tests");
+    await second.getByTestId("kanban-gate-prompt").fill("Run just test; pass if it exits 0.");
+    // A gate can follow one of the board's skills instead.
+    await page.getByTestId("kanban-add-gate").click();
+    const third = gates.nth(2);
+    await third.getByTestId("kanban-gate-kind").selectOption("skill:sk-release");
+    await third.getByTestId("kanban-gate-name").fill("Released");
+    await page.getByTestId("kanban-edit-stages").click();
+    await expect
+      .poll(() => kanban.boards[0].gates.map((g) => [g.stage, g.direction, g.kind, g.name, g.prompt, g.skill]))
+      .toEqual([
+        [inProgress.id, "enter", "approval", "Plan approved", "", ""],
+        [design.id, "leave", "prompt", "Unit tests", "Run just test; pass if it exits 0.", ""],
+        [design.id, "leave", "prompt", "Released", "", "sk-release"],
+      ]);
+    expect(kanban.saves).toHaveLength(1);
+  });
+
   test("Rename and Delete board change the board's folder", async ({ page, request, baseURL }) => {
     const base = baseURL ?? "http://localhost:5173";
     const kanban = await serveKanban(page, request, base);
@@ -745,15 +793,14 @@ fastOnly("the kanban broker routes are stubbed in the browser")("kanban /boards 
     await expect(side.getByText(/schema work/).first()).toBeVisible();
   });
 
-  // A user's move past command gates asks whether the card's agent should make it, so the
-  // gate hook runs them: Ask the agent messages it (here stubbed) and leaves the card be.
-  const commandGate = (stage: string): Gate => ({
-    id: "g-tests", stage, kind: "command", name: "Unit tests", position: 1,
-    command: "just test", workdir: "scooter", clean: true, timeout_seconds: 600,
+  // A user's move past prompt gates asks whether the card's agent should make it, so the
+  // agent carries them out: Ask the agent messages it (here stubbed) and leaves the card be.
+  const promptGate = (stage: string, direction: Gate["direction"] = "leave"): Gate => ({
+    id: "g-tests", stage, direction, kind: "prompt", name: "Unit tests", position: 1,
+    prompt: "Run just test in /workspace/scooter; pass if it exits 0.", skill: "",
   });
   const approvalGate = (stage: string): Gate => ({
-    id: "g-ok", stage, kind: "approval", name: "Design OK", position: 2,
-    command: "", workdir: "", clean: true, timeout_seconds: 600,
+    id: "g-ok", stage, direction: "leave", kind: "approval", name: "Design OK", position: 2, prompt: "", skill: "",
   });
 
   /** Kanban's POST /conversation/{key}/card/request, answering each with the next reply. */
@@ -767,12 +814,12 @@ fastOnly("the kanban broker routes are stubbed in the browser")("kanban /boards 
     return asked;
   }
 
-  test("moving past a command gate offers to ask the agent, which leaves the card until it moves it", async ({ chat, page, request, baseURL }) => {
+  test("moving past a prompt gate offers to ask the agent, which leaves the card until it moves it", async ({ chat, page, request, baseURL }) => {
     const base = baseURL ?? "http://localhost:5173";
     const kanban = await serveKanban(page, request, base);
     const board = await kanban.board(`e2e-board-checks-${Date.now()}`);
     const [design, inProgress] = board.stages;
-    board.gates = [commandGate(design.id), approvalGate(design.id)];
+    board.gates = [promptGate(design.id), approvalGate(design.id)];
     const asked = await serveMoveRequests(page, [
       { status: 502, json: { detail: "couldn't reach this conversation's agent" } },
       { status: 200, json: { requested: inProgress.id } },
@@ -791,7 +838,7 @@ fastOnly("the kanban broker routes are stubbed in the browser")("kanban /boards 
     const ask = page.getByTestId("kanban-run-checks");
     await expect(ask).toBeVisible();
     await expect(ask).toContainText("Run checks before moving to In progress?");
-    await expect(ask.getByTestId("kanban-run-checks-gates")).toContainText("just test in scooter");
+    await expect(ask.getByTestId("kanban-run-checks-gates")).toContainText("Run just test in /workspace/scooter");
     await expect(ask).toContainText('Moving it anyway counts as the approval for "Design OK"');
     await expect(lane(page, design.id).locator(card)).toHaveCount(1);
 
@@ -816,7 +863,8 @@ fastOnly("the kanban broker routes are stubbed in the browser")("kanban /boards 
     const kanban = await serveKanban(page, request, base);
     const board = await kanban.board(`e2e-board-skip-${Date.now()}`);
     const [design, inProgress] = board.stages;
-    board.gates = [commandGate(design.id)];
+    // A gate on entering In progress is owed by the move in, like one on leaving Design.
+    board.gates = [promptGate(inProgress.id, "enter")];
     const asked = await serveMoveRequests(page, []);
     await chat.open();
     await chat.send("skip the checks");

@@ -37,18 +37,21 @@ interface Related {
   done: boolean;
 }
 
-/** A check the card must pass to leave its stage, and where it stands on it. */
+/** A check the card must pass to move on to the next stage, and where it stands on it. */
 export interface GateRow {
   id: string;
   name: string;
-  kind: "approval" | "command";
-  command: string;
-  workdir: string;
-  /** command: passed | failed; approval: pending | approved | rejected; "" before any. */
+  kind: "approval" | "prompt";
+  /** Whether it guards leaving `stage_name` or entering it. */
+  direction: "leave" | "enter";
+  stage_name: string;
+  /** prompt: what the agent must do, and the board skill it follows, if any. */
+  prompt: string;
+  skill_name: string;
+  /** prompt: passed | failed; approval: pending | approved | rejected; "" before any. */
   state: string;
-  /** A failed command's output, or the user's comment. */
+  /** The agent's note on its answer, or the user's comment. */
   detail: string;
-  commit: string;
   updated_at: string;
 }
 
@@ -85,24 +88,22 @@ function GateItem({ gate, decide }: { gate: GateRow; decide(approve: boolean, co
           {state.label}
         </span>
       </div>
-      <span className="truncate text-[11px] text-muted-foreground" title={gate.command}>
-        {gate.kind === "command" ? (
+      <span className="truncate text-[11px] text-muted-foreground" title={gate.prompt}>
+        {gate.kind === "prompt" ? (
           <>
-            <code>{gate.command}</code>
-            {gate.workdir ? ` in ${gate.workdir}` : ""}
-            {gate.commit ? ` · ${gate.commit.slice(0, 12)}` : ""}
+            {gate.skill_name ? `Follows ${gate.skill_name}` : "Asks the agent"}
+            {gate.prompt ? `: ${gate.prompt}` : ""}
           </>
         ) : (
           "Your approval"
         )}
+        {gate.stage_name ? ` · ${gate.direction === "enter" ? "entering" : "leaving"} ${gate.stage_name}` : ""}
       </span>
-      {gate.detail && (gate.state === "failed" ? (
-        <pre data-testid="kanban-gate-output" className="max-h-40 overflow-auto rounded bg-muted p-1.5 text-[11px] whitespace-pre-wrap">
-          {gate.detail}
-        </pre>
-      ) : (
-        <p className="text-xs">“{gate.detail}”</p>
-      ))}
+      {gate.detail && (
+        <p data-testid="kanban-gate-note" className="max-h-40 overflow-auto text-xs whitespace-pre-wrap">
+          “{gate.detail}”
+        </p>
+      )}
       {gate.kind === "approval" && gate.state !== "approved" && (
         <div className="flex flex-col gap-1">
           <input

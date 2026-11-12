@@ -80,16 +80,6 @@
           description = "Remind the agent of its card's column with each message.";
           command = builtins.readFile ./hooks/prompt-submit.sh;
         };
-        gate = {
-          event = "PreToolUse";
-          # Claude's mcp__scooter-broker__kanban_set_status, or goose's title for it.
-          matcher = ".*[Kk]anban[ _]?[Ss]et[ _]?[Ss]tatus.*";
-          when = "filed";
-          # The stage's command gates (tests) run here, each up to its own timeout.
-          timeout = 3600;
-          description = "Run a stage's command gates (e.g. the tests) before the agent moves its card on.";
-          command = builtins.readFile ./hooks/gate.sh;
-        };
         stop = {
           event = "Stop";
           when = "filed";

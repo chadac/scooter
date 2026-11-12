@@ -1,4 +1,4 @@
-h1:s5ZZmRzQ/zAemNdmuNZk76zZS2Ozb2Ws/a9dqcXWnbA=
+h1:UzwpzFYffd7Rp8DyU/y8HWo+UcH6Ys5Z69S6ahfQ0z4=
 20261106220000_create_kanban.sql h1:GCUgbCy8uwlY+5mCTr6/oFAhnubceWRrl3pzY6UuMoc=
 20261107045247_add_kanban_stages.sql h1:Lg1dnLN7GE29YxdnLVrzidT0pBLlMEG5U+iuiQ0wVcM=
 20261107162219_add_kanban_blockers.sql h1:byzWz9qgd7Bs5nvCkhSRTQH0xfMu9DBhnoNPRKdS7ro=
@@ -6,3 +6,5 @@ h1:s5ZZmRzQ/zAemNdmuNZk76zZS2Ozb2Ws/a9dqcXWnbA=
 20261107174049_add_kanban_card_details.sql h1:ePx4NRshZiZSpFDbllSUW0+uAOKYTSq73M9CFTHkXP0=
 20261109211540_add_kanban_skills.sql h1:bgzMSm8dCGmTek8voIyQ4aOW33Z5E3d+r3CbardBnA8=
 20261110173449_add_kanban_gates.sql h1:mRva/ElT+3zTxwzI1+UtcNgN+KAamXZh0MO1XGMUGvg=
+20261111223717_add_kanban_gate_direction.sql h1:vrI3rurZPiebn4fkeAO1l5qqUMpb857/TgLvppp9N8Y=
+20261112155100_replace_kanban_command_gates_with_prompts.sql h1:JbVha53XXoTa82l4e3jIAjh0kadSoyQL7Y4xmvfXuC0=

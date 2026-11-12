@@ -116,38 +116,35 @@ CREATE TABLE "kanban_gates" (
   "id"              character varying NOT NULL,
   -- The board's folder id (kanban_boards.folder_id).
   "board_id"        character varying NOT NULL,
-  -- The stage the gate guards leaving (kanban_stages.folder_id).
+  -- The stage the gate guards (kanban_stages.folder_id).
   "stage_id"        character varying NOT NULL,
-  -- "approval" (the user approves) or "command" (a script passes in the sandbox).
+  -- "leave" (a card must pass it to leave the stage) or "enter" (to enter it).
+  "direction"       character varying NOT NULL DEFAULT 'leave',
+  -- "approval" (the user approves) or "prompt" (the card's agent carries it out and answers).
   "kind"            character varying NOT NULL,
   -- What the user and the agent call it, e.g. "Unit tests".
   "name"            character varying NOT NULL,
-  -- kind "command": a bash script, run by the gate hook in the card's sandbox.
-  "command"         text NOT NULL DEFAULT '',
-  -- kind "command": the directory under /workspace it runs in, e.g. "scooter".
-  "workdir"         character varying NOT NULL DEFAULT '',
-  -- kind "command": run on a clean checkout of HEAD rather than the working tree.
-  "clean"           boolean NOT NULL DEFAULT true,
-  "timeout_seconds" integer NOT NULL DEFAULT 600,
-  -- Order on the stage; gates run in this order, approvals after commands.
+  -- kind "prompt": what the agent must do, and what counts as passing.
+  "prompt"          text NOT NULL DEFAULT '',
+  -- kind "prompt": a skill of the board (kanban_skills.id) the agent follows for it, or ''.
+  "skill_id"        character varying NOT NULL DEFAULT '',
+  -- Order on the stage; gates are met in this order, approvals after prompts.
   "position"        double precision NOT NULL,
   PRIMARY KEY ("id")
 );
 CREATE INDEX "ix_kanban_gates_board_id" ON "kanban_gates" ("board_id");
 
--- Where a card stands on each gate: a command's last run, or an approval's request.
+-- Where a card stands on each gate: the agent's answer to a prompt, or an approval's request.
 CREATE TABLE "kanban_gate_results" (
   -- kanban_cards.conversation_id
   "conversation_id" character varying NOT NULL,
   -- kanban_gates.id
   "gate_id"         character varying NOT NULL,
-  -- command: "passed" or "failed"; approval: "pending", "approved" or "rejected".
+  -- prompt: "passed" or "failed"; approval: "pending", "approved" or "rejected".
   "state"           character varying NOT NULL,
-  -- A failed command's last output, or the user's comment on an approval.
+  -- The agent's note on its answer to a prompt, or the user's comment on an approval.
   "detail"          text NOT NULL DEFAULT '',
-  -- The git commit a command ran on, when it ran on one.
-  "commit"          character varying NOT NULL DEFAULT '',
-  -- "agent", "hook" or "user".
+  -- "agent" or "user".
   "updated_by"      character varying NOT NULL,
   "updated_at"      character varying NOT NULL,
   PRIMARY KEY ("conversation_id", "gate_id")

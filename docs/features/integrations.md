@@ -66,17 +66,20 @@ that every agent on the board gets as a skill named `board-<name>`. Agents can w
 and update them too, when asked or when they learn something the whole board should
 know.
 
-Edit board also sets each stage's **gates**: checks a card must pass before its agent
-moves it on from that stage. A **command** gate, such as `nix develop -c just test` in
-`/workspace/<repo>`, runs in the card's sandbox when the agent calls `kanban_set_status`,
-by default on a clean checkout of its last commit. If it fails, the agent gets the
-output instead of the move. An **approval** gate asks you once the commands pass: the
+Edit board also sets the board's **gates**: checks a card must pass as its agent moves it
+on. **Add gate** adds one; each then says which stage it is on, whether it applies to
+**leave** that stage or to **enter** it, and what it checks. A move that jumps over stages owes
+the gates of every stage it leaves and enters; a move back owes none. A **prompt** gate
+asks the agent to do something, in your words ("run the tests on a clean checkout of your
+last commit; pass if they do") or by following one of the board's skills, and to answer
+whether it passed, with a note you see on the card. `kanban_set_status` refuses the move
+until every prompt gate has passed. An **approval** gate asks you once the prompts pass: the
 card shows **Approve**, and its Details tab has Approve and Reject with a comment the
 agent receives. Moving a card past a gate uses up the pass, so a card that comes back
 to the stage has to pass again. Your own moves aren't gated. When you move a card past a
-command gate, the board first offers to **Ask the agent**: the card's agent is asked to make
-the move itself, so its gates run as for its own moves, and the card moves once they pass. If
-they fail, the agent says why in the chat. **Move anyway** moves it now without them, and counts
+prompt gate, the board first offers to **Ask the agent**: the card's agent is asked to make
+the move itself, so its gates apply as for its own moves, and the card moves once they pass. If
+one fails, the agent says why in the chat. **Move anyway** moves it now without them, and counts
 as the approval for that stage.
 
 **For you**, in the board's header, filters the lanes to the cards waiting on you: an approval

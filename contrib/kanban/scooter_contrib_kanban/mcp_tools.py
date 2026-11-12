@@ -16,9 +16,9 @@ from fastmcp import FastMCP
 
 from scooter_broker_lib.mcp import ToolContext, ToolContextDep, ToolResult
 
-from .boards import BoardError, Blocker, Boards, quote_blockers
+from .boards import BoardError, Blocker, Boards, Located, quote_blockers
 from .keys import CardKeys
-from .store import PRIORITIES
+from .store import PRIORITIES, Card
 from .transport import view
 
 logger = logging.getLogger(__name__)
@@ -127,10 +127,11 @@ async def kanban_set_status(column: str, note: str = "", ctx: ToolContext = Tool
     asked: setting the same stage again records that it is still right. A card blocked
     by other cards can't move to a later stage until they are in the board's last stage.
 
-    A stage may have gates the card must pass to move on from it, as kanban_get_status
-    lists them: a command (e.g. the tests), which runs on your last commit just before
-    this call and must pass, and the user's approval, which this call asks for. When it
-    says the card is waiting for approval, end your turn; a message comes with the answer.
+    A stage may have gates the card must pass to leave it or to enter it, as
+    kanban_get_status lists them: a prompt, which asks you to do something (e.g. run the
+    tests) and answer it with kanban_answer_gate before this call, and the user's
+    approval, which this call asks for. When it says the card is waiting for approval,
+    end your turn; a message comes with the answer.
     """
     key = await _key(ctx)
     if isinstance(key, ToolResult):
@@ -141,13 +142,42 @@ async def kanban_set_status(column: str, note: str = "", ctx: ToolContext = Tool
         blockers = await _boards.blockers(key, where.conversation.owner, where.place.board)
     except BoardError as e:
         return ToolResult.error(f"{e.detail}.")
+    return ToolResult.ok(_describe(await _view(key, where, card), blockers))
+
+
+async def _view(key: str, where: Located, card: Card | None) -> dict:
+    """The card as `_describe` reads it, from where it stands now."""
+    assert _boards is not None
     tags = await _boards.tag_view(key, where.place.board)
-    v = view(
+    return view(
         card, where.stages, where.stage, **tags, details=await _boards.store.details(key),
-        gates=await _boards.gate_view(key, where.place.board, where.stage),
+        skills=await _boards.store.skills(where.place.board),
+        gates=await _boards.gate_view(key, where.place.board, where.stages, where.stage),
         stale_after=_stale_after, now=datetime.now(timezone.utc),
     )
-    return ToolResult.ok(_describe(v, blockers))
+
+
+@mcp.tool
+async def kanban_answer_gate(gate: str, passed: bool, note: str = "", ctx: ToolContext = ToolContextDep) -> ToolResult:
+    """Answer one of the gates your card must pass, once you have carried out what it asks.
+
+    `gate` is its name (or id) as kanban_set_status or kanban_get_status listed it. `passed`
+    says whether it passed, and `note` is one line on what you did and found, shown to the
+    user on the card: "97 tests pass on abc123", or what failed. Answer what you found,
+    not what you'd like: a failed answer is fine, and the user sees why. Then call
+    kanban_set_status to move the card on.
+    """
+    key = await _key(ctx)
+    if isinstance(key, ToolResult):
+        return key
+    assert _boards is not None
+    try:
+        where, g, result = await _boards.answer(key, gate, passed=passed, note=note)
+        blockers = await _boards.blockers(key, where.conversation.owner, where.place.board)
+    except BoardError as e:
+        return ToolResult.error(f"{e.detail}.")
+    card = await _boards.store.card(key)
+    return ToolResult.ok(f'Recorded "{g.name}" as {result.state}. ' + _describe(await _view(key, where, card), blockers))
 
 
 @mcp.tool
@@ -169,7 +199,7 @@ async def kanban_get_status(ctx: ToolContext = ToolContextDep) -> ToolResult:
         tags = await _boards.tag_view(key, where.place.board)
         details = await _boards.store.details(key)
         skills = await _boards.store.skills(where.place.board)
-        gates = await _boards.gate_view(key, where.place.board, where.stage)
+        gates = await _boards.gate_view(key, where.place.board, where.stages, where.stage)
     v = view(
         card, where.stages, where.stage, **tags, details=details, skills=skills, gates=gates,
         stale_after=_stale_after, now=datetime.now(timezone.utc),
