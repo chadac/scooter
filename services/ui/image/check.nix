@@ -4,6 +4,7 @@
 # frame which page. Only `/chat/<id>` may be framed, and only by that conversation's own
 # sandbox origin (or 'self' without a sandbox domain); every other UI route, by nothing.
 # Also the /agui body limit (UPLOAD_MAX_BODY, derived from scooter.uploads).
+# Also that the image's stop signal drains open SSE streams.
 
 let
   ui = pkgs.runCommand "ui-stub" { } ''
@@ -14,10 +15,31 @@ let
   '';
   conf = import ./nginx.nix { inherit pkgs ui; };
   id = "5a515e73-860b-49ba-bc3f-6ff8d5fda5ff";
+  # Sends `chunks` SSE events then ends; 0 streams forever.
+  sseUpstream = pkgs.writeText "sse-upstream.py" ''
+    import http.server, sys, time
+    port, chunks = int(sys.argv[1]), int(sys.argv[2])
+    class H(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        def log_message(self, *a): pass
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            i = 0
+            while chunks == 0 or i < chunks:
+                ev = f"data: {i}\n\n".encode()
+                self.wfile.write(b"%x\r\n%s\r\n" % (len(ev), ev)); self.wfile.flush()
+                i += 1; time.sleep(0.5)
+            ev = b"data: done\n\n"
+            self.wfile.write(b"%x\r\n%s\r\n0\r\n\r\n" % (len(ev), ev)); self.wfile.flush()
+    http.server.ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
+  '';
 in
 pkgs.runCommand "ui-nginx-frame-ancestors"
 {
-  nativeBuildInputs = [ pkgs.curl pkgs.nginx pkgs.gnused pkgs.gnugrep ];
+  nativeBuildInputs = [ pkgs.curl pkgs.nginx pkgs.gnused pkgs.gnugrep pkgs.python3 ];
 } ''
   set -euo pipefail
   fail=0
@@ -26,7 +48,8 @@ pkgs.runCommand "ui-nginx-frame-ancestors"
   serve() { # serve <name> <port> [SANDBOX_DOMAIN] [CONTRIB_MANIFEST_FILE] [UPLOAD_MAX_BODY]
     local dir=$TMPDIR/$1
     mkdir -p $dir
-    env -i PATH="$PATH" AGENT_HOST_URL=http://127.0.0.1:1 BROKER_URL=http://127.0.0.1:1 \
+    env -i PATH="$PATH" AGENT_HOST_URL="''${AGENT_HOST_URL:-http://127.0.0.1:1}" BROKER_URL=http://127.0.0.1:1 \
+      ''${SHUTDOWN_TIMEOUT:+SHUTDOWN_TIMEOUT=$SHUTDOWN_TIMEOUT} \
       ''${3:+SANDBOX_DOMAIN=$3} ''${4:+CONTRIB_MANIFEST_FILE=$4} ''${5:+UPLOAD_MAX_BODY=$5} \
       ${conf.render} $dir/rendered.conf
     sed -e "s|pid /var/run/nginx.pid;|pid $dir/nginx.pid;|" \
@@ -138,6 +161,35 @@ pkgs.runCommand "ui-nginx-frame-ancestors"
   header /assets/index-stub.js "public, max-age=31536000, immutable"
   got=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18082/assets/index-gone.js)
   [ "$got" = 404 ] && echo "ok   missing asset -> 404" || { echo "FAIL missing asset -> $got (want 404)"; fail=1; }
+
+  upstream() { # upstream <port> <chunks>; the pid lands in $up
+    python3 ${sseUpstream} $1 $2 & up=$!
+    for _ in $(seq 50); do (exec 3<>/dev/tcp/127.0.0.1/$1) 2>/dev/null && return 0; sleep 0.1; done
+    echo "upstream :$1 never listened"; exit 1
+  }
+
+  # A mid-stream stop still ends the response cleanly (curl exits 0).
+  upstream 18090 6
+  AGENT_HOST_URL=http://127.0.0.1:18090 serve drain 18085
+  curl -sSN http://127.0.0.1:18085/conversations/c1/events.integrity > $TMPDIR/stream & c=$!
+  sleep 1
+  kill -s ${conf.stopSignal} $(cat $TMPDIR/drain/nginx.pid)
+  if wait $c && grep -q "data: done" $TMPDIR/stream; then echo "ok   stream drains on ${conf.stopSignal}"
+  else echo "FAIL stream cut on ${conf.stopSignal}"; cat $TMPDIR/stream; fail=1; fi
+  kill $up
+
+  # An endless stream holds nginx only until SHUTDOWN_TIMEOUT.
+  upstream 18091 0
+  AGENT_HOST_URL=http://127.0.0.1:18091 SHUTDOWN_TIMEOUT=2s serve forever 18086
+  curl -sN http://127.0.0.1:18086/conversations/c1/events.integrity > /dev/null & c=$!
+  sleep 1
+  pid=$(cat $TMPDIR/forever/nginx.pid)
+  kill -s ${conf.stopSignal} $pid
+  for _ in $(seq 50); do kill -0 $pid 2>/dev/null || break; sleep 0.1; done
+  if kill -0 $pid 2>/dev/null; then echo "FAIL nginx outlives SHUTDOWN_TIMEOUT"; kill -9 $pid $c; fail=1
+  else echo "ok   nginx exits after SHUTDOWN_TIMEOUT"; fi
+  wait $c || true
+  kill $up
 
   kill $(cat $TMPDIR/sandbox/nginx.pid) $(cat $TMPDIR/shared/nginx.pid) $(cat $TMPDIR/uploads/nginx.pid) $(cat $TMPDIR/paths/nginx.pid) || true
   [ $fail = 0 ] || exit 1

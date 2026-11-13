@@ -38,6 +38,7 @@ let
     ];
     config = {
       Entrypoint = [ "${entrypoint}" ];
+      StopSignal = nginxConf.stopSignal;
       Env = [
         "AGENT_HOST_URL=http://agent-host:8080"
         # Where the contribs' broker public paths are proxied.

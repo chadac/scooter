@@ -2340,7 +2340,11 @@ in
               ];
               volumeMounts = [{ name = "contrib-manifest"; mountPath = "/etc/scooter-ui/contrib"; readOnly = true; }];
               readinessProbe.httpGet = { path = "/"; port = "http"; };
+              # Keep serving until the ingress drops this endpoint.
+              lifecycle.preStop.sleep.seconds = 5;
             };
+            # Covers preStop plus nginx's 15s SHUTDOWN_TIMEOUT.
+            spec.terminationGracePeriodSeconds = 30;
             spec.volumes = [{ name = "contrib-manifest"; configMap.name = "ui-contrib-manifest"; }];
           };
         };

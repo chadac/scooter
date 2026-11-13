@@ -19,6 +19,8 @@ let
     error_log /dev/stderr warn;
     pid /var/run/nginx.pid;
     events { worker_connections 1024; }
+    # SSE streams may never end, so bound the graceful quit.
+    worker_shutdown_timeout ''${SHUTDOWN_TIMEOUT};
     http {
       include ${pkgs.nginx}/conf/mime.types;
       default_type application/octet-stream;
@@ -210,6 +212,9 @@ let
     # accepts what the UI allows.
     : "''${UPLOAD_MAX_BODY:=144m}"
     export UPLOAD_MAX_BODY
+    # Fits the pod's grace period after preStop (modules/platform.nix).
+    : "''${SHUTDOWN_TIMEOUT:=15s}"
+    export SHUTDOWN_TIMEOUT
     # Who may frame /chat/<id>: its own sandbox origin, or the UI's own without a sandbox
     # domain. $chat_label is nginx's capture of the id's first 8 hex characters.
     sandbox_domain="''${SANDBOX_DOMAIN:-}"
@@ -236,10 +241,12 @@ let
         "$CONTRIB_MANIFEST")"
     fi
     export BROKER_PUBLIC_LOCATIONS
-    ${pkgs.gettext}/bin/envsubst '$AGENT_HOST_SERVER $AGENT_HOST_PROXY $BROKER_URL $OTEL_COLLECTOR_URL $TELEMETRY_ENABLED $TELEMETRY_SAMPLE_RATIO $CHAT_FRAME_ANCESTORS $CONTRIB_MANIFEST $UPLOAD_MAX_BODY $BROKER_PUBLIC_LOCATIONS' \
+    ${pkgs.gettext}/bin/envsubst '$AGENT_HOST_SERVER $AGENT_HOST_PROXY $BROKER_URL $OTEL_COLLECTOR_URL $TELEMETRY_ENABLED $TELEMETRY_SAMPLE_RATIO $CHAT_FRAME_ANCESTORS $CONTRIB_MANIFEST $UPLOAD_MAX_BODY $SHUTDOWN_TIMEOUT $BROKER_PUBLIC_LOCATIONS' \
       < ${confTemplate} > "$1"
   '';
 in
 {
   inherit confTemplate render;
+  # Graceful quit; SIGTERM would cut open responses.
+  stopSignal = "SIGQUIT";
 }
