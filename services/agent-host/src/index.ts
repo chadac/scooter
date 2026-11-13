@@ -176,8 +176,8 @@ export interface AgentHostConfig {
   /** Ephemeral scratch for the agent process (goose's per-conversation cwd), an emptyDir
    *  rather than the durable PVC. */
   scratchPath: string;
-  /** ACP agent launch (goose). */
-  agent: { command: string; args: string[]; env: Record<string, string> };
+  /** ACP agent launch (goose); `fake` marks the bundled dummy agent. */
+  agent: { command: string; args: string[]; env: Record<string, string>; fake?: boolean };
   /** The default model and the ids offered for per-conversation selection, both derived
    *  from `modelCatalog`. */
   model?: string;
@@ -288,7 +288,7 @@ export function configFromEnv(): AgentHostConfig & AgentHostConfigExtra {
       pricingJson: readPricing(),
     },
     agent: useFakeAgent
-      ? { command: process.execPath, args: [fakeAgentPath], env: {} }
+      ? { command: process.execPath, args: [fakeAgentPath], env: {}, fake: true }
       : // Without --with-builtin the agent gets no shell/file tools at all.
         {
           command: process.env.GOOSE_BIN ?? "goose",
@@ -510,6 +510,29 @@ export function gooseLaunchEnv(
     ...base,
     ...(model ? { GOOSE_MODEL: model } : {}),
     ...(limit !== undefined && !base.GOOSE_CONTEXT_LIMIT ? { GOOSE_CONTEXT_LIMIT: String(limit) } : {}),
+  };
+}
+
+/** goose's per-conversation identity env: USER/LOGNAME become its OTel user.name, and
+ *  OTEL_RESOURCE_ATTRIBUTES gains Scooter's namespace and the Langfuse user and session after
+ *  any existing value. */
+export function gooseIdentityEnv(
+  user: string,
+  conversationId: string,
+  existingAttrs: string | undefined,
+): Record<string, string> {
+  // goose's Rust SDK does not percent-decode, so escape only what splits the list.
+  const attrs = [
+    // Overrides goose's own "goose" namespace; service.name stays "goose".
+    ["service.namespace", "scooter"],
+    ["user.id", user],
+    ["langfuse.user.id", user],
+    ["langfuse.session.id", conversationId],
+  ].map(([k, v]) => `${k}=${v!.replace(/[%,]/g, encodeURIComponent)}`);
+  return {
+    USER: user,
+    LOGNAME: user,
+    OTEL_RESOURCE_ATTRIBUTES: [existingAttrs, ...attrs].filter(Boolean).join(","),
   };
 }
 
@@ -2234,6 +2257,12 @@ export async function main(
       // Approve mode stops goose at every tool call, for PreToolUse.
       ...(backpressureOn || hasPreToolHooks ? { GOOSE_MODE: "approve" } : {}),
     };
+    // Tags goose's traces with the owner, by email when known, else by id.
+    const ownerIdentityEnv = async (): Promise<Record<string, string>> => {
+      if (cfg.agent.fake || !owner) return {};
+      const user = (await resolveOwnerEmail(owner)) ?? owner;
+      return gooseIdentityEnv(user, conversationId, process.env.OTEL_RESOURCE_ATTRIBUTES);
+    };
     // goose runs in this pod, so its cwd must be a real writable dir here: ephemeral
     // per-conversation scratch under scratchPath, while its tool calls exec into the
     // sandbox.
@@ -2379,7 +2408,7 @@ export async function main(
           : createAcpClient({
               command: cfg.agent.command,
               args: cfg.agent.args,
-              env: agentEnv,
+              env: { ...agentEnv, ...(await ownerIdentityEnv()) },
               exec,
               // Back-pressure: auto-answer goose's approve-mode permission gate, rejecting the
               // next tool when a priority item waits; late-bound since `bridge` is assigned
