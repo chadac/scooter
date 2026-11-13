@@ -11,7 +11,8 @@ const { userUiSettings } = agent_host;
 export type ThemeMode = "light" | "dark" | "system";
 
 export interface UserTheme {
-  themeId: string;
+  /** Absent follows the deployment's default theme. */
+  themeId?: string;
   mode: ThemeMode;
 }
 
@@ -35,12 +36,13 @@ export function createPgUserThemeStore(config: { dsn?: string; db?: NodePgDataba
         .select({ themeId: userUiSettings.themeId, mode: userUiSettings.themeMode })
         .from(userUiSettings)
         .where(eq(userUiSettings.owner, owner));
-      return row && isThemeMode(row.mode) ? { themeId: row.themeId, mode: row.mode } : undefined;
+      if (!row || !isThemeMode(row.mode)) return undefined;
+      return row.themeId === null ? { mode: row.mode } : { themeId: row.themeId, mode: row.mode };
     },
     async set(owner, { themeId, mode }) {
       await db
         .insert(userUiSettings)
-        .values({ owner, themeId, themeMode: mode, updatedAt: now() })
+        .values({ owner, themeId: themeId ?? null, themeMode: mode, updatedAt: now() })
         .onConflictDoUpdate({
           target: userUiSettings.owner,
           set: { themeId: sql`excluded.theme_id`, themeMode: sql`excluded.theme_mode`, updatedAt: sql`excluded.updated_at` },

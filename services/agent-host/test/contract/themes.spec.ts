@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { contrastWarnings, loadThemes, parseTheme, ThemeError } from "../../src/theme/themes.js";
+import { contrastWarnings, loadDefaultThemeId, loadThemes, parseTheme, ThemeError } from "../../src/theme/themes.js";
 
 const pair = {
   name: "Solarized",
@@ -73,6 +73,30 @@ describe("loadThemes", () => {
 
   it("is empty when the directory is absent", async () => {
     expect(await loadThemes(join(tmpdir(), "no-such-themes-dir"), () => {})).toEqual([]);
+  });
+});
+
+describe("loadDefaultThemeId", () => {
+  const solarized = parseTheme("solarized", pair);
+  const at = (value?: string) => {
+    const dir = mkdtempSync(join(tmpdir(), "themes-"));
+    if (value !== undefined) writeFileSync(join(dir, "default"), value);
+    return dir;
+  };
+
+  it("names a loaded theme or the built-in", async () => {
+    expect(await loadDefaultThemeId(at("solarized\n"), [solarized], () => {})).toBe("solarized");
+    expect(await loadDefaultThemeId(at("scooter"), [solarized], () => {})).toBe("scooter");
+  });
+
+  it("is the built-in when unset", async () => {
+    expect(await loadDefaultThemeId(at(), [solarized], () => {})).toBe("scooter");
+  });
+
+  it("falls back to the built-in, warning, when the theme didn't load", async () => {
+    const warnings: string[] = [];
+    expect(await loadDefaultThemeId(at("broken"), [solarized], (m) => warnings.push(m))).toBe("scooter");
+    expect(warnings).toEqual([expect.stringMatching(/default theme broken/)]);
   });
 });
 

@@ -50,8 +50,8 @@ import { EMPTY_CHECKSUM, chainAll } from "../agui/integrity.js";
 import { DERIVED_SOURCES, HUMAN_TRIGGER_SOURCES, USER_RELAY_SOURCES } from "../acp/remoteAgentRegistry.js";
 import type { HookDef } from "../hooks/types.js";
 import type { UserHookSettingsStore } from "../hooks/userHookSettingsStore.js";
-import { BUILTIN_THEME_ID, isThemeId, loadThemes } from "../theme/themes.js";
-import { isThemeMode, type UserThemeStore } from "../theme/userThemeStore.js";
+import { BUILTIN_THEME_ID, isThemeId, loadDefaultThemeId, loadThemes } from "../theme/themes.js";
+import { isThemeMode, type UserTheme, type UserThemeStore } from "../theme/userThemeStore.js";
 
 const log = logger("agent-host");
 
@@ -1724,9 +1724,12 @@ export function createManagementApi(deps: ManagementDeps): Router {
   });
 
   // --- Themes (UI settings page and header toggle) -------------------------------
-  r.get("/themes", async () => ({
-    json: { themes: deps.themesDir ? await loadThemes(deps.themesDir, (m) => log.warn(m)) : [] },
-  }));
+  r.get("/themes", async () => {
+    if (!deps.themesDir) return { json: { themes: [], default: BUILTIN_THEME_ID } };
+    const warn = (m: string) => log.warn(m);
+    const themes = await loadThemes(deps.themesDir, warn);
+    return { json: { themes, default: await loadDefaultThemeId(deps.themesDir, themes, warn) } };
+  });
 
   r.get("/user-theme", async (ctx) => {
     const choice = deps.userThemes ? await deps.userThemes.get(skillOwner(ctx)) : undefined;
@@ -1740,8 +1743,10 @@ export function createManagementApi(deps: ManagementDeps): Router {
     if (themeId !== undefined && !isThemeId(themeId)) return { status: 400, json: { error: "themeId must be a lowercase slug" } };
     if (mode !== undefined && !isThemeMode(mode)) return { status: 400, json: { error: 'mode must be "light", "dark" or "system"' } };
     const owner = skillOwner(ctx);
-    const current = (await deps.userThemes.get(owner)) ?? { themeId: BUILTIN_THEME_ID, mode: "system" as const };
-    const next = { themeId: isThemeId(themeId) ? themeId : current.themeId, mode: isThemeMode(mode) ? mode : current.mode };
+    const current = (await deps.userThemes.get(owner)) ?? { mode: "system" as const };
+    const next: UserTheme = { mode: isThemeMode(mode) ? mode : current.mode };
+    const picked = isThemeId(themeId) ? themeId : current.themeId;
+    if (picked !== undefined) next.themeId = picked;
     await deps.userThemes.set(owner, next);
     return { json: next };
   });

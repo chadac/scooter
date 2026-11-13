@@ -93,6 +93,8 @@
       name = "High contrast";
       variants = [{ appearance = "dark"; tokens = { background = "#000000"; foreground = "#ffffff"; brand = "#ffd700"; }; }];
     };
+    # Users who haven't picked a theme get this one.
+    ui.defaultTheme = "high-contrast";
 
     # Bring-your-own-Claude: deploys the controller, the unauthenticated connect
     # Ingress and the agent-host's remote-agent routes.

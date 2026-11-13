@@ -32,7 +32,7 @@ beforeEach(() => {
 describe("theme store", () => {
   it("defaults to the built-in theme with no overrides", async () => {
     const { themeStore } = await load();
-    expect(themeStore.get()).toMatchObject({ themeId: "scooter", mode: "system" });
+    expect(themeStore.get()).toMatchObject({ themeId: undefined, defaultId: "scooter", mode: "system" });
     expect(style()).toBe("");
     expect(html().classList.contains("dark")).toBe(false);
   });
@@ -74,6 +74,29 @@ describe("theme store", () => {
     expect(activeTheme().id).toBe("scooter");
     expect(style()).toBe("");
     expect(cache()).toEqual({});
+  });
+
+  it("follows the deployment default until the user picks", async () => {
+    const { themeStore, activeTheme } = await load();
+    const save = vi.fn();
+    themeStore.onChange(save);
+    themeStore.setThemes([NORD, NIGHT], "nord");
+    expect(activeTheme().id).toBe("nord");
+    expect(style()).toBe(":root:root{--background:#eceff4;}");
+    themeStore.setTheme("nord");
+    expect(save.mock.calls).toEqual([[{ themeId: "nord" }]]);
+    themeStore.setThemes([NORD, NIGHT], "night");
+    expect(activeTheme().id).toBe("nord");
+  });
+
+  it("an account with no saved theme clears this browser's pick", async () => {
+    localStorage.setItem("scooter-theme-id", "scooter");
+    const { themeStore, activeTheme } = await load();
+    themeStore.setThemes([NORD], "nord");
+    expect(activeTheme().id).toBe("scooter");
+    themeStore.adopt({ mode: "system" });
+    expect(localStorage.getItem("scooter-theme-id")).toBeNull();
+    expect(activeTheme().id).toBe("nord");
   });
 
   it("saves user picks through onChange, but not an adopted account choice", async () => {

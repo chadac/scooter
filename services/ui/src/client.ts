@@ -1042,15 +1042,16 @@ export function clearConversationTaint(config: AgentHostConfig, conversationId: 
   return taintRequest(config, conversationId, "taint/clear", { authors });
 }
 
-/** scooter.ui.themes; undefined when the fetch fails. */
-export async function loadThemes(config: AgentHostConfig): Promise<Theme[] | undefined> {
+/** scooter.ui.themes and ui.defaultTheme; undefined when the fetch fails. */
+export async function loadThemes(config: AgentHostConfig): Promise<{ themes: Theme[]; default?: string } | undefined> {
   try {
     const res = await fetch(`${config.baseUrl.replace(/\/$/, "")}/themes`, { headers: authHeaders(config) });
     if (!res.ok) {
       console.warn(`[client] loadThemes: HTTP ${res.status}`);
       return undefined;
     }
-    return ((await res.json()) as { themes?: Theme[] }).themes ?? [];
+    const body = (await res.json()) as { themes?: Theme[]; default?: string };
+    return { themes: body.themes ?? [], default: body.default };
   } catch (e) {
     console.warn("[client] loadThemes failed:", e);
     return undefined;

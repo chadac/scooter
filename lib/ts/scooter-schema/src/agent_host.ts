@@ -91,7 +91,7 @@ export const userSkills = pgTable("user_skills", {
 
 export const userUiSettings = pgTable("user_ui_settings", {
 	owner: text().primaryKey().notNull(),
-	themeId: text("theme_id").notNull(),
+	themeId: text("theme_id"),
 	themeMode: text("theme_mode").notNull(),
 	// You can use { mode: "bigint" } if numbers are exceeding js number limitations
 	updatedAt: bigint("updated_at", { mode: "number" }).notNull(),

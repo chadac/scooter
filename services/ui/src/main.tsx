@@ -53,15 +53,16 @@ void loadWhoami({ baseUrl: BASE_URL }).then((me) => {
   folderStore.setDefaultLifetime(me.retention?.defaultLifetimeHours);
 });
 
-// The account's choice wins; this browser's seeds an unset one.
+// The account wins; only mode seeds it, so theme follows the default.
 void Promise.all([loadThemes({ baseUrl: BASE_URL }), loadUserTheme({ baseUrl: BASE_URL })]).then(([themes, saved]) => {
   // On failure keep the cached paint, not the built-in.
-  if (themes) themeStore.setThemes(themes);
+  if (themes) themeStore.setThemes(themes.themes, themes.default);
   if (!saved.configurable) return;
   const save = (choice: Parameters<typeof saveUserTheme>[1]) =>
     void saveUserTheme({ baseUrl: BASE_URL }, choice).catch((e) => console.warn("[theme] save failed:", e));
-  if (saved.themeId) themeStore.adopt(saved);
-  else save({ themeId: themeStore.get().themeId, mode: themeStore.get().mode });
+  const { mode } = themeStore.get();
+  themeStore.adopt({ mode, ...saved });
+  if (!saved.mode && mode !== "system") save({ mode });
   themeStore.onChange(save);
 });
 

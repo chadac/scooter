@@ -251,7 +251,7 @@ CREATE TABLE "user_hook_settings" (
 -- Each user's UI theme, following them across devices.
 CREATE TABLE "user_ui_settings" (
   "owner"      text NOT NULL PRIMARY KEY,
-  "theme_id"   text NOT NULL,
+  "theme_id"   text, -- null follows scooter.ui.defaultTheme
   "theme_mode" text NOT NULL CHECK ("theme_mode" IN ('light', 'dark', 'system')),
   "updated_at" bigint NOT NULL
 );

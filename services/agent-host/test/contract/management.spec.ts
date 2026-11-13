@@ -2078,19 +2078,31 @@ describe("theme routes (settings page and header toggle)", () => {
     const dir = mkdtempSync(join(tmpdir(), "themes-"));
     writeFileSync(join(dir, "nord.json"), JSON.stringify({ name: "Nord", variants: [{ appearance: "dark", tokens: { background: "#2e3440" } }] }));
     const res = await call(mk({ themesDir: dir }), "GET", "/themes");
-    expect(res.json).toEqual({ themes: [{ id: "nord", name: "Nord", variants: [{ appearance: "dark", tokens: { background: "#2e3440" } }] }] });
+    expect(res.json).toEqual({
+      themes: [{ id: "nord", name: "Nord", variants: [{ appearance: "dark", tokens: { background: "#2e3440" } }] }],
+      default: "scooter",
+    });
+  });
+
+  it("serves the deployment's default theme", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "themes-"));
+    writeFileSync(join(dir, "nord.json"), JSON.stringify({ name: "Nord", variants: [{ appearance: "dark", tokens: {} }] }));
+    writeFileSync(join(dir, "default"), "nord");
+    expect((await call(mk({ themesDir: dir }), "GET", "/themes")).json).toMatchObject({ default: "nord" });
   });
 
   it("lists none without a themes directory", async () => {
-    expect((await call(mk(), "GET", "/themes")).json).toEqual({ themes: [] });
+    expect((await call(mk(), "GET", "/themes")).json).toEqual({ themes: [], default: "scooter" });
   });
 
   it("saves each user's choice, merging partial updates", async () => {
     const api = mk({ userThemes: createMemoryUserThemeStore() });
     expect((await call(api, "GET", "/user-theme", undefined, alice)).json).toEqual({ configurable: true });
-    expect((await call(api, "PATCH", "/user-theme", { mode: "dark" }, alice)).json).toEqual({ themeId: "scooter", mode: "dark" });
+    expect((await call(api, "PATCH", "/user-theme", { mode: "dark" }, alice)).json).toEqual({ mode: "dark" });
+    expect((await call(api, "GET", "/user-theme", undefined, alice)).json).toEqual({ configurable: true, mode: "dark" });
     expect((await call(api, "PATCH", "/user-theme", { themeId: "nord" }, alice)).json).toEqual({ themeId: "nord", mode: "dark" });
     expect((await call(api, "GET", "/user-theme", undefined, alice)).json).toEqual({ configurable: true, themeId: "nord", mode: "dark" });
+    expect((await call(api, "PATCH", "/user-theme", { mode: "light" }, alice)).json).toEqual({ themeId: "nord", mode: "light" });
     expect((await call(api, "GET", "/user-theme", undefined, { "x-auth-user": "bob" })).json).toEqual({ configurable: true });
   });
 

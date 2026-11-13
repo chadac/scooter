@@ -217,9 +217,9 @@ class UserUiSettings(Base):
     )
 
     owner: Mapped[str] = mapped_column(Text, primary_key=True)
-    theme_id: Mapped[str] = mapped_column(Text, nullable=False)
     theme_mode: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    theme_id: Mapped[Optional[str]] = mapped_column(Text)
 
 
 class UserConversationMetadata(Base):

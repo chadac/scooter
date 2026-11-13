@@ -127,7 +127,14 @@ let
     (builtins.attrValues (res.deployments.agent-host.spec.template.spec.containers or { }));
   themeProblems =
     (if (res.configMaps.agent-ui-themes.data or { }) ? "high-contrast.json" then [ ] else [ "configMaps.agent-ui-themes.data.high-contrast.json (theme missing)" ])
-    ++ (if builtins.any (m: m.name == "themes" && m.mountPath == "/etc/scooter/themes") hostMounts then [ ] else [ "agent-host volumeMount themes at /etc/scooter/themes" ]);
+    ++ (if builtins.any (m: m.name == "themes" && m.mountPath == "/etc/scooter/themes") hostMounts then [ ] else [ "agent-host volumeMount themes at /etc/scooter/themes" ])
+    ++ (if (res.configMaps.agent-ui-themes.data.default or null) == "high-contrast" then [ ] else [ "configMaps.agent-ui-themes.data.default (ui.defaultTheme not rendered)" ])
+    ++ (if themeDefaultRenders "nope" then [ "ui.defaultTheme accepted an id that isn't a theme" ] else [ ])
+    ++ (if themeDefaultRenders "scooter" then [ ] else [ "ui.defaultTheme rejected the built-in" ]);
+  themeDefaultRenders = id: let r = (evalPlatform {
+    module = { lib, ... }: { imports = [ ./kubenix-config.nix ]; scooter.ui.defaultTheme = lib.mkForce id; };
+  }).config.kubernetes.resources;
+  in (builtins.tryEval (builtins.deepSeq r.configMaps true)).success;
 
   # A sandbox can reach the broker but not the agent-host, so sandbox-shaping config
   # must stay off the broker.

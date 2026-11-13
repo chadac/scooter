@@ -91,6 +91,20 @@ export async function loadThemes(dir: string, warn: (msg: string) => void): Prom
   return themes.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/** scooter.ui.defaultTheme from `dir`; built-in when unset or not loaded. */
+export async function loadDefaultThemeId(dir: string, themes: Theme[], warn: (msg: string) => void): Promise<string> {
+  let id: string;
+  try {
+    id = (await readFile(join(dir, "default"), "utf8")).trim();
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return BUILTIN_THEME_ID;
+    throw e;
+  }
+  if (id === BUILTIN_THEME_ID || themes.some((t) => t.id === id)) return id;
+  warn(`default theme ${id} isn't a loaded theme; using ${BUILTIN_THEME_ID}`);
+  return BUILTIN_THEME_ID;
+}
+
 // Text tokens that must stay readable on --background.
 const TEXT_PAIRS = ["foreground", "muted-foreground", "brand"] as const;
 

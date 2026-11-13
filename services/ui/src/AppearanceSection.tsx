@@ -33,7 +33,7 @@ function Swatch({ variant }: { variant: ThemeVariant }) {
   );
 }
 
-function ThemeCard({ theme, selected }: { theme: Theme; selected: boolean }) {
+function ThemeCard({ theme, selected, isDefault }: { theme: Theme; selected: boolean; isDefault: boolean }) {
   const fixed = fixedAppearance(theme);
   return (
     <button
@@ -50,6 +50,11 @@ function ThemeCard({ theme, selected }: { theme: Theme; selected: boolean }) {
       <span className="flex items-center gap-2">
         <span className="font-medium">{theme.name}</span>
         <span className="text-xs text-muted-foreground">{fixed ? `${fixed} only` : "light + dark"}</span>
+        {isDefault && (
+          <span data-testid="theme-default-badge" className="rounded-sm border px-1 text-xs text-muted-foreground">
+            Default
+          </span>
+        )}
         {selected && <Check className="ml-auto size-4 text-brand" aria-hidden />}
       </span>
       <span className="flex flex-col gap-1.5 sm:flex-row">
@@ -74,7 +79,7 @@ export function AppearanceSection() {
         </div>
         <div role="radiogroup" aria-label="Theme" className="grid gap-2 sm:grid-cols-2">
           {state.themes.map((t) => (
-            <ThemeCard key={t.id} theme={t} selected={t.id === active.id} />
+            <ThemeCard key={t.id} theme={t} selected={t.id === active.id} isDefault={t.id === state.defaultId} />
           ))}
         </div>
       </div>

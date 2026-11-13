@@ -58,6 +58,35 @@ test.describe("settings — appearance", () => {
     await other.context().close();
   });
 
+  test("a user who hasn't picked follows the deployment default, without saving it", async ({ browser }) => {
+    const page = await pageAs(browser, uniqueUser());
+    // Stand in for scooter.ui.defaultTheme without changing every other test's theme.
+    await page.route("**/themes", async (route) => {
+      const res = await route.fetch();
+      await route.fulfill({ response: res, json: { ...(await res.json()), default: "ocean" } });
+    });
+    const saves: string[] = [];
+    page.on("request", (r) => {
+      if (r.url().endsWith("/user-theme") && r.method() === "PATCH") saves.push(r.postData() ?? "");
+    });
+    await page.emulateMedia({ colorScheme: "light" });
+    await openAppearance(page);
+
+    const ocean = page.locator('[data-testid="theme-option-ocean"]');
+    await expect(ocean).toHaveAttribute("aria-checked", "true");
+    await expect(ocean.locator('[data-testid="theme-default-badge"]')).toBeVisible();
+    await expect(page.locator('[data-testid="theme-default-badge"]')).toHaveCount(1);
+    await expect.poll(() => background(page)).toBe("#eef6fb");
+    expect(saves).toEqual([]);
+
+    // Picking the default pins it against later default changes.
+    const save = page.waitForResponse((r) => r.url().endsWith("/user-theme") && r.request().method() === "PATCH");
+    await ocean.click();
+    await save;
+    expect(saves.map((b) => JSON.parse(b))).toEqual([{ themeId: "ocean" }]);
+    await page.context().close();
+  });
+
   test("a single-variant theme pins its appearance and the header toggle names it", async ({ browser }) => {
     const page = await pageAs(browser, uniqueUser());
     await openAppearance(page);

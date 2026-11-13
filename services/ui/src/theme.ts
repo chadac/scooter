@@ -18,7 +18,8 @@ export interface Theme {
 
 /** The account-wide choice, as GET/PATCH /user-theme carry it. */
 export interface ThemeChoice {
-  themeId: string;
+  /** Absent follows the deployment's default. */
+  themeId?: string;
   mode: ThemeMode;
 }
 
@@ -47,7 +48,10 @@ interface PaintCache {
 
 export interface ThemeState {
   mode: ThemeMode;
-  themeId: string;
+  /** The user's pick; undefined follows `defaultId`. */
+  themeId?: string;
+  /** scooter.ui.defaultTheme. */
+  defaultId: string;
   /** The built-in first, then the deployment's. */
   themes: readonly Theme[];
   /** Whether the deployment's themes have been fetched yet. */
@@ -71,6 +75,14 @@ function write(key: string, value: string) {
   }
 }
 
+function remove(key: string) {
+  try {
+    globalThis.localStorage?.removeItem(key);
+  } catch {
+    // Best-effort, as in write().
+  }
+}
+
 function isMode(v: unknown): v is ThemeMode {
   return v === "light" || v === "dark" || v === "system";
 }
@@ -87,7 +99,8 @@ function readCache(): PaintCache {
 const storedMode = read(MODE_KEY);
 let state: ThemeState = {
   mode: isMode(storedMode) ? storedMode : "system",
-  themeId: read(THEME_KEY) ?? BUILTIN_THEME.id,
+  themeId: read(THEME_KEY) ?? undefined,
+  defaultId: BUILTIN_THEME.id,
   themes: [BUILTIN_THEME],
   loaded: false,
 };
@@ -96,9 +109,10 @@ const listeners = new Set<() => void>();
 const media = globalThis.matchMedia?.("(prefers-color-scheme: dark)");
 let persist: ((choice: Partial<ThemeChoice>) => void) | undefined;
 
-/** The selected theme, else the built-in. */
+/** The user's pick, else the deployment default, else the built-in. */
 export function activeTheme(s: ThemeState = state): Theme {
-  return s.themes.find((t) => t.id === s.themeId) ?? BUILTIN_THEME;
+  const find = (id: string | undefined) => s.themes.find((t) => t.id === id);
+  return find(s.themeId) ?? find(s.defaultId) ?? BUILTIN_THEME;
 }
 
 /** The appearance a single-variant theme pins, else undefined. */
@@ -185,15 +199,16 @@ export const themeStore = {
     update({ themeId });
     persist?.({ themeId });
   },
-  /** The deployment's themes, from GET /themes. */
-  setThemes(themes: readonly Theme[]) {
-    update({ themes: [BUILTIN_THEME, ...themes.filter((t) => t.id !== BUILTIN_THEME.id)], loaded: true });
+  /** The deployment's themes and default, from GET /themes. */
+  setThemes(themes: readonly Theme[], defaultId: string = BUILTIN_THEME.id) {
+    update({ themes: [BUILTIN_THEME, ...themes.filter((t) => t.id !== BUILTIN_THEME.id)], defaultId, loaded: true });
   },
-  /** Take the account's saved choice without saving it back. */
+  /** Take the account's saved choice without saving it back; no theme follows the default. */
   adopt(choice: Partial<ThemeChoice>) {
     const next: Partial<ThemeState> = {};
-    if (choice.themeId && choice.themeId !== state.themeId) {
-      write(THEME_KEY, choice.themeId);
+    if (choice.themeId !== state.themeId) {
+      if (choice.themeId) write(THEME_KEY, choice.themeId);
+      else remove(THEME_KEY);
       next.themeId = choice.themeId;
     }
     if (isMode(choice.mode) && choice.mode !== state.mode) {

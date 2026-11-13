@@ -161,6 +161,10 @@ let
   } // lib.optionalAttrs (contextLimitOf id != null) { contextLimit = contextLimitOf id; }) modelIds);
   hasModels = modelIds != [ ];
 
+  uiDefaultTheme = let id = cfg.ui.defaultTheme; in
+    if id == "scooter" || cfg.ui.themes ? ${id} then id
+    else throw "scooter.ui.defaultTheme is \"${id}\", which is neither \"scooter\" nor a key of scooter.ui.themes (${lib.concatStringsSep ", " (lib.attrNames cfg.ui.themes)}).";
+
   # agent.env is set on the agent-host and, with agent.envPassthrough, forwarded to goose;
   # a name the platform already sets would be silently shadowed by k8s, so it throws.
   agentEnvNames = lib.attrNames cfg.agent.env ++ lib.attrNames cfg.agent.secretEnv;
@@ -707,6 +711,20 @@ in
         Rendered to the `agent-ui-themes` ConfigMap, which agent-host re-reads on each
         request, so editing it changes the themes on the next page load without a restart.
         An invalid theme is skipped with a warning in agent-host's log.
+      '';
+    };
+    ui.defaultTheme = mkOption {
+      type = types.str;
+      default = "scooter";
+      example = "acme";
+      description = ''
+        The theme users see until they pick one in Settings → Appearance: `scooter` (the
+        built-in) or a key of `ui.themes`, for branding. Users who haven't picked follow
+        it when it changes; a user who picks a theme, this one included, keeps it.
+
+        Rendered into the `agent-ui-themes` ConfigMap, so changing it applies on the next
+        page load without a restart. If the theme it names fails validation, users get
+        the built-in.
       '';
     };
     replicas = mkOption {
@@ -2168,10 +2186,10 @@ in
           metadata = { name = "agent-skills"; namespace = cfg.namespace; };
           data = allSkills;
         };
-      } // lib.optionalAttrs (cfg.ui.themes != { }) {
+      } // lib.optionalAttrs (cfg.ui.themes != { } || uiDefaultTheme != "scooter") {
         agent-ui-themes = {
           metadata = { name = "agent-ui-themes"; namespace = cfg.namespace; };
-          data = lib.mapAttrs' (id: theme: lib.nameValuePair "${id}.json"
+          data = { default = uiDefaultTheme; } // lib.mapAttrs' (id: theme: lib.nameValuePair "${id}.json"
             (if builtins.isAttrs theme then builtins.toJSON theme else builtins.readFile theme)) cfg.ui.themes;
         };
       } // lib.optionalAttrs (cfg.deployTools.configFiles != { }) {
