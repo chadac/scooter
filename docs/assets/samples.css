@@ -9,21 +9,76 @@
   width: 100%;
   border-radius: 6px;
   box-shadow: var(--md-shadow-z2);
+  cursor: zoom-in;
 }
-[data-md-color-scheme="default"] .scooter-demos .only-dark,
-[data-md-color-scheme="slate"] .scooter-demos .only-light { display: none; }
-.scooter-demos video { cursor: zoom-in; }
-.scooter-demo-zoom {
-  max-width: 95vw;
-  max-height: 95vh;
-  padding: 0;
+[data-md-color-scheme="default"] :is(.scooter-demos, .scooter-demo-focus) .only-dark,
+[data-md-color-scheme="slate"] :is(.scooter-demos, .scooter-demo-focus) .only-light { display: none; }
+
+/* A demo's title opens its full view; the icon says so. */
+.md-typeset .scooter-demos a.scooter-demo-open { color: inherit; }
+.md-typeset .scooter-demos a.scooter-demo-open:hover,
+.md-typeset .scooter-demos a.scooter-demo-open:focus-visible { color: var(--md-accent-fg-color); }
+.scooter-demo-open svg {
+  width: 0.8em;
+  height: 0.8em;
+  margin-left: 0.35em;
+  vertical-align: -0.05em;
+  fill: currentColor;
+  opacity: 0.55;
+  transition: opacity 125ms;
+}
+.scooter-demo-open:is(:hover, :focus-visible) svg { opacity: 1; }
+
+/* Full view: one demo fills the viewport until closed. */
+.scooter-demo-focus {
+  box-sizing: border-box;
+  width: 100vw;
+  height: 100dvh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 1rem clamp(1rem, 4vw, 3rem) 1.5rem;
   border: 0;
-  background: transparent;
+  background: var(--md-default-bg-color);
+  color: var(--md-default-fg-color);
 }
-.scooter-demo-zoom::backdrop { background: rgb(0 0 0 / 0.8); }
-.scooter-demo-zoom video {
-  display: block;
-  max-width: 95vw;
-  max-height: 95vh;
+.scooter-demo-focus[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.scooter-demo-focus::backdrop { background: var(--md-default-bg-color); }
+.scooter-demo-focus header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.md-typeset.scooter-demo-focus h2 { margin: 0; }
+.md-typeset.scooter-demo-focus p {
+  margin: 0 0 0.5rem;
+  color: var(--md-default-fg-color--light);
+}
+.scooter-demo-close {
+  display: flex;
+  flex: none;
+  padding: 0.4rem;
+  border-radius: 50%;
+  color: inherit;
+  cursor: pointer;
+}
+.scooter-demo-close:is(:hover, :focus-visible) { background: var(--md-default-fg-color--lightest); }
+.scooter-demo-close svg { width: 1.6rem; height: 1.6rem; fill: currentColor; }
+.scooter-demo-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+.scooter-demo-stage video {
+  max-width: 100%;
+  max-height: 100%;
   border-radius: 6px;
+  box-shadow: var(--md-shadow-z2);
 }
