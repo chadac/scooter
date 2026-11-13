@@ -4,6 +4,46 @@ Each release's section becomes its GitHub Release notes. Images keep their
 content tags and also gain `vX.Y.Z`; the flake is published to
 [FlakeHub](https://flakehub.com/flake/chadac-me/scooter).
 
+## v1.4.2
+
+### Features
+
+- **Run Scooter on one machine**: `nix run .#local -- up` brings up a k3d
+  cluster, deploys Scooter from the published images and prints
+  `http://localhost:8080`. It needs only Nix and Docker. (#1335)
+- **Atlassian contrib**: `contribs.atlassian` puts one Atlassian OAuth app
+  behind the forge proxy for Jira and Confluence, so agents use plain `curl`
+  without holding a token (#1351, #1353). It adds Confluence tools, page
+  auto-linking and a Confluence chip. (#1354)
+- **Kanban prompt gates**: a gate can ask the card's agent to do something
+  and answer whether it passed, with a note on the card. Prompt gates replace
+  command gates, and existing command gates are migrated. (#1347)
+- **Custom conversation retention**: a folder's retention menu takes any
+  lifetime in hours, days or weeks, and its Default item shows the actual
+  default. (#1338)
+- **Merge blockers named**: `github_pr_summary` and `gitlab_mr_summary` say
+  what holds a merge, which rules require it and who can clear it. The agent
+  can resolve threads that have been answered. (#1349, #1350)
+- **Docs**: a sample opens in a full-viewport view, and `samples/#<demo>`
+  links straight to it. (#1356)
+
+### Bug fixes
+
+- **Slack writes work again**: the read-only forge policy applies only to
+  `files.slack.com` and no longer blocks `slack.com/api`. (#1348)
+- **Forge proxy**: paths with `.` or `..` segments, including encoded ones,
+  never match a scoped API prefix or repo, so they get no token. (#1352)
+- **Long conversations keep updating** after older history is paged in.
+  (#1355)
+- **The ui nginx drains gracefully on pod stop** instead of cutting open
+  streams. (#1357)
+- **The conversation controller waits a full window** before it scales
+  agent-host down. (#1295)
+- **The broker grants FGA tuples with `on_duplicate=ignore`**, which stops an
+  OpenFGA error on every start. (#1345)
+- **e2e**: cold-sandbox waits for the warm-up run to end before suspending.
+  (#1344)
+
 ## v1.4.1
 
 ### Features
