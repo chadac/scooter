@@ -254,6 +254,14 @@ export const setConversationMinter = (fn: () => Promise<string | null>) => {
   mintId = fn;
 };
 
+/** Runs once the server issues a new conversation's id, before the create resolves, so the first send waits for it. */
+let afterCreate: (key: string, id: string) => Promise<void> = async () => {};
+
+/** Install the post-create step: folders.ts files a conversation started in a folder before its first run reads the folder. */
+export const setAfterCreate = (fn: (key: string, id: string) => Promise<void>) => {
+  afterCreate = fn;
+};
+
 /** How conversations reach the server, injected once at app start. */
 let agentHostConfig: AgentHostConfig = { baseUrl: "" };
 export const setAgentHostConfig = (cfg: AgentHostConfig) => {
@@ -270,7 +278,12 @@ export const conversationFor = (
   const found = conversations.get(session.id);
   // Rebuild when the persisted `serverId` has moved on, since the key may be a local placeholder that outlived creation.
   if (found && found.serverId() === session.serverId) return found;
-  const create = () => mintId();
+  const create = async () => {
+    const id = await mintId();
+    // A failed step must not fail the create; the step's owner retries once the id is adopted.
+    if (id?.trim()) await afterCreate(session.id, id).catch((e: unknown) => console.warn("[sessions] post-create step failed:", e));
+    return id;
+  };
   const onCreated = (key: string, id: string) => adoptServerId(key, id);
   const c = session.serverId
     ? new Conversation({

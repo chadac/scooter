@@ -267,6 +267,50 @@ describe("newIn: a conversation started inside a folder", () => {
     expect(folderStore.get().drafts).toEqual({});
   });
 
+  it("is filed before the create resolves, so the first send's run already sees the folder (#1361)", async () => {
+    const calls: Array<{ url: string; method: string }> = [];
+    let releasePut!: () => void;
+    const putDone = new Promise<void>((r) => (releasePut = r));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: { method?: string }) => {
+        const method = init?.method ?? "GET";
+        calls.push({ url: String(url), method });
+        if (method === "PUT") await putDone;
+        return { ok: true, status: method === "GET" ? 200 : 204, json: async () => ({ folders: [STARRED_FOLDER, WORK], placements: {} }) };
+      }) as never,
+    );
+    setConversationMinter(async () => "srv-first");
+    const key = folderStore.newIn(WORK.id);
+
+    let created = false;
+    const creating = conversationFor(current(key)).ensureCreated().then((id) => {
+      created = true;
+      return id;
+    });
+    await vi.waitFor(() => expect(calls.some((c) => c.method === "PUT")).toBe(true));
+    // Shown in the folder throughout, never bouncing through Recent.
+    expect(folderOf(current(key))).toBe(WORK.id);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(created, "the send must wait for the folder write").toBe(false);
+
+    releasePut();
+    expect(await creating).toBe("srv-first");
+    expect(calls.filter((c) => c.method === "PUT")).toEqual([
+      expect.objectContaining({ url: expect.stringContaining("/conversations/srv-first/folder") }),
+    ]);
+    expect(folderOf(current(key))).toBe(WORK.id);
+    expect(folderStore.get().drafts).toEqual({});
+  });
+
+  it("a failed folder write still creates the conversation, and filing retries once it has an id", async () => {
+    const calls = stubFetch({ folders: [STARRED_FOLDER, WORK], placements: {} }, 500);
+    setConversationMinter(async () => "srv-retry");
+    const key = folderStore.newIn(WORK.id);
+    expect(await conversationFor(current(key)).ensureCreated()).toBe("srv-retry");
+    expect(calls.filter((c) => c.method === "PUT")).toHaveLength(2);
+  });
+
   it("the main New conversation button takes a reused draft back out", () => {
     const key = folderStore.newIn(WORK.id);
     expect(folderStore.newIn(null)).toBe(key);

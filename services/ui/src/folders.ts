@@ -12,7 +12,7 @@ import {
 } from "./client.js";
 import { agentHostConfig } from "./config.js";
 import { serverIdOf } from "./sessionActions.js";
-import { serverKeyOf, sessionStore, type Session, type SidebarRow } from "./sessions.js";
+import { serverKeyOf, sessionStore, setAfterCreate, type Session, type SidebarRow } from "./sessions.js";
 
 export const STARRED = "starred";
 
@@ -288,7 +288,18 @@ export function folderPath(id: string, folders = state.folders): string {
   return names.join(" / ");
 }
 
-// File drafts once sent; forget discarded ones.
+// File a conversation started in a folder before its create resolves: the first send waits on
+// the create, and its run reads the folder for the kanban hooks and board skills (#1361). The
+// draft stays until the id is adopted so the row never drops to Recent in between.
+setAfterCreate(async (key, id) => {
+  const folderId = state.drafts[key];
+  if (!folderId) return;
+  await write({ ...state, placements: { ...state.placements, [id]: folderId } }, () =>
+    placeConversation(agentHostConfig, id, folderId),
+  );
+});
+
+// File drafts once sent (unless filed at create); forget discarded ones.
 sessionStore.subscribe(() => {
   const keys = Object.keys(state.drafts);
   if (keys.length === 0) return;
@@ -298,7 +309,7 @@ sessionStore.subscribe(() => {
   for (const key of keys) {
     const s = sessions.find((x) => x.id === key);
     if (s && serverIdOf(s) === undefined) continue;
-    if (s) sent.push([s, drafts[key]]);
+    if (s && state.placements[serverKeyOf(s)] !== drafts[key]) sent.push([s, drafts[key]]);
     delete drafts[key];
   }
   if (sent.length === 0 && Object.keys(drafts).length === keys.length) return;
