@@ -65,6 +65,12 @@ let
         example = "commented on GitLab";
         description = "Short verb for the card header.";
       };
+      source = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "atlassian-confluence";
+        description = "The source row the card shows; null is `ui.source`, keyed by the contrib name.";
+      };
       titles = mkOption {
         type = types.listOf types.str;
         default = [ ];
@@ -296,6 +302,19 @@ let
         '';
       };
 
+      sources = mkOption {
+        type = types.attrsOf (types.submodule sourceModule);
+        default = { };
+        example = literalExpression ''
+          { atlassian-confluence = { label = "Confluence"; icon = ./confluence.svg; color = "#1868DB"; linkProvider = true; }; }
+        '';
+        description = ''
+          More source rows, for a contrib whose links come from several products, keyed
+          by the links' `source`. Each id must be `<contrib name>-<product>`. Leave
+          `source` null when these replace it.
+        '';
+      };
+
       tools = mkOption {
         type = types.attrsOf (types.submodule toolModule);
         default = { };
@@ -404,7 +423,7 @@ let
     };
 
     config.enable = lib.mkDefault
-      (config.source != null || config.tools != { } || config.settingsTabs != [ ] || config.interruptRenderers != { }
+      (config.source != null || config.sources != { } || config.tools != { } || config.settingsTabs != [ ] || config.interruptRenderers != { }
         || config.panel != null || config.linkView != null || config.markdownFences != { } || config.markdownSyntax != null || config.views != { });
   };
 

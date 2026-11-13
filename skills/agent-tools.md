@@ -33,6 +33,14 @@ triggers:
 - jira issue
 - jql
 - transition jira
+- confluence
+- confluence page
+- confluence_search
+- confluence_get_page
+- confluence_create_page
+- confluence_update_page
+- confluence_comment
+- cql
 - broker endpoint
 - broker api
 - web search
@@ -118,6 +126,12 @@ on. Match the tool to your live tool list, not to this doc — the doc lists wha
 Typical flow: **acknowledge first** (a short "on it" via the matching tool), do the
 work, then post your result with the same tool. One acknowledgment, one result —
 don't repeat.
+
+**Confluence** tools are the exception: they're listed whenever the deployment
+has Confluence on, since they take the page explicitly: `confluence_search` (CQL),
+`confluence_get_page`, `confluence_create_page`, `confluence_update_page` and
+`confluence_comment`. `confluence_comment` without a page uses the page linked to
+this conversation. The `scooter-atlassian` skill covers them.
 
 ## Keeping track of a PR / MR: the summary tools
 

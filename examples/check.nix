@@ -918,7 +918,19 @@ let
         else [ "atlassian-off: sandboxPod.extraEnv still sets ATLASSIAN_CLOUD_ID — contrib/atlassian/deployment.nix is not gated on the contrib" ])
     ++ (if renders { contribs.atlassian = nixpkgsLib.mkForce { enable = false; }; contribs.jira.enable = true; }
         then [ "contribs.jira.enable = true rendered without contribs.atlassian — an old config ships Jira with no OAuth client and no error" ]
-        else [ ]);
+        else [ ])
+    # Confluence's chip and cards follow confluence.enable.
+    ++ (let on = uiManifestOf { }; off = uiManifestOf { contribs.atlassian.confluence.enable = nixpkgsLib.mkForce false; }; in
+        (if (on.sources.atlassian-confluence.label or null) == "Confluence" && builtins.elem "atlassian-confluence" on.linkProviders
+            && (on.toolCards.confluence_comment.provider or null) == "atlassian-confluence" then [ ]
+         else [ "the UI manifest has no Confluence source, link chip or comment card with atlassian on" ])
+        ++ (if off.sources ? atlassian-confluence || off.toolCards ? confluence_comment || builtins.elem "atlassian-confluence" off.linkProviders
+            then [ "atlassian.confluence.enable = false still ships Confluence's chip or tool cards" ] else [ ])
+        ++ (if on.sources ? jira then [ ] else [ "the Jira source row went missing beside Confluence's" ]))
+    ++ (if convUiThrow { contribs.atlassian.ui.sources.confluence = { label = "C"; icon = ../contrib/atlassian/confluence.svg; color = "#000"; }; } then [ ]
+        else [ "a ui.sources id without its contrib's prefix rendered" ])
+    ++ (if convUiThrow { contribs.atlassian.ui.tools.confluence_comment.source = nixpkgsLib.mkForce "atlassian-nope"; } then [ ]
+        else [ "a tool card naming a missing source row rendered" ]);
 
   # scooter.sandbox.volumes reaches the provisioner as SANDBOX_VOLUME_CLAIMS: defaults keep the
   # overlay claim on the warm pool, an override and the renamed workspaceStorageClass land on

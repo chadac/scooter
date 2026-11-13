@@ -45,7 +45,7 @@ in
       default = "";
       example = "https://acme.atlassian.net";
       description = ''
-        The site root, for the human /browse/{KEY} link of issues the agent
+        The site root, for the human links of issues and pages the agent
         creates. The proxy intercepts only `api.atlassian.com`.
       '';
     };
@@ -80,7 +80,10 @@ in
     options.confluence.enable = mkOption {
       type = types.bool;
       default = true;
-      description = "Proxy Confluence (`/ex/confluence/<cloudId>/`).";
+      description = ''
+        Proxy Confluence (`/ex/confluence/<cloudId>/`) and ship its agent tools
+        (`confluence_*`), page links and UI.
+      '';
     };
 
     config = {
@@ -93,8 +96,24 @@ in
           ATLASSIAN_SITE_URL = lib.mkIf (config.siteUrl != "") config.siteUrl;
           ATLASSIAN_FORGE_POLICY = lib.mkIf (config.forgePolicy != "") config.forgePolicy;
         };
-        # Mints with jira's Atlassian OAuth source.
-        pythonDeps = ps: [ ps.scooterContrib.jira ];
+        # jira's OAuth source, plus Confluence's Markdown conversion.
+        pythonDeps = ps: [ ps.scooterContrib.jira ps.markdown-it-py ps.markdownify ps.beautifulsoup4 ];
+      };
+      # The Confluence chip, icon and cards; Jira's live in contribs.jira.
+      ui = lib.mkIf config.confluence.enable {
+        sources.atlassian-confluence = {
+          label = "Confluence"; icon = ./confluence.svg; color = "#1868DB"; linkProvider = true;
+        };
+        tools.confluence_comment = {
+          source = "atlassian-confluence";
+          argKey = "body";
+          action = "commented on Confluence";
+        };
+        tools.confluence_create_page = {
+          source = "atlassian-confluence";
+          argKey = "title";
+          action = "created a Confluence page";
+        };
       };
       skills."scooter-atlassian.md" = ./skills/scooter-atlassian.md;
     };

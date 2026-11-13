@@ -713,6 +713,18 @@ ui = {
 };
 ```
 
+A contrib whose links come from several products declares one row per product in
+`ui.sources`, keyed by the links' `source`, which must be `<contrib>-<product>`.
+Each tool card then picks its row with `source`. contribs.atlassian does this for
+Confluence:
+
+```nix
+ui = {
+  sources.atlassian-confluence = { label = "Confluence"; icon = ./confluence.svg; color = "#1868DB"; linkProvider = true; };
+  tools.confluence_comment = { source = "atlassian-confluence"; argKey = "body"; action = "commented on Confluence"; };
+};
+```
+
 A contrib can also draw its own linked resources, for instance a PR as `#12 feat: …`.
 `ui.linkView.entry` names a component in its `ui/` that takes `LinkViewProps` from
 `@/src/contrib/sdk` and renders the text of one link whose `source` is this contrib.
@@ -723,7 +735,7 @@ module loads, if it fails, or for a contrib without one:
 ui.linkView.entry = "ui/LinkView.tsx";
 ```
 
-`enable` defaults to true as soon as `source`, `tools`, `settingsTabs`,
+`enable` defaults to true as soon as `source`, `sources`, `tools`, `settingsTabs`,
 `interruptRenderers`, `panel`, `linkView`, `markdownFences`, `markdownSyntax` or `views` is set, so a declared row cannot
 silently render nothing.
 

@@ -27,19 +27,36 @@ contribs:
 
 let
   withUi = lib.filterAttrs (_: c: c.ui.enable) contribs;
-  sourced = lib.filterAttrs (_: c: c.ui.source != null) withUi;
+  # `ui.source` keyed by contrib name, plus each `ui.sources` row.
+  sourceRows = lib.concatLists (lib.mapAttrsToList
+    (name: c:
+      lib.optional (c.ui.source != null) { id = name; owner = name; row = c.ui.source; }
+      ++ lib.mapAttrsToList
+        (id: row:
+          if lib.hasPrefix "${name}-" id then { inherit id row; owner = name; }
+          else throw "contribs.${name}.ui.sources.${id}: a source id must start with \"${name}-\"")
+        c.ui.sources)
+    withUi);
 
-  sources = lib.mapAttrs
-    (name: c: {
-      inherit (c.ui.source) label color linkProvider;
-      icon = iconData name c.ui.source.icon;
-    })
-    sourced;
+  sourceIds = map (r: r.id) sourceRows;
+  sourceDups = lib.unique (lib.filter (id: lib.count (x: x == id) sourceIds > 1) sourceIds);
+
+  sources =
+    if sourceDups != [ ] then throw "contribs' ui.source/ui.sources: duplicate source ids ${lib.concatStringsSep ", " sourceDups}"
+    else lib.listToAttrs (map
+      (r: lib.nameValuePair r.id {
+        inherit (r.row) label color linkProvider;
+        icon = iconData r.owner r.row.icon;
+      })
+      sourceRows);
 
   # Keyed by the tool name the UI normalizes an incoming ACP tool call down to; `provider` selects the contrib's source row.
   toolCards = lib.listToAttrs (lib.concatLists (lib.mapAttrsToList
     (name: c: lib.mapAttrsToList
-      (tool: t: lib.nameValuePair tool { provider = name; inherit (t) argKey action; })
+      (tool: t:
+        if t.source != null && !(sources ? ${t.source})
+        then throw "contribs.${name}.ui.tools.${tool}.source: no source row \"${t.source}\""
+        else lib.nameValuePair tool { provider = if t.source != null then t.source else name; inherit (t) argKey action; })
       c.ui.tools)
     withUi));
 
@@ -50,7 +67,7 @@ let
       c.ui.tools))
     withUi));
 
-  linkProviders = lib.attrNames (lib.filterAttrs (_: c: c.ui.source.linkProvider) sourced);
+  linkProviders = lib.attrNames (lib.filterAttrs (_: s: s.linkProvider) sources);
 
   # Keyed by tab id; validated (and thrown on) in settings-tabs.nix.
   settingsTabs = resolveSettingsTabs contribs;

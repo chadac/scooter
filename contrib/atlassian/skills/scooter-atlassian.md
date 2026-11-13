@@ -68,9 +68,36 @@ Jira REST v3 takes rich text as ADF (Atlassian Document Format); v2
 (`/rest/api/2/…`) still takes plain text, which is simpler for comments and
 descriptions.
 
+## Confluence tools
+
+With Confluence on, prefer these tools over `curl` for pages. They convert
+Markdown to Confluence's storage XHTML and back, handle page versions, and
+return Confluence's real error.
+
+| Tool | Does |
+|---|---|
+| `confluence_search(cql, limit=25)` | CQL search: one line per hit with id, title, space and URL |
+| `confluence_get_page(page, format="markdown")` | Read a page by id or URL |
+| `confluence_create_page(space, title, body, parent=None)` | Create a page in a space (by key); it is linked to this conversation |
+| `confluence_update_page(page, edits=[{old, new}] or body=…, title=None, message=None)` | Change a page |
+| `confluence_comment(body, page=None)` | Footer comment; without `page`, on the page linked to this conversation |
+
+- **Bodies are Markdown** unless you pass `format="storage"` for raw XHTML. Fenced
+  code becomes Confluence's code macro.
+- **Edit, don't rewrite.** `edits` is a list of `{old, new}`, like the edit tool:
+  each `old` must match exactly once in the current page or nothing is written.
+  Copy `old` from a fresh `confluence_get_page` in the same `format`.
+- **Macros and layouts don't survive Markdown.** `confluence_get_page` lists any
+  the page has. Markdown edits refuse such a page; read and edit it with
+  `format="storage"` instead, which leaves the rest byte for byte.
+- **A 409 on update** means someone saved first: re-read and redo the edit.
+- `page` takes a numeric id or a URL with `/pages/<id>/` or `?pageId=`. Tiny
+  `/x/…` links don't carry an id: search for the page instead.
+
 ## Links and tools
 
-- An issue you create (`POST …/rest/api/{2,3}/issue`) is linked to this
-  conversation automatically. Pages you create are not.
+- An issue you create (`POST …/rest/api/{2,3}/issue`) or a page you create
+  (`POST …/wiki/api/v2/pages`, or v1 `…/wiki/rest/api/content` with
+  `"type":"page"`) is linked to this conversation automatically.
 - To comment on the Jira issue this conversation came from, prefer the
   `jira_comment` tool: it finds the issue for you.
