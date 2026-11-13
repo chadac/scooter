@@ -10,6 +10,7 @@ FIXED_PROVIDER="@fixedProvider@"
 MANIFESTS_CLAUDE_CODE="@manifestsClaudeCode@"
 MANIFESTS_ANTHROPIC="@manifestsAnthropic@"
 MANIFESTS_OLLAMA="@manifestsOllama@"
+MANIFESTS_COPILOT="@manifestsCopilot@"
 # The agent-sandbox release the platform targets (same as test/support/cluster-up.sh).
 AGENT_SANDBOX_VERSION="@agentSandboxVersion@"
 
@@ -43,10 +44,11 @@ scooter-local ${VERSION} — Scooter on this machine (k3d + the published images
 Environment:
   SCOOTER_LOCAL_PORT       the UI port on localhost (default 8080)
   SCOOTER_LOCAL_STATE      state dir (default \$XDG_STATE_HOME/scooter-local)
-  SCOOTER_LOCAL_PROVIDER   claude-code | anthropic | ollama, to skip the prompt
+  SCOOTER_LOCAL_PROVIDER   claude-code | anthropic | ollama | copilot, to skip the prompt
   CLAUDE_CODE_OAUTH_TOKEN  the \`claude setup-token\` token, to skip the prompt
   ANTHROPIC_API_KEY        the API key, to skip the prompt
   OLLAMA_MODEL             the Ollama model, to skip the prompt
+  GITHUB_COPILOT_TOKEN     the GitHub token of a Copilot seat, to skip the prompt
   SCOOTER_LOCAL_CLAUDE_TAG the agent-host-claude image tag, instead of resolving it
   SCOOTER_LOCAL_K3D_ARGS   extra arguments for \`k3d cluster create\` (e.g. --agents 1)
 EOF
@@ -152,17 +154,19 @@ Which model provider should the agent use?
   1) Claude subscription (claude-code)   needs a token from \`claude setup-token\`
   2) Anthropic API key                   needs a key from console.anthropic.com
   3) Ollama on this machine              needs \`ollama serve\` with a model pulled
+  4) GitHub Copilot seat (copilot)       needs a GitHub token of a user with Copilot
 
 EOF
-    ask "Provider [1/2/3]: " choice
+    ask "Provider [1/2/3/4]: " choice
     case "$choice" in
       1|claude-code) choice=claude-code ;;
       2|anthropic) choice=anthropic ;;
       3|ollama) choice=ollama ;;
+      4|copilot) choice=copilot ;;
       *) die "unknown choice '$choice'" ;;
     esac
   fi
-  case "$choice" in claude-code|anthropic|ollama) ;; *) die "unknown provider '$choice' (claude-code, anthropic or ollama)" ;; esac
+  case "$choice" in claude-code|anthropic|ollama|copilot) ;; *) die "unknown provider '$choice' (claude-code, anthropic, ollama or copilot)" ;; esac
   mkdir -p "$STATE"
   echo "$choice" > "$provider_file"
   log "provider: $choice"
@@ -176,6 +180,7 @@ render_source() {
     claude-code) echo "$MANIFESTS_CLAUDE_CODE" ;;
     anthropic) echo "$MANIFESTS_ANTHROPIC" ;;
     ollama) echo "$MANIFESTS_OLLAMA" ;;
+    copilot) echo "$MANIFESTS_COPILOT" ;;
   esac
 }
 # Whether the render still carries a placeholder; a configuration that set the value
@@ -228,6 +233,20 @@ ensure_provider_secret() {
       [[ "$value" =~ ^[A-Za-z0-9._:/-]+$ ]] || die "model id '$value' has characters outside [A-Za-z0-9._:/-]"
       echo "$value" > "$STATE/ollama-model"
       ;;
+    copilot)
+      if [ -z "$force" ] && [ -z "${GITHUB_COPILOT_TOKEN:-}" ] && secret_exists agent-copilot-token; then return; fi
+      value="${GITHUB_COPILOT_TOKEN:-}"
+      if [ -z "$value" ]; then
+        echo
+        echo "Paste a GitHub token of a user with a Copilot seat: \`gh auth token\` prints the"
+        echo "gh CLI's, or make a fine-grained token at github.com/settings/tokens. goose"
+        echo "exchanges it for a Copilot API token; it is kept only in the cluster."
+        ask "Token: " value silent
+      fi
+      [ -n "$value" ] || die "no token given"
+      case "$value" in gh[a-z]_*|github_pat_*) ;; *) die "that does not look like a GitHub token (gho_…, ghp_…, ghu_… or github_pat_…)" ;; esac
+      put_secret agent-copilot-token token "$value"
+      ;;
   esac
 }
 
@@ -277,6 +296,9 @@ render() {
       if render_has ollama '@OLLAMA_MODEL@'; then model="${OLLAMA_MODEL:-$(cat "$STATE/ollama-model")}"; fi
       subst '@OLLAMA_HOST@' "$OLLAMA_CLUSTER_HOST" < "$MANIFESTS_OLLAMA" \
         | subst '@OLLAMA_MODEL@' "$model" > "$out"
+      ;;
+    copilot)
+      cp "$MANIFESTS_COPILOT" "$out"
       ;;
   esac
   chmod 644 "$out"

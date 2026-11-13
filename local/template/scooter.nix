@@ -2,9 +2,10 @@
 # setting there is a default, so anything set here wins.
 {
   scooter = {
-    # claude-code (a subscription token), anthropic (an API key) or ollama. `up` asks
-    # for the credential once; CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY / OLLAMA_MODEL
-    # in the environment answer it for scripts and the NixOS service.
+    # claude-code (a subscription token), anthropic (an API key), ollama or copilot (a
+    # GitHub Copilot seat). `up` asks for the credential once; CLAUDE_CODE_OAUTH_TOKEN /
+    # ANTHROPIC_API_KEY / OLLAMA_MODEL / GITHUB_COPILOT_TOKEN in the environment answer
+    # it for scripts and the NixOS service.
     local.provider = "claude-code";
 
     # With ollama, name the model here or let `up` ask:

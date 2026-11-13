@@ -26,7 +26,10 @@ and takes a few minutes; later runs take about a minute.
     - an **Anthropic API key** from [console.anthropic.com](https://console.anthropic.com/);
     - **[Ollama](https://ollama.com/)** on the same machine, with a model pulled. Nothing
       leaves your machine, but a model has to be good at tool use to drive a sandbox;
-      try a coding model of 7B parameters or more.
+      try a coding model of 7B parameters or more;
+    - a **GitHub Copilot seat**: a GitHub token of a user with Copilot (`gh auth token`
+      prints the gh CLI's). See [GitHub Copilot](../../features/models.md#github-copilot)
+      for what to expect.
 
 ## Commands
 
@@ -48,8 +51,9 @@ uploaded files) lives in `~/.local/state/scooter-local`. Credentials are stored 
 the cluster, as Secrets.
 
 For a script or a CI job, the prompts can be answered from the environment:
-`SCOOTER_LOCAL_PROVIDER=claude-code|anthropic|ollama`, and `CLAUDE_CODE_OAUTH_TOKEN`,
-`ANTHROPIC_API_KEY` or `OLLAMA_MODEL`. `SCOOTER_LOCAL_PORT` changes the port.
+`SCOOTER_LOCAL_PROVIDER=claude-code|anthropic|ollama|copilot`, and `CLAUDE_CODE_OAUTH_TOKEN`,
+`ANTHROPIC_API_KEY`, `OLLAMA_MODEL` or `GITHUB_COPILOT_TOKEN`. `SCOOTER_LOCAL_PORT` changes
+the port.
 
 ## What runs
 
@@ -134,7 +138,8 @@ environment). `nix build .#manifests` gives the same render as YAML for
   services.scooter-local = {
     enable = true;
     settings.scooter.local = { provider = "anthropic"; };
-    # ANTHROPIC_API_KEY=… / CLAUDE_CODE_OAUTH_TOKEN=… / OLLAMA_MODEL=…, outside the store.
+    # ANTHROPIC_API_KEY=… / CLAUDE_CODE_OAUTH_TOKEN=… / OLLAMA_MODEL=… / GITHUB_COPILOT_TOKEN=…,
+    # outside the store.
     environmentFile = "/run/secrets/scooter-local";
   };
 }

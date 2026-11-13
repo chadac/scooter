@@ -21,6 +21,7 @@ export interface ModelGroup {
 // Display labels for provider tags that differ from the tag; unknown tags render verbatim.
 const PROVIDER_LABELS: Record<string, string> = {
   byoc: "bring-your-own-claude",
+  copilot: "github-copilot",
 };
 
 /** Bucket for model ids no named provider offers, so a mixed catalog still lists them. */

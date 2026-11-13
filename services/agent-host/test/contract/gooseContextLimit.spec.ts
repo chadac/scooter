@@ -7,7 +7,7 @@
 import { describe, it, expect } from "vitest";
 
 import { catalogFromEnv, contextLimitOf } from "../../src/agent/models.js";
-import { bedrockEnv, gooseLaunchEnv, resolveFloorModel } from "../../src/index.js";
+import { bedrockEnv, floorTagOf, gooseLaunchEnv, resolveFloorModel } from "../../src/index.js";
 
 const catalog = catalogFromEnv({
   AGENT_MODELS_JSON: JSON.stringify([
@@ -67,6 +67,24 @@ describe("bedrockEnv", () => {
     expect(env).toEqual({ AWS_REGION: "us-east-1", GOOSE_AUTO_COMPACT_THRESHOLD: "0.8" });
   });
 
+  // GitHub Copilot through goose: the seat's token (and the GHES host) reach goose, but no
+  // other GITHUB_* var does, so a forge credential on the pod never leaks into a launch.
+  it("forwards the Copilot credential and host, and nothing else GitHub-shaped", () => {
+    const env = bedrockEnv({
+      GOOSE_PROVIDER: "github_copilot",
+      GITHUB_COPILOT_TOKEN: "gho_seat",
+      GITHUB_COPILOT_HOST: "https://github.example.com",
+      GITHUB_TOKEN: "ghp_forge",
+      GH_TOKEN: "ghp_forge",
+    } as NodeJS.ProcessEnv);
+    expect(env).toEqual({
+      GOOSE_PROVIDER: "github_copilot",
+      GITHUB_COPILOT_TOKEN: "gho_seat",
+      GITHUB_COPILOT_HOST: "https://github.example.com",
+      GOOSE_AUTO_COMPACT_THRESHOLD: "0.8",
+    });
+  });
+
   it("forwards the extra names listed in AGENT_ENV_PASSTHROUGH, when set", () => {
     const env = bedrockEnv({
       AGENT_ENV_PASSTHROUGH: "GOOSE_MAX_TURNS, GOOSE_TOOLSHIM\nUNSET_VAR",
@@ -123,5 +141,45 @@ describe("resolveFloorModel", () => {
     const c = { model: noGoose.defaultId, availableModels: noGoose.models.map((m) => m.id), modelCatalog: noGoose };
     expect(resolveFloorModel("model-smart", c, "goose")).toBe("model-smart");
     expect(resolveFloorModel("nope", c, "goose")).toBe(c.model);
+  });
+});
+
+// GitHub Copilot through goose is its own model namespace: Copilot's dotted ids live under
+// the "copilot" tag, so a Bedrock id never reaches a Copilot launch and vice versa.
+describe("floorTagOf + the copilot namespace", () => {
+  const cat = catalogFromEnv({
+    AGENT_MODELS_JSON: JSON.stringify([
+      { id: "us.anthropic.claude-opus-4-8", providers: ["goose"], defaultFor: ["goose"] },
+      { id: "gpt-5.4", providers: ["copilot"], defaultFor: ["copilot"], contextLimit: 1_050_000 },
+      { id: "claude-sonnet-4.6", providers: ["copilot"], contextLimit: 200_000 },
+    ]),
+  } as NodeJS.ProcessEnv);
+  const cfg = { model: cat.defaultId, availableModels: cat.models.map((m) => m.id), modelCatalog: cat };
+
+  it("tags the floor by GOOSE_PROVIDER", () => {
+    expect(floorTagOf({}, { GOOSE_PROVIDER: "github_copilot" } as NodeJS.ProcessEnv)).toBe("copilot");
+    expect(floorTagOf({}, { GOOSE_PROVIDER: "claude-code" } as NodeJS.ProcessEnv)).toBe("claude-code");
+    expect(floorTagOf({}, { GOOSE_PROVIDER: "aws_bedrock" } as NodeJS.ProcessEnv)).toBe("goose");
+    expect(floorTagOf({}, { GOOSE_PROVIDER: "anthropic" } as NodeJS.ProcessEnv)).toBe("goose");
+    expect(floorTagOf({}, {} as NodeJS.ProcessEnv)).toBe("goose");
+    // The fake sandbox runs the goose path whatever the provider says.
+    expect(floorTagOf({ fakeSandbox: true }, { GOOSE_PROVIDER: "github_copilot" } as NodeJS.ProcessEnv)).toBe("goose");
+  });
+
+  it("a Copilot launch never gets a Bedrock id, nor a Bedrock launch a Copilot id", () => {
+    expect(resolveFloorModel("us.anthropic.claude-opus-4-8", cfg, "copilot")).toBe("gpt-5.4");
+    expect(resolveFloorModel("claude-sonnet-4.6", cfg, "goose")).toBe("us.anthropic.claude-opus-4-8");
+  });
+
+  it("keeps a Copilot pick and launches goose with its declared context window", () => {
+    expect(resolveFloorModel("claude-sonnet-4.6", cfg, "copilot")).toBe("claude-sonnet-4.6");
+    const env = gooseLaunchEnv(
+      bedrockEnv({ GOOSE_PROVIDER: "github_copilot", GITHUB_COPILOT_TOKEN: "gho_seat" } as NodeJS.ProcessEnv),
+      cat,
+      "claude-sonnet-4.6",
+    );
+    expect(env.GOOSE_MODEL).toBe("claude-sonnet-4.6");
+    expect(env.GOOSE_CONTEXT_LIMIT).toBe("200000");
+    expect(env.GITHUB_COPILOT_TOKEN).toBe("gho_seat");
   });
 });

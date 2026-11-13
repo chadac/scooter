@@ -21,8 +21,35 @@ scooter.agent.availableModels = {
   Models tied for the top priority are sampled per conversation, and a conversation stays on its pick.
 - The **agent picks its own model** via the `list_models` / `switch_model` tools, steered by
   your `hint`s; the UI and management API can override per conversation.
-- Providers: `goose` (Bedrock), `claude-code` (in-cluster subscription SDK), `byoc` (the
-  user's own container).
+- Providers: `goose` (Bedrock, or any other goose provider such as `anthropic` and `ollama`),
+  `claude-code` (in-cluster subscription SDK), `byoc` (the user's own container), `copilot`
+  (goose's `github_copilot` provider; see below).
+
+## GitHub Copilot
+
+A Copilot seat drives the agent through goose's `github_copilot` provider. The credential is
+the seat's GitHub token (`gh auth token`, or a fine-grained token) in a Secret, read as
+`GITHUB_COPILOT_TOKEN`; goose exchanges it for a Copilot token on its own. Models go under
+the `copilot` group, in Copilot's dotted ids:
+
+```nix
+scooter.agent = {
+  provider = "github_copilot";
+  secretEnv.GITHUB_COPILOT_TOKEN = { secret = "agent-copilot-token"; key = "token"; };
+  availableModels.copilot = {
+    "gpt-5.4"           = { default = true; hint = "Fast enough for most work; streams."; };
+    "claude-sonnet-4.6" = { hint = "Small edits and PRs. Answers arrive in one block."; };
+  };
+};
+```
+
+- One token serves every conversation; per-user Copilot is not this provider.
+- Claude models do not stream through Copilot (GPT, Gemini and Grok do): a reply arrives as
+  one block, so prefer a GPT default.
+- GitHub Enterprise: set `GITHUB_COPILOT_HOST` (and `GITHUB_COPILOT_TOKEN_URL`) in
+  `scooter.agent.env`.
+- goose uses the internal endpoint editors use, presenting itself as one; check your Copilot
+  terms before deploying it for a team.
 
 ## Context windows
 
@@ -52,7 +79,7 @@ table.
 ## Extra goose environment
 
 goose gets only an allowlist of the agent-host's environment (provider, model, AWS
-credentials, `GOOSE_CONTEXT_LIMIT`, `OLLAMA_HOST`, …). To pass more:
+credentials, `GOOSE_CONTEXT_LIMIT`, `OLLAMA_HOST`, `GITHUB_COPILOT_TOKEN`, …). To pass more:
 
 ```nix
 scooter.agent.env = { GOOSE_AUTO_COMPACT_THRESHOLD = "0.7"; GOOSE_MAX_TURNS = "200"; };

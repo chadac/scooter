@@ -49,7 +49,8 @@ in
       description = ''
         A systemd EnvironmentFile with the credential `up` would otherwise ask for:
         `CLAUDE_CODE_OAUTH_TOKEN=…` (claude-code), `ANTHROPIC_API_KEY=…` (anthropic),
-        or `OLLAMA_MODEL=…` (ollama, unless `settings` sets `scooter.local.ollama.model`).
+        `GITHUB_COPILOT_TOKEN=…` (copilot), or `OLLAMA_MODEL=…` (ollama, unless
+        `settings` sets `scooter.local.ollama.model`).
         Outside the Nix store. The service has no terminal, so it fails with a message
         if a needed value is missing.
       '';

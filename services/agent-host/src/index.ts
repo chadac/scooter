@@ -378,9 +378,17 @@ export async function resolveUnsetDefault(
   return { model, provider: tagged ? tag : undefined };
 }
 
-/** The catalog tag of the in-pod floor provider. */
-function floorTagOf(config: { fakeSandbox?: boolean }): "claude-code" | "goose" {
-  return process.env.GOOSE_PROVIDER === "claude-code" && !config.fakeSandbox ? "claude-code" : "goose";
+/** The catalog tag of the in-pod floor provider, from GOOSE_PROVIDER: the in-cluster Claude
+ *  SDK is "claude-code", goose's GitHub Copilot provider is "copilot" (Copilot's own model
+ *  ids, a separate namespace from Bedrock's), and every other goose provider is "goose". */
+export function floorTagOf(
+  config: { fakeSandbox?: boolean },
+  env: NodeJS.ProcessEnv = process.env,
+): "claude-code" | "copilot" | "goose" {
+  if (config.fakeSandbox) return "goose";
+  if (env.GOOSE_PROVIDER === "claude-code") return "claude-code";
+  if (env.GOOSE_PROVIDER === "github_copilot") return "copilot";
+  return "goose";
 }
 
 /** Owners whose fake sandbox starts slowly when FAKE_SANDBOX_COLD_MS is set (e2e). */
@@ -481,6 +489,9 @@ export const GOOSE_ENV_ALLOWLIST: readonly string[] = [
   "AWS_ROLE_SESSION_NAME",
   // Ollama: GOOSE_PROVIDER=ollama + OLLAMA_HOST points goose at it.
   "OLLAMA_HOST",
+  // GitHub Copilot: GOOSE_PROVIDER=github_copilot + the GitHub token goose exchanges for a
+  // Copilot API token (cached under the pod's $HOME); HOST/TOKEN_URL for GitHub Enterprise.
+  "GITHUB_COPILOT_TOKEN", "GITHUB_COPILOT_HOST", "GITHUB_COPILOT_TOKEN_URL",
 ];
 
 /** goose's pod-level env: the allowlist plus the deployer's extra names from
@@ -2433,7 +2444,7 @@ export async function main(
       kind: usingClaude ? "claude" : "goose",
       priority: 0,
       // The model namespace this provider serves: goose = Bedrock ids, the in-cluster SDK =
-      // API ids under "claude-code".
+      // API ids under "claude-code", goose's Copilot provider = Copilot ids under "copilot".
       modelTag: floorTag,
       eligible: () => true,
       createClient: floorAcpClientFactory,

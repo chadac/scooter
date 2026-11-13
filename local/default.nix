@@ -16,6 +16,7 @@ let
     "@manifestsClaudeCode@" = toString (manifests.claude-code or "");
     "@manifestsAnthropic@" = toString (manifests.anthropic or "");
     "@manifestsOllama@" = toString (manifests.ollama or "");
+    "@manifestsCopilot@" = toString (manifests.copilot or "");
   };
   text = builtins.replaceStrings (builtins.attrNames vars) (builtins.attrValues vars)
     (builtins.readFile ./scooter-local.sh);

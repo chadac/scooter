@@ -807,7 +807,13 @@ in
       provider = mkOption {
         type = types.str;
         default = "aws_bedrock";
-        description = "GOOSE_PROVIDER for the real agent (e.g. aws_bedrock, anthropic).";
+        description = ''
+          GOOSE_PROVIDER for the real agent (e.g. aws_bedrock, anthropic, ollama,
+          github_copilot), or `claude-code` for the in-cluster Claude Agent SDK. A goose
+          provider's credential goes in `secretEnv` (e.g. ANTHROPIC_API_KEY, or
+          GITHUB_COPILOT_TOKEN for github_copilot); its models are listed under the
+          `goose` group of `availableModels`, except github_copilot's under `copilot`.
+        '';
       };
       model = mkOption {
         type = types.nullOr types.str;
@@ -888,8 +894,10 @@ in
           The model catalog, PROVIDER-FIRST: provider -> model id -> options.
           Model ids are provider-specific namespaces — "goose" runs Bedrock ids
           (us.anthropic.…) while "claude-code" (the in-cluster subscription SDK)
-          and "byoc" (the user's own container) run API ids (claude-sonnet-4-5) —
-          so the provider is the outer key: a model two providers offer is simply
+          and "byoc" (the user's own container) run API ids (claude-sonnet-4-5),
+          and "copilot" (goose's github_copilot provider) runs Copilot's dotted
+          ids (claude-sonnet-4.6, gpt-5.4) — so the provider is the outer key: a
+          model two providers offer is simply
           listed under both, and each provider group ranks its own models by
           `priority`. A run only ever receives a model its provider serves — the
           conversation's choice when that provider offers it, else that provider's

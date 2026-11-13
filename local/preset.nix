@@ -17,16 +17,26 @@ let
     "claude-fable-5-1" = { hint = "Most capable, slowest: the hardest reasoning and long agentic work."; };
   };
 
+  # The github_copilot provider's catalog: Copilot's own (dotted) ids. Which of them a
+  # seat may use is GitHub's policy. goose streams GPT replies but not Claude's through
+  # Copilot (those arrive as one block per turn), so a GPT model is the default.
+  copilotModels = {
+    "gpt-5.4" = { default = true; hint = "Capable and fast enough for most work; streams."; };
+    "claude-sonnet-4.6" = { hint = "Fast: simple edits, config fixes, small PRs. Answers arrive in one block."; };
+    "claude-opus-4.7" = { hint = "Most capable, slowest: the hardest reasoning. Answers arrive in one block."; };
+  };
+
 in
 {
   options.scooter.local = {
     provider = mkOption {
-      type = types.enum [ "claude-code" "anthropic" "ollama" ];
+      type = types.enum [ "claude-code" "anthropic" "ollama" "copilot" ];
       default = "claude-code";
       description = ''
         Which model provider the preset configures: `claude-code` (a Claude
         subscription token, the agent-host-claude image), `anthropic` (an Anthropic
-        API key through goose) or `ollama` (a server on the host through goose).
+        API key through goose), `ollama` (a server on the host through goose) or
+        `copilot` (a GitHub Copilot seat, through goose's github_copilot provider).
       '';
     };
     agentHostClaudeTag = mkOption {
@@ -43,6 +53,14 @@ in
       type = types.str;
       default = "agent-anthropic-key";
       description = "For the `anthropic` provider: the Secret holding the API key under `api-key`.";
+    };
+    copilot.secret = mkOption {
+      type = types.str;
+      default = "agent-copilot-token";
+      description = ''
+        For the `copilot` provider: the Secret holding a GitHub token of a user with a
+        Copilot seat under `token`. goose exchanges it for a Copilot API token.
+      '';
     };
     ollama = {
       host = mkOption {
@@ -149,6 +167,16 @@ in
             default = true;
             hint = "The local Ollama model.";
           };
+        };
+      })
+      # goose's GitHub Copilot provider on a seat's GitHub token. goose keeps the
+      # exchanged Copilot token under the agent-host's $HOME (an emptyDir), never in a
+      # sandbox; a rollout wipes it and goose exchanges again on the next launch.
+      (lib.mkIf (cfg.provider == "copilot") {
+        agent = {
+          provider = mkDefault "github_copilot";
+          secretEnv.GITHUB_COPILOT_TOKEN = mkDefault { secret = cfg.copilot.secret; key = "token"; };
+          availableModels.copilot = mkDefault copilotModels;
         };
       })
     ];

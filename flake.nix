@@ -173,7 +173,7 @@
           # for `nix run .#local`. buildSystem stays x86_64-linux on every host: the
           # published tags are that build's content hashes (publish-images.yml).
           hostPkgs = nixpkgs.legacyPackages.${system};
-          localRenders = lib.genAttrs [ "claude-code" "anthropic" "ollama" ] (provider:
+          localRenders = lib.genAttrs [ "claude-code" "anthropic" "ollama" "copilot" ] (provider:
             evalPlatformWith {
               inherit system;
               modules = [{
