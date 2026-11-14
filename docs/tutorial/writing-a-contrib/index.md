@@ -5,6 +5,15 @@ the platform without editing any service's core. The integrations you set up in
 [Setting up contribs](../contribs.md) are all built this way, so a new one has the
 same reach they do.
 
+A contrib can reach into each part of Scooter. It can add routes to the
+[broker](broker.md), which calls a provider's API with credentials the agent never
+holds. It can give the agent [typed tools](tools.md) and [skills](skills.md) that teach it
+the integration. It can [handle webhooks](webhooks.md), so a provider's events start or
+steer conversations. It can add packages and services to the agent's
+[sandbox](sandbox.md), and a brand icon and tool cards to the [chat UI](ui.md). Each of
+these parts is optional, and the [deployment half](deployment.md) turns the operator's
+options into config for whichever ones the contrib uses.
+
 This chapter builds one from scratch: **`acme`**, an integration for a made-up issue
 tracker at `https://api.acme.example`. By the end, the agent can call the Acme API with a
 token it never sees, comment on issues through a typed tool, and be started by a mention
