@@ -1,6 +1,6 @@
 # Extending Scooter
 
-Every Scooter integration is a **contrib**: a directory under `contrib/` that plugs into
+Every Scooter extension is a **contrib**: a directory under `contrib/` that plugs into
 the platform without editing any service's core. The integrations you set up in
 [Setting up contribs](../contribs.md) are all built this way, so a new one has the
 same reach they do.
