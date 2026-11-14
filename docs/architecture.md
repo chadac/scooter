@@ -69,7 +69,7 @@ rule says so, and then makes the call or vends a short-lived credential.
 On top of that, the broker offers a few conveniences:
 
 - **Forge proxy:** CLI tools like `git`, `gh`, `glab` and `jira` work in the sandbox with
-  no configuration, because the proxy adds the token on the way out.
+  no configuration, because the proxy injects the token on the way out.
 - **MCP tools:** typed tools the agent can call for common tasks on each service.
 - **REST interface:** plain HTTP routes for each service, which contribs declare.
 
