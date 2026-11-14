@@ -65,7 +65,7 @@ nav:
       - Customizing skills: tutorial/skills.md
       - Setting up contribs: tutorial/contribs.md
       - Configuring webhooks: tutorial/webhooks.md
-      - Writing a contrib:
+      - Extending Scooter:
           - Overview: tutorial/writing-a-contrib/index.md
           - The declaration: tutorial/writing-a-contrib/declaration.md
           - The deployment half: tutorial/writing-a-contrib/deployment.md

@@ -1,4 +1,4 @@
-# Writing a contrib
+# Extending Scooter
 
 Every Scooter integration is a **contrib**: a directory under `contrib/` that plugs into
 the platform without editing any service's core. The integrations you set up in

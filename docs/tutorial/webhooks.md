@@ -8,7 +8,7 @@ human colleague.
 
 Scooter ships webhook handlers for **GitHub**, **GitLab**, **Slack** and **Jira**.
 Other sources, such as Confluence, have no handler yet; see
-[Writing a contrib → Webhooks](writing-a-contrib/webhooks.md) to add one.
+[Extending Scooter → Webhooks](writing-a-contrib/webhooks.md) to add one.
 
 ## How it works
 
@@ -212,4 +212,4 @@ kubectl -n scooter logs deploy/agent-webhooks -f
 
 For more detail, set `scooter.webhooks.logLevel = "DEBUG"`.
 
-Next: [Writing a contrib](writing-a-contrib/index.md).
+Next: [Extending Scooter](writing-a-contrib/index.md).

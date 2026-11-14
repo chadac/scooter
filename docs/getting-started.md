@@ -268,7 +268,7 @@ The rest of the tutorial builds on this deployment:
    more.
 4. [Configuring webhooks](tutorial/webhooks.md): start conversations from comments,
    labels and mentions.
-5. [Writing a contrib](tutorial/writing-a-contrib/index.md): add an integration of your
+5. [Extending Scooter](tutorial/writing-a-contrib/index.md): add an integration of your
    own.
 
 Also useful:

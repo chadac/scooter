@@ -134,7 +134,7 @@ building from a fork. The fork already contains everything needed to publish.
 ### 1. Fork and change
 
 Fork [chadac-me/scooter](https://github.com/chadac-me/scooter) and make your changes on its
-`main`. For a contrib, [Writing a contrib](../writing-a-contrib/index.md) covers the code.
+`main`. For a contrib, [Extending Scooter](../writing-a-contrib/index.md) covers the code.
 Remember to enable it in `.github/deployment/config.nix`, which decides what goes into the
 images.
 

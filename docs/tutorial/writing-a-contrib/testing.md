@@ -80,7 +80,7 @@ it, and CI runs them on every PR.
    events to subscribe to.
 
 On a fork, the same steps publish to `ghcr.io/<you>/scooter/`. Deployments then set
-`scooter.registryPrefix` to match (see [Writing a contrib](index.md#where-a-contrib-lives)).
+`scooter.registryPrefix` to match (see [Extending Scooter](index.md#where-a-contrib-lives)).
 
 Once the images are published, operators enable the contrib like any other:
 
