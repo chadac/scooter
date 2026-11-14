@@ -60,16 +60,18 @@ does there can't leak a secret.
 
 ### Broker
 
-The broker is the only component that holds credentials. Every call a sandbox makes to
-an outside service goes through it.
+The broker gives the agent secretless access to privileged services, under a permission
+model the infrastructure owner defines. The sandbox never holds a credential. It
+authenticates to the broker with its ServiceAccount token, and the broker checks each
+request against the deployment's permission rules, asks the user to approve it when a
+rule says so, and then makes the call or vends a short-lived credential.
 
-- It authenticates each sandbox by its ServiceAccount token, checked with a TokenReview.
-- It applies the deployment's permission rules, and asks the user to approve a request
-  when a rule says so.
-- It either vends a short-lived credential or makes the request itself.
-- Forge traffic (`git`, `gh`) goes through its forge proxy, which adds the token on the
-  way out, so the sandbox never sees it.
-- Contribs add their own routes and agent tools to it.
+On top of that, the broker offers a few conveniences:
+
+- **Forge proxy:** CLI tools like `git`, `gh`, `glab` and `jira` work in the sandbox with
+  no configuration, because the proxy adds the token on the way out.
+- **MCP tools:** typed tools the agent can call for common tasks on each service.
+- **REST interface:** plain HTTP routes for each service, which contribs declare.
 
 ### Webhooks
 
