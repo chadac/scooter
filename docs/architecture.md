@@ -51,14 +51,12 @@ holding its credentials. The rest support them.
 
 ### Sandbox
 
-Each conversation gets its own sandbox: a `Sandbox` object from
-[agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) running a plain NixOS
-machine. The agent's shell commands and file edits all run here.
-
-- It has its own ServiceAccount, `sandbox-<id>`, which is its identity to the broker.
-- Its workspace lives on a persistent volume, so files and installed tools survive.
-- An idle sandbox is suspended and resumed on the next message, with its workspace intact.
-- It holds no credentials. Anything outside the cluster is reached through the broker.
+The sandbox is the agent's compute environment. Each conversation gets its own: a NixOS
+machine that works like a virtual machine the agent has full control over. The agent
+can install packages, run services, change its own system configuration and resize its
+CPU and memory. Its workspace persists, and an idle sandbox is suspended and picks up
+where it left off on the next message. It holds no credentials, so whatever the agent
+does there can't leak a secret.
 
 ### Broker
 
