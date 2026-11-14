@@ -60,7 +60,7 @@ machine. The agent's shell commands and file edits all run here.
 - An idle sandbox is suspended and resumed on the next message, with its workspace intact.
 - It holds no credentials. Anything outside the cluster is reached through the broker.
 
-### broker
+### Broker
 
 The broker is the only component that holds credentials. Every call a sandbox makes to
 an outside service goes through it.
@@ -73,7 +73,7 @@ an outside service goes through it.
   way out, so the sandbox never sees it.
 - Contribs add their own routes and agent tools to it.
 
-### webhooks
+### Webhooks
 
 The webhooks service lets outside events start or steer conversations.
 
@@ -82,7 +82,7 @@ The webhooks service lets outside events start or steer conversations.
   new one if needed.
 - Each contrib registers the handlers for its own provider.
 
-### agent-host
+### Agent-host
 
 The agent-host runs the agent. It is a fleet of replicas, and each one runs many
 conversations.
@@ -93,7 +93,7 @@ conversations.
 - It provisions, suspends, resumes and deletes sandboxes.
 - It stores each conversation's event history, so a reconnecting browser can replay it.
 
-### conversation-router
+### Conversation-router
 
 The router sits in front of every agent-host, so a request can reach whichever replica
 owns its conversation.
@@ -112,15 +112,15 @@ owns its conversation.
 
 - **UI:** serves the chat app. Its nginx proxies the API to the router and contribs'
   public paths to the broker.
-- **conversation-controller:** assigns each conversation to the least-loaded ready
+- **Conversation-controller:** assigns each conversation to the least-loaded ready
   agent-host pod, and reassigns it when that pod goes away, so any replica can pick up any
   conversation. It also scales the agent-host fleet to demand. It is leader-elected, so
   only one replica acts at a time.
-- **scheduler:** stores scheduled tasks and fires each one when it is due, as a new
+- **Scheduler:** stores scheduled tasks and fires each one when it is due, as a new
   conversation or a prompt to an existing one.
-- **byoc-controller** (optional): holds the WebSocket from each
+- **BYOC-controller** (optional): holds the WebSocket from each
   [bring-your-own-Claude](features/byoc.md) container, so any agent-host can drive it.
-- **warm-store-controller** (optional): keeps a pool of pre-filled `/nix/store` volumes so
+- **Warm-store-controller** (optional): keeps a pool of pre-filled `/nix/store` volumes so
   new sandboxes start faster.
 
 ## Network boundaries
