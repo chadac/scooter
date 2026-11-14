@@ -82,31 +82,23 @@ The webhooks service lets outside events start or steer conversations.
   new one if needed.
 - Each contrib registers the handlers for its own provider.
 
-### Agent-host
+### Agent-host and conversation-router
 
-The agent-host runs the agent. It is a fleet of replicas, and each one runs many
-conversations.
+The agent-host is a horizontally scalable service that runs the agents. Each replica runs
+the agent sessions for many conversations, and carries out their tool calls by exec'ing
+into each conversation's sandbox through the Kubernetes API. It also creates, suspends
+and resumes those sandboxes.
 
-- It runs one agent session per live conversation and bridges ACP to AG-UI for the browser.
-- It runs each tool call by exec'ing into the conversation's sandbox through the
-  Kubernetes API.
-- It provisions, suspends, resumes and deletes sandboxes.
-- It stores each conversation's event history, so a reconnecting browser can replay it.
+The agent is kept out of its sandbox on purpose. Secrets the agent process needs, such as
+its model credentials, stay in the agent-host and never enter the sandbox, where the
+agent runs arbitrary code. And because the sandbox holds no agent state, it can be resized
+or restarted without interrupting the agent's session.
 
-### Conversation-router
-
-The router sits in front of every agent-host, so a request can reach whichever replica
-owns its conversation.
-
-- It finds the conversation's owning pod and proxies the request there, whether HTTP,
-  SSE or WebSocket.
-- If the conversation has no pod yet, it claims one.
-- It checks who the caller is and whether they may see the conversation, since private
-  conversations admit only their owner.
-- It serves each conversation's web services, such as the terminal or VS Code, from
-  their own origin on `*.sandboxDomain`.
-- It has a separate listener where a sandbox can call its own conversation's API,
-  authenticated by its ServiceAccount token.
+The conversation-router sits in front of the agent-host replicas. Each conversation is
+owned by one replica, and the router sends every request for it there, whether HTTP, SSE
+or WebSocket. It also checks who the caller is and whether they may see the conversation,
+and it serves each conversation's web services from their own origin on
+`*.sandboxDomain`.
 
 ### Supporting services
 
