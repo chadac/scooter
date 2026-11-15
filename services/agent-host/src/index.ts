@@ -71,6 +71,7 @@ import { failedPodWait, formatPodWait, podWaitStatus } from "./exec/podReadiness
 import { createLocalSandboxApiClient } from "./exec/localExec.js";
 import { resolvePodTarget, sandboxPodReady, waitForSandboxPod } from "./exec/k8sExec.js";
 import { createWake, createWebServiceProxy } from "./proxy/webServiceProxy.js";
+import { createAcpSocket } from "./acp/conversationSocket.js";
 import { sandboxOriginsFromEnv } from "./proxy/sandboxOrigin.js";
 import { createWebServiceRegistry } from "./proxy/webServiceRegistry.js";
 import {
@@ -2015,6 +2016,29 @@ export async function main(
       },
     }),
   );
+
+  // A conversation as an ACP agent, for editors' agent panels.
+  if (store.readEventsWithChecksum && store.onAppend) {
+    server.useAcpSocket(
+      createAcpSocket({
+        sessions,
+        events: {
+          readEventsWithChecksum: store.readEventsWithChecksum.bind(store),
+          onAppend: store.onAppend.bind(store),
+          flush: store.flush?.bind(store),
+        },
+        resolveUser,
+        accessCheck,
+        recordSteering: async (id, user) => {
+          const author = steeringAuthor(user, sessions.get(id as SessionId)?.owner);
+          if (author) await authorStore.record(id, author);
+        },
+        answerInterrupt: resumeInterrupt,
+        sandboxDomain: sandboxOrigins?.domain,
+        publicUrl: process.env.PUBLIC_URL || undefined,
+      }),
+    );
+  }
 
   // Web-service reverse proxy (/c/<id>/<service>/... -> the conversation's pod), unmounted
   // for a fake sandbox.

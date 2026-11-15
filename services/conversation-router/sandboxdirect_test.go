@@ -247,6 +247,22 @@ func TestDirectFallsBackToTheAgentHost(t *testing.T) {
 	}
 }
 
+// The ACP socket is agent-host's own, even while the pod would take requests direct.
+func TestDirectLeavesThePlatformPathToTheAgentHost(t *testing.T) {
+	ah := newFakeAgentHost(t, func(*http.Request) (int, directTarget) { return 200, directTarget{} })
+	h := directHandler(t, ah, newDirectProxy())
+	rec := sandboxGet(t, h, "GET", "/_scooter/acp", nil)
+	if rec.Header().Get("X-Served-By") != "agent-host" {
+		t.Fatalf("not served by the agent-host: %d %q", rec.Code, rec.Body.String())
+	}
+	if n := ah.lookups.Load(); n != 0 {
+		t.Errorf("lookups = %d, want 0", n)
+	}
+	if got := ah.servedPaths(); strings.Join(got, ",") != "/c/"+directID+"/_scooter/acp" {
+		t.Errorf("agent-host served %v", got)
+	}
+}
+
 // A pod that refuses: a GET goes to the agent-host (which starts the unit and shows the
 // loading page) and the cached answer is dropped; a request with a body gets a 502.
 func TestDirectPodRefused(t *testing.T) {
