@@ -3,7 +3,8 @@ import { CircleHelp, CheckCircle2, Loader2 } from "lucide-react";
 import clsx from "clsx";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { api, type Question } from "./api";
+import { outbox, type Question } from "./api";
+import { SyncBadge } from "./Thread";
 
 export function QuestionCard({
   path,
@@ -31,7 +32,7 @@ export function QuestionCard({
     setBusy(true);
     setError("");
     try {
-      await api.add({ path, line: q.line, text: answer, kind: "answer", question_id: q.id });
+      await outbox.add({ path, line: q.line, text: answer, kind: "answer", question_id: q.id });
       setEditing(false);
       onChange();
     } catch (err) {
@@ -113,6 +114,7 @@ export function QuestionCard({
               {last.text}
             </span>
             {last.state === "pending" && <Loader2 className="size-3.5 animate-spin text-muted-foreground" />}
+            {(last.state === "queued" || last.state === "failed") && <SyncBadge a={last} />}
             <button className="btn-ghost ml-auto" onClick={() => setEditing(true)}>
               Change
             </button>

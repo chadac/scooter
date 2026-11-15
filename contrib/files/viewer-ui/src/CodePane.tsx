@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { File, type LineAnnotation, type SelectedLineRange } from "@pierre/diffs/react";
-import { api, type Thread } from "./api";
+import { outbox, type Thread } from "./api";
 import { Composer, ThreadCard } from "./Thread";
 import { useNarrow } from "./media";
 
@@ -79,7 +79,7 @@ export function CodePane({
               submitLabel="Comment"
               onCancel={() => setDraft(null)}
               onSubmit={async (text) => {
-                await api.add({ path, line: anchor.line, quote: anchor.quote, text });
+                await outbox.add({ path, line: anchor.line, quote: anchor.quote, text });
                 setDraft(null);
                 onChange();
               }}

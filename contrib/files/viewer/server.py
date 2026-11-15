@@ -451,6 +451,7 @@ class Handler(BaseHTTPRequestHandler):
             thread=str(body.get("thread") or ""),
             question_id=str(body.get("question_id") or ""),
             by=str(body.get("by") or "reviewer"),
+            id=str(body.get("id") or ""),
         )
         # Where the anchor actually landed, since `add` places it against live content
         # and the browser's line was only a hint.

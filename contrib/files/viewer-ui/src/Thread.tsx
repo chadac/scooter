@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Check, ChevronDown, ChevronUp, CircleAlert, Loader2, MessageSquare, RotateCcw, Trash2, Undo2 } from "lucide-react";
 import clsx from "clsx";
-import { api, type Annotation, type Thread } from "./api";
+import { outbox, useOutbox, type Annotation, type Thread } from "./api";
 import { previewOf } from "./markdown";
 
 function ago(iso: string): string {
@@ -13,7 +13,26 @@ function ago(iso: string): string {
   return new Date(iso).toLocaleDateString();
 }
 
-function SyncBadge({ a, onChange }: { a: Annotation; onChange: () => void }) {
+/** Where a comment is on its way to the agent; nothing once delivered. */
+export function SyncBadge({ a, onChange }: { a: Annotation; onChange?: () => void }) {
+  const { stalled } = useOutbox();
+  if (a.state === "queued")
+    return stalled ? (
+      <button
+        className="inline-flex items-center gap-1 whitespace-nowrap text-xs text-warning hover:underline"
+        title="Saved in this browser; it sends once the sandbox is up"
+        onClick={() => outbox.poke()}
+      >
+        <RotateCcw className="size-3" /> still waking, retry
+      </button>
+    ) : (
+      <span
+        className="inline-flex items-center gap-1 whitespace-nowrap text-xs text-muted-foreground"
+        title="Waking the sandbox to send this; it's saved in this browser meanwhile"
+      >
+        <Loader2 className="size-3 animate-spin" /> submitting…
+      </span>
+    );
   if (a.state === "pending")
     return (
       <span
@@ -28,7 +47,7 @@ function SyncBadge({ a, onChange }: { a: Annotation; onChange: () => void }) {
       <button
         className="inline-flex items-center gap-1 text-xs text-destructive hover:underline"
         title={a.error}
-        onClick={() => api.retry(a.id).then(onChange)}
+        onClick={() => outbox.retry(a.id).then(onChange)}
       >
         <CircleAlert className="size-3" /> not delivered, retry
       </button>
@@ -141,7 +160,7 @@ function DeleteButton({ a, thread, onChange }: { a: Annotation; thread: Thread; 
           return;
         setBusy(true);
         try {
-          await api.remove(a.id);
+          await outbox.remove(a.id);
         } finally {
           setBusy(false);
           onChange();
@@ -184,7 +203,7 @@ export function ThreadCard({
     setFailed(false);
     setOpen(!want);
     try {
-      await api.resolve(thread.id, want);
+      await outbox.resolve(thread.id, want);
     } catch {
       setPending(null);
       setOpen(true);
@@ -270,7 +289,7 @@ export function ThreadCard({
             submitLabel="Reply"
             onCancel={() => setReplying(false)}
             onSubmit={async (text) => {
-              await api.add({ path, line: thread.line, quote: thread.quote, text, thread: thread.id });
+              await outbox.add({ path, line: thread.line, quote: thread.quote, text, thread: thread.id });
               setReplying(false);
               onChange();
             }}
@@ -314,7 +333,7 @@ export function RetryAll({ failed, onChange }: { failed: Annotation[]; onChange:
   return (
     <button
       className="btn-ghost text-destructive"
-      onClick={() => Promise.all(failed.map((a) => api.retry(a.id))).then(onChange)}
+      onClick={() => Promise.all(failed.map((a) => outbox.retry(a.id))).then(onChange)}
     >
       <RotateCcw className="size-3.5" /> Retry {failed.length} undelivered
     </button>

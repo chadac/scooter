@@ -105,7 +105,7 @@ export default defineConfig({
         test: {
           name: "ui",
           // Contrib UI tests sit beside their cards in contrib/<name>/ui/.
-          include: ["services/ui/src/**/*.{test,spec}.{ts,tsx}", "contrib/*/ui/*.{test,spec}.{ts,tsx}"],
+          include: ["services/ui/src/**/*.{test,spec}.{ts,tsx}", "contrib/*/ui/*.{test,spec}.{ts,tsx}", "contrib/files/viewer-ui/src/*.test.ts"],
           environment: "node",
         },
       },

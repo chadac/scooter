@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ChevronRight, CircleHelp, Code2, Eye, FileSearch, MessageSquare, Moon, PanelLeft, RefreshCw, Sun } from "lucide-react";
+import { ArrowLeft, ChevronRight, CircleHelp, Code2, Eye, FileSearch, Loader2, MessageSquare, Moon, PanelLeft, RefreshCw, Sun } from "lucide-react";
 import clsx from "clsx";
-import { api, CONVERSATION_URL, threadsOf, type Annotation, type FileView, type Question } from "./api";
+import { api, CONVERSATION_URL, outbox, threadsOf, useOutbox, type Annotation, type FileView, type Question } from "./api";
+import { overlay, overlayQuestions } from "./outbox";
 import { Tree } from "./Tree";
 import { CodePane } from "./CodePane";
 import { MarkdownPane } from "./MarkdownPane";
@@ -65,8 +66,11 @@ export function App() {
   const [{ path, hash }, setLoc] = useState(current);
   const [file, setFile] = useState<FileView | null>(null);
   const [error, setError] = useState("");
-  const [annotations, setAnnotations] = useState<Annotation[]>([]);
-  const [questions, setQuestions] = useState<Question[]>([]);
+  const [served, setAnnotations] = useState<Annotation[]>([]);
+  const [servedQuestions, setQuestions] = useState<Question[]>([]);
+  const box = useOutbox();
+  const annotations = useMemo(() => overlay(served, box.entries, path), [served, box.entries, path]);
+  const questions = useMemo(() => overlayQuestions(servedQuestions, annotations), [servedQuestions, annotations]);
   const [source, setSource] = useState(false);
   const narrow = useNarrow();
   const [wideTree, setWideTree] = useState(true);
@@ -118,6 +122,11 @@ export function App() {
       setError(String(e.message ?? e));
     });
   }, [path, load]);
+
+  // A queued write landed: refetch what the server holds.
+  useEffect(() => {
+    if (path && box.delivered) load(path).catch(() => {});
+  }, [box.delivered, path, load]);
 
   const [live, toggleLive] = useLive();
 
@@ -251,6 +260,8 @@ export function App() {
         </div>
       </header>
 
+      <SleepBar />
+
       <div className="relative flex min-h-0 flex-1">
         {tree && narrow && path && (
           <div aria-hidden className="absolute inset-0 z-30 bg-black/30" onClick={() => setDrawer(false)} />
@@ -303,6 +314,35 @@ export function App() {
           )}
         </main>
       </div>
+    </div>
+  );
+}
+
+/** Shows queued changes waiting on the sandbox to wake. */
+function SleepBar() {
+  const { entries, stalled } = useOutbox();
+  const n = entries.filter((e) => !e.error).length;
+  if (!n) return null;
+  const changes = `${n} change${n === 1 ? "" : "s"}`;
+  return (
+    <div
+      role="status"
+      className={clsx(
+        "flex shrink-0 items-center gap-2 border-b border-border px-3 py-1 font-sans text-xs",
+        stalled ? "bg-warning/10 text-warning" : "bg-brand/10 text-brand",
+      )}
+    >
+      {!stalled && <Loader2 className="size-3.5 animate-spin" />}
+      {stalled ? (
+        <>
+          <span>The sandbox is still waking. {changes} {n === 1 ? "is" : "are"} saved in this browser and will send once it is up.</span>
+          <button className="ml-auto underline" onClick={() => outbox.poke()}>
+            Retry now
+          </button>
+        </>
+      ) : (
+        <span>Sandbox is asleep, waking it to send {changes}.</span>
+      )}
     </div>
   );
 }

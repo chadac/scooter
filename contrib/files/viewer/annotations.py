@@ -418,8 +418,18 @@ class Annotations:
         thread: str = "",
         question_id: str = "",
         by: str = "reviewer",
+        id: str = "",
     ) -> Record:
-        """Record an annotation against live content, and queue it for the broker."""
+        """Record an annotation and queue it; a held `id` returns its record."""
+        if id:
+            try:
+                id = str(uuid.UUID(id))
+            except ValueError:
+                raise AnnotationError("id must be a UUID") from None
+            with self._lock:
+                held = self.records.get(id)
+            if held is not None:
+                return held
         if kind not in KINDS:
             raise AnnotationError(f"kind must be one of {sorted(KINDS)}")
         if by not in AUTHORS:
@@ -441,7 +451,7 @@ class Annotations:
 
         now = _now_iso()
         record = Record(
-            id=str(uuid.uuid4()),
+            id=id or str(uuid.uuid4()),
             path=path,
             line=at,
             quote=quote,

@@ -189,6 +189,22 @@ def test_a_reply_joins_the_thread_it_names(store):
     assert reply.id != first.id
 
 
+def test_a_replayed_client_id_returns_the_record_it_made(store):
+    # An outbox replay after a lost response must not double-post.
+    cid = "6f1c2b9e-3d4a-4e5f-8a7b-1c2d3e4f5a6b"
+    first = store.add(content=DOC, path="doc.md", line=2, quote="bravo", text="once", id=cid)
+    again = store.add(content=DOC, path="doc.md", line=2, quote="bravo", text="once", id=cid)
+    assert first.id == again.id == cid
+    assert first.thread == cid
+    assert [r.id for r in store.records.values()] == [cid]
+    assert len(store.queue) == 1
+
+
+def test_a_client_id_must_be_a_uuid(store):
+    with pytest.raises(ann.AnnotationError):
+        store.add(content=DOC, path="doc.md", line=2, quote="bravo", text="x", id="../etc")
+
+
 def test_an_answer_needs_the_question_it_answers(store):
     with pytest.raises(ann.AnnotationError):
         store.add(

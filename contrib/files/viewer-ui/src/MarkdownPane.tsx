@@ -14,7 +14,7 @@ import remarkGfm from "remark-gfm";
 import { codeToHtml } from "shiki";
 import { MessageSquare, MessageSquarePlus, X } from "lucide-react";
 import clsx from "clsx";
-import { api, rawUrl, type Question, type Thread } from "./api";
+import { outbox, rawUrl, type Question, type Thread } from "./api";
 import { hrefFor, isExternal, navigate, resolveRel, slug } from "./nav";
 import { BLOCKS, blockAt, blockSource, findText, plainOf, previewOf, rehypeSourceLines, segments, sourceAnchor, remarkHtmlImages, remarkInlineImages } from "./markdown";
 import { Composer, Quote, ThreadCard } from "./Thread";
@@ -608,7 +608,7 @@ export function MarkdownPane({
               submitLabel="Comment"
               onCancel={() => setDraft(null)}
               onSubmit={async (text) => {
-                await api.add({ path, line: draft.line, quote: draft.quote, text });
+                await outbox.add({ path, line: draft.line, quote: draft.quote, text });
                 setDraft(null);
                 window.getSelection()?.removeAllRanges();
                 onChange();

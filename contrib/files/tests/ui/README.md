@@ -51,6 +51,9 @@ What it asserts, each one a bug that shipped or a contract someone relies on:
   can't reach the viewer's page, its cookies or its API; Source shows the HTML
 - in a code file, a range comment anchors to its first line, quotes the range, and
   its thread renders inline under those lines
+- a comment made while the sandbox is asleep (the proxy's 503) shows at once as
+  submitting, survives a reload, polls the proxy's status route to wake it, and is
+  delivered exactly once when it is up
 - no page errors
 
 CI home: this belongs in the Playwright suite under `test/e2e`, which already has the

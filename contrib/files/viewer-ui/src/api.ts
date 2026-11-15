@@ -1,4 +1,7 @@
-// The viewer server's JSON API (contrib/files/viewer/server.py), unchanged.
+// The viewer server's JSON API (contrib/files/viewer/server.py).
+
+import { useSyncExternalStore } from "react";
+import { Asleep, Outbox, type AddBody, type Write } from "./outbox";
 
 declare global {
   interface Window {
@@ -40,7 +43,7 @@ export type Annotation = {
   by: "reviewer" | "agent";
   resolved: boolean;
   created_at: string;
-  state: "pending" | "acked" | "failed" | "disabled";
+  state: "pending" | "acked" | "failed" | "disabled" | "queued";
   error: string;
   anchor_state: "ok" | "moved" | "stale" | "unknown";
 };
@@ -66,7 +69,7 @@ export class ApiError extends Error {
 
 async function call<T>(method: string, route: string, body?: unknown, query?: Record<string, string>): Promise<T> {
   const qs = query ? `?${new URLSearchParams(query)}` : "";
-  const r = await fetch(`${BASE}/api/${route}${qs}`, {
+  const r = await reach(`${BASE}/api/${route}${qs}`, {
     method,
     headers: body === undefined ? undefined : { "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -74,6 +77,18 @@ async function call<T>(method: string, route: string, body?: unknown, query?: Re
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new ApiError(data.error ?? `${r.status} ${r.statusText}`, r.status);
   return data as T;
+}
+
+// Only the proxy sends 502/503: the sandbox or unit is down.
+async function reach(url: string, init?: RequestInit): Promise<Response> {
+  let r: Response;
+  try {
+    r = await fetch(url, init);
+  } catch {
+    throw new Asleep("the sandbox is not reachable");
+  }
+  if (r.status === 502 || r.status === 503) throw new Asleep(`the sandbox is asleep (${r.status})`);
+  return r;
 }
 
 /** An image file's bytes; `v` busts the cache when it changes. */
@@ -98,15 +113,7 @@ export const api = {
   annotations: (path: string) =>
     call<{ annotations: Annotation[] }>("GET", "annotations", undefined, { path }).then((r) => r.annotations),
   questions: (path: string) => call<{ questions: Question[]; etag: string }>("GET", "questions", undefined, { path }),
-  add: (body: {
-    path: string;
-    line: number;
-    quote?: string;
-    text: string;
-    thread?: string;
-    kind?: "comment" | "answer";
-    question_id?: string;
-  }) => call<{ annotation: Annotation }>("POST", "annotations", body),
+  add: (body: AddBody & { id?: string }) => call<{ annotation: Annotation }>("POST", "annotations", body),
   resolve: (thread: string, resolved: boolean) =>
     call("POST", `annotations/threads/${encodeURIComponent(thread)}/resolve`, { resolved }),
   retry: (id: string) => call("POST", `annotations/${encodeURIComponent(id)}/retry`, {}),
@@ -147,3 +154,31 @@ export function threadsOf(annotations: Annotation[]): Thread[] {
     })
     .sort((a, b) => a.line - b.line);
 }
+
+function send(w: Write): Promise<unknown> {
+  if (w.op === "add") return api.add(w.body);
+  if (w.op === "resolve") return api.resolve(w.thread, w.resolved);
+  if (w.op === "remove") return api.remove(w.target);
+  return api.retry(w.target);
+}
+
+/** Wakes the sandbox via the proxy route the loading page polls. */
+async function awake(): Promise<boolean> {
+  const r = await fetch(`${BASE}/__scooter_status`, { cache: "no-store" });
+  // No proxy in front: just try the write.
+  if (r.status === 404) return true;
+  const data = await r.json().catch(() => null);
+  return typeof data?.running === "boolean" ? data.running : r.ok;
+}
+
+let storage: Storage | null = null;
+try {
+  storage = window.localStorage;
+} catch {
+  // Blocked storage: the queue lasts only as long as the page.
+}
+
+/** Every page write goes here, so a sleeping sandbox queues it. */
+export const outbox = new Outbox({ send, awake, storage, key: `files-outbox:${BASE}` });
+
+export const useOutbox = () => useSyncExternalStore(outbox.subscribe, outbox.snapshot);

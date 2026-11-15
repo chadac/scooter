@@ -576,6 +576,44 @@ fetch("${url}/api/list?path=").then(() => out.push("fetch:ok"), () => out.push("
   );
   check("the thread renders inline under its lines", (await page.locator("[data-thread]").count()) === 1);
 
+  // --- asleep: a comment waits in the browser, wakes the sandbox, then sends ------
+
+  // Playwright plays the proxy: 503 on writes, a status route.
+  writeFileSync(join(ws, "docs/asleep.md"), "# Asleep\n\nA paragraph to comment on while the sandbox sleeps.\n");
+  let asleep = true;
+  let statusPolls = 0;
+  await page.route(`${url}/api/annotations`, (route) =>
+    asleep && route.request().method() === "POST"
+      ? route.fulfill({ status: 503, contentType: "text/plain", body: "files is asleep" })
+      : route.continue(),
+  );
+  await page.route(`${url}/__scooter_status`, (route) => {
+    statusPolls++;
+    return route.fulfill({ contentType: "application/json", body: JSON.stringify({ running: !asleep, logs: "", phase: "sandbox" }) });
+  });
+  await page.goto(`${url}/?path=docs/asleep.md`);
+  await page.locator("article h1").waitFor();
+  await select(0, "A paragraph", "comment on");
+  await page.getByRole("button", { name: "Comment", exact: true }).first().click();
+  await composer.fill("written while asleep");
+  await submit.click();
+  const waking = page.getByText("submitting…");
+  check("asleep: the comment shows at once as submitting", await waking.waitFor({ timeout: 5000 }).then(() => true, () => false));
+  check("asleep: the composer clears and shows no error", !(await page.getByText("files is asleep").count()));
+  check("asleep: a bar says the sandbox is waking", await page.getByRole("status").getByText("waking it to send 1 change").isVisible());
+  check("asleep: nothing reached the server yet", (await notes("docs/asleep.md")).length === 0);
+  await page.reload();
+  await page.locator("article h1").waitFor();
+  check("asleep: the queued comment survives a reload", await waking.waitFor({ timeout: 5000 }).then(() => true, () => false));
+  check("asleep: the page polls the proxy's status route to wake it", await until(() => statusPolls > 1), `${statusPolls} polls`);
+  asleep = false;
+  check("asleep: the badge clears once the sandbox is up", await waking.waitFor({ state: "detached", timeout: 10_000 }).then(() => true, () => false));
+  const sent = (await notes("docs/asleep.md")).filter((a) => a.text === "written while asleep");
+  check("asleep: the comment is delivered exactly once", sent.length === 1, `${sent.length} written`);
+  check("asleep: the bar goes away", (await page.getByRole("status").count()) === 0);
+  check("asleep: the outbox is emptied", await page.evaluate(() => !Object.keys(localStorage).some((k) => k.startsWith("files-outbox"))));
+  await page.unrouteAll();
+
   // --- phone: tree drawer, tap to comment, comments in a bottom sheet -------------
 
   const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
