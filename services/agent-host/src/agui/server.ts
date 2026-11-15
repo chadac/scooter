@@ -14,6 +14,9 @@ import { userAssertionOf, type AguiEvent, type ApproverIdentity } from "../bridg
 import type { SessionId, ThreadId } from "../types.js";
 import type { Router } from "../http/router.js";
 import { sandboxLabelOf, type WebServiceProxy } from "../proxy/webServiceProxy.js";
+import type { createAcpSocket } from "../acp/conversationSocket.js";
+
+type AcpSocketHandler = ReturnType<typeof createAcpSocket>;
 import { logger, withConversation } from "../log.js";
 import { isDbUnavailable } from "../db/pgPool.js";
 import type { AccessCheck } from "../session/access.js";
@@ -214,6 +217,8 @@ export interface AguiServer {
   use(router: Router): void;
   /** Mount the web-service reverse proxy (/c/<id>/<service>/...), an HTTP fallback before the 404 and the `upgrade` handler for WebSocket services. */
   useProxy(proxy: WebServiceProxy): void;
+  /** Mount the ACP socket (/c/<id>/_scooter/acp), consulted on `upgrade` before the proxy. */
+  useAcpSocket(acp: AcpSocketHandler): void;
   /** Register a raw WebSocket upgrade handler for an exact pathname, consulted before the proxy; the handler owns the socket. */
   onUpgrade(pathname: string, handler: (req: import("node:http").IncomingMessage, socket: import("node:stream").Duplex, head: Buffer) => void): void;
   /** Set the verifier that decides whether a /agui request is the trusted webhooks caller, gating the privileged `owner` field. */
@@ -254,6 +259,7 @@ export function createAguiServer(): AguiServer {
   let server: Server | undefined;
   let mountedRouter: Router | undefined;
   let mountedProxy: WebServiceProxy | undefined;
+  let mountedAcp: AcpSocketHandler | undefined;
   // Exact-pathname WS upgrade handlers, consulted before the proxy on `upgrade`.
   const upgradeHandlers = new Map<string, (req: IncomingMessage, socket: import("node:stream").Duplex, head: Buffer) => void>();
   let ownerVerifier: ((req: IncomingMessage) => Promise<boolean>) | undefined;
@@ -634,6 +640,8 @@ export function createAguiServer(): AguiServer {
           const registered = upgradeHandlers.get(pathname);
           if (registered && sandboxLabelOf(req) === undefined) {
             registered(req, socket, head);
+          } else if (mountedAcp && mountedAcp.matches(pathname)) {
+            mountedAcp.handleUpgrade(req, socket, head).catch(() => socket.destroy());
           } else if (mountedProxy && mountedProxy.matches(pathname)) {
             mountedProxy.handleUpgrade(req, socket, head).catch(() => socket.destroy());
           } else {
@@ -688,6 +696,9 @@ export function createAguiServer(): AguiServer {
     },
     onUpgrade(pathname, handler) {
       upgradeHandlers.set(pathname, handler);
+    },
+    useAcpSocket(acp) {
+      mountedAcp = acp;
     },
     useProxy(proxy) {
       mountedProxy = proxy;

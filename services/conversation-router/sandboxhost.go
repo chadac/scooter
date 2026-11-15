@@ -25,6 +25,10 @@ import (
 	"strings"
 )
 
+// platformService is the reserved segment agent-host serves itself (the ACP socket,
+// /_scooter/acp), so it never goes straight to the pod.
+const platformService = "_scooter"
+
 // SandboxHostHeader carries the sandbox label of a host-routed request to the
 // agent-host. The router always removes a client-supplied copy first, so only the
 // router can set it.
@@ -191,7 +195,7 @@ func newSandboxHandler(shutdownCtx context.Context, cfg config, resolver ownerRe
 			serveVia(shutdownCtx, ww, rr, target, fallback, target.Host != fallback.Host, convID)
 		}
 		if direct != nil {
-			if service, rest, ok := sandboxService(browserPath); ok && rest != "/"+statusSegment {
+			if service, rest, ok := sandboxService(browserPath); ok && rest != "/"+statusSegment && service != platformService {
 				if t := direct.lookup(r.Context(), target, fallback, convID, service, label, r); t != nil {
 					direct.serve(shutdownCtx, w, r, t, target, browserPath, rest, viaAgentHost)
 					return
