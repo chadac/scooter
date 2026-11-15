@@ -2018,6 +2018,7 @@ export async function main(
   );
 
   // A conversation as an ACP agent, for editors' agent panels.
+  // Both stores (file, Postgres) have these; the check narrows the types.
   if (store.readEventsWithChecksum && store.onAppend) {
     server.useAcpSocket(
       createAcpSocket({
