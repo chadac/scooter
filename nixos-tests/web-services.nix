@@ -42,7 +42,7 @@ pkgs.testers.runNixOSTest {
     ];
     webServices.demo = { enable = true; port = 9911; displayName = "Demo"; command = "${demoServer}"; };
     webServices.ssh.enable = true;
-    # "Demo + chat", as marimo's notebook frames marimo.
+    # "Demo + chat": a chat page framing the demo.
     webServices.demo-chat = { enable = true; port = 9913; displayName = "Demo"; chatPage.app = "../demo/"; };
   };
 
@@ -84,7 +84,7 @@ pkgs.testers.runNixOSTest {
       command = "${pkgs.writeShellScript "isolated-env" "env > $RUNTIME_DIRECTORY/env; exec sleep infinity"}";
     };
 
-    # An unlisted backend the demo starts, as marimo is to "marimo + chat" (notebook).
+    # An unlisted backend the demo starts.
     webServices.backend = {
       enable = true;
       port = 9912;

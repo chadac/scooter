@@ -236,7 +236,7 @@ let
           Whether the service is shown in the UI Services panel and `scooter-service list`.
           An unlisted service is still proxied at its URL and still answers
           `scooter-service start|stop|status <name>`: it is a backend another service
-          frames or calls (marimo's server, behind "marimo + chat"), started with it
+          frames or calls, started with it
           through `extraConfig` (wants/partOf).
         '';
       };

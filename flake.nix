@@ -256,11 +256,8 @@
               skillTree = lib.head (lib.filter
                 (d: lib.hasSuffix "-sandbox-os-src" (toString d))
                 skillCfg.system.extraDependencies);
-              notebookStart = shipped.nixos.config.systemd.services.webservice-notebook.serviceConfig.ExecStart;
-              notebookPort = shipped.nixos.config.webServices.notebook.port;
-              marimoCfg = shipped.nixos.config.webServices.marimo;
-              marimoStart = marimoCfg.command;
               notebookCfg = shipped.nixos.config.webServices.notebook;
+              marimoStart = notebookCfg.command;
             in
             assert sandboxWithEcho.nixos.config.environment.etc ? "scooter/contrib-echo";
             assert echoOnly == [ "contrib/echo/sandbox.nix" ];
@@ -268,20 +265,15 @@
               == [ "pkgs/sandbox-os/container.nix" ] ++ (derive [ ]).treeRelative ++ [ "skill-dirs/module.nix" ];
             # marimo ships as a contrib: its service, and marimo-pair's directory for the agent's shell.
             assert builtins.elem "contrib/marimo/sandbox.nix" (derive [ ]).treeRelative;
-            assert shipped.nixos.config.webServices.marimo.enable;
+            assert notebookCfg.enable;
             # marimo shares the agent's HOME, so its ~/.config is on the workspace PVC.
-            assert shipped.nixos.config.systemd.services.webservice-marimo.environment.HOME == "/workspace";
+            assert shipped.nixos.config.systemd.services.webservice-notebook.environment.HOME == "/workspace";
             # Its rules are printed whenever the agent starts or checks it (scooter-service).
             assert lib.hasInfix "ctx.packages.add()" notebookCfg.hint;
             assert shipped.nixos.config.environment.etc ? "scooter/skills/marimo-pair";
-            # "marimo + chat" ships with it, served at root so its ../marimo/ resolves on either base path.
-            assert shipped.nixos.config.webServices.notebook.enable;
-            assert shipped.nixos.config.webServices.notebook.stripBasePath;
-            # "marimo + chat" is the only marimo the user sees: the server is unlisted, starts
-            # with the page and stops or restarts with it.
-            assert notebookCfg.displayName == "Notebook" && notebookCfg.visibleInMenu && !marimoCfg.visibleInMenu;
-            assert builtins.elem "webservice-marimo.service" shipped.nixos.config.systemd.services.webservice-notebook.wants;
-            assert builtins.elem "webservice-notebook.service" shipped.nixos.config.systemd.services.webservice-marimo.partOf;
+            # The Notebook is marimo itself, listed; the chat is in its sidebar, not a page around it.
+            assert notebookCfg.displayName == "Notebook" && notebookCfg.visibleInMenu && !notebookCfg.stripBasePath;
+            assert !(shipped.nixos.config.webServices ? marimo) || !shipped.nixos.config.webServices.marimo.enable;
             # commits switches on the git-identity poller in the sandbox.
             assert builtins.elem "contrib/commits/sandbox.nix" (derive [ ]).treeRelative;
             assert shipped.nixos.config.programs.scooterGitIdentity.enable;
@@ -330,22 +322,10 @@
               grep -F 'builtins.path { path = ./echo-skill; name = "skill-echo-skill"; }' \
                 ${skillTree}/skill-dirs/module.nix
 
-              # The "marimo + chat" page, rendered by its real ExecStart.
-              export RUNTIME_DIRECTORY=$TMPDIR/nb CONVERSATION_ID=5a515e73-860b-49ba-bc3f-6ff8d5fda5ff
-              export CONVERSATION_URL="https://scooter.example.com/?thread=$CONVERSATION_ID&x=1"
-              mkdir -p $RUNTIME_DIRECTORY && echo SECRET=1 > $RUNTIME_DIRECTORY/conv.env
-              ${notebookStart} &
-              for _ in $(seq 50); do ${pkgs.curl}/bin/curl -sf -o $TMPDIR/page.html http://127.0.0.1:${toString notebookPort}/ && break; sleep 0.1; done
-              grep -F '"chatUrl":"https://scooter.example.com/chat/5a515e73-860b-49ba-bc3f-6ff8d5fda5ff"' $TMPDIR/page.html
-              grep -F '"convUrl":"https://scooter.example.com/?thread=5a515e73-860b-49ba-bc3f-6ff8d5fda5ff&x=1"' $TMPDIR/page.html
-              grep -F '"app":"../marimo/"' $TMPDIR/page.html
-              grep -F '"storageKey":"notebook"' $TMPDIR/page.html
-              grep -F 'window.ChatPage' $TMPDIR/page.html
-              grep -F 'w.open = (url, target, features)' $TMPDIR/page.html
-              if grep -E '@(CONFIG|CHAT_PAGE|EXTRA_SCRIPT|TITLE)@' $TMPDIR/page.html; then echo 'FAIL: placeholder left in the page' >&2; exit 1; fi
-              # Only the page: conv.env, beside it in the runtime dir, is not served.
-              test "$(${pkgs.curl}/bin/curl --path-as-is -s -o /dev/null -w '%{http_code}' http://127.0.0.1:${toString notebookPort}/../conv.env)" != 200
-              kill %1
+              # marimo starts through launch.py, with the Agent panel's redirect in its page head.
+              grep -F 'launch.py edit --sandbox' ${marimoStart}
+              grep -F '/_scooter/acp' ${marimoStart}
+              grep -F -- '--base-url "$prefix/notebook"' ${marimoStart}
 
               # marimo opens notebooks computed: its start seeds runtime.auto_instantiate, but
               # only while marimo has no settings (it leaves an empty file), never over the user's.

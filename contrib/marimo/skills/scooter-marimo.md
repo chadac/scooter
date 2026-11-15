@@ -26,11 +26,16 @@ shell for that.
 scooter-service start notebook   # prints the URL to give the user
 ```
 
-The `notebook` service ("Notebook" in the Services panel) is **marimo + chat**: this conversation on the left and the
-notebook on the right, so the user can ask you for changes without leaving it. It
-starts the marimo server behind it, the unlisted `marimo` service; don't give the
-user that service's link. The user can also start it from the **Services panel**. The
-first start materializes marimo, which takes a while. Notebooks live in `/workspace`.
+The `notebook` service ("Notebook" in the Services panel) is the marimo editor. This
+conversation is in its sidebar: marimo's **Agent panel** (labelled "Claude") chats
+here, so the user can ask you for changes without leaving the notebook. Their messages
+from it arrive as ordinary messages, with the open notebook's path ("Attached: …").
+The first may also carry marimo's own agent rules (`marimo_rules.md`); where they
+differ from this skill and marimo-pair, follow these. The panel shows
+replies, tool calls and approvals, but not Scooter-only parts like the Services panel
+or kanban, so link the full chat when you need those. The user can also start it from
+the **Services panel**. The first start materializes marimo, which takes a while.
+Notebooks live in `/workspace`.
 
 **marimo-pair can only reach a notebook the user has open in the browser.** A
 session exists only while a tab has the notebook open. So ask the user to open
@@ -44,8 +49,8 @@ Read the **marimo-pair** skill and follow it. Two things differ here:
   `discover-servers.sh` won't find it. Use:
 
   ```bash
-  # marimo serves at /marimo on the conversation's own origin, else under /c/<id>/marimo.
-  MARIMO_BASE=${SCOOTER_SERVICES_ORIGIN:+/marimo}; MARIMO_BASE=${MARIMO_BASE:-/c/$CONVERSATION_ID/marimo}
+  # marimo serves at /notebook on the conversation's own origin, else under /c/<id>/notebook.
+  MARIMO_BASE=${SCOOTER_SERVICES_ORIGIN:+/notebook}; MARIMO_BASE=${MARIMO_BASE:-/c/$CONVERSATION_ID/notebook}
   bash /etc/scooter/skills/marimo-pair/scripts/execute-code.sh \
     --url "http://localhost:2718$MARIMO_BASE" \
     -c "import marimo._code_mode as cm; help(cm)"
@@ -134,9 +139,12 @@ reads it whenever a notebook opens, so changes need no restart.
 
 ## If something is off
 
-- `scooter-service status marimo` and `journalctl -u webservice-marimo -n 50`
-  show the server's state and log. `scooter-service restart notebook` restarts both,
+- `scooter-service status notebook` and `journalctl -u webservice-notebook -n 50`
+  show the server's state and log. `scooter-service restart notebook` restarts it,
   which ends every open kernel.
+- The Agent panel says "disconnected" or shows no history: reload the tab. If it
+  persists, check that `experimental.external_agents` isn't set to false in
+  marimo.toml.
 - "Failed to connect": the service isn't running, or the URL lacks marimo's base
   path (`$MARIMO_BASE` above).
 - "No sessions": nobody has the notebook open. Ask the user to open the link.

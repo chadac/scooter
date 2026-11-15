@@ -1,4 +1,4 @@
-# marimo's declaration: a notebook served as webServices.notebook ("marimo + chat"), and marimo-pair, the
+# marimo's declaration: a notebook served as webServices.notebook, with this conversation in its sidebar, and marimo-pair, the
 # skill the agent drives the running notebook with (its scripts run in the sandbox;
 # see contrib/README.md, "Contributing skill directories"). Sandbox-only, plus
 # skills. `enable` stays opt-in like every other contrib; this repo's own builds turn
