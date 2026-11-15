@@ -47,7 +47,7 @@ let
         options = {
           app = lib.mkOption {
             type = lib.types.str;
-            example = "../marimo/";
+            example = "../app/";
             description = ''
               The app beside the chat, as a URL relative to this page, usually an unlisted
               service: `../<service>/`. The page's query and hash are passed on to it.
@@ -74,8 +74,8 @@ let
             type = lib.types.nullOr lib.types.path;
             default = null;
             description = ''
-              JS run after the page mounts, for app-specific behaviour (marimo's keeps its
-              route in the address bar). It sees the globals `CFG`, `APP` (the app's URL),
+              JS run after the page mounts, for app-specific behaviour (e.g. keeping the
+              app's route in the address bar). It sees the globals `CFG`, `APP` (the app's URL),
               `page` (`{ layout, chat, rail, full }`) and `frame` (the app's iframe).
             '';
           };
