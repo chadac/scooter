@@ -4,6 +4,7 @@
 
 let
   inherit (lib) mkOption types;
+  clib = import ../lib.nix { inherit lib; };
 
   # A backend's own schema: the three fields every selector/cap needs, plus whatever
   # else that backend's factory reads off the config (apiKeySecret, url, …) —
@@ -54,6 +55,29 @@ let
       };
     };
   };
+
+  # The shipped Gemini backend's own fields. Its key reaches the broker as env, never
+  # IMAGEGEN_BACKENDS_JSON.
+  geminiModule = {
+    options = {
+      models = mkOption {
+        type = types.nonEmptyListOf types.str;
+        default = [ "gemini-nano-banana-2.1" ];
+        example = [ "gemini-nano-banana-2.1" "gemini-3-pro-image" ];
+        description = "Gemini API image model ids to offer, the first being the default.";
+      };
+      apiKeySecret = clib.mkSecretOption {
+        key = "GEMINI_API_KEY";
+        holds = "a Gemini API key";
+        nullable = true;
+        example = lib.literalExpression ''{ name = "imagegen-gemini"; key = "GEMINI_API_KEY"; }'';
+        description = ''
+          Secret holding a Gemini API key (aistudio.google.com/apikey), injected into the
+          broker as GEMINI_API_KEY. Required when the gemini backend is enabled.
+        '';
+      };
+    };
+  };
 in
 {
   # The strict module form (rather than a plain attrset) so `config` below is THIS
@@ -85,6 +109,11 @@ in
             default = { };
             description = "The shipped Bedrock backend: `backendModule`'s fields plus region and models.";
           };
+          options.gemini = mkOption {
+            type = types.submoduleWith { modules = [ backendOptions geminiModule ]; };
+            default = { };
+            description = "The shipped Gemini backend: `backendModule`'s fields plus models and apiKeySecret.";
+          };
         };
         default = { };
         example = lib.literalExpression ''
@@ -115,11 +144,17 @@ in
         # against the manifest it publishes. An out-of-tree backend brings its own deps.
         pythonDeps = ps: [ ps.boto3 ps.jsonschema ];
         env = {
+          # A throw, since kubenix has no `assertions` option.
+          GEMINI_API_KEY = lib.mkIf config.backends.gemini.enable (
+            if config.backends.gemini.apiKeySecret == null
+            then throw "contribs.imagegen.backends.gemini.enable needs apiKeySecret"
+            else config.backends.gemini.apiKeySecret);
           IMAGEGEN_DAILY_LIMIT = toString config.dailyLimit;
           IMAGEGEN_SELECTOR = config.selector;
           # Not secret (a backend's own secrets are its own env, via mkSecretOption):
           # enable/priority/dailyLimit plus whatever extra fields that backend reads.
-          IMAGEGEN_BACKENDS_JSON = builtins.toJSON config.backends;
+          IMAGEGEN_BACKENDS_JSON = builtins.toJSON
+            (lib.mapAttrs (_: backend: removeAttrs backend [ "apiKeySecret" ]) config.backends);
         };
       };
 

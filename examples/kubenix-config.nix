@@ -334,14 +334,19 @@
       };
     };
 
-    # Image generation: Bedrock is IRSA (no secret), picked by the default "priority"
-    # selector whenever the agent does not name a backend.
+    # Image generation: Bedrock is IRSA (no secret), Gemini an API key; the default
+    # "priority" selector tries Bedrock first whenever the agent does not name a backend.
     imagegen = {
       dailyLimit = 50;
       backends.bedrock = {
         enable = true;
         priority = 100;
         roleArn = "arn:aws:iam::123456789012:role/agent-broker-bedrock";
+      };
+      backends.gemini = {
+        enable = true;
+        priority = 50;
+        apiKeySecret = { name = "imagegen-gemini"; key = "GEMINI_API_KEY"; };
       };
     };
 

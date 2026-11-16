@@ -21,6 +21,7 @@ imagegen = "scooter_contrib_imagegen.broker_provider:imagegen"
 # so an out-of-tree package can add a backend or a selector without touching this one.
 [project.entry-points."scooter_imagegen.backends"]
 bedrock = "scooter_contrib_imagegen.backends.bedrock:factory"
+gemini = "scooter_contrib_imagegen.backends.gemini:factory"
 
 [project.entry-points."scooter_imagegen.selectors"]
 priority = "scooter_contrib_imagegen.selectors:priority"

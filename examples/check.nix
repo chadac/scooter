@@ -51,8 +51,15 @@ let
   # Bedrock's typed region/models defaults reach the broker's backend config.
   imagegenBedrock = (builtins.fromJSON (builtins.head (map (e: e.value)
     (builtins.filter (e: e.name == "IMAGEGEN_BACKENDS_JSON") brokerEnv) ++ [ "{}" ]))).bedrock or { };
-  imagegenProblems = if (imagegenBedrock.models or null) == [ "stability.stable-image-core-v1:1" ] && (imagegenBedrock.region or null) == "us-west-2" then [ ]
-    else [ "broker.env.IMAGEGEN_BACKENDS_JSON lacks bedrock's default models/region" ];
+  imagegenGemini = (builtins.fromJSON (builtins.head (map (e: e.value)
+    (builtins.filter (e: e.name == "IMAGEGEN_BACKENDS_JSON") brokerEnv) ++ [ "{}" ]))).gemini or { };
+  imagegenProblems = (if (imagegenBedrock.models or null) == [ "stability.stable-image-core-v1:1" ] && (imagegenBedrock.region or null) == "us-west-2" then [ ]
+    else [ "broker.env.IMAGEGEN_BACKENDS_JSON lacks bedrock's default models/region" ])
+    ++ (if (imagegenGemini.models or null) == [ "gemini-nano-banana-2.1" ] && !(imagegenGemini ? apiKeySecret) then [ ]
+    else [ "broker.env.IMAGEGEN_BACKENDS_JSON lacks gemini's default models, or carries its apiKeySecret" ])
+    ++ (if builtins.any (e: e.name == "GEMINI_API_KEY"
+          && (e.valueFrom.secretKeyRef or { }) == { name = "imagegen-gemini"; key = "GEMINI_API_KEY"; }) brokerEnv then [ ]
+    else [ "broker.env.GEMINI_API_KEY is not the imagegen-gemini secret" ]);
 
   # GitHub owners reach both the broker and webhooks.
   ghOwnersProblems =
