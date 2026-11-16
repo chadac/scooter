@@ -40,6 +40,7 @@ const inMemoryStore = (): ConversationStore => {
 /** A minimal fake bridge whose RUN_FINISHED a test can drive. */
 function fakeBridgeFactory() {
   const bridges = new Map<string, { emit: (e: AguiEvent) => void }>();
+  let queued = 0;
   const factory = ({ conversationId }: { conversationId: string }) => {
     const listeners = new Set<(e: AguiEvent) => void>();
     bridges.set(conversationId, { emit: (e) => listeners.forEach((l) => l(e)) });
@@ -50,11 +51,20 @@ function fakeBridgeFactory() {
       cancel: () => {},
       stop: async () => {},
       start: async () => {},
-      queueState: () => ({ running: false, currentRunMs: 0, queued: 0, maxQueuedPriority: 0 }),
+      queueState: () => ({ running: false, currentRunMs: 0, queued, maxQueuedPriority: 0 }),
       answerPermission: () => {},
     } as unknown as import("../../src/bridge.js").SessionBridge;
   };
-  return { factory, finish: (id: string) => bridges.get(id)?.emit({ type: "RUN_FINISHED", threadId: id, runId: "r1" } as AguiEvent) };
+  return {
+    factory,
+    finish: (id: string) => bridges.get(id)?.emit({ type: "RUN_FINISHED", threadId: id, runId: "r1" } as AguiEvent),
+    /** Ends the run cancelled with a prompt waiting, as a priority preemption does. */
+    preempt: (id: string) => {
+      queued = 1;
+      bridges.get(id)?.emit({ type: "RUN_FINISHED", threadId: id, runId: "r1", cancelled: true } as AguiEvent);
+      queued = 0;
+    },
+  };
 }
 
 describe("SessionManager subagents", () => {
@@ -188,6 +198,21 @@ describe("SessionManager subagents", () => {
 
     bf.finish(child.id);
     expect(fired).toEqual([{ subagentId: "c1", parentId: parent.id }]);
+  });
+
+  it("THE BUG: a preempted subagent turn is not reported as complete @proves", async () => {
+    const bf = fakeBridgeFactory();
+    const sessions = createSessionManager({ provisioner: fakeProvisioner(), store: inMemoryStore(), bridgeFactory: bf.factory });
+    const parent = await sessions.start("p", undefined, "alice");
+    const child = await sessions.spawnChild(parent.id, "c1", { prompt: "a" });
+    const fired: string[] = [];
+    sessions.onSubagentComplete((subagentId) => fired.push(subagentId));
+
+    bf.preempt(child.id);
+    expect(fired).toEqual([]);
+    // The turn the preemption queued is the one that completes.
+    bf.finish(child.id);
+    expect(fired).toEqual(["c1"]);
   });
 });
 

@@ -1324,9 +1324,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // Fire onSubagentComplete when this subagent's run terminates; a RUN_FINISHED with outcome
       // "interrupt" is a pause, not a completion.
       entry.bridge?.onEvent((event) => {
-        const done =
-          (event.type === "RUN_FINISHED" && event.outcome?.type !== "interrupt") || event.type === "RUN_ERROR";
-        if (done) emitSubagentComplete(id, parentId);
+        const finished = event.type === "RUN_FINISHED" && event.outcome?.type !== "interrupt";
+        // Queued work means a preemption: another turn follows.
+        if (finished && (entry.bridge?.queueState().queued ?? 0) > 0) return;
+        if (finished || event.type === "RUN_ERROR") emitSubagentComplete(id, parentId);
       });
       await saveMeta(entry);
 

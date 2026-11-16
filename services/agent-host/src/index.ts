@@ -128,7 +128,7 @@ import {
   type SubagentManager,
   type SubagentStatus,
 } from "./agent/subagentTools.js";
-import { createSubagentManager, DEFAULT_SUBAGENT_LIMITS } from "./session/subagentManager.js";
+import { createSubagentManager, DEFAULT_SUBAGENT_LIMITS, subagentIsBusy } from "./session/subagentManager.js";
 import { createRouterSubagentCreator } from "./session/routerSubagents.js";
 import { lastRunCompleted, unansweredInterrupt } from "./session/danglingRun.js";
 import { orphanedAnswerPrompt, orphanedChoicePrompt } from "./session/orphanedAnswer.js";
@@ -2203,13 +2203,14 @@ export async function main(
       let events = store.readEventsTail
         ? await store.readEventsTail(subagentId, 1).catch(() => [])
         : await collectEventsSafe(store.readEvents(subagentId));
-      if (!lastRunCompleted(events)) {
-        notified.delete(subagentId); // hasn't actually run yet — re-check later
+      const child = sessions.get(subagentId);
+      // A busy child was preempted, not finished; its real end notifies later.
+      if (!lastRunCompleted(events) || (child && subagentIsBusy(child))) {
+        notified.delete(subagentId);
         return;
       }
       // A reply-less last run reports an earlier reply.
       if (!lastAssistantText(events)) events = await collectEventsSafe(store.readEvents(subagentId));
-      const child = sessions.get(subagentId);
       if (sessions.get(parentId)) {
         const text = subagentDoneNotice(subagentId, child?.title, lastAssistantText(events));
         await sessions

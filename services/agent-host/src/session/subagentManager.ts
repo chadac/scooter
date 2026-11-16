@@ -7,9 +7,12 @@ import type { AguiEvent } from "../bridge.js";
 import { SubagentLimitError, type SubagentManager, type SubagentStatus } from "../agent/subagentTools.js";
 import { foldTurnsWithTools } from "../agent/subagentTranscript.js";
 import { PRIORITY_INTERRUPT } from "../bridge.js";
+import { formatError, logger } from "../log.js";
 import type { SubagentCreator } from "./routerSubagents.js";
 import type { SpawnChildArgs } from "./manager.js";
 import type { ConversationKind } from "./visibility.js";
+
+const log = logger("subagents");
 
 /** The minimal child conversation shape the manager reasons about, a subset of SessionManager's
  *  Conversation. */
@@ -182,8 +185,8 @@ export function createSubagentManager(
       // Only a running child has a turn for a course correction to land on.
       if (subagentStatusOf(c) !== "running") return { outcome: "not-running" };
       // Preempt the child's current turn with the clarification, sourced as a system message from
-      // the parent.
-      await sessions.prompt(
+      // the parent. Not awaited: prompt() resolves only when that run completes.
+      void sessions.prompt(
         subagentId as SessionId,
         `[Clarification from your parent agent — factor this into your current work]\n\n${message}`,
         undefined,
@@ -192,7 +195,9 @@ export function createSubagentManager(
         undefined,
         undefined,
         "parent-clarification",
-      );
+      ).catch((err: unknown) => {
+        log.warn("subagent clarification failed", { subagent_id: subagentId, error: formatError(err) });
+      });
       return { outcome: "sent" };
     },
     async recentTurns(parentId, subagentId, n) {

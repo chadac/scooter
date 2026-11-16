@@ -67,6 +67,20 @@ describe("createSubagentManager", () => {
       expect(source).toBe("parent-clarification");
     });
 
+    it("THE BUG: returns without waiting for the child's turn to finish @proves", async () => {
+      const { mgr, prompt } = fakes([child("sub-a", PARENT, true)]);
+      // SessionManager.prompt resolves only when the child's run completes; this one never does.
+      prompt.mockImplementation(() => new Promise<void>(() => {}));
+      expect(await mgr.send(PARENT, "sub-a", "fyi")).toEqual({ outcome: "sent" });
+      expect(prompt).toHaveBeenCalledTimes(1);
+    });
+
+    it("a failed clarification is logged, not thrown at the parent", async () => {
+      const { mgr, prompt } = fakes([child("sub-a", PARENT, true)]);
+      prompt.mockImplementation(async () => { throw new Error("boom"); });
+      expect(await mgr.send(PARENT, "sub-a", "fyi")).toEqual({ outcome: "sent" });
+    });
+
     it("FAILS with not-running for an idle child (nothing to clarify)", async () => {
       const { mgr, prompt } = fakes([child("sub-a", PARENT, /* running */ false)]);
       expect(await mgr.send(PARENT, "sub-a", "hi")).toEqual({ outcome: "not-running" });
