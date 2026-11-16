@@ -37,9 +37,17 @@ or kanban, so link the full chat when you need those. The user can also start it
 the **Services panel**. The first start materializes marimo, which takes a while.
 Notebooks live in `/workspace`.
 
-**marimo-pair can only reach a notebook the user has open in the browser.** A
-session exists only while a tab has the notebook open. So ask the user to open
-the link, and to create or pick a notebook, before you pair.
+**marimo-pair needs a running session for the notebook.** A browser tab creates
+one, and so does `marimo-open`, so you don't need the user to open anything:
+
+```bash
+marimo-open nb.py   # starts the kernel, runs every cell, then detaches
+```
+
+It does nothing if the notebook already has a session, so run it before you pair.
+The kernel keeps running after it exits, until the notebook service restarts. When
+the user opens the notebook later, their tab takes over that same kernel, with its
+outputs, as the editor. Still send them the link when there's something to see.
 
 ## 2. Pair with marimo-pair
 
@@ -101,8 +109,8 @@ never `pip install` for one.** None of these reach it.
   ```
 
   If `/api/sessions` lists no session for the notebook, there is no kernel to
-  restart: the next open builds the environment from the header. A session can
-  outlive its tab for a while, so check rather than assume.
+  restart: the next open (or `marimo-open`) builds the environment from the header.
+  A session outlives its tab, so check rather than assume.
 - **A new notebook nobody has open yet:** write the header when you create the file.
 
   ```python
@@ -147,7 +155,8 @@ reads it whenever a notebook opens, so changes need no restart.
   marimo.toml.
 - "Failed to connect": the service isn't running, or the URL lacks marimo's base
   path (`$MARIMO_BASE` above).
-- "No sessions": nobody has the notebook open. Ask the user to open the link.
+- "No sessions": the notebook has no kernel. Run `marimo-open nb.py`. If that fails,
+  ask the user to open the link.
 - `ImportError: libstdc++.so.6` (or another `.so`) from a wheel: uv-nix did not patch
   the environment, usually because the `patchelf` it resolved is not in the store
   (`uv nix patch -v <venv>` shows `Failed to patch ...: No such file or directory`).

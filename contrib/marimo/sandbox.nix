@@ -7,7 +7,8 @@
 # `pkgs.marimo` is a nix-stubs shim (modules/sandbox-os/stubs.nix) that materializes
 # on first start, so declaring the service costs a manifest entry and no running
 # process. curl and jq are here for marimo-pair's scripts
-# (/etc/scooter/skills/marimo-pair).
+# (/etc/scooter/skills/marimo-pair), and marimo-open starts a kernel for them
+# when no browser has the notebook open.
 #
 # Supplies mkDefault values only and must not gate on `cfg.enable` (infinite
 # recursion); web-services.nix filters on `.enable` when it renders units.
@@ -20,10 +21,17 @@ let
   # Printed by `scooter-service start|status notebook`, since the skill's body
   # can drop out of a long session's context. Mirrors scooter-marimo.md.
   hint = ''
+    No tab open? `marimo-open nb.py` starts its kernel for marimo-pair.
     Packages: marimo-pair's ctx.packages.add(), never pip, a venv or a pyproject.toml (each notebook has its own environment).
     Settings: ~/.config/marimo/marimo.toml. More in the scooter-marimo skill.
     This conversation is in the notebook's sidebar too (the Agent panel, labelled Claude).
   '';
+
+  # Starts a notebook's kernel with no browser open, so marimo-pair can reach it.
+  marimoOpen = pkgs.writers.writePython3Bin "marimo-open" {
+    libraries = [ pkgs.python3Packages.websockets ];
+    flakeIgnore = [ "E501" ];
+  } (lib.replaceStrings [ "@port@" ] [ (toString cfg.port) ] (builtins.readFile ./notebook/marimo_open.py));
 
   # marimo 0.25 opens a notebook with every cell stale (runtime.auto_instantiate
   # defaults to false). Here a visit is how the user asks for the notebook, often from a
@@ -46,7 +54,7 @@ in
 {
   # The marimo shim on PATH, so the agent can run it by hand, and what marimo-pair's
   # scripts call: they talk to the running server's HTTP API with curl and jq.
-  environment.systemPackages = lib.mkIf cfg.enable [ pkgs.marimo pkgs.curl pkgs.jq ];
+  environment.systemPackages = lib.mkIf cfg.enable [ pkgs.marimo pkgs.curl pkgs.jq marimoOpen ];
 
   webServices.notebook = {
     enable = lib.mkDefault true;

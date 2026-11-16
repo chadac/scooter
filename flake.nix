@@ -271,6 +271,9 @@
             # Its rules are printed whenever the agent starts or checks it (scooter-service).
             assert lib.hasInfix "ctx.packages.add()" notebookCfg.hint;
             assert shipped.nixos.config.environment.etc ? "scooter/skills/marimo-pair";
+            # marimo-open gives marimo-pair a kernel when no browser has the notebook open.
+            assert lib.any (p: (p.name or "") == "marimo-open")
+              shipped.nixos.config.environment.systemPackages;
             # The Notebook is marimo itself, listed; the chat is in its sidebar, not a page around it.
             assert notebookCfg.displayName == "Notebook" && notebookCfg.visibleInMenu && !notebookCfg.stripBasePath;
             assert !(shipped.nixos.config.webServices ? marimo) || !shipped.nixos.config.webServices.marimo.enable;
