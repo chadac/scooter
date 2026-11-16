@@ -4,6 +4,48 @@ Each release's section becomes its GitHub Release notes. Images keep their
 content tags and also gain `vX.Y.Z`; the flake is published to
 [FlakeHub](https://flakehub.com/flake/chadac-me/scooter).
 
+## v1.4.3
+
+### Features
+
+- **EKS clusters**: `contribs.k8s.clusters.<name>.auth.eks` lets the broker
+  reach EKS clusters with AWS IAM, optionally through an assumed role. (#1385)
+- **GitHub Copilot as a model provider**: goose's `github_copilot` provider
+  is documented and tested, with its own `copilot` model-catalog tag and a
+  `copilot` provider in the local preset. (#1360)
+- **Conversations as ACP agents**: agent-host serves each conversation as an
+  Agent Client Protocol agent over a WebSocket (#1376). The marimo contrib
+  uses it to put the conversation in the notebook's Agent panel (#1375), and
+  `marimo-open` starts a notebook's kernel for marimo-pair with no browser
+  open. (#1383)
+- **Agents add prompt gates**: `kanban_set_gate` adds, changes and deletes
+  prompt gates on the agent's board. Approval gates stay the user's. (#1377)
+- **Gemini image backend**: `contribs.imagegen.backends.gemini` generates and
+  edits images through the Gemini API. (#1378)
+- **Default theme**: `scooter.ui.defaultTheme` picks the theme users land on.
+  (#1364)
+- **Goose traces name the conversation owner** in their OTel attributes.
+  (#1359)
+- **scooter-local**: stamps a fixed identity, checks Docker's size and the
+  port before starting, and enables kanban. (#1369)
+
+### Bug fixes
+
+- **Review comments on the files viewer are queued while the sandbox is
+  asleep** and sent once it wakes, instead of failing. (#1374)
+- **Subagents**: a preempted turn no longer counts as finished, and
+  `send_to_subagent` returns at once. (#1384)
+- **New conversations**: an unsent one shows in the sidebar and header
+  (#1382), and one started in a folder is filed before its first run.
+  (#1362)
+- **agent-host no longer resumes a run it is still executing** as dangling,
+  which added a stray reply. (#1372)
+- **An interrupted Claude turn ends as cancelled**, not a stream error.
+  (#1373)
+- **A failed web-service WebSocket upgrade is answered with a 502.** (#1381)
+- **contrib-api serves the anonymous single user** when auth isn't enforced,
+  so Boards and shares work under scooter-local. (#1366)
+
 ## v1.4.2
 
 ### Features
