@@ -690,6 +690,27 @@ describe("web-service proxy", () => {
     expect(echoed).toContain("ping");
   });
 
+  it("answers an upgrade to a service that is not listening with a 502, not a bare close", async () => {
+    const registry = fakeRegistry(DEAD_PORT);
+    const { statusLine, raw } = await proxyUpgrade(makeProxy(registry), "/c/conv-1/marimo/ws", "ping");
+    expect(statusLine).toBe("HTTP/1.1 502 Bad Gateway");
+    expect(raw).toContain("marimo did not accept the connection");
+    expect(registry.invalidated).toContain("conv-1");
+  });
+
+  it("answers an upgrade with a 502 when the service closes before answering it", async () => {
+    const pod = createServer();
+    pod.on("upgrade", (_req, socket) => socket.destroy());
+    await new Promise<void>((r) => pod.listen(0, "127.0.0.1", r));
+    try {
+      const port = (pod.address() as AddressInfo).port;
+      const { statusLine } = await proxyUpgrade(makeProxy(fakeRegistry(port)), "/c/conv-1/marimo/ws", "ping");
+      expect(statusLine).toBe("HTTP/1.1 502 Bad Gateway");
+    } finally {
+      pod.close();
+    }
+  });
+
   // --- access: shared by default (#798) -----------------------------------------
 
   const ALICE = { id: "alice", email: "alice@example.com", anonymous: false };

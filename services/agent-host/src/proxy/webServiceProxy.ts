@@ -728,10 +728,11 @@ export function createWebServiceProxy(deps: WebServiceProxyDeps): WebServiceProx
         pending = Buffer.concat([pending, chunk]);
         const end = pending.indexOf("\r\n\r\n");
         if (end < 0) {
-          if (pending.length > MAX_HANDSHAKE_BYTES) teardown();
+          if (pending.length > MAX_HANDSHAKE_BYTES) refuse("handshake too large");
           return;
         }
         upstream.off("data", onHandshake);
+        answered = true;
         socket.write(filterHandshakeSetCookies(pending.subarray(0, end).toString("latin1")) + "\r\n\r\n");
         const rest = pending.subarray(end + 4);
         if (rest.length) socket.write(rest);
@@ -741,13 +742,28 @@ export function createWebServiceProxy(deps: WebServiceProxyDeps): WebServiceProx
       };
       upstream.on("data", onHandshake);
     });
+    let answered = false;
     const teardown = () => { socket.destroy(); upstream.destroy(); };
+    // A bare close before the pod answers looks like a platform fault.
+    const refuse = (reason: string) => {
+      answered = true;
+      upstream.destroy();
+      log.debug("web-service upgrade refused", { conversation_id: conversationId, service: r.service, reason });
+      const body = `${r.service} did not accept the connection`;
+      socket.end(
+        `HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\nContent-Length: ${Buffer.byteLength(body)}\r\n` +
+          `Connection: close\r\n\r\n${body}`,
+        () => socket.destroy(),
+      );
+    };
     upstream.on("error", (err: NodeJS.ErrnoException) => {
-      // As before the socket just fails; the navigation owns the auto-start.
+      // The navigation owns the auto-start, so the upgrade just fails.
       dropTarget(conversationId);
       if (nothingListening(err)) registry.invalidate(conversationId);
-      teardown();
+      if (answered) teardown();
+      else refuse(err.code ?? err.message);
     });
+    upstream.on("close", () => { if (!answered) refuse("closed before answering"); });
     socket.on("error", teardown);
   }
 
