@@ -203,6 +203,7 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
   /** Tools that wait on the user, set by newSession (contribs' `agent.blockingTools`). */
   let blockingTools: Record<string, BlockingTool> = {};
   let active: SdkQuery | undefined; // the in-flight query() for cancel()
+  let interrupted = false; // prompt() then reads the stream's rejection as a cancel
   let closed = false; // the SDK runs in-process, so alive means not closed
 
   // The SDK runs in-process, so its failures never reach a stderr the agent-host can tail; keep the last few lines for the dead-on-arrival watchdog to quote.
@@ -344,6 +345,13 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
     },
   };
 
+  /** Interrupts the in-flight query, marking its rejection as our own. */
+  const interrupt = async (): Promise<void> => {
+    if (!active) return;
+    interrupted = true;
+    await active.interrupt?.().catch(() => {});
+  };
+
   /** baseOptions plus the current session's extra MCP servers. */
   let sessionOptions: Record<string, unknown> = baseOptions;
 
@@ -387,6 +395,7 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
       debug("[sdk] prompt: query start, model=%s, resume=%s, multimodal=%s", deps.model, sdkSessionId ?? "(new)", hasImage);
       const q = query({ prompt: promptArg, options });
       active = q;
+      interrupted = false;
       let stopReason = "end_turn";
       let lastPrompt: PromptUsage | null = null;
       try {
@@ -424,6 +433,11 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
           }
         }
       } catch (e) {
+        // Our own interrupt mid-tool ends in an ede_diagnostic error.
+        if (interrupted) {
+          debug("[sdk] prompt: interrupted, stream ended with: %s", e instanceof Error ? e.message : String(e));
+          return { stopReason: "cancelled" };
+        }
         const line = `[sdk] prompt: query stream error: ${e instanceof Error ? e.message : String(e)}`;
         noteDiagnostic(line);
         debugError("[sdk] prompt: query stream error:", e);
@@ -436,12 +450,12 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
     },
 
     async cancel(_sessionId: string) {
-      await active?.interrupt?.().catch(() => {});
+      await interrupt();
     },
 
     async killActiveTerminals() {
       // Interrupting the query stops the running tool; sandbox terminals are ExecBackend handles released per call.
-      await active?.interrupt?.().catch(() => {});
+      await interrupt();
     },
 
     isAlive() {
@@ -468,7 +482,7 @@ export async function createSdkAcpClient(deps: SdkAcpClientDeps): Promise<AcpCli
     },
 
     async close() {
-      await active?.interrupt?.().catch(() => {});
+      await interrupt();
     },
   };
 }

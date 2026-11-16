@@ -4,7 +4,7 @@
  * the SDK's session so the conversation keeps its history.
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 
 import { createSdkAcpClient } from "./sdkClient.js";
 import type { ExecBackend } from "./types.js";
@@ -142,6 +142,82 @@ describe("SDK client session resume", () => {
     await client.newSession({ threadId: "c2" } as never);
     await client.prompt({ prompt: [{ type: "text", text: "b" }] } as never);
     expect(fq.calls[fq.calls.length - 1].options.resume).toBeUndefined();
+  });
+});
+
+describe("SDK client interrupt mid-tool (the ede_diagnostic error result)", () => {
+  const EDE = "Claude Code returned an error result: [ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use";
+
+  /** A mid-tool turn that throws EDE once interrupted, like the CLI. */
+  function midToolQuery() {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    const queryImpl = () => {
+      async function* gen() {
+        yield { type: "assistant", session_id: "s1", message: { content: [{ type: "tool_use", id: "tu1", name: "Bash", input: {} }] } } as never;
+        yield { type: "user", session_id: "s1", message: { content: [{ type: "tool_result", tool_use_id: "tu1", content: "ok" }] } } as never;
+        await gate;
+        yield { type: "result", subtype: "error_during_execution", is_error: true, session_id: "s1", errors: [EDE] } as never;
+        throw new Error(EDE);
+      }
+      return Object.assign(gen(), { interrupt: async () => release() });
+    };
+    return { queryImpl, release: () => release() };
+  }
+
+  async function startTurn(queryImpl: ReturnType<typeof midToolQuery>["queryImpl"]) {
+    const client = await mkClient(queryImpl);
+    await client.newSession({ threadId: "c1" } as never);
+    const turn = client.prompt({ prompt: [{ type: "text", text: "run it" }] } as never);
+    await new Promise((r) => setTimeout(r, 5)); // let the stream reach the gate
+    return { client, turn };
+  }
+
+  it("a cancel mid-tool ends the turn as cancelled, not as an error", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { client, turn } = await startTurn(midToolQuery().queryImpl);
+      await client.cancel("c1");
+      await expect(turn).resolves.toEqual({ stopReason: "cancelled" });
+      expect(errors.mock.calls.flat().join(" ")).not.toContain("query stream error");
+      expect(client.recentDiagnostics?.() ?? []).toEqual([]);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it("the same error without an interrupt still rejects and is recorded", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const fq = midToolQuery();
+      const { client, turn } = await startTurn(fq.queryImpl);
+      fq.release();
+      await expect(turn).rejects.toThrow("ede_diagnostic");
+      expect(client.recentDiagnostics?.().join("\n")).toContain("query stream error");
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it("an interrupt does not leak into the next turn", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const gates: Array<() => void> = [];
+      const queryImpl = () => {
+        const q = midToolQuery();
+        gates.push(q.release);
+        return q.queryImpl();
+      };
+      const { client, turn } = await startTurn(queryImpl);
+      await client.cancel("c1");
+      await turn;
+      const second = client.prompt({ prompt: [{ type: "text", text: "again" }] } as never);
+      await new Promise((r) => setTimeout(r, 5));
+      gates.at(-1)!();
+      await expect(second).rejects.toThrow("ede_diagnostic");
+    } finally {
+      errors.mockRestore();
+    }
   });
 });
 
