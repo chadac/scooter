@@ -2053,10 +2053,10 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // One budget per scan: an outage waits at most 300 × base.
       const base = opts?.retryBaseMs ?? 1000;
       let waited = 0;
-      const readLog = async (id: SessionId): Promise<AguiEvent[]> => {
+      const readMarkers = async (id: SessionId): Promise<AguiEvent[]> => {
         for (let attempt = 0; ; attempt++) {
           try {
-            return await collectEvents(store.readEvents(id));
+            return await runMarkers(id);
           } catch (err) {
             const delay = Math.min(base * 2 ** attempt, 30 * base);
             if (!isDbUnavailable(err) || waited + delay > 300 * base) throw err;
@@ -2079,7 +2079,7 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         // Another pod's conversation: resuming it here would run it twice.
         if (ownershipGuard.observedGeneration?.(entry.id) !== undefined && !ownershipGuard.owns?.(entry.id)) continue;
         try {
-          const events = await readLog(entry.id);
+          const events = await readMarkers(entry.id);
           // No `self`: at boot every RUN_STARTED in the log predates this process, even one stamped
           // with our own pod name.
           const info = danglingRunInfo(events);

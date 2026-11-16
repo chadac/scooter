@@ -1300,6 +1300,44 @@ describe("SessionManager", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("resumeInterrupted scans run markers, not whole logs, when the store has them", async () => {
+    const root = mkdtempSync(join(tmpdir(), "convstore-"));
+    try {
+      const store1 = createFileConversationStore(root);
+      const m1 = createSessionManager({ provisioner: fakeProvisioner(), store: store1 });
+      const done = await m1.start("clean-thread");
+      await store1.appendEvent(done.id, { type: "RUN_STARTED", threadId: "clean-thread", runId: "r1" });
+      await store1.appendEvent(done.id, { type: "TEXT_MESSAGE_CONTENT", messageId: "m", delta: "hi" });
+      await store1.appendEvent(done.id, { type: "RUN_FINISHED", threadId: "clean-thread", runId: "r1" });
+
+      // A restart scans every conversation, so a full-log read each is the cost guarded here.
+      const store2 = createFileConversationStore(root);
+      const fullReads: SessionId[] = [];
+      const markerReads: SessionId[] = [];
+      const store = {
+        ...store2,
+        readEvents(id: SessionId) {
+          fullReads.push(id);
+          return store2.readEvents(id);
+        },
+        async readRunMarkers(id: SessionId) {
+          markerReads.push(id);
+          const events: AguiEvent[] = [];
+          for await (const e of store2.readEvents(id)) if (e.type.startsWith("RUN_")) events.push(e);
+          return events;
+        },
+      };
+      const m2 = createSessionManager({ provisioner: fakeProvisioner(), store });
+      await m2.hydrate();
+
+      expect(await m2.resumeInterrupted()).toEqual([]);
+      expect(markerReads).toEqual([done.id]);
+      expect(fullReads).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 
