@@ -1473,6 +1473,9 @@ let
         approvers = [ "admin@example.com" ];
         grants.enable = true;
       };
+      eks-prod = {
+        auth.eks = { clusterName = "prod"; region = "us-east-1"; roleArn = "arn:aws:iam::123456789012:role/scooter-k8s"; };
+      };
     };
   };
   k8sBrokerEnv =
@@ -1487,6 +1490,9 @@ let
           && (k8sClusters.prod-eu.approvers or [ ]) == [ "admin@example.com" ]
           && (k8sClusters.home.auth.type or "") == "inCluster" then [ ]
         else [ "K8S_CLUSTERS_JSON does not carry each cluster's auth and approvers" ])
+    ++ (if (k8sClusters.eks-prod.auth or { }) == { type = "eks"; cluster_name = "prod"; region = "us-east-1";
+          role_arn = "arn:aws:iam::123456789012:role/scooter-k8s"; endpoint = ""; certificate_authority = ""; } then [ ]
+        else [ "K8S_CLUSTERS_JSON does not carry an eks cluster's auth" ])
     ++ (if (k8sClusters.home.impersonate or null) == "scooter-k8s" && (k8sClusters.prod-eu.impersonate or "x") == null then [ ]
         else [ "K8S_CLUSTERS_JSON does not carry each cluster's impersonate user" ])
     ++ (let r = k8sEval.config.kubernetes.resources; in

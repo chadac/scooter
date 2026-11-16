@@ -22,7 +22,7 @@ let
     (lib.throwIf (i.user == null && (i.clusterRoles != [ ] || i.namespaceRoles != { }))
       "${where}: roles need a user to bind them to"
     (lib.throwIf (!(c.auth ? inCluster) && (i.clusterRoles != [ ] || i.namespaceRoles != { }))
-      "${where}: roles are bound only on inCluster clusters; bind a kubeconfig cluster's user there"
+      "${where}: roles are bound only on inCluster clusters; bind the user on the cluster itself"
       i.user));
 
   kubeconfigEnv = name: "K8S_KUBECONFIG_${lib.toUpper (lib.replaceStrings [ "-" ] [ "_" ] (checkName name))}";
@@ -60,6 +60,52 @@ let
             type = types.str;
             default = "";
             description = "Context to use; empty means the kubeconfig's current-context.";
+          };
+        };
+      };
+    };
+    eks = mkOption {
+      description = ''
+        An EKS cluster, over AWS IAM. The broker signs a token with its own AWS
+        credentials (IRSA via `scooter.broker.serviceAccountAnnotations`, or the
+        default chain), so no kubeconfig or `exec` plugin is involved. Map the
+        signing principal to a Kubernetes user with an EKS access entry (or
+        `aws-auth`), and give it what `impersonate` and the tools need there.
+      '';
+      type = types.submodule {
+        options = {
+          clusterName = mkOption {
+            type = types.str;
+            example = "prod";
+            description = "The EKS cluster's name.";
+          };
+          region = mkOption {
+            type = types.str;
+            example = "us-east-1";
+            description = "The AWS region the cluster is in.";
+          };
+          roleArn = mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            example = "arn:aws:iam::123456789012:role/scooter-k8s";
+            description = ''
+              A role the broker assumes before signing, e.g. one in the cluster's
+              account. Null signs as the broker's own credentials.
+            '';
+          };
+          endpoint = mkOption {
+            type = types.str;
+            default = "";
+            example = "https://ABCDEF.gr7.us-east-1.eks.amazonaws.com";
+            description = ''
+              The API server URL. Empty, or an empty `certificateAuthority`, looks
+              both up with `eks:DescribeCluster`, which the signer must be allowed.
+            '';
+          };
+          certificateAuthority = mkOption {
+            type = types.str;
+            default = "";
+            description = "The cluster's base64 CA bundle, as `aws eks describe-cluster` prints it.";
           };
         };
       };
@@ -103,7 +149,8 @@ let
             still run as the broker. Null runs everything as the broker. The audit
             log records each call with the conversation and approver as extras.
             For `inCluster`, the broker is allowed to impersonate this user;
-            for `kubeconfig`, grant that kubeconfig's user `impersonate` yourself.
+            for `kubeconfig` and `eks`, grant the broker's user there
+            `impersonate` yourself.
           '';
         };
         clusterRoles = mkOption {
@@ -173,13 +220,21 @@ in
 
       services.broker = {
         enable = true;
-        pythonDeps = ps: [ ps.kubernetes ps.pyyaml ];
+        pythonDeps = ps: [ ps.kubernetes ps.pyyaml ps.boto3 ];
         env = {
           # No clusters: tools stay off, so shipping enabled is safe.
           K8S_ENABLED = lib.boolToString (config.clusters != { });
           K8S_CLUSTERS_JSON = builtins.toJSON (lib.mapAttrs' (name: c: lib.nameValuePair (checkName name) {
             auth =
               if c.auth ? inCluster then { type = "inCluster"; }
+              else if c.auth ? eks then
+                let e = c.auth.eks; in {
+                  type = "eks";
+                  cluster_name = e.clusterName;
+                  inherit (e) region endpoint;
+                  role_arn = e.roleArn;
+                  certificate_authority = e.certificateAuthority;
+                }
               else { type = "kubeconfig"; env = kubeconfigEnv name; context = c.auth.kubeconfig.context; };
             default_namespace = c.defaultNamespace;
             read_only = c.readOnly;
