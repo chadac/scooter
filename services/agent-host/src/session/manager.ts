@@ -1591,6 +1591,16 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
           });
         } else if (dangling && !entries.get(id)?.bridge && (await closeIfSuspended(id, dangling))) {
           // Closed above; a live bridge means it was just revived.
+        } else if (
+          dangling &&
+          (dangling.host === undefined || dangling.host === deps.selfPod) &&
+          entries.get(id)?.bridge?.queueState?.().running
+        ) {
+          // Unstamped or ours, and our bridge is mid-run: it's live.
+          log.info("dangling-run check: the run is executing on this host — not resuming", {
+            conversation_id: id,
+            run_id: dangling.runId,
+          });
         } else if (dangling) {
           const grace = deps.handoffGraceMs ?? 0;
           if (grace > 0 && dangling.host !== undefined && dangling.host !== deps.selfPod) {

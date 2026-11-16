@@ -126,3 +126,55 @@ describe("the ownership WATCH settles a stranded run (the production shape)", ()
     expect(tail).toMatchObject({ type: "RUN_FINISHED", runId: "r1", cancelled: true });
   });
 });
+
+describe("a run this host is still executing is never resumed as dangling", () => {
+  // Without POD_NAME, RUN_STARTED is unstamped and reads as foreign.
+  const liveBridge = (running: boolean) => {
+    const prompts: string[] = [];
+    const bridge = {
+      sessionId: "s1",
+      start: async () => {},
+      prompt: async (input: { text: string }) => {
+        prompts.push(input.text);
+        return "r-next";
+      },
+      cancel: async () => {},
+      stop: async () => {},
+      queueState: () => ({ running, currentRunMs: 0, queued: 0, maxQueuedPriority: 0 }),
+      drainQueue: () => [],
+      shouldYieldToQueue: () => false,
+      onEvent: () => () => {},
+      onPersist: () => () => {},
+      onTitle: () => () => {},
+    };
+    return { bridge, prompts };
+  };
+  const UNSTAMPED_RUN: AguiEvent[] = [{ type: "RUN_STARTED", threadId: "t1", runId: "r1" }] as never;
+
+  it("the first prompt's own unstamped RUN_STARTED gets no resume nudge @proves", async () => {
+    const { store } = seededStore("t1", []);
+    const { bridge, prompts } = liveBridge(true);
+    const sessions = createSessionManager({ provisioner: fakeProvisioner(), store, bridgeFactory: () => bridge } as never);
+    const conv = await sessions.start("t1" as never);
+    // The adoption check sees the live run's own marker.
+    await store.appendEvent(conv.id as SessionId, UNSTAMPED_RUN[0]);
+
+    await sessions.reconcileDanglingRun(conv.id as SessionId);
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(prompts, "a live run must not be re-driven").toEqual([]);
+  });
+
+  it("an idle bridge still resumes a stranded unstamped run", async () => {
+    const { store } = seededStore("t1", []);
+    const { bridge, prompts } = liveBridge(false);
+    const sessions = createSessionManager({ provisioner: fakeProvisioner(), store, bridgeFactory: () => bridge } as never);
+    const conv = await sessions.start("t1" as never);
+    await store.appendEvent(conv.id as SessionId, UNSTAMPED_RUN[0]);
+
+    await sessions.reconcileDanglingRun(conv.id as SessionId);
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(prompts.length, "a stranded run is resumed once").toBe(1);
+  });
+});
