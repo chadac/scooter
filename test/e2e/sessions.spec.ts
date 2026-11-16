@@ -106,9 +106,10 @@ test.describe("session selector & titles", () => {
 
   test("the tab title and the header carry the conversation's title", async ({ chat, page }) => {
     await chat.open();
-    // An unnamed conversation is the bare wordmark, with no header title beside it.
+    // An unsent conversation is the bare wordmark, with the draft label in the header.
     await expect(page).toHaveTitle("scooter");
-    await expect(page.locator(headerTitle)).toHaveCount(0);
+    await expect(page.locator(headerTitle)).toHaveText("New conversation");
+    await expect(page.locator(headerTitle)).toHaveAttribute("data-draft", "true");
 
     await chat.send("help me refactor the parser");
     await chat.waitForReply(/dummy agent/i);
@@ -238,6 +239,10 @@ test.describe("session selector & titles", () => {
     const items = section.locator(sidebar.item);
     await expect(items.filter({ hasText: /already in the folder/i })).toHaveCount(1, { timeout: 10_000 });
     await section.getByTestId("folder-new-session").click();
+    // The draft takes the button's place, below the folder's sent conversations.
+    await expect(items.last()).toHaveText(/New conversation/);
+    await expect(items.last()).toHaveAttribute("data-pending-create", "true");
+    await expect(section.getByTestId("folder-new-session")).toHaveCount(0);
     await chat.send("started in the folder");
     await chat.waitForReply(/dummy agent/i);
     await expect(items.filter({ hasText: /started in the folder/i })).toHaveCount(1, { timeout: 10_000 });

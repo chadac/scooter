@@ -63,3 +63,12 @@ describe("HeaderConversationTitle", () => {
     expect(confirmDeleteMessage({ title: "A", starred: false }, true)).toMatch(/sandbox/);
   });
 });
+
+describe("HeaderConversationTitle for an unsent draft", () => {
+  it("names the draft so a new conversation is visibly open", () => {
+    sessionStore.newSession();
+    const html = render(true);
+    expect(html).toContain("New conversation");
+    expect(html).toContain('data-draft="true"');
+  });
+});

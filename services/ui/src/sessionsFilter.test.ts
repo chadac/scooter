@@ -12,6 +12,7 @@ import {
   sessionStore,
   filteredSessions,
   sessionLabel,
+  DRAFT_LABEL,
   linkName,
   primaryLink,
   type Session,
@@ -155,5 +156,19 @@ describe("Show: label mode (title | provider)", () => {
     const plain = sessionStore.get().sessions.find((s) => s.id === "plain")!;
     expect(primaryLink(gh)?.source).toBe("github");
     expect(primaryLink(plain)).toBeUndefined();
+  });
+});
+
+describe("an unsent draft under the Mine scope", () => {
+  it("stays listed and labelled until its first send", () => {
+    seed();
+    sessionStore.setCurrentUser({ id: "u1" });
+    sessionStore.setScope("mine");
+    const id = sessionStore.newSession();
+    const draft = filteredSessions(sessionStore.get()).find((s) => s.id === id);
+    expect(draft).toBeDefined();
+    expect(sessionLabel(draft!, "title")).toBe(DRAFT_LABEL);
+    // Someone else's server conversations stay hidden.
+    expect(filteredSessions(sessionStore.get()).map((s) => s.id)).toEqual([id]);
   });
 });

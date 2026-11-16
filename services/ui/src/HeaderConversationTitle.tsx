@@ -13,7 +13,7 @@ import { FolderGlyph } from "./FolderGlyph.js";
 import { PrivacyPopover } from "./PrivacyPopover.js";
 import { folderOf, folderStore, moveTo, STARRED, useFolders } from "./folders.js";
 import { displayTitle } from "./pageTitle.js";
-import { sessionStore, useSessions, type Session } from "./sessions.js";
+import { DRAFT_LABEL, isDraft, sessionStore, useSessions, type Session } from "./sessions.js";
 import {
   canChangeVisibility,
   commitRename,
@@ -220,11 +220,12 @@ function Actions({ session: s }: { session: Session }) {
   );
 }
 
-/** The conversation's title beside the wordmark; absent when unnamed and not yet on the server. */
+/** The conversation's title beside the wordmark, or the draft label before its first send. */
 export function HeaderConversationTitle({ actions = false }: { actions?: boolean }) {
   const { sessions, currentId, editingId } = useSessions();
   const s = sessions.find((x) => x.id === currentId);
-  const title = displayTitle(s?.title);
+  const draft = !!s && isDraft(s);
+  const title = displayTitle(s?.title) ?? (draft ? DRAFT_LABEL : undefined);
   if (!s || (!title && !(actions && isServerBacked(s)))) return null;
   const editing = actions && editingId === s.id;
   return (
@@ -238,7 +239,8 @@ export function HeaderConversationTitle({ actions = false }: { actions?: boolean
           <span
             data-testid="header-conversation-title"
             title={title}
-            className="min-w-0 truncate text-[13.5px] text-muted-foreground desk:max-w-[32rem]"
+            data-draft={draft ? "true" : undefined}
+            className={cn("min-w-0 truncate text-[13.5px] text-muted-foreground desk:max-w-[32rem]", draft && "italic")}
           >
             {title}
           </span>

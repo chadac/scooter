@@ -143,6 +143,12 @@ const isPristine = (s: Session) => s.title === DEFAULT_TITLE;
 /** Whether the server has ever created this conversation. */
 const isServerBacked = (s: Session): boolean => s.serverId !== undefined || s.serverCreated === true;
 
+/** The label an unsent, untitled conversation shows in the sidebar and header. */
+export const DRAFT_LABEL = "New conversation";
+
+/** Whether this is an unsent conversation still carrying the placeholder title. */
+export const isDraft = (s: Session): boolean => isPristine(s) && !isServerBacked(s);
+
 /** Whether this session's first send is still creating it server-side (still titled "New chat" and id-less meanwhile). */
 const isCreating = (s: Session): boolean => conversations.get(s.id)?.creating === true;
 
@@ -772,14 +778,15 @@ export function sessionLabel(s: Session, mode: LabelMode): string {
     const l = linkForProvider(s, mode);
     if (l) return linkName(l);
   }
-  return s.title;
+  return isDraft(s) ? DRAFT_LABEL : s.title;
 }
 
-/** Filter by the Mine/All scope, where Mine shows only the caller's own conversations once a non-anonymous identity is known and everything before that. */
+/** Filter by the Mine/All scope, where Mine shows only the caller's own conversations and unsent drafts once a non-anonymous identity is known and everything before that. */
 export function visibleSessions(state: State): Session[] {
   const known = !!state.currentUser && !state.currentUserAnonymous;
   if (state.scope === "all" || !known) return state.sessions;
-  return state.sessions.filter((s) => s.owner === state.currentUser);
+  // A conversation the server never created has no owner yet, but is ours.
+  return state.sessions.filter((s) => s.owner === state.currentUser || !isServerBacked(s));
 }
 
 /** Whether a session links to any selected provider (no chips selected passes everything). */

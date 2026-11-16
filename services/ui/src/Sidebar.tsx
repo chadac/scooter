@@ -33,6 +33,7 @@ import {
   filteredSessions,
   nestSubagents,
   sessionLabel,
+  isDraft,
   linkForProvider,
   linkProviders,
   turnDot,
@@ -121,7 +122,8 @@ function InfoTip({ text }: { text: string }) {
 /** A row's label: the provider's link, drawn by its contrib's view, else the title. */
 function SessionLabel({ session: s, mode }: { session: import("./sessions.js").Session; mode: LabelMode }) {
   const link = mode !== "title" ? linkForProvider(s, mode) : undefined;
-  return link ? <LinkText link={link} /> : <span className="truncate">{sessionLabel(s, mode)}</span>;
+  if (link) return <LinkText link={link} />;
+  return <span className={cn("truncate", isDraft(s) && "italic text-muted-foreground")}>{sessionLabel(s, mode)}</span>;
 }
 
 /** One conversation row: select only. Star / rename / delete live beside the title in the
@@ -318,6 +320,9 @@ function FolderSectionView({
   }, [drop]);
   const open = !closed && (searching || !fstate.collapsed[f.id]);
   const shown = open ? f.rows : currentBranch(f.rows, currentId);
+  // An open folder's draft takes the New conversation button's place.
+  const drafts = open ? shown.filter((r) => isDraft(r.session)) : [];
+  const ordered = [...shown.filter((r) => !drafts.includes(r)), ...drafts];
   const kids = f.children.filter((c) => (searching ? allRows(c).length > 0 : open || holds(c, currentId)));
   const everything = allRows(f);
   const count = (open ? f.rows : everything).filter((r) => r.depth === 0).length;
@@ -652,7 +657,7 @@ function FolderSectionView({
                 {f.starred ? "Star a conversation to pin it here." : "Drag conversations here."}
               </p>
             )}
-            {shown.map(({ session: s, depth, childCount }) => (
+            {ordered.map(({ session: s, depth, childCount }) => (
               <SessionRow
                 key={s.id}
                 session={s}
@@ -662,7 +667,7 @@ function FolderSectionView({
                 labelMode={labelMode}
               />
             ))}
-            {open && (
+            {open && drafts.length === 0 && (
               <button
                 type="button"
                 data-testid="folder-new-session"
