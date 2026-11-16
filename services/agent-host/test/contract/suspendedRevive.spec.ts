@@ -378,6 +378,40 @@ describe("queued messages survive suspend → revive", () => {
     }
   });
 
+  it("a message that lands WHILE suspend persists the queue is still re-run on revive", async () => {
+    // Like the real bridge, stop() discards whatever is still queued.
+    const root = mkdtempSync(join(tmpdir(), "susp-queue-late-"));
+    try {
+      const { store, sessions, bridges } = harness(root);
+      const conv = await sessions.start("thread-queue-late");
+      const first = bridges.get(conv.id)!;
+      first.queued = [{ text: "in flight at the suspend", priority: 0 }];
+      first.stop = async function () {
+        this.drainQueue();
+        this.started = false;
+      };
+      const saveMeta = store.saveMeta!.bind(store);
+      let landed = false;
+      store.saveMeta = async (meta) => {
+        if (!landed && meta.pendingQueue?.length) {
+          landed = true;
+          first.queued.push({ text: "queued during the save", priority: 0 });
+        }
+        await saveMeta(meta);
+      };
+
+      await sessions.suspend(conv.id);
+      await sessions.revive(conv.id);
+
+      expect(
+        bridges.get(conv.id)!.prompts,
+        "a message queued while suspend was saving must not be discarded by stop()",
+      ).toEqual(expect.arrayContaining(["in flight at the suspend", "queued during the save"]));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("re-enqueued messages are cleared, so a second revive does not replay them", async () => {
     const root = mkdtempSync(join(tmpdir(), "susp-queue-2-"));
     try {

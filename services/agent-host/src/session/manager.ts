@@ -1782,12 +1782,13 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // Drain the bridge's in-memory queue onto the entry before dropping the bridge so
       // already-sent messages survive; the optional call keeps a bridge without drainQueue from
       // failing the suspend.
-      const drained = entry.bridge?.drainQueue?.() ?? [];
-      if (drained.length > 0) {
+      // Re-drain: stop() discards prompts that land during the save.
+      const bridge = entry.bridge;
+      for (let drained = bridge?.drainQueue?.() ?? []; drained.length > 0; drained = bridge?.drainQueue?.() ?? []) {
         entry.pendingQueue = [...(entry.pendingQueue ?? []), ...drained];
         await saveMeta(entry); // durable before the teardown
       }
-      await entry.bridge?.stop();
+      await bridge?.stop();
       // A subagent's Sandbox is its parent's, which keeps running.
       if (!entry.parentId) await provisioner.suspend(entry.sandbox);
       entry.bridge = undefined;
