@@ -357,6 +357,46 @@ async def kanban_set_skill(name: str, body: str, ctx: ToolContext = ToolContextD
     return ToolResult.ok(f"The board skill `{slug}` was {done}.")
 
 
+@mcp.tool
+async def kanban_set_gate(
+    stage: str,
+    name: str,
+    prompt: str = "",
+    skill: str = "",
+    direction: str = "leave",
+    ctx: ToolContext = ToolContextDep,
+) -> ToolResult:
+    """Add, change or delete a prompt gate on this kanban board: a check every card's agent
+    must carry out and answer (kanban_answer_gate) before its card moves on.
+
+    `stage` is the stage's name; `direction` is "leave" (checked as a card leaves the stage)
+    or "enter" (as it enters). `name` is the gate's short title, which identifies it on that
+    stage. `prompt` says what the agent must do and what counts as passing; `skill` is a
+    board skill (with or without `board-`) the gate follows. Give at least one; give neither
+    to delete the gate. You may change or delete only gates this conversation set; the
+    user's gates, approvals, and gates other cards' agents set are the user's to change in
+    Edit board. Add gates when the user asks for a check on the board's process, not for
+    this card alone. New cards usually start in the first stage, so an "enter" gate there
+    rarely fires; put a check on the first stage as "leave".
+    """
+    key = await _key(ctx)
+    if isinstance(key, ToolResult):
+        return key
+    assert _boards is not None
+    try:
+        where, gate, done = await _boards.set_gate(key, stage, name, prompt=prompt, skill=skill, direction=direction)
+    except BoardError as e:
+        return ToolResult.error(f"{e.detail}.")
+    stage_name = next(s.name for s in where.stages if s.name.casefold() == stage.strip().casefold())
+    if gate is None:
+        return ToolResult.ok(f'The gate "{name.strip()}" on "{stage_name}" was deleted.')
+    when = "leaving" if gate.direction == "leave" else "entering"
+    return ToolResult.ok(
+        f'The gate "{gate.name}" ({when} "{stage_name}") was {done}. The user sees it, marked as set by an agent, in '
+        "Edit board."
+    )
+
+
 def kanban_mcp_server() -> FastMCP:
     """The server the provider factory hands to `McpTools`."""
     return mcp

@@ -120,6 +120,7 @@ class _Gate(_Base):
     name: Mapped[str] = mapped_column(String)
     prompt: Mapped[str] = mapped_column(Text, default="")
     skill_id: Mapped[str] = mapped_column(String, default="")
+    added_by: Mapped[str] = mapped_column(String, default="user")
     position: Mapped[float] = mapped_column(Float)
 
 
@@ -215,6 +216,9 @@ class Gate:
     prompt: str = ""
     skill: str = ""
     direction: str = "leave"
+    # Who last set what it checks: "user" in Edit board, or "agent:<conversation id>" for the
+    # agent that set it with kanban_set_gate.
+    added_by: str = "user"
 
     def payload(self) -> dict:
         return asdict(self)
@@ -474,15 +478,22 @@ class KanbanStore:
         for g in gates:
             row = have.get(g.id)
             if row is None:
-                row = _Gate(id=str(uuid.uuid4()), board_id=board_id)
+                row = _Gate(id=str(uuid.uuid4()), board_id=board_id, added_by=g.added_by)
                 s.add(row)
             elif (row.kind, row.prompt, row.skill_id, row.stage_id, row.direction) != (
                 g.kind, g.prompt, g.skill, g.stage, g.direction
             ):
-                # What passed before is no longer what the gate checks, or where.
+                # What passed before is no longer what the gate checks, or where; and the gate
+                # is now whoever changed it's, so one the user edits is theirs.
                 await s.execute(delete(_GateResult).where(_GateResult.gate_id == row.id))
+                row.added_by = g.added_by
             row.stage_id, row.direction, row.kind, row.name, row.position = g.stage, g.direction, g.kind, g.name, g.position
             row.prompt, row.skill_id = g.prompt, g.skill
+
+    async def save_gates(self, board_id: str, gates: list[Gate]) -> None:
+        """Make a board's gates these, leaving its stages, tags and skills; a gate without an id is new."""
+        async with self._session() as s, s.begin():
+            await self._write_gates(s, board_id, gates)
 
     async def save_skills(self, board_id: str, skills: list[Skill]) -> None:
         """Make a board's skills these, leaving its stages and tags; a skill without an id is new."""
@@ -714,6 +725,7 @@ def _gate(row: _Gate) -> Gate:
     return Gate(
         id=row.id, stage=row.stage_id, kind=row.kind, name=row.name, position=row.position,
         prompt=row.prompt or "", skill=row.skill_id or "", direction=row.direction or "leave",
+        added_by=row.added_by or "user",
     )
 
 

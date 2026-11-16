@@ -36,9 +36,14 @@ telling the truth.
   has passed. An *approval* gate then asks the user: tell them what to look at (the PR,
   a preview, the doc), then end your turn. A message comes when they approve, so move
   the card on then, or when they reject it, with their comment, so address it and ask
-  again. Don't poll, and don't try to get around a gate. Only the user can change gates,
-  under Edit board; if one looks wrong, or the user asks for gates you can't set, tell
-  them what to put.
+  again. Don't poll, and don't try to get around a gate.
+- **When the user asks for a check on the board's process** ("before anything leaves
+  Design, look for duplicate issues"), add it as a prompt gate with
+  `kanban_set_gate(stage, name, prompt, skill, direction)`. It can follow a board skill,
+  so write the steps there with `kanban_set_skill` first. New cards start in the first
+  stage, so a check there goes on *leaving* it. You can change or delete (no `prompt`,
+  no `skill`) only the gates your conversation set. Approvals, the user's gates and other
+  agents' gates are the user's to change under Edit board; if one looks wrong, tell them.
 - **When planning work as several cards**, start each one (e.g. with `handoff_spawn`),
   put it on the board with `kanban_add_card(conversation, blocked_by)`, and order the
   cards with `kanban_set_blockers`. `kanban_list_cards` shows the cards and their ids.

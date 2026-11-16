@@ -42,6 +42,7 @@ interface Gate {
   position: number;
   prompt: string;
   skill: string;
+  added_by?: string;
 }
 
 // Board folders this file made, deleted after each test so the sidebar stays short.
@@ -591,6 +592,30 @@ fastOnly("the kanban broker routes are stubbed in the browser")("kanban /boards 
         [design.id, "leave", "prompt", "Released", "", "sk-release"],
       ]);
     expect(kanban.saves).toHaveLength(1);
+  });
+
+  test("Edit board marks the gates an agent set with kanban_set_gate", async ({ page, request, baseURL }) => {
+    const base = baseURL ?? "http://localhost:5173";
+    const kanban = await serveKanban(page, request, base);
+    const board = await kanban.board(`e2e-board-agent-gates-${Date.now()}`);
+    const [design, , review] = board.stages;
+    board.skills.push({ id: "sk-dedupe", name: "Upstream dedupe check", body: "Search issues and PRs.", position: 1 });
+    board.gates.push(
+      { id: "g-user", stage: review.id, direction: "enter", kind: "prompt", name: "Unit tests", position: 1, prompt: "Run just test.", skill: "", added_by: "user" },
+      {
+        id: "g-agent", stage: design.id, direction: "leave", kind: "prompt", name: "Upstream check", position: 2,
+        prompt: "Pass with a note on what you found.", skill: "sk-dedupe", added_by: "agent:conv-1",
+      },
+    );
+
+    await page.goto(`/boards/${board.folder}`);
+    await expect(page.getByTestId("kanban-board")).toBeVisible({ timeout: 20_000 });
+    await page.getByTestId("kanban-edit-stages").click();
+    const gates = page.getByTestId("kanban-gates").getByTestId("kanban-gate-edit");
+    await expect(gates).toHaveCount(2);
+    await expect(gates.nth(0).getByTestId("kanban-gate-by-agent")).toHaveCount(0);
+    await expect(gates.nth(1).getByTestId("kanban-gate-by-agent")).toHaveText("set by an agent");
+    if (process.env.KANBAN_SHOTS) await page.getByTestId("kanban-gates").screenshot({ path: `${process.env.KANBAN_SHOTS}/agent-gate.png` });
   });
 
   test("Rename and Delete board change the board's folder", async ({ page, request, baseURL }) => {

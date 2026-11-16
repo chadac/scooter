@@ -31,6 +31,8 @@ MAX_SKILL_NAME_CHARS = 60
 MAX_SKILL_CHARS = 4_000
 # What a board skill's name becomes in the agent's skill list, e.g. "board-release-steps".
 SKILL_PREFIX = "board-"
+# A gate's `added_by` when an agent set it: this, then its conversation's id.
+AGENT_PREFIX = "agent:"
 # A board's gates, and what one may hold.
 MAX_BOARD_GATES = 20
 MAX_GATE_NAME_CHARS = 60
@@ -1079,6 +1081,83 @@ class Boards:
         await self.store.save_skills(board, [replace(k, position=float(i + 1)) for i, k in enumerate(skills)])
         await self.changed(where.conversation.owner)
         return where, slug, done
+
+    async def set_gate(
+        self, key: str, stage: str, name: str, *, prompt: str = "", skill: str = "", direction: str = "leave",
+    ) -> tuple[Located, Gate | None, str]:
+        """The agent adds, changes or (with no `prompt` and no `skill`) deletes a prompt gate on its board.
+
+        A gate is matched by its name on `stage`. The agent adds only prompt gates, and
+        changes or deletes only the gates its own conversation set: an approval, a gate the
+        user set or has since edited, or one another card's agent set is the user's to change
+        in Edit board, so an agent can't lift a gate holding its card. `skill` is a board
+        skill's name, with or without `board-`. Returns where the card is, the gate as saved
+        (None once deleted), and what happened: "added", "updated" or "deleted".
+        """
+        where = await self.locate(key)
+        board = where.place.board
+        want = stage.strip().casefold()
+        at = next((s for s in where.stages if s.name.casefold() == want), None)
+        if at is None:
+            names = ", ".join(f'"{s.name}"' for s in where.stages)
+            raise BoardError(404, f'no stage "{stage}" on this board; its stages: {names}')
+        if direction not in GATE_DIRECTIONS:
+            raise BoardError(400, f"a gate's direction is one of {', '.join(GATE_DIRECTIONS)}")
+        title = name.strip()
+        if not title:
+            raise BoardError(400, "a gate needs a name")
+        mine = AGENT_PREFIX + where.conversation.id
+        have = await self.store.gates(board)
+        i = next(
+            (i for i, g in enumerate(have) if g.stage == at.folder and g.name.casefold() == title.casefold()), None
+        )
+        old = have[i] if i is not None else None
+        if old is not None and (old.kind != "prompt" or old.added_by != mine):
+            whose = (
+                "the user's approval" if old.kind != "prompt"
+                else "set by another card's agent" if old.added_by.startswith(AGENT_PREFIX)
+                else "set by the user"
+            )
+            raise BoardError(
+                409, f'the gate "{old.name}" on {at.name} is {whose}; only the user changes it, in Edit board. '
+                "Add a gate with another name, or ask them"
+            )
+        skills = await self.store.skills(board)
+        skill_id = ""
+        if skill.strip():
+            want_skill = skill.strip()
+            if want_skill.casefold().startswith(SKILL_PREFIX):
+                want_skill = want_skill[len(SKILL_PREFIX) :]
+            slug = skill_slug(want_skill)
+            found = next((k for k in skills if skill_slug(k.name) == slug), None)
+            if found is None:
+                names = ", ".join(f"`{skill_slug(k.name)}`" for k in skills) or "none"
+                raise BoardError(404, f"this board has no skill `{slug}`; its skills: {names}")
+            skill_id = found.id
+        if not prompt.strip() and not skill_id:
+            if old is None:
+                raise BoardError(404, f'no gate "{title}" on {at.name} to delete; give a prompt or a skill to add one')
+            gates, done, made = have[:i] + have[i + 1 :], "deleted", None
+        else:
+            made = Gate(
+                id=old.id if old else "", stage=at.folder, kind="prompt", name=title, prompt=prompt,
+                skill=skill_id, direction=direction, added_by=mine,
+            )
+            if old is None:
+                gates, done = [*have, made], "added"
+            else:
+                gates, done = [*have[:i], made, *have[i + 1 :]], "updated"
+        gates = self._check_gates(
+            gates, {s.folder for s in where.stages}, {g.id for g in have},
+            {k.id for k in skills},
+        )
+        gates = [replace(g, position=float(n + 1)) for n, g in enumerate(gates)]
+        await self.store.save_gates(board, gates)
+        await self.changed(where.conversation.owner)
+        if made is not None:
+            saved = await self.store.gates(board)
+            made = next(g for g in saved if g.stage == at.folder and g.name.casefold() == title.casefold())
+        return where, made, done
 
     async def tag_view(self, key: str, board: str) -> dict[str, list[Tag]]:
         """A board's tags and the card's, as `view` takes them."""

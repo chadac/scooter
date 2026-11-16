@@ -128,6 +128,9 @@ CREATE TABLE "kanban_gates" (
   "prompt"          text NOT NULL DEFAULT '',
   -- kind "prompt": a skill of the board (kanban_skills.id) the agent follows for it, or ''.
   "skill_id"        character varying NOT NULL DEFAULT '',
+  -- Who last set what it checks: "user" (in Edit board) or "agent:<conversation id>"
+  -- (kanban_set_gate). An agent may change or delete only a gate its conversation set.
+  "added_by"        character varying NOT NULL DEFAULT 'user',
   -- Order on the stage; gates are met in this order, approvals after prompts.
   "position"        double precision NOT NULL,
   PRIMARY KEY ("id")

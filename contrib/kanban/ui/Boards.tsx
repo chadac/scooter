@@ -87,7 +87,12 @@ interface Gate {
   prompt: string;
   /** prompt: the id of a board skill it follows, or "". */
   skill: string;
+  /** Who last set what it checks: "user", or "agent:<conversation id>" for an agent's kanban_set_gate. */
+  added_by?: string;
 }
+
+/** Whether an agent set the gate; it is the user's once they change what it checks. */
+export const setByAgent = (g: { added_by?: string }) => (g.added_by ?? "").startsWith("agent:");
 
 interface BoardRow {
   folder: string;
@@ -1367,6 +1372,15 @@ function Board({
                   value={g.name}
                   onChange={(e) => changeGate(g.id, { name: e.currentTarget.value })}
                 />
+                {setByAgent(g) && (
+                  <span
+                    data-testid="kanban-gate-by-agent"
+                    className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground"
+                    title="An agent on this board added this gate. Editing it makes it yours."
+                  >
+                    set by an agent
+                  </span>
+                )}
                 <Button
                   size="icon-xs"
                   variant="ghost"

@@ -4,7 +4,7 @@
 
 import { describe, it, expect } from "vitest";
 
-import { gatesOnTheWay, pageLane, skillSlug, userTodos } from "./Boards.js";
+import { gatesOnTheWay, pageLane, setByAgent, skillSlug, userTodos } from "./Boards.js";
 
 const card = (id: string, lastActivityAt: number) => ({ id, lastActivityAt });
 
@@ -113,5 +113,13 @@ describe("userTodos", () => {
 
   it("is empty when nothing waits on the user", () => {
     expect(userTodos([conv("a", 1, { dot: "active" }), conv("b", 2, { dot: "unread" })], none)).toEqual([]);
+  });
+});
+
+describe("setByAgent", () => {
+  it("marks the gates an agent set, not the user's", () => {
+    expect(setByAgent({ added_by: "agent:conv-1" })).toBe(true);
+    expect(setByAgent({ added_by: "user" })).toBe(false);
+    expect(setByAgent({})).toBe(false);
   });
 });

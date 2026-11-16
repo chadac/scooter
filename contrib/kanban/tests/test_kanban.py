@@ -1516,3 +1516,95 @@ async def test_a_bad_direction_is_refused_and_a_changed_one_resets_the_pass(app,
     saved = next(g for g in board["gates"] if g["id"] == gate)
     await _gated(app, board, [{**saved, "stage": "Design", "direction": "enter"}])
     assert await store.gate_results("key-api") == {}
+
+
+# --- gates the agent sets ------------------------------------------------------------
+
+async def test_the_agent_adds_changes_and_deletes_a_prompt_gate(app, boards, folders, store):
+    board = await _cards(app, boards, folders, "api", "web", stage="Design")
+    async with as_(app, user="alice") as c:
+        await _skills(c, board, [{"name": "Upstream dedupe check", "body": "Search issues and PRs."}])
+    out = await mcp_tools.kanban_set_gate(
+        stage="design", name=" Upstream check ", skill="board-upstream-dedupe-check", ctx=_ctx("thread-api")
+    )
+    assert not out.is_error, out.text
+    assert out.text.startswith('The gate "Upstream check" (leaving "Design") was added.')
+    [gate] = await store.gates(board["folder"])
+    skill = (await store.skills(board["folder"]))[0]
+    assert (gate.kind, gate.stage, gate.skill, gate.direction) == ("prompt", _stage(board, "Design"), skill.id, "leave")
+    assert gate.added_by == "agent:conv-api"
+    # Every card on the board must now answer it, its own included.
+    out = await mcp_tools.kanban_set_status(column="In progress", ctx=_ctx("thread-web"))
+    assert out.is_error and '"Upstream check" (leaving Design' in out.text
+    # Its agent changes it by name; what it checks changed, so earlier answers go.
+    await mcp_tools.kanban_answer_gate(gate="Upstream check", passed=True, ctx=_ctx("thread-web"))
+    out = await mcp_tools.kanban_set_gate(
+        stage="Design", name="upstream check", prompt="Also check open PRs.", skill="upstream-dedupe-check",
+        ctx=_ctx("thread-api"),
+    )
+    assert "was updated" in out.text
+    [again] = await store.gates(board["folder"])
+    assert again.id == gate.id and again.prompt == "Also check open PRs." and again.added_by == "agent:conv-api"
+    assert await store.gate_results("key-web") == {}
+    # The user sees who set it.
+    async with as_(app, user="alice") as c:
+        listed = (await c.get("/kanban/user/boards")).json()
+    [row] = [b for b in listed["boards"] if b["folder"] == board["folder"]]
+    assert row["gates"][0]["added_by"] == "agent:conv-api"
+    out = await mcp_tools.kanban_set_gate(stage="Design", name="Upstream check", ctx=_ctx("thread-api"))
+    assert not out.is_error and out.text == 'The gate "Upstream check" on "Design" was deleted.'
+    assert await store.gates(board["folder"]) == []
+
+
+async def test_an_agent_cant_change_a_gate_it_didnt_set(app, boards, folders, store):
+    board = await _cards(app, boards, folders, "api", "web", stage="Design")
+    board = await _gated(app, board, [
+        {"stage": "Design", "kind": "prompt", "name": "Tests", "prompt": "Run the tests."},
+        {"stage": "Design", "kind": "approval", "name": "Design OK"},
+    ])
+    out = await mcp_tools.kanban_set_gate(stage="Design", name="tests", ctx=_ctx("thread-api"))
+    assert out.is_error and "set by the user" in out.text
+    out = await mcp_tools.kanban_set_gate(stage="Design", name="Design OK", prompt="x", ctx=_ctx("thread-api"))
+    assert out.is_error and "the user's approval" in out.text
+    # Another card's agent can't lift a gate holding its card.
+    await mcp_tools.kanban_set_gate(stage="Design", name="Docs", prompt="Update the docs.", ctx=_ctx("thread-api"))
+    out = await mcp_tools.kanban_set_gate(stage="Design", name="Docs", ctx=_ctx("thread-web"))
+    assert out.is_error and "another card's agent" in out.text
+    assert [g.name for g in await store.gates(board["folder"])] == ["Tests", "Design OK", "Docs"]
+    # Once the user edits an agent's gate it is theirs.
+    gates = [
+        {"id": g.id, "stage": "Design", "kind": g.kind, "name": g.name,
+         "prompt": "Update the docs and the changelog." if g.name == "Docs" else g.prompt}
+        for g in await store.gates(board["folder"])
+    ]
+    await _gated(app, board, gates)
+    docs = next(g for g in await store.gates(board["folder"]) if g.name == "Docs")
+    assert docs.added_by == "user"
+    out = await mcp_tools.kanban_set_gate(stage="Design", name="Docs", prompt="x", ctx=_ctx("thread-api"))
+    assert out.is_error and "set by the user" in out.text
+
+
+async def test_the_agent_s_bad_gates_are_refused(app, boards, folders, store):
+    board = await _cards(app, boards, folders, "api", stage="Design")
+    out = await mcp_tools.kanban_set_gate(stage="Nope", name="x", prompt="y", ctx=_ctx("thread-api"))
+    assert out.is_error and '"Design", "In progress", "Review", "Done"' in out.text
+    out = await mcp_tools.kanban_set_gate(stage="Design", name="x", skill="nope", ctx=_ctx("thread-api"))
+    assert out.is_error and "no skill `board-nope`" in out.text
+    assert (await mcp_tools.kanban_set_gate(stage="Design", name=" ", prompt="y", ctx=_ctx("thread-api"))).is_error
+    out = await mcp_tools.kanban_set_gate(stage="Design", name="x", prompt="y", direction="up", ctx=_ctx("thread-api"))
+    assert out.is_error
+    assert (await mcp_tools.kanban_set_gate(stage="Design", name="gone", ctx=_ctx("thread-api"))).is_error
+    out = await mcp_tools.kanban_set_gate(stage="Design", name="big", prompt="x" * 4_001, ctx=_ctx("thread-api"))
+    assert out.is_error and "at most" in out.text
+    for i in range(20):
+        assert not (await mcp_tools.kanban_set_gate(stage="Review", name=f"g{i}", prompt="x", ctx=_ctx("thread-api"))).is_error
+    out = await mcp_tools.kanban_set_gate(stage="Review", name="g20", prompt="x", ctx=_ctx("thread-api"))
+    assert out.is_error and "at most 20 gates" in out.text
+    # An entering gate is checked as a card moves in.
+    await mcp_tools.kanban_set_gate(stage="Review", name="g0", ctx=_ctx("thread-api"))
+    out = await mcp_tools.kanban_set_gate(
+        stage="In progress", name="Plan", prompt="Write the plan.", direction="enter", ctx=_ctx("thread-api")
+    )
+    assert '(entering "In progress")' in out.text
+    out = await mcp_tools.kanban_set_status(column="In progress", ctx=_ctx("thread-api"))
+    assert out.is_error and '"Plan"' in out.text
