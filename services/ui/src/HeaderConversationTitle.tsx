@@ -4,7 +4,7 @@
  * drawer, and hover-revealed tiles on a row are easy to hit while selecting a conversation.
  */
 
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { Check, EllipsisVertical, FolderInput, FolderPlus, Lock, LockOpen, Pencil, Star, Trash2 } from "lucide-react";
 import { DropdownMenu, Popover } from "radix-ui";
 import { flushSync } from "react-dom";
@@ -88,6 +88,11 @@ function Actions({ session: s }: { session: Session }) {
     if (!window.confirm(confirmDeleteMessage(s, backed))) return;
     void removeSession(s);
   };
+  // Open after the menu closes; its focus return dismisses popovers.
+  const afterClose = useRef<(() => void) | undefined>(undefined);
+  const thenOpen = (open: (v: boolean) => void) => () => {
+    afterClose.current = () => open(true);
+  };
   const menu = (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
@@ -106,6 +111,13 @@ function Actions({ session: s }: { session: Session }) {
         <DropdownMenu.Content
           align="end"
           sideOffset={6}
+          onCloseAutoFocus={(e) => {
+            const fn = afterClose.current;
+            if (!fn) return;
+            afterClose.current = undefined;
+            e.preventDefault();
+            fn();
+          }}
           className="z-50 min-w-44 rounded-md border bg-popover p-1 text-sm text-popover-foreground shadow-md"
         >
           {starrable && (
@@ -116,8 +128,7 @@ function Actions({ session: s }: { session: Session }) {
             </DropdownMenu.Item>
           )}
           {movable && (
-            // Deferred so the menu has closed and returned focus before the picker takes it.
-            <DropdownMenu.Item data-testid="session-menu-move" onSelect={() => setTimeout(() => setMoving(true))} className={menuItem}>
+            <DropdownMenu.Item data-testid="session-menu-move" onSelect={thenOpen(setMoving)} className={menuItem}>
               <FolderInput />
               Move to…
             </DropdownMenu.Item>
@@ -125,8 +136,7 @@ function Actions({ session: s }: { session: Session }) {
           {canShare && (
             <DropdownMenu.Item
               data-testid="session-menu-visibility"
-              // Opens the privacy panel after the menu returns focus.
-              onSelect={() => (isPrivate ? setTimeout(() => setPrivacy(true)) : void toggleVisibility(s))}
+              onSelect={isPrivate ? thenOpen(setPrivacy) : () => void toggleVisibility(s)}
               className={menuItem}
             >
               <Lock />
