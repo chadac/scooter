@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import re
 import ssl
 import tempfile
 import threading
@@ -72,6 +73,11 @@ def generate_ca(hosts: list[str]) -> CaMaterial:
     )
 
 
+def split_pem(pem: bytes) -> list[bytes]:
+    """Each PEM block in a bundle, in order."""
+    return re.findall(rb"-----BEGIN [^-]+-----.*?-----END [^-]+-----\n?", pem, re.S)
+
+
 def ca_hosts(cert_pem: bytes) -> list[str]:
     """The hosts a CA's name constraints permit."""
     cert = x509.load_pem_x509_certificate(cert_pem)
@@ -82,12 +88,20 @@ def ca_hosts(cert_pem: bytes) -> list[str]:
     return sorted(n.value for n in (nc.permitted_subtrees or []) if isinstance(n, x509.DNSName))
 
 
-class LeafIssuer:
-    """Server-side SSLContexts for intercepted hosts, each with a leaf the CA signed, cached until near expiry."""
+def _permits(constraint: str, host: str) -> bool:
+    return host == constraint or host.endswith("." + constraint)
 
-    def __init__(self, ca: CaMaterial) -> None:
-        self._ca_cert = x509.load_pem_x509_certificate(ca.cert_pem)
-        self._ca_key = serialization.load_pem_private_key(ca.key_pem, password=None)
+
+class LeafIssuer:
+    """Server-side SSLContexts for intercepted hosts, each with a leaf signed by the CA whose constraints cover it, cached until near expiry."""
+
+    def __init__(self, *cas: CaMaterial) -> None:
+        if not cas:
+            raise ValueError("a leaf issuer needs at least one CA")
+        self._cas = [
+            (x509.load_pem_x509_certificate(ca.cert_pem), serialization.load_pem_private_key(ca.key_pem, password=None), ca_hosts(ca.cert_pem))
+            for ca in cas
+        ]
         self._leaf_key = ec.generate_private_key(ec.SECP256R1())
         self._contexts: dict[str, tuple[ssl.SSLContext, dt.datetime]] = {}
         self._lock = threading.Lock()
@@ -106,11 +120,14 @@ class LeafIssuer:
             return ctx
 
     def _issue(self, host: str, now: dt.datetime) -> tuple[ssl.SSLContext, dt.datetime]:
+        ca_cert, ca_key, _ = next(
+            (ca for ca in self._cas if any(_permits(c, host) for c in ca[2])), self._cas[0],
+        )
         not_after = now + _LEAF_LIFETIME
         leaf = (
             x509.CertificateBuilder()
             .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, host)]))
-            .issuer_name(self._ca_cert.subject)
+            .issuer_name(ca_cert.subject)
             .public_key(self._leaf_key.public_key())
             .serial_number(x509.random_serial_number())
             .not_valid_before(now - dt.timedelta(minutes=5))
@@ -119,10 +136,10 @@ class LeafIssuer:
             .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
             .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
             .add_extension(
-                x509.AuthorityKeyIdentifier.from_issuer_public_key(self._ca_cert.public_key()),  # type: ignore[arg-type]
+                x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_cert.public_key()),  # type: ignore[arg-type]
                 critical=False,
             )
-            .sign(self._ca_key, hashes.SHA256())  # type: ignore[arg-type]
+            .sign(ca_key, hashes.SHA256())  # type: ignore[arg-type]
         )
         chain = os.path.join(self._dir, f"{host}.pem")
         keyfile = os.path.join(self._dir, "leaf.key")
@@ -135,7 +152,7 @@ class LeafIssuer:
             ))
         with open(chain, "wb") as f:
             f.write(leaf.public_bytes(serialization.Encoding.PEM))
-            f.write(self._ca_cert.public_bytes(serialization.Encoding.PEM))
+            f.write(ca_cert.public_bytes(serialization.Encoding.PEM))
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         ctx.load_cert_chain(chain, keyfile)

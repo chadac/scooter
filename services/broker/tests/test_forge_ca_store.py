@@ -1,4 +1,4 @@
-"""The forge CA store: create once, adopt across replicas, regenerate on a new host set, never publish the key."""
+"""The forge CA store: create once, adopt across replicas, add a CA per new host set, never publish the keys."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import pytest
 from kubernetes.client.exceptions import ApiException
 
 from broker.forge.ca import ca_hosts
-from broker.forge.ca_store import NAME, load_or_create_ca
+from broker.forge.ca_store import NAME, load_or_create_cas
 
 
 class FakeCore:
@@ -61,35 +61,48 @@ class FakeCore:
 
 def test_created_once_then_adopted():
     core = FakeCore()
-    first = load_or_create_ca(core, "ns", ["github.com", "api.github.com"])
-    second = load_or_create_ca(core, "ns", ["api.github.com", "github.com"])
+    first = load_or_create_cas(core, "ns", ["github.com", "api.github.com"])
+    second = load_or_create_cas(core, "ns", ["api.github.com", "github.com"])
     assert first == second
-    assert ca_hosts(first.cert_pem) == ["api.github.com", "github.com"]
+    assert [ca_hosts(ca.cert_pem) for ca in first] == [["api.github.com", "github.com"]]
 
     cm = core.configmaps[NAME].data
-    assert cm["ca.crt"] == first.cert_pem.decode()
+    assert cm["ca.crt"] == first[0].cert_pem.decode()
     assert cm["hosts"] == "api.github.com\ngithub.com\n"
     assert "PRIVATE KEY" not in "".join(cm.values())
-    assert base64.b64decode(core.secrets[NAME].data["ca.key"]) == first.key_pem
+    assert base64.b64decode(core.secrets[NAME].data["ca.key"]) == first[0].key_pem
 
 
-def test_new_host_set_regenerates_and_republishes():
+def test_a_new_host_adds_a_ca_and_keeps_the_trusted_one():
+    """A running sandbox trusts the CAs it booted with, so they must not change (#1053)."""
     core = FakeCore()
-    old = load_or_create_ca(core, "ns", ["github.com"])
-    new = load_or_create_ca(core, "ns", ["github.com", "gitlab.com"])
-    assert new != old
-    assert ca_hosts(new.cert_pem) == ["github.com", "gitlab.com"]
+    [old] = load_or_create_cas(core, "ns", ["github.com"])
+    cas = load_or_create_cas(core, "ns", ["github.com", "gitlab.com"])
+    assert cas[0] == old
+    assert [ca_hosts(ca.cert_pem) for ca in cas] == [["github.com"], ["gitlab.com"]]
+    assert core.configmaps[NAME].data["ca.crt"] == "".join(ca.cert_pem.decode() for ca in cas)
     assert core.configmaps[NAME].data["hosts"] == "github.com\ngitlab.com\n"
+    # A replica that restarts reads back the same pair, in order.
+    assert load_or_create_cas(core, "ns", ["gitlab.com", "github.com"]) == cas
+
+
+def test_a_ca_for_only_removed_hosts_is_dropped():
+    core = FakeCore()
+    load_or_create_cas(core, "ns", ["github.com"])
+    [_, gitlab] = load_or_create_cas(core, "ns", ["github.com", "gitlab.com"])
+    assert load_or_create_cas(core, "ns", ["gitlab.com"]) == [gitlab]
+    assert core.configmaps[NAME].data["ca.crt"] == gitlab.cert_pem.decode()
+    assert core.configmaps[NAME].data["hosts"] == "gitlab.com\n"
 
 
 def test_losing_a_race_adopts_the_winner():
     core = FakeCore()
-    winner = load_or_create_ca(core, "ns", ["github.com"])
+    winner = load_or_create_cas(core, "ns", ["github.com"])
     # A replica that read the old state and lost the replace retries and adopts.
     core.conflict_next_write = True
-    assert load_or_create_ca(core, "ns", ["github.com"]) == winner
+    assert load_or_create_cas(core, "ns", ["github.com"]) == winner
 
 
 def test_no_hosts_is_an_error():
     with pytest.raises(ValueError):
-        load_or_create_ca(FakeCore(), "ns", [])
+        load_or_create_cas(FakeCore(), "ns", [])

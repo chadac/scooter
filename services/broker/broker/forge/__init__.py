@@ -31,7 +31,7 @@ async def start_forge_proxy(providers: list[Provider], *, port: int, namespace: 
     from kubernetes import client, config
 
     from .ca import LeafIssuer
-    from .ca_store import load_or_create_ca
+    from .ca_store import load_or_create_cas
 
     routes = build_routes([p for p in providers if p.enabled])
     if not routes:
@@ -41,7 +41,7 @@ async def start_forge_proxy(providers: list[Provider], *, port: int, namespace: 
         config.load_incluster_config()
     except config.ConfigException:
         config.load_kube_config()
-    ca = await asyncio.to_thread(load_or_create_ca, client.CoreV1Api(), namespace, sorted(routes))
-    proxy = ForgeProxy(routes, LeafIssuer(ca), _authenticate, agent_host_url=agent_host_url)
+    cas = await asyncio.to_thread(load_or_create_cas, client.CoreV1Api(), namespace, sorted(routes))
+    proxy = ForgeProxy(routes, LeafIssuer(*cas), _authenticate, agent_host_url=agent_host_url)
     await proxy.start("0.0.0.0", port)
     return proxy

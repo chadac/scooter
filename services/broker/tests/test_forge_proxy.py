@@ -422,6 +422,40 @@ def test_two_providers_cannot_claim_one_host():
         build_routes([a, b])
 
 
+def _handshake(server_ctx: ssl.SSLContext, cadata: str, host: str) -> None:
+    """Raise unless a client trusting `cadata` accepts `server_ctx` for `host`."""
+    import socket
+    import threading
+
+    client_ctx = ssl.create_default_context(cadata=cadata)
+    a, b = socket.socketpair()
+
+    def serve():
+        try:
+            with server_ctx.wrap_socket(b, server_side=True):
+                pass
+        except (ssl.SSLError, OSError):
+            pass
+
+    t = threading.Thread(target=serve)
+    t.start()
+    try:
+        with client_ctx.wrap_socket(a, server_hostname=host):
+            pass
+    finally:
+        a.close()
+        t.join()
+
+
+def test_each_host_is_signed_by_the_ca_that_covers_it():
+    old, new = generate_ca(["github.com"]), generate_ca(["gitlab.com"])
+    issuer = LeafIssuer(old, new)
+    # A sandbox that booted before gitlab.com was added still verifies github.com.
+    _handshake(issuer.context_for("github.com"), old.cert_pem.decode(), "github.com")
+    _handshake(issuer.context_for("api.github.com"), old.cert_pem.decode(), "api.github.com")
+    _handshake(issuer.context_for("gitlab.com"), new.cert_pem.decode(), "gitlab.com")
+
+
 def test_leaf_for_an_unconstrained_host_does_not_verify(ca):
     """Even a leaf the CA signs for another host is rejected by the client, because of the name constraints."""
     import socket
