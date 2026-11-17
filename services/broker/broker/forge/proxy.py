@@ -225,7 +225,7 @@ class ForgeProxy:
             path=path, query=query,
         )
         if "upgrade" in hmap:
-            await io.send_simple(403, forge.upgrade_refusal, json_body=True)
+            await io.send_simple(403, forge.upgrade_refusal, json_body=forge.error_body)
             return False
         has_body = "transfer-encoding" in hmap or hmap.get("content-length", "0") not in ("", "0")
 
@@ -263,7 +263,7 @@ class ForgeProxy:
         if not decision.allowed:
             await io.send_simple(
                 403, denial_message(decision),
-                extra=[(DENY_HEADER, decision.reason or "denied")], json_body=True,
+                extra=[(DENY_HEADER, decision.reason or "denied")], json_body=forge.error_body,
             )
             return False
 
@@ -405,11 +405,12 @@ class _H11IO:
             await self.writer.drain()
 
     async def send_simple(
-        self, status: int, message: str, *, extra: list[tuple[str, str]] | None = None, json_body: bool = False,
+        self, status: int, message: str, *, extra: list[tuple[str, str]] | None = None,
+        json_body: Callable[[int, str], dict] | None = None,
     ) -> None:
         if self.conn.our_state not in (h11.IDLE, h11.SEND_RESPONSE):
             return
-        payload = (json.dumps({"message": message}) if json_body else message + "\n").encode()
+        payload = (json.dumps(json_body(status, message)) if json_body else message + "\n").encode()
         headers = [
             ("content-type", "application/json" if json_body else "text/plain; charset=utf-8"),
             ("content-length", str(len(payload))),

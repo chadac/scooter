@@ -145,10 +145,12 @@ def world(ca, monkeypatch):
                 client=httpx.AsyncClient(transport=httpx.MockTransport(kube_handler)),
             )],
             upgrade_refusal="use k8s_exec",
+            error_body=lambda code, message: {"kind": "Status", "code": code, "message": message},
             drop_header_prefixes=("Impersonate-",),
         )],
         forge_policy=Recorder(),
     )
+    kube_policy = kube.forge_policy
 
     async def authenticate(token: str) -> Identity:
         if token != "good-sa-token":
@@ -161,6 +163,7 @@ def world(ca, monkeypatch):
         agent_host_url="http://agent-host",
     )
     proxy.kube_seen = kube_seen
+    proxy.kube_policy = kube_policy
     return proxy, upstream_seen, links, gh_policy, gl_policy
 
 
@@ -363,7 +366,17 @@ async def test_upgrade_requests_are_refused_with_the_hosts_message(running, ca):
             headers={"Connection": "Upgrade", "Upgrade": "websocket"},
         )
     assert r.status_code == 403
-    assert r.json()["message"] == "use k8s_exec"
+    assert r.json() == {"kind": "Status", "code": 403, "message": "use k8s_exec"}
+    assert proxy.kube_seen == []
+
+
+async def test_a_denial_uses_the_hosts_error_body(running, ca):
+    proxy = running[0]
+    proxy.kube_policy.deny = lambda fr: fr.method == "POST"
+    async with _client(proxy, ca) as c:
+        r = await c.post("https://prod.k8s.scooter/api/v1/namespaces/default/configmaps", json={})
+    assert r.status_code == 403
+    assert r.json()["kind"] == "Status" and "forge policy" in r.json()["message"]
     assert proxy.kube_seen == []
 
 
