@@ -54,6 +54,8 @@ Environment:
   GITHUB_COPILOT_TOKEN     the GitHub token of a Copilot seat, to skip the prompt
   SCOOTER_LOCAL_CLAUDE_TAG the agent-host-claude image tag, instead of resolving it
   SCOOTER_LOCAL_K3D_ARGS   extra arguments for \`k3d cluster create\` (e.g. --agents 1)
+  SCOOTER_LOCAL_CA_BUNDLE  a full CA bundle (PEM) for the cluster's nodes, e.g. one with a
+                           TLS-intercepting proxy's CA in it; used when the cluster is created
 EOF
 }
 
@@ -106,9 +108,34 @@ cluster_running() {
         and all(.nodes[]; .State.Running))' >/dev/null
 }
 
+# The nodes mount a copy under the state dir: a Docker VM (colima) shares only $HOME,
+# and the host's bundle is often a symlink into /nix/store that the VM can't follow.
+CA_COPY="$STATE/ca-certificates.crt"
+NODE_CA=/etc/ssl/certs/ca-certificates.crt
+
+sync_ca_bundle() {
+  [ -n "${SCOOTER_LOCAL_CA_BUNDLE:-}" ] || return 0
+  [ -s "$SCOOTER_LOCAL_CA_BUNDLE" ] || die "SCOOTER_LOCAL_CA_BUNDLE=$SCOOTER_LOCAL_CA_BUNDLE is not a readable, non-empty file"
+  # Rewritten in place: the nodes bind-mount this inode, and a new file would not reach them.
+  cat "$SCOOTER_LOCAL_CA_BUNDLE" > "$CA_COPY"
+}
+
+# An existing cluster created without the bundle can't gain the mount.
+check_ca_mount() {
+  [ -n "${SCOOTER_LOCAL_CA_BUNDLE:-}" ] || return 0
+  docker inspect "k3d-${CLUSTER}-server-0" --format '{{range .Mounts}}{{println .Destination}}{{end}}' 2>/dev/null \
+    | grep -qxF "$NODE_CA" && return 0
+  log "WARN: cluster '$CLUSTER' was created without SCOOTER_LOCAL_CA_BUNDLE, so image pulls don't trust it;"
+  log "      \`scooter-local destroy\` and \`up\` again to apply it (this deletes every conversation)."
+}
+
 cluster_up() {
   mkdir -p "$STATE/assets"
+  sync_ca_bundle
+  local ca_mount=()
+  [ -z "${SCOOTER_LOCAL_CA_BUNDLE:-}" ] || ca_mount=(-v "$CA_COPY:$NODE_CA@server:*;agent:*")
   if cluster_exists; then
+    check_ca_mount
     if cluster_running; then
       log "cluster '$CLUSTER' is running"
     else
@@ -126,6 +153,7 @@ cluster_up() {
       --api-port "127.0.0.1:${API_PORT}" \
       -p "127.0.0.1:${PORT}:80@loadbalancer" \
       -v "$STATE/assets:/var/lib/scooter/assets@server:0" \
+      "${ca_mount[@]}" \
       --wait --timeout 300s \
       ${SCOOTER_LOCAL_K3D_ARGS:-}
   fi

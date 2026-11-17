@@ -219,6 +219,13 @@ cluster.
 - **A pod stays `Pending` or `ImagePullBackOff`**: `scooter-local status` shows the
   pods; `scooter-local kubectl describe pod <name>` says why. Memory is the usual
   reason on a small machine.
+- **`x509: certificate signed by unknown authority` pulling images**: a
+  TLS-intercepting proxy re-signs traffic with a CA your machine trusts but the
+  cluster's nodes don't. Point `SCOOTER_LOCAL_CA_BUNDLE` at a full bundle with that CA
+  in it (with nix-darwin, `/etc/ssl/certs/ca-certificates.crt`), then
+  `scooter-local destroy` and `up`: the nodes mount it only when the cluster is
+  created. This covers image pulls; pods that make TLS calls of their own need the CA
+  in their images.
 - **Boards or settings answer 401**: the request reached Scooter without an identity.
   Check that `scooter-local kubectl get middleware local-identity -o yaml` names your
   user, and that `up` finished after upgrading.
