@@ -99,8 +99,11 @@ free_port_after() {
 
 cluster_exists() { k3d cluster list -o json | jq -e --arg c "$CLUSTER" 'any(.[]; .name == $c)' >/dev/null; }
 cluster_running() {
+  # serversRunning counts only servers; the serverlb that publishes the API and UI
+  # ports can be stopped while they run (e.g. after the Docker VM restarts).
   k3d cluster list -o json \
-    | jq -e --arg c "$CLUSTER" 'any(.[]; .name == $c and .serversRunning == .serversCount and .serversRunning > 0)' >/dev/null
+    | jq -e --arg c "$CLUSTER" 'any(.[]; .name == $c and .serversRunning == .serversCount and .serversRunning > 0
+        and all(.nodes[]; .State.Running))' >/dev/null
 }
 
 cluster_up() {
