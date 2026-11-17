@@ -70,6 +70,8 @@ class ForgeHosts(Transport):
 
     def inject_git(self, request: httpx.Request, cred: Credential) -> None:
         """git smart-HTTP and LFS take basic auth, whatever header the API wants."""
+        if not cred.value.strip():
+            return
         basic = base64.b64encode(f"{self.git_username}:{cred.value}".encode()).decode()
         request.headers["Authorization"] = f"Basic {basic}"
 

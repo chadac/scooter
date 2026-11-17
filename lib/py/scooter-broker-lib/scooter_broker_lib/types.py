@@ -9,6 +9,7 @@ edits the core.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Awaitable, Callable, Protocol, runtime_checkable
 
@@ -17,6 +18,8 @@ from fastapi import APIRouter
 
 if TYPE_CHECKING:
     from .forge.policy import ForgePolicy, ForgeRequest
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +62,10 @@ class Credential:
 
     def inject(self, req: httpx.Request) -> None:
         """Apply this credential to an outbound httpx request in place; a provider whose auth fits none of the shipped kinds overrides this."""
+        # No secret means no header, so the upstream answers 401 rather than httpx rejecting "Bearer ".
+        if self.kind in ("bearer", "basic", "header") and not self.value.strip():
+            logger.warning("empty credential, sending no auth header", extra={"kind": self.kind, "host": req.url.host})
+            return
         if self.kind == "bearer":
             req.headers["Authorization"] = f"Bearer {self.value}"
         elif self.kind == "header":
@@ -67,8 +74,9 @@ class Credential:
         elif self.kind == "basic":
             req.headers["Authorization"] = f"Basic {self.value}"
         elif self.kind == "multi-header":
-            for name, val in json.loads(self.value).items():
-                req.headers[name] = val
+            for name, val in json.loads(self.value or "{}").items():
+                if val and val.strip():
+                    req.headers[name] = val
 
 
 @runtime_checkable
