@@ -60,6 +60,9 @@ platform auto-starts it.
   toggle. Scripts run, and CDN (`https:`) scripts, styles and fonts load, but the
   page can't `fetch` anything. Relative `<img>` files load; relative CSS and JS
   don't, so inline them. Good for charts and reports you want *seen*.
+- **Diagrams**: ` ```mermaid ` and ` ```dot ` fences in markdown, and `.mmd`,
+  `.mermaid`, `.dot` and `.gv` files, draw as Mermaid or Graphviz diagrams. A
+  diagram that fails to parse shows its source and the error, so check it.
 - Other binaries and text files past 2 MB report themselves instead of rendering —
   say so rather than retrying.
 

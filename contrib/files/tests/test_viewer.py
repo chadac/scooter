@@ -251,6 +251,14 @@ def test_html_gets_its_own_renderer_with_its_source(client, workspace: Path, nam
     assert payload["body"] == html and payload["etag"]
 
 
+@pytest.mark.parametrize("name", ["flow.mmd", "flow.mermaid", "graph.dot", "graph.GV"])
+def test_diagram_files_get_the_diagram_renderer(client, workspace: Path, name: str) -> None:
+    (workspace / name).write_text("graph TD; a-->b\n")
+    _, payload = client.json(f"/api/file?path={name}")
+    assert payload["renderer"] == "diagram"
+    assert payload["body"] == "graph TD; a-->b\n"
+
+
 def test_binary_is_reported_not_rendered(client) -> None:
     _, payload = client.json("/api/file?path=blob.bin")
     assert payload["renderer"] == "binary"

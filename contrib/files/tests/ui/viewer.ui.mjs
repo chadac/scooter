@@ -549,6 +549,54 @@ fetch("${url}/api/list?path=").then(() => out.push("fetch:ok"), () => out.push("
   await page.getByTitle("Source").click();
   check("Source shows the HTML as code", await until(() => page.getByText("parent.document.title").first().isVisible(), 5000));
 
+  // --- diagrams: Mermaid and Graphviz, in fences and as files ---------------------
+
+  const FLOW = "flowchart TD\n  A[Start] --> B{Ready?}\n  B -->|yes| C[Ship]\n  click A call alert()";
+  writeFileSync(
+    join(ws, "docs/flow.md"),
+    `# Flow\n\n\`\`\`mermaid\n${FLOW}\n\`\`\`\n\n\`\`\`dot\ndigraph { a -> b; x [URL="javascript:alert(1)"] }\n\`\`\`\n\n\`\`\`mermaid\nflowchart TD\n  A --> \n\`\`\`\n`,
+  );
+  writeFileSync(join(ws, "docs/flow.mmd"), "sequenceDiagram\n  Reader->>Agent: comment\n");
+  writeFileSync(join(ws, "docs/graph.gv"), "digraph { left -> right }\n");
+  await page.goto(`${url}/?path=docs/flow.md`);
+  const mmd = page.locator('[data-diagram="mermaid"]').first();
+  const dot = page.locator('[data-diagram="dot"]');
+  check("a mermaid fence renders as a diagram", await mmd.locator(".diagram svg").waitFor({ timeout: 20_000 }).then(() => true, () => false));
+  check("its labels are drawn", (await mmd.locator(".diagram").textContent()).includes("Ready?"));
+  check("a dot fence renders as a diagram", await dot.locator(".diagram svg").waitFor({ timeout: 20_000 }).then(() => true, () => false));
+  check("a broken fence shows its source and the error", await page.locator("[data-diagram-error] pre.shiki").waitFor({ timeout: 10_000 }).then(() => true, () => false));
+  check("diagrams carry no script links or handlers", await page.locator("article").evaluate((a) =>
+    ![...a.querySelectorAll("*")].some((el) => [...el.attributes].some((x) => /^on/i.test(x.name) || /^\s*javascript:/i.test(x.value))),
+  ));
+  const inkOf = () => dot.locator(".diagram svg text").first().getAttribute("fill");
+  const lightInk = await inkOf();
+  await page.getByTitle("Toggle theme").click();
+  check("dot follows the theme", await until(async () => (await inkOf()) !== lightInk, 5000), `${lightInk} → ${await inkOf()}`);
+  await page.getByTitle("Toggle theme").click();
+
+  await mmd.hover();
+  await mmd.getByTitle("Show source").click();
+  check("a diagram's toggle shows its source", await mmd.locator("pre.shiki").waitFor({ timeout: 5000 }).then(() => true, () => false));
+  await mmd.getByTitle("Show diagram").click();
+  check("and back to the diagram", await mmd.locator(".diagram svg").waitFor({ timeout: 5000 }).then(() => true, () => false));
+
+  const mbox = await mmd.boundingBox();
+  await page.mouse.move(5, mbox.y + 20);
+  await page.mouse.move(mbox.x - 16, mbox.y + 20, { steps: 12 });
+  await page.getByRole("button", { name: "Comment on this paragraph" }).click();
+  await page.locator("[data-comments] textarea").fill("on the chart");
+  await page.locator("[data-comments]").getByRole("button", { name: "Comment", exact: true }).click();
+  const onChart = await until(async () => (await notes("docs/flow.md")).some((a) => a.text === "on the chart"));
+  const chartNote = (await notes("docs/flow.md")).find((a) => a.text === "on the chart");
+  check("a comment on a diagram quotes its whole fence", onChart && chartNote.quote.includes(FLOW), JSON.stringify(chartNote));
+
+  await page.goto(`${url}/?path=docs/flow.mmd`);
+  check("a .mmd file renders as a diagram", await page.locator("main .diagram svg").waitFor({ timeout: 20_000 }).then(() => true, () => false));
+  await page.getByTitle("Source").click();
+  check("Source shows the .mmd file as code", await until(() => page.getByText("Reader->>Agent").first().isVisible(), 5000));
+  await page.goto(`${url}/?path=docs/graph.gv`);
+  check("a .gv file renders as a diagram", await page.locator("main .diagram svg").waitFor({ timeout: 20_000 }).then(() => true, () => false));
+
   // --- code: a line-range comment -------------------------------------------------
 
   await page.goto(`${url}/?path=src/sample.py`);

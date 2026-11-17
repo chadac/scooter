@@ -249,3 +249,17 @@ body {
   margin: 0;
   vertical-align: middle;
 }
+
+/* A rendered diagram: centred, never wider than the page. */
+.diagram {
+  display: flex;
+  justify-content: center;
+  overflow-x: auto;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+}
+.diagram svg {
+  max-width: 100%;
+  height: auto;
+}

@@ -27,7 +27,7 @@ export type FileView = {
   body: string;
   lines?: number;
   etag?: string;
-  renderer: "code" | "markdown" | "html" | "image" | "too-large" | "binary";
+  renderer: "code" | "markdown" | "html" | "diagram" | "image" | "too-large" | "binary";
 };
 
 export type Annotation = {

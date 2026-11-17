@@ -23,7 +23,7 @@ buildNpmPackage {
     ];
   };
 
-  npmDepsHash = "sha256-/iMiF8Rjcgf5mujWLL4rxRzHJae3RDsJ2DjIgRQT66Q=";
+  npmDepsHash = "sha256-APyupG/g5QsrIMKRu/QssYLdrv/3BEGXqHOBvxxmAAQ=";
 
   # Static output, no bin to wrap.
   installPhase = ''

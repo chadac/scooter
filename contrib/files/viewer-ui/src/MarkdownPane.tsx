@@ -11,7 +11,6 @@ import {
 } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { codeToHtml } from "shiki";
 import { MessageSquare, MessageSquarePlus, X } from "lucide-react";
 import clsx from "clsx";
 import { outbox, rawUrl, type Question, type Thread } from "./api";
@@ -19,37 +18,9 @@ import { hrefFor, isExternal, navigate, resolveRel, slug } from "./nav";
 import { BLOCKS, blockAt, blockSource, findText, plainOf, previewOf, rehypeSourceLines, segments, sourceAnchor, remarkHtmlImages, remarkInlineImages } from "./markdown";
 import { Composer, Quote, ThreadCard } from "./Thread";
 import { QuestionCard } from "./Questions";
+import { CodeBlock } from "./CodeBlock";
+import { Diagram, diagramLang } from "./Diagram";
 import { useMedia, useNarrow } from "./media";
-
-function CodeBlock({ lang, code }: { lang: string; code: string }) {
-  const [html, setHtml] = useState("");
-  useEffect(() => {
-    let live = true;
-    codeToHtml(code, {
-      lang: lang || "text",
-      themes: { light: "solarized-light", dark: "solarized-dark" },
-      defaultColor: false,
-    })
-      .catch(() =>
-        codeToHtml(code, {
-          lang: "text",
-          themes: { light: "solarized-light", dark: "solarized-dark" },
-          defaultColor: false,
-        }),
-      )
-      .then((h) => live && setHtml(h));
-    return () => {
-      live = false;
-    };
-  }, [lang, code]);
-  if (!html)
-    return (
-      <pre className="shiki-fallback">
-        <code>{code}</code>
-      </pre>
-    );
-  return <div className="not-prose shiki-block" dangerouslySetInnerHTML={{ __html: html }} />;
-}
 
 const components: Components = {
   pre: ({ children, node, ...rest }) => {
@@ -61,13 +32,14 @@ const components: Components = {
         .map((c) => (c.type === "text" ? c.value : ""))
         .join("")
         .replace(/\n$/, "");
+      const diagram = diagramLang(lang);
       return (
         <div
           data-code
           data-line={rest["data-line" as keyof typeof rest] as string}
           data-line-end={rest["data-line-end" as keyof typeof rest] as string}
         >
-          <CodeBlock lang={lang} code={text} />
+          {diagram ? <Diagram lang={diagram} code={text} /> : <CodeBlock lang={lang} code={text} />}
         </div>
       );
     }
