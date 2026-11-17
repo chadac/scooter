@@ -525,17 +525,17 @@ export function gooseLaunchEnv(
   };
 }
 
-/** goose's per-conversation identity env: USER/LOGNAME become its OTel user.name, and
+/** The agent's per-conversation identity env: USER/LOGNAME become its OTel user.name, and
  *  OTEL_RESOURCE_ATTRIBUTES gains Scooter's namespace and the Langfuse user and session after
  *  any existing value. */
-export function gooseIdentityEnv(
+export function agentIdentityEnv(
   user: string,
   conversationId: string,
   existingAttrs: string | undefined,
 ): Record<string, string> {
   // goose's Rust SDK does not percent-decode, so escape only what splits the list.
   const attrs = [
-    // Overrides goose's own "goose" namespace; service.name stays "goose".
+    // Overrides the agent's own namespace; service.name is unchanged.
     ["service.namespace", "scooter"],
     ["user.id", user],
     ["langfuse.user.id", user],
@@ -2294,11 +2294,11 @@ export async function main(
       // Approve mode stops goose at every tool call, for PreToolUse.
       ...(backpressureOn || hasPreToolHooks ? { GOOSE_MODE: "approve" } : {}),
     };
-    // Tags goose's traces with the owner, by email when known, else by id.
+    // Tags the agent's traces with the owner, by email when known, else by id.
     const ownerIdentityEnv = async (): Promise<Record<string, string>> => {
       if (cfg.agent.fake || !owner) return {};
       const user = (await resolveOwnerEmail(owner)) ?? owner;
-      return gooseIdentityEnv(user, conversationId, process.env.OTEL_RESOURCE_ATTRIBUTES);
+      return agentIdentityEnv(user, conversationId, process.env.OTEL_RESOURCE_ATTRIBUTES);
     };
     // goose runs in this pod, so its cwd must be a real writable dir here: ephemeral
     // per-conversation scratch under scratchPath, while its tool calls exec into the
@@ -2386,6 +2386,7 @@ export async function main(
               // so the model cannot invoke any.
               skills: "all",
               nativeWebSearch: process.env.SCOOTER_NATIVE_WEB_SEARCH === "1",
+              extraEnv: await ownerIdentityEnv(),
               // One line naming the skills the session discovered.
               onInit: (info) =>
                 hostLog.info("sdk session init", {
