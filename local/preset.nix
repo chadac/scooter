@@ -161,6 +161,11 @@ in
         };
         idleSuspendMs = mkDefault (30 * 60 * 1000);
 
+        # Linked PRs (the sidebar and board badges) live in the webhooks database's
+        # resource_links, which exists only with webhooks on. No provider is set up and
+        # there is no receiver Ingress, so nothing is reachable from outside.
+        webhooks.enable = mkDefault true;
+
         agent.name = mkDefault "Scooter";
       }
       # The in-cluster Claude Code SDK on a subscription token (`claude setup-token`).

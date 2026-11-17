@@ -24,7 +24,7 @@ let
 
   # Resources every render must have.
   expect = {
-    Deployment = [ "agent-host" "agent-broker" "ui" "conversation-controller" "conversation-router" ];
+    Deployment = [ "agent-host" "agent-broker" "ui" "conversation-controller" "conversation-router" "agent-webhooks" ];
     Service = [ "agent-host" "ui" ];
     Ingress = [ "agent-host" ];
     PersistentVolume = [ "agent-host-assets" ];
@@ -59,6 +59,9 @@ let
         != "scooter-local-identity@kubernetescrd")
       "${provider}: the Ingress does not use the identity Middleware"
     ++ lib.optional (brokerEnv "KANBAN_ENABLED" != "true") "${provider}: kanban is not enabled"
+    # The Postgres link store (linked-PR badges) needs the webhooks DB.
+    ++ lib.optional (envValue provider "WEBHOOKS_DB_NAME" != "webhooks") "${provider}: agent-host has no webhooks DB, so links stay in files"
+    ++ lib.optional (find provider "Ingress" "agent-webhooks" != null) "${provider}: the webhooks receiver has a public Ingress"
     ++ lib.optional ((agentHost provider).spec.replicas or 1 != 1) "${provider}: agent-host has more than one replica"
     ++ lib.optional (controllerEnv provider "AGENT_HOST_MIN_REPLICAS" != "1") "${provider}: the agent-host autoscaler floor is not 1"
   ) renders);
