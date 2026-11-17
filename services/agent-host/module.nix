@@ -5,8 +5,10 @@ let
 in
 {
   scooter.packages = {
-    # The ACP agent each conversation runs.
-    scooter-agent = lib.mkDefault buildPkgs.goose-cli;
+    # The ACP agent, patched to drop goose's compaction countdown.
+    scooter-agent = lib.mkDefault (buildPkgs.goose-cli.overrideAttrs (old: {
+      patches = (old.patches or [ ]) ++ [ ../../pkgs/goose/compaction-countdown.patch ];
+    }));
     scooter-agent-host = lib.mkDefault (buildPkgs.callPackage ./. { });
   };
 
