@@ -489,6 +489,16 @@ in
         leave this off without one.
       '';
     };
+    sandboxGpuResource = mkOption {
+      type = types.str;
+      default = "nvidia.com/gpu";
+      example = "nvidia.com/gpu-all";
+      description = ''
+        Extended-resource name a preset's `gpu` count is requested under. The NVIDIA
+        device plugin advertises `nvidia.com/gpu`; CDI-based plugins (e.g.
+        generic-cdi-plugin on NixOS) advertise other names such as `nvidia.com/gpu-all`.
+      '';
+    };
     sandboxSizes = mkOption {
       type = types.attrsOf (types.submodule {
         options = {
@@ -498,7 +508,7 @@ in
             type = types.nullOr types.ints.unsigned;
             default = null;
             # k8s requires gpu request == limit, so one count renders on both sides.
-            description = "Whole GPUs (nvidia.com/gpu) for this preset; null = none.";
+            description = "Whole GPUs (requested as `sandboxGpuResource`) for this preset; null = none.";
           };
           hint = mkOption {
             type = types.str;
@@ -1969,9 +1979,11 @@ in
                       # A GPU renders under its extended-resource name on both sides, since
                       # k8s rejects a GPU request that differs from its limit.
                       side = { cpu = preset.cpu; memory = preset.memory; }
-                        // lib.optionalAttrs (preset.gpu != null) { "nvidia.com/gpu" = toString preset.gpu; };
+                        // lib.optionalAttrs (preset.gpu != null) { ${cfg.sandboxGpuResource} = toString preset.gpu; };
                     in builtins.toJSON { requests = side; limits = side; };
                   }
+                ++ lib.optional (cfg.sandboxGpuResource != "nvidia.com/gpu")
+                  { name = "SANDBOX_GPU_RESOURCE"; value = cfg.sandboxGpuResource; }
                 ++ [
                   # The agent-host mints a conversation token per conversation as the MCP
                   # endpoint's bearer credential and verifies it there, as does the broker

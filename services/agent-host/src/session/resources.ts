@@ -49,9 +49,9 @@ export function validateResources(r: SandboxResources): SandboxResources {
   return r;
 }
 
-/** k8s extended-resource name for a whole GPU; a GPU request must equal its limit, so one friendly
- *  `gpu` count renders on both sides. */
-export const GPU_RESOURCE = "nvidia.com/gpu";
+/** k8s extended-resource name for a whole GPU (scooter.sandboxGpuResource); a GPU request must
+ *  equal its limit, so one friendly `gpu` count renders on both sides. */
+export const GPU_RESOURCE = process.env.SANDBOX_GPU_RESOURCE || "nvidia.com/gpu";
 
 /** A k8s container `resources` block: arbitrary quantity strings per side, including extended
  *  resources like nvidia.com/gpu. */

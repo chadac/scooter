@@ -143,6 +143,9 @@
       # Drop the GPU preset on a cluster with no GPU nodes.
       gpu-small = { cpu = "4"; memory = "16Gi"; gpu = 1; hint = "Local model inference."; };
     };
+    # The extended resource a preset's `gpu` requests. CDI-based device plugins
+    # advertise other names (e.g. "nvidia.com/gpu-all").
+    sandboxGpuResource = "nvidia.com/gpu";
 
     # `replicas` is the agent-host floor the controller scales above, and
     # retentionMaxAgeMs = 0 disables auto-reaping.

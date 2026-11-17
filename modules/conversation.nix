@@ -22,7 +22,7 @@ let
         then { cpu = "2"; memory = "4Gi"; gpu = null; }
         else cfg.sandboxSizes.${cfg.defaultSandboxSizeName};
       side = { cpu = defaultPreset.cpu; memory = defaultPreset.memory; }
-        // lib.optionalAttrs (defaultPreset.gpu != null) { "nvidia.com/gpu" = toString defaultPreset.gpu; };
+        // lib.optionalAttrs (defaultPreset.gpu != null) { ${cfg.sandboxGpuResource} = toString defaultPreset.gpu; };
     in { requests = side; limits = side; }
   }: {
     # Unique per conversation; the broker identity.
