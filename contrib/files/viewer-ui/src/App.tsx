@@ -8,6 +8,7 @@ import { CodePane } from "./CodePane";
 import { MarkdownPane } from "./MarkdownPane";
 import { ImagePane } from "./ImagePane";
 import { HtmlPane } from "./HtmlPane";
+import { Diagram, diagramLang } from "./Diagram";
 import { RetryAll } from "./Thread";
 import { current, navigate, onNavigate } from "./nav";
 import { useNarrow } from "./media";
@@ -174,8 +175,9 @@ export function App() {
   const md = file?.renderer === "markdown";
   const image = file?.renderer === "image";
   const html = file?.renderer === "html";
-  // Rendered by default, with a Source toggle: markdown, HTML, and SVGs (images with a body).
-  const previewable = md || html || (image && !!file?.body);
+  const diagram = file?.renderer === "diagram" ? diagramLang(path.split(".").pop() ?? "") : undefined;
+  // Rendered by default, with a Source toggle: documents, diagrams, and SVGs.
+  const previewable = md || html || !!diagram || (image && !!file?.body);
   const open = threads.filter((t) => !t.resolved).length;
   const unanswered = questions.filter((q) => !q.answered).length;
 
@@ -297,6 +299,11 @@ export function App() {
           )}
           {file && file.path === path && image && !(previewable && source) && <ImagePane file={file} />}
           {file && file.path === path && html && !source && <HtmlPane path={path} body={file.body} />}
+          {file && file.path === path && diagram && !source && (
+            <div className="min-h-0 flex-1 overflow-auto p-3 md:p-6">
+              <Diagram lang={diagram} code={file.body} toggle={false} />
+            </div>
+          )}
           {file && file.path === path && md && !source && (
             <MarkdownPane
               path={path}

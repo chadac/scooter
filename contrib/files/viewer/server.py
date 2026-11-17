@@ -55,7 +55,16 @@ MAX_RAW_BYTES = 16 * 1024 * 1024
 RAW_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".avif", ".ico", ".bmp"}
 
 # Text files the page renders rather than shows as source.
-RENDERERS = {".md": "markdown", ".markdown": "markdown", ".html": "html", ".htm": "html"}
+RENDERERS = {
+    ".md": "markdown",
+    ".markdown": "markdown",
+    ".html": "html",
+    ".htm": "html",
+    ".mmd": "diagram",
+    ".mermaid": "diagram",
+    ".dot": "diagram",
+    ".gv": "diagram",
+}
 
 # A write body is a comment and its quote, never a file, so anything larger is a bug
 # or an attack whose read would cost the pod's memory.
