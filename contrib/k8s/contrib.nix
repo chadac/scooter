@@ -1,4 +1,4 @@
-# k8s: cluster tools via the broker; people approve every write.
+# k8s: cluster tools and kubectl/helm via the broker; people approve every write.
 { lib, ... }:
 
 let
@@ -174,16 +174,19 @@ let
           type = types.bool;
           default = false;
           description = ''
-            Let the agent ask for a time-limited write grant on one namespace.
-            While it lasts, that conversation's apply, delete, scale and rollout
-            restart in the namespace run without a card. Exec, Secret reveals and
-            cluster-scoped objects always need their own approval.
+            Let the agent ask for time-limited grants on one namespace. A write
+            grant lets that conversation's apply, delete, scale and rollout
+            restart there run without a card, through the tools or through
+            `kubectl` and `helm` (which need one to write at all), and lets it
+            read Helm's release Secrets there. A Secret grant lets it read the
+            named Secrets. Exec and cluster-scoped objects always need their
+            own approval.
           '';
         };
         maxMinutes = mkOption {
           type = types.ints.between 1 1440;
           default = 60;
-          description = "Longest grant the agent may ask for, in minutes.";
+          description = "Longest grant, write or Secret, the agent may ask for, in minutes.";
         };
       };
     };
@@ -249,6 +252,7 @@ in
       # Writes, exec and reveals are approved in-conversation, at /k8s/approvals.
       approvals = { };
 
+      sandbox.module = ./sandbox.nix;
       skills."scooter-k8s.md" = ./skills/scooter-k8s.md;
 
       ui.source = { label = "Kubernetes"; icon = ./icon.svg; };

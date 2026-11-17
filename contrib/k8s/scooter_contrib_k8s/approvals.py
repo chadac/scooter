@@ -19,7 +19,7 @@ GRANTABLE = frozenset({"apply", "delete", "scale", "restart"})
 @dataclass(frozen=True)
 class Op:
     cluster: str
-    # apply | delete | scale | restart | exec | reveal | grant
+    # apply | delete | scale | restart | exec | reveal | grant | secret-grant
     verb: str
     namespace: str = ""
     kind: str = ""
@@ -31,6 +31,8 @@ class Op:
     argv: list[str] = field(default_factory=list)
     container: str = ""
     keys: list[str] = field(default_factory=list)
+    #: secret-grant: the Secrets it lets the agent read.
+    names: list[str] = field(default_factory=list)
     minutes: int = 0
     reason: str = ""
     #: The card's diff or plan, computed at request time.
@@ -65,6 +67,9 @@ def headline(op: Op) -> str:
             return f"read the values of Secret {op.namespace}/{op.name} ({keys}) {on}"
         case "grant":
             return f"write to namespace {op.namespace} {on} for {op.minutes} minutes without asking per change"
+        case "secret-grant":
+            return (f"read Secret{'s' if len(op.names) != 1 else ''} {', '.join(op.names)} in namespace "
+                    f"{op.namespace} {on} for {op.minutes} minutes")
     return f"{op.verb} {target(op)} {on}"
 
 

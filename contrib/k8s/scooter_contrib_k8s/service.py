@@ -115,7 +115,12 @@ class K8sService:
         return Approvals.pending_result(req)
 
     async def _grant_for(self, conversation_id: str, op: Op):
-        if op.verb not in GRANTABLE or self.grants is None:
+        if self.grants is None:
+            return None
+        if op.verb == "reveal":
+            found = await self.grants.active(conversation_id, op.cluster, op.namespace, kind="secret")
+            return next((g for g in found if op.name in g.names), None)
+        if op.verb not in GRANTABLE:
             return None
         if op.verb == "apply":
             if not all(m["resource"]["namespaced"] for m in op.manifests):
@@ -127,7 +132,7 @@ class K8sService:
             spaces = {op.namespace}
         if len(spaces) != 1:
             return None
-        found = await self.grants.active(conversation_id, op.cluster, spaces.pop())
+        found = await self.grants.active(conversation_id, op.cluster, spaces.pop(), kind="write")
         return found[0] if found else None
 
     def _op(self, c: Cluster, verb: str, **kw) -> Op:
@@ -242,10 +247,33 @@ class K8sService:
             raise Refused("say why in `reason`; the approver reads it")
         preview = (
             f"Reason: {reason.strip()}\n\nCovers apply, delete, scale and rollout restart of namespaced objects "
-            f"in {namespace}, from this conversation only. Exec, Secret reads and cluster-scoped objects still "
+            f"in {namespace}, from this conversation only, with the tools or kubectl and helm. Helm's release "
+            "Secrets there become readable too. Exec, other Secret reads and cluster-scoped objects still "
             "need their own approval. It starts when approved."
         )
         return self._op(c, "grant", namespace=namespace, minutes=minutes, reason=reason.strip(), preview=preview)
+
+    async def plan_secret_grant(self, cluster: str, namespace: str, names: list[str], minutes: int,
+                                reason: str) -> Op:
+        c = self.cluster(cluster)
+        if c.config.read_only:
+            raise Refused(f"cluster {c.config.name} is read-only here")
+        if not c.config.grants_enabled:
+            raise Refused(f"cluster {c.config.name} does not allow grants; ask with k8s_secret_reveal")
+        names = sorted({n.strip() for n in names if n.strip()})
+        if not names or any("," in n or "/" in n for n in names):
+            raise Refused("name the Secrets, by name only")
+        if not 1 <= minutes <= c.config.grant_max_minutes:
+            raise Refused(f"minutes must be between 1 and {c.config.grant_max_minutes}")
+        if not reason.strip():
+            raise Refused("say why in `reason`; the approver reads it")
+        ns = self.namespace(c, namespace)
+        preview = (
+            f"Reason: {reason.strip()}\n\nWhile it lasts, this conversation can read these Secrets' values with "
+            "kubectl or k8s_secret_reveal, and they land in its transcript. It starts when approved."
+        )
+        return self._op(c, "secret-grant", namespace=ns, names=names, minutes=minutes, reason=reason.strip(),
+                        preview=preview)
 
     # --- running what was approved --------------------------------------------------
 
@@ -291,6 +319,17 @@ class K8sService:
             raise Refused(f"cluster {op.cluster} became read-only")
         logger.info("k8s write approved", extra=self._audit(op, req.conversation_id, approved_by=who.id,
                                                              request_id=req.id))
+        if op.verb == "secret-grant":
+            if self.grants is None:
+                raise Refused("grants are not configured here")
+            g = await self.grants.add(req.conversation_id, op.cluster, op.namespace, minutes=op.minutes,
+                                      approved_by=who.id, request_id=req.id, kind="secret", names=tuple(op.names))
+            return Decision(
+                f"The user approved your Secret grant: until {iso(g.expires_at)}, you can read "
+                f"{', '.join(op.names)} in namespace {op.namespace} on cluster {op.cluster} with kubectl "
+                "or k8s_secret_reveal.",
+                body={"grant_id": g.id},
+            )
         if op.verb == "grant":
             if self.grants is None:
                 raise Refused("grants are not configured here")

@@ -6,6 +6,7 @@ triggers:
 - kubernetes
 - k8s
 - kubectl
+- helm
 - cluster
 - pod
 - deployment
@@ -14,9 +15,14 @@ triggers:
 
 # Kubernetes clusters (scooter-k8s)
 
-You reach the deployment's Kubernetes clusters through the `k8s_*` tools. The
-broker holds the credentials, so there is no kubeconfig in your sandbox, and
-`kubectl` won't reach these clusters. Don't go looking for a token.
+You reach the deployment's Kubernetes clusters through the `k8s_*` tools, or
+with `kubectl` and `helm`. The broker holds the credentials. Your
+`~/.kube/config` has one context per cluster, pointing at
+`https://<cluster>.k8s.scooter` with a placeholder token that the broker's
+proxy replaces. Don't go looking for a real token, and don't edit those
+entries. If `~/.kube/config` was already there (a k3d cluster, say), the
+deployment's copy is `/etc/scooter/k8s/kubeconfig`: pass it with
+`--kubeconfig`.
 
 Start with `k8s_clusters`. It lists each cluster, its default namespace,
 whether it's read-only, whether it allows write grants and who approves its
@@ -31,6 +37,24 @@ when a kind name is ambiguous.
 
 Secrets never show their values in these tools, only their key names and
 value lengths.
+
+## kubectl and helm
+
+Every read works: `get`, `describe`, `logs` (including `-f`), `top`,
+`--watch`, `helm template`. A watch is reconnected after 10 minutes.
+
+- **Writes need a write grant** (below) on that namespace: `apply`, `delete`,
+  `scale`, `helm install/upgrade/rollback/uninstall`. Without one you get a
+  403 naming `k8s_request_grant`. `--dry-run=server` always works.
+- **Secrets are closed.** Listing them is refused. Reading one by name needs
+  a Secret grant from `k8s_request_secret_access`. Helm's own release Secrets
+  open with a write grant on the namespace, so `helm list`, `status` and
+  `upgrade` work under one.
+- **Cluster-scoped writes** (Namespaces, CRDs, ClusterRoles) are refused here;
+  use `k8s_apply` or `k8s_delete`, which raise a card.
+- **`exec`, `attach`, `port-forward` and `cp` don't work.** Use `k8s_exec`.
+- A 403 whose JSON message starts with "denied by the Scooter forge policy"
+  is the broker, not Kubernetes RBAC. It says what to ask for.
 
 ## Writes: a person approves
 
@@ -48,8 +72,8 @@ value lengths.
 - When a request is approved, exactly what you sent runs, so get it right
   before you ask. If it's denied, nothing ran.
 - A conversation can have at most 5 requests waiting at once.
-- Prefer `k8s_apply` with complete manifests. Render Helm or Kustomize in the
-  sandbox first, then apply the output.
+- For one change, use `k8s_apply` with complete manifests. For a run of
+  changes, or anything Helm, get a grant and use `kubectl` or `helm`.
 
 ### Write grants
 
@@ -61,9 +85,16 @@ immediately and return their result. `k8s_grants` lists your active grants.
 `k8s_exec`, `k8s_secret_reveal` and cluster-scoped objects (Namespaces, CRDs,
 ClusterRoles) always need their own card, even under a grant.
 
+### Secret grants
+
+`k8s_request_secret_access(names, minutes, reason, namespace)` asks to read
+named Secrets in one namespace. Once it's approved, `kubectl get secret
+<name> -o yaml` and `k8s_secret_reveal` for those names answer without a
+card. Name only the Secrets you need.
+
 ### Secrets and exec
 
-- `k8s_secret_reveal` returns the values in a message, so they end up in the
+- Secret values you read, by either path, end up in the
   transcript. Ask only for the keys you need, and never repeat the values back
   to the user, in files you commit, or anywhere else.
 - `k8s_exec` runs one argv with no TTY or stdin, e.g.

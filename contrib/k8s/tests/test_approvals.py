@@ -9,7 +9,7 @@ import pytest
 from scooter_contrib_k8s.kube import Actor, K8sError
 from scooter_contrib_k8s.mcp_tools import (
     k8s_apply, k8s_delete, k8s_exec, k8s_grants, k8s_request_grant, k8s_rollout_restart, k8s_scale,
-    k8s_secret_reveal,
+    k8s_request_secret_access, k8s_secret_reveal,
 )
 
 from conftest import ctx, who
@@ -187,3 +187,28 @@ async def test_reveal_reads_the_secret_as_the_actor(configured, kube, http):
 async def test_grant_writes_carry_the_grants_approver(granted, kube):
     await k8s_scale("deploy", "web", 3, cluster="home", ctx=ctx())
     assert kube.actors[-1] == ("patch", Actor("conv", "alice"))
+
+
+async def test_a_secret_grant_reveals_its_names_without_a_card(configured, kube, cards, http):
+    rid = pending(await k8s_request_secret_access(["db"], 10, "checking the DB password", cluster="home",
+                                                  ctx=ctx()))
+    r = (await http.post(f"/k8s/approvals/{rid}/approve", json=who("alice"))).json()
+    assert "db" in r["agent_message"], r
+    raised = len(cards.raised)
+    out = json.loads((await k8s_secret_reveal("db", ["password"], cluster="home", ctx=ctx())).text)
+    assert out["status"] == "done" and out["result"] == {"password": "hunter2"}
+    assert kube.actors[-1] == ("get", Actor("conv", "alice"))
+    assert len(cards.raised) == raised
+    pending(await k8s_secret_reveal("db", cluster="home", ctx=ctx("other")))
+    pending(await k8s_apply(CM, cluster="home", ctx=ctx()))
+    kinds = [g["kind"] for g in json.loads((await k8s_grants(ctx=ctx())).text)]
+    assert kinds == ["secret"]
+
+
+async def test_secret_grant_limits(configured):
+    ask = k8s_request_secret_access
+    assert "between 1 and 30" in (await ask(["db"], 90, "x", cluster="home", ctx=ctx())).text
+    assert "does not allow" in (await ask(["db"], 10, "x", cluster="prod", ctx=ctx())).text
+    assert "read-only" in (await ask(["db"], 10, "x", cluster="ro", ctx=ctx())).text
+    assert "by name" in (await ask([" "], 10, "x", cluster="home", ctx=ctx())).text
+    assert "reason" in (await ask(["db"], 10, " ", cluster="home", ctx=ctx())).text

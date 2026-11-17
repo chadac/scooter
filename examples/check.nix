@@ -1515,6 +1515,16 @@ let
           && !((sysEval { contribs.k8s = { enable = nixpkgsLib.mkForce true; clusters = nixpkgsLib.mkForce { home.auth.inCluster = { }; }; }; })
           .config.kubernetes.resources.clusterRoles ? agent-broker-k8s-impersonate) then [ ]
         else [ "k8s with no clusters bound roles, or without impersonate rendered its role" ])
+    ++ (let
+          kc = builtins.fromJSON (k8sEval.config.kubernetes.resources.configMaps.agent-k8s-kubeconfig.data.kubeconfig or "{}");
+          pod = k8sEval.config.scooter.sandboxPod;
+        in
+        if builtins.elem { name = "prod-eu"; cluster = { server = "https://prod-eu.k8s.scooter"; certificate-authority = "/etc/ssl/certs/ca-certificates.crt"; }; } (kc.clusters or [ ])
+          && (kc.users or [ ]) == [ { name = "scooter"; user.token = "scooter-forge-proxy"; } ]
+          && !(kc ? current-context)
+          && builtins.any (m: m.name == "k8s-kubeconfig" && m.mountPath == "/etc/scooter/k8s") pod.extraVolumeMounts
+          && builtins.any (v: v.name == "k8s-kubeconfig") pod.extraVolumes then [ ]
+        else [ "contribs.k8s did not publish the sandbox kubeconfig (agent-k8s-kubeconfig) and mount it at /etc/scooter/k8s" ])
     ++ (if !(builtins.tryEval (builtins.deepSeq (sysEval { contribs.k8s = { enable = nixpkgsLib.mkForce true; clusters."Bad_Name".auth.inCluster = { }; }; })
           .config.kubernetes.resources.deployments.agent-broker.spec true)).success then [ ]
         else [ "a k8s cluster name that is not lowercase and dashes rendered" ]);

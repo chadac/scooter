@@ -164,9 +164,9 @@ async def k8s_logs(pod: str, cluster: str = "", namespace: str = "", container: 
 @mcp.tool
 async def k8s_secret_reveal(name: str, keys: list[str] | None = None, cluster: str = "", namespace: str = "",
                             ctx: ToolContext = ToolContextDep) -> ToolResult:
-    """Ask a person to show you a Secret's values: `keys` names which (empty: all). Always
-    needs approval; the values come back in a message and land in the transcript, so ask
-    only for the keys you need."""
+    """Ask a person to show you a Secret's values: `keys` names which (empty: all). Needs
+    approval unless a k8s_request_secret_access grant covers it; the values land in the
+    transcript, so ask only for the keys you need."""
     return await _answer(_gated(ctx, lambda s, cid: s.plan_reveal(cid, cluster, name, keys or [], namespace)))
 
 
@@ -219,13 +219,23 @@ async def k8s_request_grant(namespace: str, minutes: int, reason: str, cluster: 
 
 
 @mcp.tool
+async def k8s_request_secret_access(names: list[str], minutes: int, reason: str, cluster: str = "",
+                                    namespace: str = "", ctx: ToolContext = ToolContextDep) -> ToolResult:
+    """Ask to read named Secrets in one namespace for `minutes`, so `kubectl get secret <name>`
+    and k8s_secret_reveal work for them without a card each. Only on clusters that allow grants;
+    other Secrets stay closed, and Secrets can't be listed."""
+    return await _answer(_gated(ctx, lambda s, _: s.plan_secret_grant(cluster, namespace, names, minutes, reason)))
+
+
+@mcp.tool
 async def k8s_grants(cluster: str = "", ctx: ToolContext = ToolContextDep) -> ToolResult:
-    """This conversation's active write grants and when each expires."""
+    """This conversation's active write and Secret grants and when each expires."""
     async def run():
         svc = _svc()
         if svc.grants is None:
             return "No grants."
         found = await svc.grants.active(ctx.identity.conversation_id, cluster or None)
-        return [{"grant_id": g.id, "cluster": g.cluster, "namespace": g.namespace,
+        return [{"grant_id": g.id, "kind": g.kind, "secrets": list(g.names) or None,
+                 "cluster": g.cluster, "namespace": g.namespace,
                  "expires_at": iso(g.expires_at), "approved_by": g.approved_by} for g in found] or "No active grants."
     return await _answer(run())

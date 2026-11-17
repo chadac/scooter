@@ -68,6 +68,15 @@
         ],
         "name": "google-cloud-sdk-591.0.0"
       },
+      "kubernetes-helm": {
+        "attr": "kubernetes-helm",
+        "drv": "/nix/store/infrsp03gcf2nnb45cwn48zw6ly9s7iv-kubernetes-helm-4.3.1.drv",
+        "output": "out",
+        "bins": [
+          "helm"
+        ],
+        "name": "kubernetes-helm-4.3.1"
+      },
       "marimo": {
         "attr": "marimo",
         "drv": "/nix/store/nzx28vwdh5rw48cmzvr3xijjwdfv8xb8-python3.14-marimo-0.25.1.drv",
@@ -220,6 +229,15 @@
         ],
         "name": "kubectl-1.37.2"
       },
+      "kubernetes-helm": {
+        "attr": "kubernetes-helm",
+        "drv": "/nix/store/af3vbxw752wyn53mwqww6c0arcwliwxb-kubernetes-helm-4.3.1.drv",
+        "output": "out",
+        "bins": [
+          "helm"
+        ],
+        "name": "kubernetes-helm-4.3.1"
+      },
       "marimo": {
         "attr": "marimo",
         "drv": "/nix/store/k5wayxhw0p6k8mdkp6xd83xm5vx3n80g-python3.14-marimo-0.25.1.drv",
@@ -371,6 +389,15 @@
           "kubectl"
         ],
         "name": "kubectl-1.37.2"
+      },
+      "kubernetes-helm": {
+        "attr": "kubernetes-helm",
+        "drv": "/nix/store/jfc88q6w29byyca75f9qv35m9zvarrj8-kubernetes-helm-4.3.1.drv",
+        "output": "out",
+        "bins": [
+          "helm"
+        ],
+        "name": "kubernetes-helm-4.3.1"
       },
       "marimo": {
         "attr": "marimo",

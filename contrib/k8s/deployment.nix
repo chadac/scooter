@@ -1,4 +1,5 @@
-# k8s deployment half: agent-broker's in-cluster roles and its impersonated user.
+# k8s deployment half: agent-broker's in-cluster roles, its impersonated user, and the
+# sandbox kubeconfig that points kubectl and helm at the forge proxy.
 # No `pkgs`: platform.nix may be imported without one.
 { config, lib, ... }:
 
@@ -9,6 +10,26 @@ let
   roles = lib.unique (lib.concatMap (c: c.auth.inCluster.clusterRoles) inCluster);
   impersonated = lib.filter (c: c.impersonate.user != null) inCluster;
   users = lib.unique (map (c: c.impersonate.user) impersonated);
+
+  names = lib.attrNames ccfg.clusters;
+  # Each cluster is a forge-proxy host; the token is a placeholder the broker replaces.
+  kubeconfig = {
+    apiVersion = "v1";
+    kind = "Config";
+    clusters = map (n: {
+      name = n;
+      cluster = {
+        server = "https://${n}.k8s.scooter";
+        # Includes the forge CA.
+        certificate-authority = "/etc/ssl/certs/ca-certificates.crt";
+      };
+    }) names;
+    users = [{ name = "scooter"; user.token = "scooter-forge-proxy"; }];
+    contexts = map (n: {
+      name = n;
+      context = { cluster = n; user = "scooter"; namespace = ccfg.clusters.${n}.defaultNamespace; };
+    }) names;
+  } // lib.optionalAttrs (lib.length names == 1) { current-context = lib.head names; };
 
   rbac = "rbac.authorization.k8s.io";
   broker = [{ kind = "ServiceAccount"; name = "agent-broker"; namespace = cfg.namespace; }];
@@ -34,7 +55,20 @@ let
 in
 {
   config = lib.mkIf (cfg.broker.enable && ccfg.enable) {
+    # contrib/k8s/sandbox.nix copies it to ~/.kube/config at boot.
+    scooter.sandboxPod = lib.mkIf (names != [ ]) {
+      extraVolumeMounts = [{ name = "k8s-kubeconfig"; mountPath = "/etc/scooter/k8s"; readOnly = true; }];
+      extraVolumes = [{ name = "k8s-kubeconfig"; configMap.name = "agent-k8s-kubeconfig"; }];
+    };
+
     kubernetes.resources = {
+      configMaps = lib.optionalAttrs (names != [ ]) {
+        agent-k8s-kubeconfig = {
+          metadata = { name = "agent-k8s-kubeconfig"; namespace = cfg.namespace; };
+          data.kubeconfig = builtins.toJSON kubeconfig;
+        };
+      };
+
       clusterRoleBindings = lib.listToAttrs (map brokerBinding roles)
         // lib.mergeAttrsList (map userBindings impersonated)
         // lib.optionalAttrs (users != [ ]) {

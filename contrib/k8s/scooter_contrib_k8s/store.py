@@ -1,4 +1,4 @@
-"""Write grants, in this contrib's own `contrib_k8s` database.
+"""Write and Secret grants, in this contrib's own `contrib_k8s` database.
 
 The DDL lives in contrib/k8s/sql/schema.sql (Atlas owns it); this module never creates tables.
 """
@@ -26,6 +26,10 @@ class _Grant(_Base):
     conversation_id: Mapped[str] = mapped_column(String, index=True)
     cluster: Mapped[str] = mapped_column(String)
     namespace: Mapped[str] = mapped_column(String)
+    # "write", or "secret" for reading the Secrets in `names`.
+    kind: Mapped[str] = mapped_column(String, default="write")
+    # Comma-separated Secret names; empty for a write grant.
+    names: Mapped[str] = mapped_column(String, default="")
     approved_by: Mapped[str] = mapped_column(String)
     # The approval that created it.
     request_id: Mapped[str] = mapped_column(String)
@@ -42,6 +46,8 @@ class Grant:
     approved_by: str
     request_id: str
     expires_at: int
+    kind: str = "write"
+    names: tuple[str, ...] = ()
 
 
 def _now_ms() -> int:
@@ -50,7 +56,8 @@ def _now_ms() -> int:
 
 def _grant(row: _Grant) -> Grant:
     return Grant(id=row.id, conversation_id=row.conversation_id, cluster=row.cluster, namespace=row.namespace,
-                 approved_by=row.approved_by, request_id=row.request_id, expires_at=row.expires_at)
+                 approved_by=row.approved_by, request_id=row.request_id, expires_at=row.expires_at,
+                 kind=row.kind, names=tuple(n for n in row.names.split(",") if n))
 
 
 class GrantStore:
@@ -58,22 +65,24 @@ class GrantStore:
         self._engine, self._session = open_sessions(config)
 
     async def add(self, conversation_id: str, cluster: str, namespace: str, *, minutes: int,
-                  approved_by: str, request_id: str) -> Grant:
+                  approved_by: str, request_id: str, kind: str = "write", names: tuple[str, ...] = ()) -> Grant:
         now = _now_ms()
         row = _Grant(id=str(uuid.uuid4()), conversation_id=conversation_id, cluster=cluster, namespace=namespace,
-                     approved_by=approved_by, request_id=request_id, created_at=now,
+                     kind=kind, names=",".join(names), approved_by=approved_by, request_id=request_id, created_at=now,
                      expires_at=now + minutes * 60_000)
         async with self._session() as s, s.begin():
             s.add(row)
         return _grant(row)
 
     async def active(self, conversation_id: str, cluster: str | None = None,
-                     namespace: str | None = None) -> list[Grant]:
-        """Unexpired grants for a conversation, soonest to expire first."""
+                     namespace: str | None = None, *, kind: str | None = None) -> list[Grant]:
+        """Unexpired grants for a conversation, soonest to expire first; `kind` None means both."""
         q = select(_Grant).where(_Grant.conversation_id == conversation_id, _Grant.expires_at > _now_ms())
         if cluster is not None:
             q = q.where(_Grant.cluster == cluster)
         if namespace is not None:
             q = q.where(_Grant.namespace == namespace)
+        if kind is not None:
+            q = q.where(_Grant.kind == kind)
         async with self._session() as s:
             return [_grant(r) for r in (await s.scalars(q.order_by(_Grant.expires_at))).all()]

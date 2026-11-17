@@ -47,6 +47,9 @@
   # contrib/gcp's CLIs, authenticated the same way.
   google-cloud-sdk = { package = pkgs.google-cloud-sdk; bins = [ "gcloud" "gsutil" "bq" ]; };
 
+  # contrib/k8s's helm, against the clusters behind the forge proxy.
+  kubernetes-helm = { package = pkgs.kubernetes-helm; bins = [ "helm" ]; };
+
   # Node for contribs' npm packages, fetched on first use.
   scooter-node = { package = pkgs.nodejs; bins = [ "node" "npm" "npx" ]; };
 }
