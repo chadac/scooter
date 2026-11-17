@@ -70,6 +70,13 @@ in
       };
 
       clusterRoleBindings = lib.listToAttrs (map brokerBinding roles)
+        // lib.optionalAttrs (inCluster != [ ]) {
+          agent-broker-k8s-helm-releases = {
+            metadata.name = "agent-broker-k8s-helm-releases";
+            roleRef = roleRef "agent-broker-k8s-helm-releases";
+            subjects = broker;
+          };
+        }
         // lib.mergeAttrsList (map userBindings impersonated)
         // lib.optionalAttrs (users != [ ]) {
           agent-broker-k8s-impersonate = {
@@ -79,7 +86,13 @@ in
           };
         };
       roleBindings = lib.mergeAttrsList (map userRoleBindings impersonated);
-      clusterRoles = lib.optionalAttrs (users != [ ]) {
+      clusterRoles = lib.optionalAttrs (inCluster != [ ]) {
+        # helm list/status. RBAC can't select by type; the forge proxy narrows these to helm.sh/release.v1.
+        agent-broker-k8s-helm-releases = {
+          metadata.name = "agent-broker-k8s-helm-releases";
+          rules = [{ apiGroups = [ "" ]; resources = [ "secrets" ]; verbs = [ "get" "list" ]; }];
+        };
+      } // lib.optionalAttrs (users != [ ]) {
         agent-broker-k8s-impersonate = {
           metadata.name = "agent-broker-k8s-impersonate";
           rules = [

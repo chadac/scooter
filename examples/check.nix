@@ -1498,6 +1498,8 @@ let
     ++ (let r = k8sEval.config.kubernetes.resources; in
         if (builtins.head (r.clusterRoles.agent-broker-k8s-impersonate.rules or [ { } ])).resourceNames or [ ] == [ "scooter-k8s" ]
           && (r.clusterRoleBindings.agent-broker-k8s-impersonate.subjects or [ ]) != [ ]
+          && (r.clusterRoleBindings.agent-broker-k8s-helm-releases.subjects or [ ]) != [ ]
+          && (r.clusterRoles.agent-broker-k8s-helm-releases.rules or [ ]) == [ { apiGroups = [ "" ]; resources = [ "secrets" ]; verbs = [ "get" "list" ]; } ]
           && (r.clusterRoleBindings.k8s-user-scooter-k8s-view.subjects or [ ]) == [ { kind = "User"; apiGroup = "rbac.authorization.k8s.io"; name = "scooter-k8s"; } ]
           && (r.roleBindings.agent-sandbox-k8s-user-scooter-k8s-edit.metadata.namespace or "") == "agent-sandbox" then [ ]
         else [ "k8s impersonate did not render the broker's impersonate role and the user's bindings" ])

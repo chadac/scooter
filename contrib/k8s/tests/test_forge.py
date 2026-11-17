@@ -113,16 +113,16 @@ async def test_secrets_need_a_secret_grant(policy, grants):
     assert not (await decide(policy, "PUT", "/api/v1/namespaces/web/secrets/db")).allowed
 
 
-async def test_helm_release_secrets_open_with_a_write_grant(policy, grants):
+async def test_helm_release_reads_pass_without_a_grant(policy):
     lst = ("GET", "/api/v1/namespaces/web/secrets", "labelSelector=owner%3Dhelm%2Cname%3Dapi")
-    one = ("GET", "/api/v1/namespaces/web/secrets/sh.helm.release.v1.api.v3")
-    assert not (await decide(policy, *lst)).allowed
-    assert not (await decide(policy, *one)).allowed
-    await grants.add("conv", "home", "web", minutes=5, approved_by="alice", request_id="r1")
-    assert (await decide(policy, *lst)).allowed
-    assert (await decide(policy, *one)).allowed
+    for req in [lst, ("GET", "/api/v1/secrets", "labelSelector=owner%3Dhelm"),
+                ("GET", "/api/v1/namespaces/web/secrets/sh.helm.release.v1.api.v3")]:
+        d = await decide(policy, *req)
+        assert d.allowed and not parse(*req).privileged, req
+    assert (await decide(policy, *lst, host="ro.k8s.scooter")).allowed
     assert not (await decide(policy, "GET", "/api/v1/namespaces/web/secrets", "labelSelector=app%3Dx")).allowed
-    assert not (await decide(policy, "GET", "/api/v1/namespaces/web/secrets/db")).allowed
+    assert not (await decide(policy, "GET", "/api/v1/namespaces/web/secrets", "labelSelector=owner%3Dhelm&watch=1")).allowed
+    assert not (await decide(policy, "DELETE", "/api/v1/namespaces/web/secrets/sh.helm.release.v1.api.v3")).allowed
 
 
 class FakeAuth:
@@ -157,6 +157,39 @@ async def test_transport_sends_to_the_real_api_server():
     assert sent.headers["host"] == "10.0.0.1:6443"
 
 
+def _helm_link(seen, secret_type="helm.sh/release.v1"):
+    def handler(request):
+        seen.append(request)
+        if request.url.path.endswith("/secrets"):
+            return httpx.Response(200, json={"kind": "SecretList", "items": []})
+        return httpx.Response(200, json={"kind": "Secret", "type": secret_type, "data": {"release": "eA=="}})
+    return ClusterLink(FakeAuth(), inner=httpx.MockTransport(handler))
+
+
+async def test_transport_narrows_helm_lists_to_release_secrets():
+    seen = []
+    async with httpx.AsyncClient(transport=KubeTransport(_helm_link(seen))) as c:
+        await c.get("https://home.k8s.scooter/api/v1/secrets",
+                    params={"labelSelector": "owner=helm", "fieldSelector": "metadata.namespace!=x"})
+        await c.get("https://home.k8s.scooter/api/v1/pods", params={"labelSelector": "owner=helm"})
+    helm, pods = seen
+    assert helm.url.params.get_list("fieldSelector") == ["metadata.namespace!=x,type=helm.sh/release.v1"]
+    assert "fieldSelector" not in pods.url.params
+
+
+async def test_transport_refuses_a_named_secret_that_is_not_a_release():
+    url = "https://home.k8s.scooter/api/v1/namespaces/web/secrets/sh.helm.release.v1.api.v1"
+    seen = []
+    async with httpx.AsyncClient(transport=KubeTransport(_helm_link(seen))) as c:
+        ok = await c.get(url, headers={"Accept": "application/vnd.kubernetes.protobuf"})
+    assert ok.status_code == 200 and ok.json()["type"] == "helm.sh/release.v1"
+    assert seen[0].headers["accept"] == "application/json"
+    async with httpx.AsyncClient(transport=KubeTransport(_helm_link([], "Opaque"))) as c:
+        bad = await c.get(url)
+    assert bad.status_code == 403 and bad.json()["kind"] == "Status"
+    assert "eA==" not in bad.text
+
+
 async def test_credential_impersonates_only_privileged_calls(policy, grants):
     links = {n: ClusterLink(FakeAuth()) for n in CLUSTERS}
     cred = KubeCredential(CLUSTERS, links, policy)
@@ -182,3 +215,7 @@ def test_forge_hosts_strip_client_impersonation():
     assert [h.host for h in fh.hosts] == ["home.k8s.scooter"]
     assert fh.drop_header_prefixes == ("impersonate-",)
     assert "k8s_exec" in fh.upgrade_refusal
+    assert fh.error_body(403, "no") == {
+        "kind": "Status", "apiVersion": "v1", "metadata": {}, "status": "Failure",
+        "message": "no", "reason": "Forbidden", "code": 403,
+    }

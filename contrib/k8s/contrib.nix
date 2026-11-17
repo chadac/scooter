@@ -38,7 +38,9 @@ let
           description = ''
             ClusterRoles bound to the agent-broker ServiceAccount. They cap what any
             approval can do: `view` reads everything but Secrets; add `edit`
-            (or your own role) before approved writes can succeed.
+            (or your own role) before approved writes can succeed. The broker is
+            also bound `agent-broker-k8s-helm-releases` (get and list Secrets), so
+            `helm list` works; the proxy narrows those reads to Helm's release Secrets.
           '';
         };
       };

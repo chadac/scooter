@@ -41,19 +41,19 @@ value lengths.
 ## kubectl and helm
 
 Every read works: `get`, `describe`, `logs` (including `-f`), `top`,
-`--watch`, `helm template`. A watch is reconnected after 10 minutes.
+`--watch`, `helm list/status/history/get`, `helm template`. A watch is reconnected after 10 minutes.
 
 - **Writes need a write grant** (below) on that namespace: `apply`, `delete`,
   `scale`, `helm install/upgrade/rollback/uninstall`. Without one you get a
   403 naming `k8s_request_grant`. `--dry-run=server` always works.
 - **Secrets are closed.** Listing them is refused. Reading one by name needs
   a Secret grant from `k8s_request_secret_access`. Helm's own release Secrets
-  open with a write grant on the namespace, so `helm list`, `status` and
-  `upgrade` work under one.
+  (type `helm.sh/release.v1`) are the exception: they read without a grant.
+  They hold each release's values, so don't repeat those back either.
 - **Cluster-scoped writes** (Namespaces, CRDs, ClusterRoles) are refused here;
   use `k8s_apply` or `k8s_delete`, which raise a card.
 - **`exec`, `attach`, `port-forward` and `cp` don't work.** Use `k8s_exec`.
-- A 403 whose JSON message starts with "denied by the Scooter forge policy"
+- A 403 whose message starts with "denied by the Scooter forge policy"
   is the broker, not Kubernetes RBAC. It says what to ask for.
 
 ## Writes: a person approves

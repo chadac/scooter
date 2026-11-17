@@ -20,7 +20,7 @@ from scooter_broker_lib.types import Provider
 from . import mcp_tools
 from .auth import auth_for
 from .config import parse_clusters, settings
-from .forge import ClusterLink, KubeCredential, KubePolicy, KubeTransport, host_for
+from .forge import ClusterLink, KubeCredential, KubePolicy, KubeTransport, host_for, status_body
 from .kube import Kube
 from .service import Cluster, K8sService
 from .store import GrantStore
@@ -53,6 +53,8 @@ def forge_hosts(links: dict[str, ClusterLink]) -> ForgeHosts:
         upgrade_refusal="exec, attach and port-forward don't go through the proxy; use the k8s_exec tool",
         # Only the broker may impersonate, and only for what the policy allowed.
         drop_header_prefixes=("impersonate-",),
+        # kubectl prints a 403 reason only from a Status body.
+        error_body=status_body,
     )
 
 

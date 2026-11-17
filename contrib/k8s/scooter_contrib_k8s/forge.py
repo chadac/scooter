@@ -26,10 +26,18 @@ from .config import ClusterConfig
 from .store import GrantStore
 
 HOST_SUFFIX = ".k8s.scooter"
-# Helm's release Secrets, readable under a write grant.
+# Helm's release Secrets, readable by anyone who can read the cluster.
 HELM_RELEASE_PREFIX = "sh.helm.release.v1."
+HELM_RELEASE_TYPE = "helm.sh/release.v1"
 _READS = frozenset({"GET", "HEAD", "OPTIONS"})
 _STREAMS = frozenset({"exec", "attach", "portforward"})
+
+
+def status_body(code: int, message: str) -> dict:
+    """A metav1.Status, which kubectl and helm print; they show a bare message as "unknown"."""
+    reason = {403: "Forbidden", 413: "RequestEntityTooLarge"}.get(code, "")
+    return {"kind": "Status", "apiVersion": "v1", "metadata": {}, "status": "Failure",
+            "message": message, "reason": reason, "code": code}
 
 
 def host_for(name: str) -> str:
@@ -64,9 +72,16 @@ class KubeRequest:
         return self.group == "" and self.resource == "secrets"
 
     @property
+    def helm_read(self) -> bool:
+        """A read of Helm's release Secrets, which KubeTransport holds to that type."""
+        if not self.secret or self.write or self.watch or self.subresource:
+            return False
+        return self.name.startswith(HELM_RELEASE_PREFIX) if self.name else self.helm_selector
+
+    @property
     def privileged(self) -> bool:
         """Runs as the impersonated user: writes and Secret reads."""
-        return self.write or self.secret
+        return self.write or (self.secret and not self.helm_read)
 
     @property
     def helm_selector(self) -> bool:
@@ -142,9 +157,6 @@ class KubePolicy:
     async def _secret_read(self, cfg: ClusterConfig, cid: str, r: KubeRequest) -> Decision:
         if not r.namespace:
             return Decision.deny("Secrets are read one namespace at a time")
-        helm = r.name.startswith(HELM_RELEASE_PREFIX) if r.name else r.helm_selector
-        if helm and await self._grant(cid, cfg.name, r.namespace, "write"):
-            return Decision.allow("helm release under write grant")
         if r.name and not r.subresource:
             for g in await self._grants.active(cid, cfg.name, r.namespace, kind="secret"):
                 if r.name in g.names:
@@ -167,7 +179,7 @@ class KubePolicy:
         """Who approved the grant a privileged call runs under; "" when none applies."""
         if not r.namespace or self._grants is None or not identity.conversation_id:
             return ""
-        kind = "secret" if r.secret and not r.write and not r.name.startswith(HELM_RELEASE_PREFIX) else "write"
+        kind = "secret" if r.secret and not r.write else "write"
         g = await self._grant(identity.conversation_id, cluster_of(host), r.namespace, kind)
         return g.approved_by if g else ""
 
@@ -231,7 +243,35 @@ class KubeTransport(httpx.AsyncBaseTransport):
             raw_path=base.raw_path.rstrip(b"/") + request.url.raw_path,
         )
         request.headers["Host"] = base.netloc.decode("ascii")
-        return await conn.transport.handle_async_request(request)
+        r = parse(request.method, request.url.path, request.url.query.decode("ascii", "replace"))
+        if not r.helm_read:
+            return await conn.transport.handle_async_request(request)
+        if not r.name:
+            return await conn.transport.handle_async_request(_only_helm_releases(request))
+        request.headers["Accept"] = "application/json"
+        resp = await conn.transport.handle_async_request(request)
+        if resp.status_code != 200:
+            return resp
+        body = await resp.aread()
+        await resp.aclose()
+        if json.loads(body).get("type") != HELM_RELEASE_TYPE:
+            return _forbidden(f"Secret {r.namespace}/{r.name} is not a Helm release")
+        # aread() decoded the body, so its framing headers no longer apply.
+        headers = [(k, v) for k, v in resp.headers.items()
+                   if k.lower() not in ("content-encoding", "content-length", "transfer-encoding")]
+        return httpx.Response(200, headers=headers, content=body)
+
+
+def _only_helm_releases(request: httpx.Request) -> httpx.Request:
+    """Narrows a Secret list to Helm's release type; field selectors are ANDed."""
+    params = request.url.params
+    fs = ",".join(v for v in [*params.get_list("fieldSelector"), f"type={HELM_RELEASE_TYPE}"] if v)
+    request.url = request.url.copy_with(params=params.set("fieldSelector", fs))
+    return request
+
+
+def _forbidden(message: str) -> httpx.Response:
+    return httpx.Response(403, json=status_body(403, f"denied by the Scooter forge policy: {message}"))
 
 
 class KubeCredential:
