@@ -33,6 +33,10 @@ class ForgeHost:
     git: bool = False
     # Paths that get the API credential; ("/",) for an API-only host.
     api_prefixes: tuple[str, ...] = ()
+    # Upstream base URL; empty means https://<host>.
+    upstream: str = ""
+    # Own client for a private CA or client cert.
+    client: httpx.AsyncClient | None = field(default=None, compare=False, hash=False)
 
 
 # A GraphQL mutation's top-level field -> the created resource, from its `data` entry and the request's variables.
@@ -49,6 +53,10 @@ class ForgeHosts(Transport):
     # Auto-linking for creates made through the proxy: REST rules match the path without its leading "/".
     link_rules: list[LinkRule] = field(default_factory=list)
     graphql_link_rules: dict[str, GraphQLLinkRule] = field(default_factory=dict)
+    # The 403 message for upgrade requests (exec, websockets).
+    upgrade_refusal: str = "the forge proxy does not carry upgraded connections"
+    # Client request headers never forwarded, matched by lowercase prefix.
+    drop_header_prefixes: tuple[str, ...] = ()
     name: str = "forge-proxy"
 
     def routes(self, provider: Provider, authed: AuthDependency) -> APIRouter:

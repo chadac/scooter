@@ -40,7 +40,7 @@ class _GitLabish:
     def is_graphql(self, path):
         return path == "/api/graphql"
 
-HOSTS = ["api.github.com", "github.com", "gitlab.com"]
+HOSTS = ["api.github.com", "github.com", "gitlab.com", "prod.k8s.scooter"]
 IDENT = Identity(conversation_id="conv-1", namespace="ns", service_account="system:serviceaccount:ns:sandbox-conv-1")
 A, B = "a" * 40, "b" * 40
 
@@ -130,16 +130,37 @@ def world(ca, monkeypatch):
         forge_policy=gl_policy,
     )
 
+    kube_seen: list[httpx.Request] = []
+
+    async def kube_handler(request: httpx.Request) -> httpx.Response:
+        kube_seen.append(request)
+        return _streamed(200, json_body={"kind": "PodList"})
+
+    kube = Provider(
+        name="k8s",
+        credential=StaticTokenSource(token="kube-real"),
+        transports=[ForgeHosts(
+            hosts=[ForgeHost(
+                "prod.k8s.scooter", api_prefixes=("/",), upstream="https://10.0.0.1:6443/",
+                client=httpx.AsyncClient(transport=httpx.MockTransport(kube_handler)),
+            )],
+            upgrade_refusal="use k8s_exec",
+            drop_header_prefixes=("Impersonate-",),
+        )],
+        forge_policy=Recorder(),
+    )
+
     async def authenticate(token: str) -> Identity:
         if token != "good-sa-token":
             raise ProxyAuthError(407, "token not authenticated")
         return IDENT
 
     proxy = ForgeProxy(
-        build_routes([github, gitlab]), LeafIssuer(ca), authenticate,
+        build_routes([github, gitlab, kube]), LeafIssuer(ca), authenticate,
         upstream=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         agent_host_url="http://agent-host",
     )
+    proxy.kube_seen = kube_seen
     return proxy, upstream_seen, links, gh_policy, gl_policy
 
 
@@ -298,6 +319,52 @@ async def test_denied_request_never_reaches_upstream(running, ca):
     assert r.headers["x-scooter-policy"] == "not on my watch"
     assert "forge policy" in r.json()["message"]
     assert seen == []
+
+
+async def test_a_host_with_its_own_upstream_uses_its_url_and_client(running, ca):
+    proxy, seen, *_ = running
+    async with _client(proxy, ca) as c:
+        r = await c.get("https://prod.k8s.scooter/api/v1/namespaces/default/pods?limit=5")
+    assert r.status_code == 200 and r.json() == {"kind": "PodList"}
+    (req,) = proxy.kube_seen
+    assert str(req.url) == "https://10.0.0.1:6443/api/v1/namespaces/default/pods?limit=5"
+    assert req.headers["host"] == "10.0.0.1:6443"
+    assert req.headers["authorization"] == "Bearer kube-real"
+    assert seen == []
+
+
+async def test_client_impersonation_headers_are_dropped(running, ca):
+    proxy = running[0]
+    async with _client(proxy, ca) as c:
+        r = await c.get(
+            "https://prod.k8s.scooter/api/v1/secrets",
+            headers={"Impersonate-User": "admin", "Impersonate-Group": "system:masters",
+                     "Impersonate-Extra-scopes": "x"},
+        )
+    assert r.status_code == 200
+    (req,) = proxy.kube_seen
+    assert not [k for k in req.headers if k.lower().startswith("impersonate-")]
+
+
+async def test_header_drops_apply_only_to_the_provider_that_set_them(running, ca):
+    proxy, seen, *_ = running
+    async with _client(proxy, ca) as c:
+        r = await c.get("https://api.github.com/repos/o/r", headers={"Impersonate-User": "x"})
+    assert r.status_code == 200
+    ((req, _),) = seen
+    assert req.headers["impersonate-user"] == "x"
+
+
+async def test_upgrade_requests_are_refused_with_the_hosts_message(running, ca):
+    proxy = running[0]
+    async with _client(proxy, ca) as c:
+        r = await c.post(
+            "https://prod.k8s.scooter/api/v1/namespaces/default/pods/p/exec?command=sh",
+            headers={"Connection": "Upgrade", "Upgrade": "websocket"},
+        )
+    assert r.status_code == 403
+    assert r.json()["message"] == "use k8s_exec"
+    assert proxy.kube_seen == []
 
 
 async def test_non_forge_host_is_refused(running, ca):
