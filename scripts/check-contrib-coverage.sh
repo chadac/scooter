@@ -13,9 +13,11 @@ note() { echo "  - $1"; fail=1; }
 
 # Contribs that exist on disk: a directory with a contrib.nix (its declaration).
 mapfile -t on_disk < <(
-  find contrib -mindepth 2 -maxdepth 2 -name contrib.nix -printf '%h\n' \
+  find contrib -mindepth 2 -maxdepth 2 -name contrib.nix -exec dirname {} \; \
     | sed 's|^contrib/||' | sort -u
 )
+# Zero means the scan broke, not that there's nothing to check.
+[ "${#on_disk[@]}" -gt 0 ] || { echo "❌ contrib coverage: found no contrib/*/contrib.nix"; exit 1; }
 # Contribs all-modules.nix imports: the relative paths in its `imports` list,
 # minus the schema module itself.
 mapfile -t imported < <(
