@@ -24,7 +24,8 @@ and takes a few minutes; later runs take about a minute.
   macOS that is the Docker VM's size, not the Mac's, and the defaults are smaller
   (colima's is 2 CPUs and 2 GiB). `up` warns when Docker has less; resize the VM first:
   `colima start --cpu 6 --memory 16`, or Settings → Resources in Docker Desktop and
-  OrbStack.
+  OrbStack. A sandbox reserves its whole size, and the platform takes about 2 CPUs, so
+  a VM fits roughly one conversation per CPU beyond those two: 4 at 6 CPUs, 14 at 16.
 - **A free port** for the UI, 8080 by default. Other development servers often hold it;
   `up` stops with a free one to use instead (see [Your port](#your-port)).
 - **A model provider**, one of:
@@ -120,6 +121,10 @@ subscription.
 **Everything is on one disk**: Postgres and the sandbox volumes live in the k3d node's
 Docker volume, and the uploads in the state directory. `destroy` removes all of it.
 
+**No GPU on macOS.** Sandboxes run in Docker's Linux VM, which cannot reach the Mac's
+GPU, so a sandbox size with `gpu` set never schedules there. Ollama on the Mac itself uses
+Metal.
+
 ## Declare it instead
 
 `nix run …#local` takes no configuration. To pin the provider, pick models, turn on
@@ -205,6 +210,12 @@ cluster.
   message suggests, or set one in the build (see [Your port](#your-port)).
 - **`Docker has 2 CPUs and 2 GiB`**: the Docker VM is too small; resize it as the
   warning says, then `up` again.
+- **`deploy/agent-host did not become ready`**, with `http2: client connection lost` or
+  probes timing out, or new sandboxes `Pending` on `Insufficient cpu` / `Insufficient
+  memory`: the Docker VM is out of room even if `up` did not warn. Give it more. colima
+  applies a new size only on `colima stop` and `colima start`; when it is declared in
+  home-manager (`services.colima.profiles.default`), restate `isService` and `isActive`,
+  because setting the profile replaces the module's default one.
 - **A pod stays `Pending` or `ImagePullBackOff`**: `scooter-local status` shows the
   pods; `scooter-local kubectl describe pod <name>` says why. Memory is the usual
   reason on a small machine.
