@@ -12,7 +12,7 @@ import inspect
 import logging
 import pkgutil
 from types import ModuleType
-from typing import TYPE_CHECKING, Callable, Iterable, Sequence, Union
+from typing import TYPE_CHECKING, Callable, Iterable, Sequence, Union, overload
 
 from .types import Provider
 
@@ -34,10 +34,23 @@ ProviderFactory = Union[
 _REGISTRY: dict[str, ProviderFactory] = {}
 
 
-def register_provider(factory: ProviderFactory) -> ProviderFactory:
-    """Register a provider factory, keyed by its __name__."""
-    _REGISTRY[factory.__name__] = factory
-    return factory
+@overload
+def register_provider(factory: ProviderFactory, *, name: str | None = None) -> ProviderFactory: ...
+@overload
+def register_provider(*, name: str) -> Callable[[ProviderFactory], ProviderFactory]: ...
+def register_provider(
+    factory: ProviderFactory | None = None, *, name: str | None = None
+) -> ProviderFactory | Callable[[ProviderFactory], ProviderFactory]:
+    """Register a provider factory, keyed by `name` or else its __name__."""
+
+    def register(f: ProviderFactory) -> ProviderFactory:
+        # A bare duplicate still replaces (the broker's `echo` and the echo contrib's share a __name__); an explicit one is a mistake.
+        if name is not None and name in _REGISTRY:
+            raise ValueError(f"provider {name!r} is already registered")
+        _REGISTRY[name or f.__name__] = f
+        return f
+
+    return register if factory is None else register(factory)
 
 
 def _import_builtin_providers(packages: Sequence[ModuleType]) -> None:

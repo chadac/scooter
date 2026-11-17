@@ -128,6 +128,34 @@ def test_register_provider_keys_on_the_factory_name():
     assert "my_provider" in registry._REGISTRY
 
 
+def test_register_provider_takes_an_explicit_name_as_a_decorator():
+    @register_provider(name="databricks-prod")
+    def factory() -> Provider:
+        return Provider(name="databricks-prod", transports=[])
+
+    assert registry._REGISTRY["databricks-prod"] is factory
+    assert "factory" not in registry._REGISTRY
+
+
+def test_register_provider_takes_an_explicit_name_in_the_call_form(monkeypatch):
+    # The case a contrib serving one provider per configured workspace hits: one closure, many names.
+    def make(workspace: str):
+        return lambda: Provider(name=f"databricks-{workspace}", transports=[])
+
+    for workspace in ("prod", "dev"):
+        register_provider(make(workspace), name=f"databricks-{workspace}")
+    monkeypatch.setattr(registry, "_load_entrypoint_providers", lambda: None)
+
+    assert {p.name for p in discover_providers()} == {"databricks-prod", "databricks-dev"}
+
+
+def test_a_duplicate_explicit_name_is_rejected():
+    register_provider(lambda: Provider(name="dup", transports=[]), name="dup")
+
+    with pytest.raises(ValueError, match="'dup' is already registered"):
+        register_provider(lambda: Provider(name="dup", transports=[]), name="dup")
+
+
 def test_entry_point_group_is_named_once():
     # contrib/build.nix spells this group out.
     assert ENTRY_POINT_GROUP == "agent_broker.providers"
