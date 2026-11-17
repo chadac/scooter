@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import gzip
 import json
 import ssl
 
@@ -97,7 +98,12 @@ def world(ca, monkeypatch):
         body = await request.aread()
         upstream_seen.append((request, body))
         if request.url.path == "/graphql":
-            return _streamed(200, json_body={"data": {"createPullRequest": {"pullRequest": {"url": "https://github.com/o/r/pull/7", "title": "T"}}}})
+            payload = {"data": {"createPullRequest": {"pullRequest": {"url": "https://github.com/o/r/pull/7", "title": "T"}}}}
+            # Like GHES: compress whenever the request allows it.
+            if "gzip" in request.headers.get("accept-encoding", ""):
+                return _streamed(200, content=gzip.compress(json.dumps(payload).encode()),
+                                 headers={"content-type": "application/json", "content-encoding": "gzip"})
+            return _streamed(200, json_body=payload)
         if request.url.path.endswith("/merge_requests"):
             return _streamed(201, json_body={"web_url": "https://gitlab.com/g/p/-/merge_requests/3", "title": "MR"})
         return _streamed(200, content=b"upstream:" + body, headers={"x-up": "1"})
@@ -259,6 +265,17 @@ async def test_graphql_mutation_is_parsed_and_autolinked(running, ca):
     assert r.json()["data"]["createPullRequest"]["pullRequest"]["url"].endswith("/pull/7")
     assert policy.seen[0].graphql[0].fields == ("createPullRequest",)
     assert links == [Link("github", "pr", "https://github.com/o/r/pull/7", "Add X")]
+
+
+async def test_an_autolinked_call_asks_upstream_for_an_uncompressed_body(running, ca):
+    """httpx would send its default gzip if the header were only dropped; the body is parsed raw."""
+    proxy, seen, links, _, _ = running
+    query = "mutation PullRequestCreate($input: CreatePullRequestInput!) { createPullRequest(input: $input) { pullRequest { url } } }"
+    async with _client(proxy, ca) as c:
+        await c.post("https://api.github.com/graphql", headers={"accept-encoding": "gzip"},
+                     json={"query": query, "variables": {"input": {"title": "Zipped"}}})
+    assert seen[-1][0].headers["accept-encoding"] == "identity"
+    assert links[-1] == Link("github", "pr", "https://github.com/o/r/pull/7", "Zipped")
 
 
 async def test_the_credential_source_sees_the_request(running, ca):

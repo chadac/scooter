@@ -271,8 +271,10 @@ class ForgeProxy:
         drop = tuple(p.lower() for p in forge.drop_header_prefixes)
         out_headers = [(k, v) for k, v in headers if k not in _DROP_REQUEST and not k.startswith(drop)]
         if autolink:
-            # The response is read as JSON, so ask for it uncompressed.
+            # The raw response is parsed as JSON, so ask for it uncompressed: with no
+            # header, httpx sends its own `gzip, deflate` and GHES compresses GraphQL.
             out_headers = [(k, v) for k, v in out_headers if k != "accept-encoding"]
+            out_headers.append(("accept-encoding", "identity"))
 
         async def content() -> AsyncIterator[bytes]:
             for chunk in prefix:
