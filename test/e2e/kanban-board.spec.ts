@@ -839,6 +839,45 @@ fastOnly("the kanban broker routes are stubbed in the browser")("kanban /boards 
     return asked;
   }
 
+  test("the card panel's Session and Approvals tabs show the chat's, and answer an approval there", async ({ chat, page, request, baseURL }) => {
+    const base = baseURL ?? "http://localhost:5173";
+    const kanban = await serveKanban(page, request, base);
+    const board = await kanban.board(`e2e-board-session-${Date.now()}`);
+    await chat.open();
+    await page.locator('[data-testid="new-session"]').click();
+    await chat.send("?pick a color");
+    await expect(page.getByTestId("interrupt-panel")).toBeVisible({ timeout: 90_000 });
+    const id = threadId(page)!;
+    await request.put(`${base}/conversations/${id}/folder`, { data: { folderId: board.stages[0].id } });
+
+    await page.goto(`/boards/${board.folder}`);
+    await page.locator(`[data-testid="kanban-card"][data-conversation-id="${id}"]`).getByRole("button").first().click();
+    const side = page.getByTestId("kanban-chat");
+    await expect(side.getByTestId("kanban-approvals-count")).toHaveText("1", { timeout: 30_000 });
+
+    await side.getByTestId("kanban-tab-session").click();
+    await expect(side.getByTestId("kanban-tab-session")).toHaveAttribute("aria-selected", "true");
+    await expect(side.getByTestId("kanban-session").getByTestId("sandbox-panel")).toBeVisible();
+    if (process.env.KANBAN_SHOTS) await page.screenshot({ path: `${process.env.KANBAN_SHOTS}/session-tab.png` });
+
+    await side.getByTestId("kanban-tab-approvals").click();
+    const approvals = side.getByTestId("kanban-approvals");
+    const green = approvals.getByTestId("interrupt-option").filter({ hasText: /green/i });
+    await expect(green).toBeEnabled({ timeout: 30_000 });
+    if (process.env.KANBAN_SHOTS) await page.screenshot({ path: `${process.env.KANBAN_SHOTS}/approvals-tab.png` });
+    // A click made before the interrupt is wired never reaches the agent, so retry it.
+    await expect(async () => {
+      if (await green.isVisible().catch(() => false)) await green.click({ timeout: 5_000 }).catch(() => {});
+      await expect(approvals.getByTestId("interrupt-panel")).toHaveCount(0, { timeout: 10_000 });
+    }).toPass({ timeout: 90_000 });
+    await expect(approvals.getByTestId("approvals-empty")).toBeVisible();
+    await expect(side.getByTestId("kanban-approvals-count")).toHaveCount(0);
+
+    // The chat behind the tabs is the same run, and carries on.
+    await side.getByTestId("kanban-tab-chat").click();
+    await expect(side.getByText(/you picked: green/i).first()).toBeVisible({ timeout: 30_000 });
+  });
+
   test("moving past a prompt gate offers to ask the agent, which leaves the card until it moves it", async ({ chat, page, request, baseURL }) => {
     const base = baseURL ?? "http://localhost:5173";
     const kanban = await serveKanban(page, request, base);

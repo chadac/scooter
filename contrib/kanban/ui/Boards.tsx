@@ -26,11 +26,13 @@ import {
   X,
 } from "lucide-react";
 import {
+  ApprovalsPanel,
   Button,
   ChatPanel,
   cn,
   contribFetch,
   conversationApi,
+  ConversationRuntime,
   EmptyState,
   ErrorState,
   inputClass,
@@ -39,6 +41,7 @@ import {
   openConversation,
   openInChat,
   send,
+  SessionPanel,
   setThreadInUrl,
   Spinner,
   StatusDot,
@@ -47,11 +50,54 @@ import {
   useConversations,
   useFolders,
   useOpenConversation,
+  usePendingApprovals,
   useViewRoute,
   type ViewConversation,
   type ViewFolder,
 } from "@/src/contrib/sdk";
 import { CardDetails, PriorityMark } from "./Details.js";
+
+type CardTab = "chat" | "details" | "session" | "approvals";
+const CARD_TABS: Array<[CardTab, string]> = [
+  ["chat", "Chat"],
+  ["details", "Details"],
+  ["session", "Session"],
+  ["approvals", "Approvals"],
+];
+
+/** The card panel's tabs: its chat, its card, and the chat page's Session and Approvals. */
+function CardTabs({ shown, open, select }: { shown: CardTab; open: boolean; select: (t: CardTab) => void }) {
+  const pending = usePendingApprovals();
+  return (
+    <div role="tablist" aria-label="Card" className="flex gap-1 self-stretch overflow-x-auto">
+      {CARD_TABS.map(([t, label]) => (
+        <button
+          key={t}
+          type="button"
+          role="tab"
+          data-testid={`kanban-tab-${t}`}
+          aria-selected={shown === t}
+          disabled={t !== "chat" && !open}
+          onClick={() => select(t)}
+          className={cn(
+            "-mb-px flex shrink-0 items-center gap-1 border-b-2 px-2 py-2 disabled:opacity-50",
+            shown === t ? "border-primary font-medium" : "border-transparent text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {label}
+          {t === "approvals" && pending > 0 && (
+            <span
+              data-testid="kanban-approvals-count"
+              className="inline-flex min-w-5 items-center justify-center rounded-full bg-destructive px-1.5 text-xs font-semibold text-white dark:bg-destructive/60"
+            >
+              {pending}
+            </span>
+          )}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 interface Stage {
   id: string;
@@ -691,7 +737,7 @@ function Board({
   const [newTag, setNewTag] = useState("");
   // The card whose tag field is open.
   const [tagging, setTagging] = useState<string | null>(null);
-  const [tab, setTab] = useState<"chat" | "details">("chat");
+  const [tab, setTab] = useState<CardTab>("chat");
   const openId = useOpenConversation();
   const live = useRef(true);
   useEffect(() => {
@@ -1718,26 +1764,9 @@ function Board({
         </div>
         {showing && (
           <aside data-testid="kanban-chat" className="flex w-full shrink-0 flex-col md:w-[min(42rem,50%)] md:border-s">
+            <ConversationRuntime>
             <div className="flex items-center gap-1 border-b px-2 text-sm">
-              <div role="tablist" aria-label="Card" className="flex gap-1 self-stretch">
-                {(["chat", "details"] as const).map((t) => (
-                  <button
-                    key={t}
-                    type="button"
-                    role="tab"
-                    data-testid={`kanban-tab-${t}`}
-                    aria-selected={shownTab === t}
-                    disabled={t === "details" && !openConv}
-                    onClick={() => setTab(t)}
-                    className={cn(
-                      "-mb-px border-b-2 px-2 py-2 disabled:opacity-50",
-                      shownTab === t ? "border-primary font-medium" : "border-transparent text-muted-foreground hover:text-foreground",
-                    )}
-                  >
-                    {t === "chat" ? "Chat" : "Details"}
-                  </button>
-                ))}
-              </div>
+              <CardTabs shown={shownTab} open={!!openConv} select={setTab} />
               <span className="ms-auto" />
               <Button
                 size="icon-sm"
@@ -1818,6 +1847,17 @@ function Board({
                 />
               </div>
             )}
+            {shownTab === "session" && openConv && (
+              <div role="tabpanel" data-testid="kanban-session" className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+                <SessionPanel />
+              </div>
+            )}
+            {shownTab === "approvals" && openConv && (
+              <div role="tabpanel" data-testid="kanban-approvals" className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+                <ApprovalsPanel />
+              </div>
+            )}
+            </ConversationRuntime>
           </aside>
         )}
       </div>
