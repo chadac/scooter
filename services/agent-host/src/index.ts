@@ -24,6 +24,7 @@ import {
   raiseApprovalInterrupt,
   fetchPendingApprovalsByKeys,
   approvalAgentMessage,
+  canApproveFromBroker,
   type ApprovalContrib,
   type ManagementDeps,
 } from "./api/management.js";
@@ -2040,12 +2041,10 @@ export async function main(
             `${auth.url}${prefix}/${encodeURIComponent(requestId)}/can-approve`,
             { method: "POST", headers: { ...auth.headers, ...relay.headers }, body: relay.body },
           );
-          if (!res.ok) return { canApprove: false };
-          const j = (await res.json().catch(() => ({}))) as { can_approve?: boolean; pending?: boolean };
-          // A contrib that omits `pending` is treated as still pending.
-          return { canApprove: j.can_approve === true, pending: j.pending !== false };
+          if (!res.ok) return { canApprove: false, reason: "error" };
+          return canApproveFromBroker(await res.json().catch(() => ({})));
         } catch {
-          return { canApprove: false };
+          return { canApprove: false, reason: "error" };
         }
       },
     }),

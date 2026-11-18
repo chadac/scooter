@@ -10,7 +10,7 @@ import pytest
 
 from scooter_contrib_aws.iam import IamProvisioner
 from scooter_contrib_aws.models import RequestStatus, StsCredentials
-from scooter_contrib_aws.service import NotPending, PermissionService, ServiceConfig, RequestError
+from scooter_contrib_aws.service import ApprovalCheck, NotPending, PermissionService, ServiceConfig, RequestError
 from scooter_contrib_aws.store import PermissionStore
 from scooter_broker_lib.store import StoreConfig
 
@@ -360,6 +360,42 @@ async def test_revoke_tears_down(tmp_path):
     assert creds is None
 
 
+async def test_revoking_a_pending_request_withdraws_its_interrupt(tmp_path):
+    withdrawn: list[str] = []
+
+    async def on_withdraw(req):
+        withdrawn.append(req.request_id)
+
+    svc = await make_service(tmp_path, on_withdraw=on_withdraw)
+    req = await svc.request(conversation_id="c1", target_account="dev", justification="x", policy_document=READ)
+    await svc.revoke(request_id=req.request_id, conversation_id="c1")
+    assert withdrawn == [req.request_id]
+    assert await svc.can_approve(request_id=req.request_id, approver="a") == ApprovalCheck(False, "not_pending", "revoked")
+
+
+async def test_revoking_an_active_request_has_no_interrupt_to_withdraw(tmp_path):
+    withdrawn: list[str] = []
+
+    async def on_withdraw(req):
+        withdrawn.append(req.request_id)
+
+    svc = await make_service(tmp_path, on_withdraw=on_withdraw)
+    req = await svc.request(conversation_id="c1", target_account="dev", justification="x", policy_document=READ)
+    await svc.approve(request_id=req.request_id, approver="a")
+    await svc.revoke(request_id=req.request_id, conversation_id="c1")
+    assert withdrawn == []
+
+
+async def test_a_failing_withdraw_does_not_fail_the_revoke(tmp_path):
+    async def on_withdraw(req):
+        raise RuntimeError("agent-host down")
+
+    svc = await make_service(tmp_path, on_withdraw=on_withdraw)
+    req = await svc.request(conversation_id="c1", target_account="dev", justification="x", policy_document=READ)
+    revoked = await svc.revoke(request_id=req.request_id, conversation_id="c1")
+    assert revoked.status == RequestStatus.REVOKED
+
+
 # --- supersede: one live grant per (conversation, account) ---------------
 # A pending sibling is cancelled at request time; an active sibling keeps working until the new one is approved.
 
@@ -408,8 +444,8 @@ async def test_answering_a_superseded_request_names_its_replacement(tmp_path):
         assert exc.value.superseded_by == r2.request_id
     g1, _ = await svc.status(request_id=r1.request_id, conversation_id="c1")
     assert g1.status == RequestStatus.SUPERSEDED, "a stale deny must not overwrite superseded"
-    assert await svc.can_approve(request_id=r1.request_id, approver="a") is False
-    assert await svc.can_approve(request_id=r2.request_id, approver="a") is True
+    assert await svc.can_approve(request_id=r1.request_id, approver="a") == ApprovalCheck(False, "not_pending", "superseded")
+    assert (await svc.can_approve(request_id=r2.request_id, approver="a")).can_approve is True
 
 
 async def test_deny_refuses_an_active_request(tmp_path):

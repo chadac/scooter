@@ -164,7 +164,7 @@ async def notify_host(req) -> None:
 
 
 async def withdraw_host(req) -> None:
-    """Tell the agent-host to drop a superseded request's approval interrupt.
+    """Tell the agent-host to drop the approval interrupt of a request no longer pending.
 
     One attempt and never raises: a card left behind answers with a harmless 409.
     """

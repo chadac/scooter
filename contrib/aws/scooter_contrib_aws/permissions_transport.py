@@ -198,8 +198,9 @@ class AwsPermissions(Transport):
         @router.post("/aws/{request_id}/can-approve")
         async def can_approve(request_id: str, identity: Identity = Depends(authed), body: dict = Body(default={})):
             approver = _svc().resolve_approver(body.get("approver"), fallback=identity.conversation_id)
-            allowed = await _svc().can_approve(request_id=request_id, approver=approver)
-            return {"can_approve": allowed}
+            check = await _svc().can_approve(request_id=request_id, approver=approver)
+            # `pending: false` makes the agent-host drop the card for everyone.
+            return {"can_approve": check.can_approve, "pending": check.pending, "reason": check.reason}
 
         @router.post("/aws/{request_id}/approve")
         async def approve(request_id: str, identity: Identity = Depends(authed), body: dict = Body(default={})):

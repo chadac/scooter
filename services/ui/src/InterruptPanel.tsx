@@ -22,6 +22,7 @@ import { hasId, type MaybeConversationId } from "./conversation.js";
 import { useConversationInterrupts } from "./RuntimeProvider.js";
 import type { PendingInterrupt } from "./integrityAgent.js";
 import { contribApprovals, contribInterruptRenderers } from "./contribManifest.js";
+import type { ContribApproval } from "./contribTypes.js";
 import { ContribInterruptCard } from "./contribInterrupts.js";
 import { approvalFocus, pruneApprovals, RequestIdContext, useFocusedApproval } from "./approvalFocus.js";
 import type { ApprovalView, BlockedOption, InterruptOption } from "./contrib/sdk.js";
@@ -56,20 +57,44 @@ export function ownerOf(intr: PendingInterrupt): string | undefined {
   return approvalOf(intr)?.contrib ?? requestOf(intr)?.kind.split(".")[0];
 }
 
+/** Why a viewer may not approve, as the host reports it. */
+const REASONS = ["not_pending", "already_approved", "not_eligible", "error"] as const;
+type CanApproveReason = (typeof REASONS)[number];
+
 /** The host's can-approve answer; `pending` is false once the request is gone. */
 interface CanApprove {
   canApprove: boolean;
   pending: boolean;
+  reason?: CanApproveReason;
 }
 
-// Shown in place of the contrib's admin wording when the request no longer exists.
-const STALE_TITLE = "This request is no longer pending.";
-const STALE_HINT = "It expired or was already answered. Dismiss it and ask the agent again if it is still needed.";
+// Shown instead of the contrib's admin wording when that is not why.
+const ALREADY_TITLE = "You already approved this.";
+const ALREADY_HINT = "It is waiting on other approvers.";
+const ERROR_TITLE = "Couldn't check your approval rights.";
+const ERROR_HINT = "Retrying in a few seconds.";
+
+// How soon a can-approve check that errored is asked again.
+const RETRY_MS = 5_000;
+
+/** A request the contrib no longer has; hidden, not greyed. */
+export function isGone(can: CanApprove | undefined): boolean {
+  return !!can && (!can.pending || can.reason === "not_pending");
+}
+
+/** The option to grey and why; only an explicit no blocks. */
+export function blockedFor(gating: ContribApproval | undefined, can: CanApprove | undefined): BlockedOption | undefined {
+  if (!gating || !can || can.canApprove || isGone(can)) return undefined;
+  const block = (title: string, hint: string) => ({ optionId: gating.gatedOption, title, hint });
+  if (can.reason === "already_approved") return block(ALREADY_TITLE, ALREADY_HINT);
+  if (can.reason === "error") return block(ERROR_TITLE, ERROR_HINT);
+  return block(gating.blockedTitle, gating.blockedHint);
+}
 
 /**
  * Whether this viewer may approve an approval interrupt, asked live from the host;
  * undefined while loading or for a non-approval interrupt, which the caller treats
- * as allowed.
+ * as allowed. A check that errored is retried.
  */
 function useCanApprove(
   approval: { contrib: string; requestId: string } | undefined,
@@ -77,27 +102,34 @@ function useCanApprove(
   baseUrl: string,
 ): CanApprove | undefined {
   const [can, setCan] = useState<CanApprove | undefined>(undefined);
+  const [attempt, setAttempt] = useState(0);
   // Depend on the fields, not the object, which `approvalOf` rebuilds every render.
   const contrib = approval?.contrib;
   const requestId = approval?.requestId;
   useEffect(() => {
     if (!contrib || !requestId || !hasId(conversationId)) return;
     let cancelled = false;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const settle = (next: CanApprove) => {
+      if (cancelled) return;
+      setCan(next);
+      if (next.reason === "error") retry = setTimeout(() => setAttempt((n) => n + 1), RETRY_MS);
+    };
     fetch(
       `${baseUrl}/conversations/${encodeURIComponent(conversationId)}/approvals/${encodeURIComponent(contrib)}/${encodeURIComponent(requestId)}/can-approve`,
       { credentials: "include" },
     )
-      .then((r) => (r.ok ? r.json() : { canApprove: false }))
-      .then((j: { canApprove?: boolean; pending?: boolean }) => {
-        if (!cancelled) setCan({ canApprove: j.canApprove !== false, pending: j.pending !== false });
+      .then((r) => (r.ok ? r.json() : { canApprove: false, reason: "error" }))
+      .then((j: { canApprove?: boolean; pending?: boolean; reason?: string }) => {
+        const reason = REASONS.find((r) => r === j.reason);
+        settle({ canApprove: j.canApprove !== false, pending: j.pending !== false, ...(reason ? { reason } : {}) });
       })
-      .catch(() => {
-        if (!cancelled) setCan({ canApprove: false, pending: true }); // fail closed → greyed
-      });
+      .catch(() => settle({ canApprove: false, pending: true, reason: "error" })); // fail closed → greyed
     return () => {
       cancelled = true;
+      clearTimeout(retry);
     };
-  }, [contrib, requestId, conversationId, baseUrl]);
+  }, [contrib, requestId, conversationId, baseUrl, attempt]);
   return can;
 }
 
@@ -254,13 +286,9 @@ function InterruptView({
   // A contrib absent from the manifest has no gating; greying is a courtesy, and the
   // broker remains the enforcement point.
   const gating = approval ? contribApprovals()[approval.contrib] : undefined;
-  // Gate only on an explicit no; loading/unknown leaves it enabled.
-  const blocked: BlockedOption | undefined =
-    !approval || !gating || !canApprove || canApprove.canApprove
-      ? undefined
-      : canApprove.pending
-        ? { optionId: gating.gatedOption, title: gating.blockedTitle, hint: gating.blockedHint }
-        : { optionId: gating.gatedOption, title: STALE_TITLE, hint: STALE_HINT };
+  const blocked = blockedFor(gating, canApprove);
+  // The host withdraws it too and tells the agent.
+  if (isGone(canApprove)) return null;
 
   const choose = (optionId: string, result?: Record<string, unknown>) => {
     if (blocked?.optionId === optionId) return;

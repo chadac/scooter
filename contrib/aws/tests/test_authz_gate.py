@@ -6,7 +6,7 @@ import pytest
 
 from scooter_contrib_aws.iam import IamProvisioner
 from scooter_contrib_aws.models import RequestStatus, StsCredentials, approval_message
-from scooter_contrib_aws.service import PermissionService, ServiceConfig, RequestError
+from scooter_contrib_aws.service import ApprovalCheck, PermissionService, ServiceConfig, RequestError
 from scooter_contrib_aws.store import PermissionStore
 from scooter_broker_lib.store import StoreConfig
 from scooter_broker_lib.authz import NoopAuthorizer
@@ -116,7 +116,7 @@ async def test_can_approve_true_for_account_approver(tmp_path):
     authz = FakeAuthorizer({("user:alice", "approver", "aws_account:dev")})
     svc = await _service(tmp_path, authz)
     req = await _pending(svc)
-    assert await svc.can_approve(request_id=req.request_id, approver="alice") is True
+    assert await svc.can_approve(request_id=req.request_id, approver="alice") == ApprovalCheck(True, None, "pending")
     assert (await svc._store.get(req.request_id)).status == RequestStatus.PENDING
 
 
@@ -124,12 +124,12 @@ async def test_can_approve_false_when_not_approver_for_account(tmp_path):
     authz = FakeAuthorizer({("user:alice", "approver", "aws_account:prod")})
     svc = await _service(tmp_path, authz)
     req = await _pending(svc)
-    assert await svc.can_approve(request_id=req.request_id, approver="alice") is False
+    assert await svc.can_approve(request_id=req.request_id, approver="alice") == ApprovalCheck(False, "not_eligible", "pending")
 
 
 async def test_can_approve_false_for_unknown_request(tmp_path):
     svc = await _service(tmp_path, FakeAuthorizer(set()))
-    assert await svc.can_approve(request_id="nope", approver="alice") is False
+    assert await svc.can_approve(request_id="nope", approver="alice") == ApprovalCheck(False, "not_pending")
 
 
 async def test_can_approve_false_when_authz_unreachable(tmp_path):
@@ -139,13 +139,13 @@ async def test_can_approve_false_when_authz_unreachable(tmp_path):
 
     svc = await _service(tmp_path, BoomAuthorizer(set()))
     req = await _pending(svc)
-    assert await svc.can_approve(request_id=req.request_id, approver="alice") is False
+    assert await svc.can_approve(request_id=req.request_id, approver="alice") == ApprovalCheck(False, "error", "pending")
 
 
 async def test_can_approve_true_with_noop_authorizer(tmp_path):
     svc = await _service(tmp_path, NoopAuthorizer())
     req = await _pending(svc)
-    assert await svc.can_approve(request_id=req.request_id, approver="anyone") is True
+    assert (await svc.can_approve(request_id=req.request_id, approver="anyone")).can_approve is True
 
 
 # --- check-time / seed-time prefix alignment -----------
@@ -221,8 +221,8 @@ async def test_a_request_needing_two_groups_stays_pending_after_one(tmp_path):
     assert out.status == RequestStatus.PENDING
     assert len(notified) == 2, "the interrupt is raised again for the remaining approver"
     assert "Still needs approval for: account/secrets" in approval_message(out)
-    assert await svc.can_approve(request_id=req.request_id, approver="ops") is False
-    assert await svc.can_approve(request_id=req.request_id, approver="sec") is True
+    assert await svc.can_approve(request_id=req.request_id, approver="ops") == ApprovalCheck(False, "already_approved", "pending")
+    assert (await svc.can_approve(request_id=req.request_id, approver="sec")).can_approve is True
 
     out = await svc.approve(request_id=req.request_id, approver="sec")
     assert out.status == RequestStatus.ACTIVE
@@ -241,7 +241,7 @@ async def test_an_ineligible_approver_is_refused(tmp_path):
     svc, req, _ = await _multi(tmp_path, {SEC, OPS})
     with pytest.raises(RequestError):
         await svc.approve(request_id=req.request_id, approver="mallory")
-    assert await svc.can_approve(request_id=req.request_id, approver="mallory") is False
+    assert await svc.can_approve(request_id=req.request_id, approver="mallory") == ApprovalCheck(False, "not_eligible", "pending")
 
 
 async def test_anyone_eligible_for_any_obligation_can_deny(tmp_path):

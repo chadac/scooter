@@ -228,12 +228,19 @@ def test_can_approve_route_reflects_the_openfga_check(tmp_path):
         ).json()["request_id"]
 
         r = client.post(f"/aws/aws/{rid}/can-approve", json={"approver": {"id": "alice@x", "email": "alice@x"}})
-        assert r.status_code == 200 and r.json()["can_approve"] is True
+        assert r.status_code == 200
+        assert r.json() == {"can_approve": True, "pending": True, "reason": None}
 
         r = client.post(f"/aws/aws/{rid}/can-approve", json={"approver": {"id": "bob@x", "email": "bob@x"}})
-        assert r.status_code == 200 and r.json()["can_approve"] is False
+        assert r.status_code == 200
+        assert r.json() == {"can_approve": False, "pending": True, "reason": "not_eligible"}
 
         assert client.get(f"/aws/aws/{rid}").json()["status"] == "pending"
+
+        # Revoked means gone, not that alice lacks the rights.
+        assert client.delete(f"/aws/aws/{rid}").status_code == 200
+        r = client.post(f"/aws/aws/{rid}/can-approve", json={"approver": {"id": "alice@x", "email": "alice@x"}})
+        assert r.json() == {"can_approve": False, "pending": False, "reason": "not_pending"}
 
 
 def test_approve_requires_approver_identity(tmp_path):

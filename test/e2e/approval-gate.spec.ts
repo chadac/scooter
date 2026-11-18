@@ -37,14 +37,14 @@ async function serveManifest(page: import("@playwright/test").Page, approvals: u
 }
 
 /** Answer the panel's per-viewer can-approve check and record the URLs it asked for. */
-function interceptCanApprove(page: import("@playwright/test").Page, canApprove: boolean, pending = true) {
+function interceptCanApprove(page: import("@playwright/test").Page, canApprove: boolean, pending = true, reason?: string) {
   const asked: string[] = [];
   void page.route("**/can-approve", (route) => {
     asked.push(route.request().url());
     return route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ canApprove, pending }),
+      body: JSON.stringify({ canApprove, pending, reason }),
     });
   });
   return asked;
@@ -135,10 +135,10 @@ fastOnly("needs a controlled can-approve answer (no real authorizer to seed)")(
       expect(asked.some((u) => u.includes("/approvals/echo/"))).toBe(true);
     });
 
-    test("says a request that is gone is no longer pending, not that an admin must approve", async ({ chat, page, baseURL, request }) => {
+    test("hides a request that is gone instead of greying it", async ({ chat, page, baseURL, request }) => {
       const base = (baseURL ?? "").replace(/\/$/, "");
       await serveManifest(page, { echo: ECHO_GATING });
-      interceptCanApprove(page, false, false);
+      const asked = interceptCanApprove(page, false, false, "not_pending");
 
       const before = await conversationIds(request, base);
       await chat.open();
@@ -147,12 +147,37 @@ fastOnly("needs a controlled can-approve answer (no real authorizer to seed)")(
       const id = await newConversationId(page, request, base, before);
       await raiseApproval(request, base, id, "echo", `echo-${Date.now()}`, "Echo would like permission.");
 
-      await expect(page.locator(panel.root)).toBeVisible({ timeout: 30_000 });
-      const approve = page.locator(panel.option).filter({ hasText: /approve/i });
-      await expect(approve).toBeDisabled();
-      await expect(page.locator(panel.hint)).toContainText("expired or was already answered");
-      await expect(approve).toHaveAttribute("title", "This request is no longer pending.");
+      // Wait for the check, so hidden means hidden.
+      await expect.poll(() => asked.length, { timeout: 30_000 }).toBeGreaterThan(0);
+      await expect(page.locator(panel.message)).toHaveCount(0);
+      await expect(page.locator(panel.option)).toHaveCount(0);
+      await expect(page.locator(panel.hint)).toHaveCount(0);
     });
+
+    for (const [reason, title, hint] of [
+      ["already_approved", "You already approved this.", "It is waiting on other approvers."],
+      ["error", "Couldn't check your approval rights.", "Retrying in a few seconds."],
+    ] as const) {
+      test(`says why when the reason is ${reason}, not that an admin must approve`, async ({ chat, page, baseURL, request }) => {
+        const base = (baseURL ?? "").replace(/\/$/, "");
+        await serveManifest(page, { echo: ECHO_GATING });
+        interceptCanApprove(page, false, true, reason);
+
+        const before = await conversationIds(request, base);
+        await chat.open();
+        await chat.send("do something that needs approval");
+        await chat.waitForReply(/dummy agent/i);
+        const id = await newConversationId(page, request, base, before);
+        await raiseApproval(request, base, id, "echo", `echo-${Date.now()}`, "Echo would like permission.");
+
+        await expect(page.locator(panel.root)).toBeVisible({ timeout: 30_000 });
+        const approve = page.locator(panel.option).filter({ hasText: /approve/i });
+        await expect(approve).toBeDisabled();
+        await expect(page.locator(panel.hint)).toHaveText(hint);
+        await expect(approve).toHaveAttribute("title", title);
+      });
+    }
+
     test("leaves the option live when the viewer MAY approve", async ({ chat, page, baseURL, request }) => {
       const base = (baseURL ?? "").replace(/\/$/, "");
       await serveManifest(page, { echo: ECHO_GATING });

@@ -92,6 +92,19 @@ class RequestError(Exception):
         self.reasons = reasons
 
 
+@dataclass(frozen=True)
+class ApprovalCheck:
+    """can_approve's answer: whether, and if not why, with the request's status."""
+
+    can_approve: bool
+    reason: str | None = None  # not_pending | already_approved | not_eligible | error
+    status: str | None = None  # None for an unknown request
+
+    @property
+    def pending(self) -> bool:
+        return self.status == RequestStatus.PENDING.value
+
+
 class NotPending(RequestError):
     """An approve/deny for a request that no longer awaits an answer."""
 
@@ -113,7 +126,7 @@ class PermissionService:
         account_registry: dict[str, dict],
         config: ServiceConfig,
         on_request=None,  # async (PermissionRequest) -> None that asks the host to raise the approval interrupt
-        on_withdraw=None,  # async (PermissionRequest) -> None that asks the host to drop a superseded interrupt
+        on_withdraw=None,  # async (PermissionRequest) -> None that asks the host to drop a superseded or revoked interrupt
         authorizer: Authorizer | None = None,  # per-account approve/deny gate; None means NoopAuthorizer
     ) -> None:
         self._store = store
@@ -476,17 +489,24 @@ class PermissionService:
         )
         return await self._store.get(request_id)  # type: ignore[return-value]
 
-    async def can_approve(self, *, request_id: str, approver: str) -> bool:
-        """Would approve() accept `approver` now? Fails closed."""
+    async def can_approve(self, *, request_id: str, approver: str) -> ApprovalCheck:
+        """Would approve() accept `approver` now, and if not, why? Fails closed."""
         req = await self._store.get(request_id)
-        if req is None or req.status != RequestStatus.PENDING:
-            return False
+        if req is None:
+            return ApprovalCheck(False, "not_pending")
+        status = req.status.value
+        if req.status != RequestStatus.PENDING:
+            return ApprovalCheck(False, "not_pending", status)
         if any(a["approver"] == approver for a in req.approvals):
-            return False
+            return ApprovalCheck(False, "already_approved", status)
         try:
-            return bool(await self._eligible(approver, self._unmet(req, self._obligations(req))))
+            eligible = await self._eligible(approver, self._unmet(req, self._obligations(req)))
         except Exception:
-            return False
+            logger.exception("can_approve check failed", extra={"request_id": request_id})
+            return ApprovalCheck(False, "error", status)
+        if not eligible:
+            return ApprovalCheck(False, "not_eligible", status)
+        return ApprovalCheck(True, None, status)
 
     # --- standing grants (approver, from the Approvals tab) ----------------
     @property
@@ -625,6 +645,9 @@ class PermissionService:
             )
         self._creds.pop(request_id, None)
         await self._store.update(request_id, status=RequestStatus.REVOKED, revoked_at=_now())
+        if req.status == RequestStatus.PENDING:
+            # Nothing is left to approve, so its card goes too.
+            await self._withdraw(req)
         return await self._store.get(request_id)  # type: ignore[return-value]
 
     # --- lifecycle sweep (background) -------------------------------------

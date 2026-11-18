@@ -350,7 +350,9 @@ class Approvals(Transport, Generic[P]):
             req = await self.get(request_id)
             ok = req is not None and req.status == PENDING and not req.expired()
             # `pending: false` lets the UI say the request is gone, not that an admin must approve.
-            return {"can_approve": ok and self.may_approve(req, _approver(body)), "pending": ok}
+            allowed = ok and self.may_approve(req, _approver(body))
+            reason = None if allowed else "not_eligible" if ok else "not_pending"
+            return {"can_approve": allowed, "pending": ok, "reason": reason}
 
         @router.post("/{request_id}/{verb}")
         async def verb(request_id: str, verb: str, body: dict = Body(default={})) -> dict:
