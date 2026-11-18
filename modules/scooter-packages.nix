@@ -138,7 +138,7 @@ in
         nixStubs = mkOption {
           type = types.raw;
           internal = true;
-          description = "The nix-stubs source, binary and extra arguments the in-pod re-converge vendors.";
+          description = "The nix-stubs source and extra arguments the in-pod re-converge vendors.";
         };
       };
     };

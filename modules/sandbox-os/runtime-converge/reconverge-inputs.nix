@@ -1,12 +1,12 @@
 # The inputs the in-pod re-converge feeds base-config.nix, shared by the runtime
 # (runtime-converge.nix) and the nixosTest so both build the same derivations.
 # `baseConfig` is the entrypoint the in-pod `nix build` imports, `modulesTree` is
-# the repo vendored at its own layout plus the nix-stubs overlay source and binary
+# the repo vendored at its own layout plus the nix-stubs source
 # needed to rebuild the stub overlay in-pod, and `modulesSrc` is the modulesPath
 # passed to base-config.nix.
 
 { pkgs, lib
-  # `{ src; package; }` of the nix-stubs flake input; null when there is no stub overlay to reconstruct.
+  # `{ src; stubArgs; }` of the nix-stubs flake input; null when there is no stub overlay to reconstruct.
 , nixStubs ? null
   # name -> store path of each skill directory (scooter.skillDirs), copied into the
   # tree with a module that re-declares them, so the in-pod eval never fetches.
@@ -39,10 +39,8 @@ let
     cp -r ${repoSrc} $out
     chmod -R u+w $out
   '' + lib.optionalString (nixStubs != null) ''
-    # nix-stubs' Nix side is pure, so it vendors as plain files.
-    cp -r ${nixStubs.src}/nix $out/nix-stubs
-    # The binary as a bare store path, already in the image closure so the in-pod eval resolves it offline.
-    printf '%s' ${lib.escapeShellArg "${nixStubs.package}"} > $out/nix-stubs-bin
+    # Whole source, so the pod re-derives the image's binary.
+    cp -r ${nixStubs.src} $out/nix-stubs
     # stubs.nix's extra arguments (uv-nix's source), one directory each, read back by base-config.nix.
     mkdir -p $out/stub-args
     ${lib.concatStrings (lib.mapAttrsToList (name: src: ''

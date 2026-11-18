@@ -15,7 +15,7 @@
   # into the booted system and baked into the re-converge list so they survive a
   # self-modify.
 , extraModuleFiles ? [ ]
-  # { src; package; stubArgs; } of nix-stubs, vendored with stubs.nix's extra arguments
+  # { src; stubArgs; } of nix-stubs, vendored with stubs.nix's extra arguments
   # (stubArgs) so a self-modify can rebuild the stub overlay in-pod (null in nixosTests).
 , nixStubs ? null
 }:
@@ -52,7 +52,7 @@ let
     scooter.skillDirs = contribSandbox.skillDirs;
     programs.scooterModule.contribSrcs = contribSandbox.outOfTreeSrcs;
 
-    # The nix-stubs source and binary for runtime-converge.nix to vendor.
+    # The nix-stubs source for runtime-converge.nix to vendor.
     _module.args.nixStubs = nixStubs;
 
     # The pinned nixpkgs the dev-env registry resolves against, the `path:` ref of the

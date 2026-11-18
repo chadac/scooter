@@ -4,7 +4,11 @@ let
   cfg = config.scooter.config;
   inherit (cfg) inputs;
   system = cfg.buildSystem;
-  nix-stubs = inputs.nix-stubs.packages.${system}.nix-stubs;
+  nix-stubs = import ../../modules/sandbox-os/nix-stubs-package.nix {
+    inherit system;
+    nixpkgs = cfg.buildPkgs.path;
+    src = inputs.nix-stubs.outPath;
+  };
   # stubs.nix's arguments beyond `pkgs`, also vendored for the in-pod re-converge.
   stubArgs = { uvNixSrc = inputs.uv-nix.outPath; };
 in
@@ -18,7 +22,6 @@ in
     sandboxPkgs = lib.mkDefault (import cfg.buildPkgs.path { inherit system; overlays = [ cfg.stubOverlay ]; });
     nixStubs = {
       src = inputs.nix-stubs;
-      package = nix-stubs;
       inherit stubArgs;
     };
   };

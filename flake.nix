@@ -247,6 +247,9 @@
               reconvergedShipped = reconvergeImage shipped;
               unitNames = cfg: builtins.attrNames cfg.systemd.units;
               droppedUnits = lib.subtractLists (unitNames reconvergedShipped) (unitNames shipped.nixos.config);
+              # Every shim's store path; a rebuild must reuse the image's.
+              stubPaths = cfg: map (p: p.outPath)
+                (lib.filter (p: p ? real) cfg.environment.systemPackages);
 
               # echo enabled as a contrib (not just its module file), so its skill
               # DIRECTORY goes through modules/skills like a shipped one would.
@@ -317,6 +320,12 @@
               # In the script, not an assert: it reads the built tree.
               dropped=${lib.escapeShellArg (toString droppedUnits)}
               if [ -n "$dropped" ]; then echo "FAIL: a rebuild drops $dropped" >&2; exit 1; fi
+              ${lib.optionalString (stubPaths shipped.nixos.config == [ ]) ''
+                echo "FAIL: the image ships no stubs to compare" >&2; exit 1
+              ''}
+              ${lib.optionalString (stubPaths shipped.nixos.config != stubPaths reconvergedShipped) ''
+                echo "FAIL: a rebuild changes a stub's store path" >&2; exit 1
+              ''}
               ${lib.optionalString (extHalf extCfg != extHalf reconvergedExt) ''
                 echo "FAIL: a rebuild changes the out-of-tree contrib's package or file" >&2; exit 1
               ''}

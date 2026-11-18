@@ -46,9 +46,9 @@ let
     if builtins.hasContext modulesPathArg then builtins.substring 0 rootLen modulesPathArg
     else modulesTreeRoot;
   stubBits =
-    if !builtins.pathExists (stubBitsRoot + "/nix-stubs/lock.nix") then null
+    if !builtins.pathExists (stubBitsRoot + "/nix-stubs/nix/lock.nix") then null
     else {
-      lockLib = import (stubBitsRoot + "/nix-stubs/lock.nix") {
+      lockLib = import (stubBitsRoot + "/nix-stubs/nix/lock.nix") {
         lib = import (nixpkgsPath + "/lib");
       };
       flakeLock = stubBitsRoot + "/flake.lock";
@@ -58,12 +58,12 @@ let
         if builtins.pathExists dir
         then builtins.mapAttrs (name: _: dir + "/${name}") (builtins.readDir dir)
         else { };
-      # The baked binary, referenced via storePath in impure eval and appendContext
-      # in pure eval.
-      nix-stubs =
-        let p = builtins.readFile (stubBitsRoot + "/nix-stubs-bin"); in
-        if builtins ? currentSystem then builtins.storePath p
-        else builtins.appendContext p { ${p} = { path = true; }; };
+      # The image's derivation, so shims keep their store paths.
+      nix-stubs = import (stubBitsRoot + "/modules/sandbox-os/nix-stubs-package.nix") {
+        inherit system;
+        nixpkgs = nixpkgsPath;
+        src = stubBitsRoot + "/nix-stubs";
+      };
     };
 
   evaled = import (nixpkgsPath + "/nixos/lib/eval-config.nix") {
