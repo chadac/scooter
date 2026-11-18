@@ -656,10 +656,11 @@ in
             activation, anything NixOS offers. `null` means this contrib adds nothing
             to the sandbox.
 
-            Must live inside the repo: the in-pod re-converge rebuilds the system from
-            a vendored copy of it, so a module reached from outside would be in the
-            image and missing from a `scooter-rebuild switch`. Anything the module
-            refers to relatively (`../../pkgs/…`) resolves the same on both sides.
+            Must sit directly in `src`. The in-pod re-converge rebuilds the system
+            from a vendored copy of the repo, so the module and everything it refers
+            to must be in that copy, or a `scooter-rebuild switch` would drop them. A
+            contrib in this repo may refer to the rest of it (`../../pkgs/…`); one
+            declared outside it has only its `src`, vendored to `contrib-ext/<name>/`.
           '';
         };
       };

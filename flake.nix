@@ -229,20 +229,22 @@
               # The baked re-converge list, as the image renders it
               listFile = sandboxWithEcho.nixos.config.environment.etc."scooter/reconverge-modules.json".source;
               shippedListFile = shipped.nixos.config.environment.etc."scooter/reconverge-modules.json".source;
-              shippedTree = lib.head (lib.filter
-                (d: lib.hasSuffix "-sandbox-os-src" (toString d))
-                shipped.nixos.config.system.extraDependencies);
-              # The shipped image re-converged with no local modules, as scooter-rebuild does.
-              reconvergedShipped =
-                let layers = map (f: "${shippedTree}/${f}")
-                  shipped.nixos.config.programs.scooterModule.extraReconvergeModuleFiles;
-                in (import "${shippedTree}/modules/sandbox-os/runtime-converge/base-config.nix" {
+              # An image re-converged as scooter-rebuild does.
+              reconvergeImage = img:
+                let
+                  tree = lib.head (lib.filter
+                    (d: lib.hasSuffix "-sandbox-os-src" (toString d))
+                    img.nixos.config.system.extraDependencies);
+                  layers = map (f: "${tree}/${f}")
+                    img.nixos.config.programs.scooterModule.extraReconvergeModuleFiles;
+                in (import "${tree}/modules/sandbox-os/runtime-converge/base-config.nix" {
                   nixpkgs = builtins.path { path = build.config.sandboxPkgs.path; name = "source"; };
-                  modulesPath = "${shippedTree}/modules/sandbox-os";
+                  modulesPath = "${tree}/modules/sandbox-os";
                   inherit system;
                   extraModules = layers
                     ++ [{ programs.scooterModule.extraReconvergeModules = layers; }];
                 }).config;
+              reconvergedShipped = reconvergeImage shipped;
               unitNames = cfg: builtins.attrNames cfg.systemd.units;
               droppedUnits = lib.subtractLists (unitNames reconvergedShipped) (unitNames shipped.nixos.config);
 
@@ -258,7 +260,24 @@
                 skillCfg.system.extraDependencies);
               notebookCfg = shipped.nixos.config.webServices.notebook;
               marimoStart = notebookCfg.command;
+
+              # An image with an out-of-tree contrib, and its re-converge.
+              withExt = mkSandboxOs {
+                deploymentModules = build.config.deploymentModules
+                  ++ [ ./nixos-tests/fixtures/contrib-ext/contrib.nix ];
+              };
+              extCfg = withExt.nixos.config;
+              reconvergedExt = reconvergeImage withExt;
+              # The contrib's outputs as store paths, compared across both.
+              extHalf = cfg: {
+                pkg = (lib.findFirst (p: (p.name or "") == "contrib-ext-demo")
+                  (throw "contrib-ext-demo is not in environment.systemPackages")
+                  cfg.environment.systemPackages).outPath;
+                etc = "${cfg.environment.etc."scooter/contrib-ext-demo".source}";
+              };
             in
+            assert builtins.elem "contrib-ext/ext-demo/sandbox.nix"
+              extCfg.programs.scooterModule.extraReconvergeModuleFiles;
             assert sandboxWithEcho.nixos.config.environment.etc ? "scooter/contrib-echo";
             assert echoOnly == [ "contrib/echo/sandbox.nix" ];
             assert shipped.nixos.config.programs.scooterModule.extraReconvergeModuleFiles
@@ -298,6 +317,9 @@
               # In the script, not an assert: it reads the built tree.
               dropped=${lib.escapeShellArg (toString droppedUnits)}
               if [ -n "$dropped" ]; then echo "FAIL: a rebuild drops $dropped" >&2; exit 1; fi
+              ${lib.optionalString (extHalf extCfg != extHalf reconvergedExt) ''
+                echo "FAIL: a rebuild changes the out-of-tree contrib's package or file" >&2; exit 1
+              ''}
 
               echo "baked re-converge list:"
               ${pkgs.jq}/bin/jq -r '.[]' ${listFile}

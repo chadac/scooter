@@ -11,6 +11,8 @@
   # name -> store path of each skill directory (scooter.skillDirs), copied into the
   # tree with a module that re-declares them, so the in-pod eval never fetches.
 , skillDirs ? { }
+  # name -> out-of-tree contrib src, copied to contrib-ext/<name>.
+, contribSrcs ? { }
 }:
 
 let
@@ -53,6 +55,11 @@ let
     '') skillDirs)}
     chmod -R u+w $out/skill-dirs
     cp ${skillModule} $out/skill-dirs/module.nix
+  '' + lib.optionalString (contribSrcs != { }) ''
+    mkdir -p $out/contrib-ext
+    ${lib.concatStrings (lib.mapAttrsToList (name: src: ''
+      cp -r ${src} $out/contrib-ext/${name}
+    '') contribSrcs)}
   '');
 
   # Same content and same name as at image build, so the store paths match and a

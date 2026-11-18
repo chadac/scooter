@@ -1,8 +1,8 @@
 # The enabled contribs' sandbox modules, evaluated once at image build and baked
 # into the re-converge's module list so a self-modify replays the same modules
 # by path. `modules` holds the real paths for the booted system's `imports`;
-# `treeRelative` holds the same files relative to the repo root, resolved
-# against the vendored tree (reconverge-inputs.nix) in the pod. `extraModules`
+# `treeRelative` holds the same files relative to the vendored tree
+# (reconverge-inputs.nix) the pod resolves them against. `extraModules`
 # lets a test enable a contrib the repo ships disabled.
 { lib, extraModules ? [ ] }:
 
@@ -17,6 +17,9 @@ let
   enabled = lib.filterAttrs
     (_: c: c.enable && c.sandbox.module != null)
     eval.config.contribs;
+
+  # In-tree contribs are already in the vendored tree.
+  inTree = c: toString c.src == toString (./.. + "/contrib/${baseNameOf c.src}");
 in
 {
   modules = lib.mapAttrsToList (_: c: c.sandbox.module) enabled;
@@ -24,15 +27,22 @@ in
   # Skill directories (modules/skills), the enabled contribs' included: name -> store path.
   skillDirs = eval.config.resolvedSkillDirs;
 
-  # Built from base names rather than `toString`, which would drag the whole repo into the image closure, and checked against this tree so a path that resolves nowhere throws at image build.
+  # Vendored to contrib-ext/<name> by reconverge-inputs.nix.
+  outOfTreeSrcs = lib.mapAttrs (_: c: c.src) (lib.filterAttrs (_: c: !inTree c) enabled);
+
+  # Base names, not `toString`, keep the repo out of closures.
   treeRelative = lib.mapAttrsToList
     (name: c:
-      let rel = "contrib/${baseNameOf c.src}/${baseNameOf c.sandbox.module}"; in
-      if (./.. + "/${rel}") == c.sandbox.module then rel
-      else throw ("contrib ${name}: its sandbox module must be the sandbox.nix in "
-        + "its own directory. ${rel} is where the re-converge would look in the "
-        + "vendored tree, and that is not the file this contrib declared — the "
-        + "booted image and every self-modify after it would import different "
-        + "modules."))
+      let
+        file = baseNameOf c.sandbox.module;
+        rel = if inTree c then "contrib/${baseNameOf c.src}/${file}" else "contrib-ext/${name}/${file}";
+        # Where the module must be for `rel` to match.
+        expected = if inTree c then toString (./.. + "/${rel}") else "${toString c.src}/${file}";
+      in
+      if toString c.sandbox.module == expected then rel
+      else throw ("contrib ${name}: its sandbox module must sit directly in its "
+        + "`src` (${toString c.src}), and is ${toString c.sandbox.module}. The "
+        + "re-converge imports ${rel} from the vendored tree, so the booted image "
+        + "and every self-modify after it would import different modules."))
     enabled;
 }

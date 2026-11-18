@@ -50,6 +50,7 @@ let
       ++ lib.optional (contribSandbox.skillDirs != { }) "skill-dirs/module.nix";
 
     scooter.skillDirs = contribSandbox.skillDirs;
+    programs.scooterModule.contribSrcs = contribSandbox.outOfTreeSrcs;
 
     # The nix-stubs source and binary for runtime-converge.nix to vendor.
     _module.args.nixStubs = nixStubs;

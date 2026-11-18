@@ -19,7 +19,11 @@ pkgs.testers.runNixOSTest {
   name = "dev-env-scooter-module";
 
   nodes.machine = { config, pkgs, lib, ... }: {
-    imports = [ sandboxModule ];
+    imports = [ sandboxModule ] ++ reconverge.contribSandbox.modules;
+
+    # The out-of-tree contrib wired as pkgs/sandbox-os wires one.
+    programs.scooterModule.contribSrcs = reconverge.contribSandbox.outOfTreeSrcs;
+    programs.scooterModule.extraReconvergeModuleFiles = reconverge.contribSandbox.treeRelative;
 
     programs.scooterModule.enable = true;
     # Point the in-pod build at the test's own nixpkgs source.
@@ -51,6 +55,12 @@ pkgs.testers.runNixOSTest {
     machine.fail("command -v scooter-demo")
     machine.fail("systemctl cat scooter-demo-service.service")
 
+    # The out-of-tree contrib is in the booted system.
+    def assert_contrib_ext():
+        assert "contrib-ext-demo ran" in machine.succeed("contrib-ext-demo")
+        assert "Hello from outside the tree." in machine.succeed("cat /etc/scooter/contrib-ext-demo")
+    assert_contrib_ext()
+
     pid1_before = machine.succeed("stat -c %Y /proc/1").strip()
 
     # Apply the mounted .scooter/module.nix via switch-to-configuration.
@@ -61,6 +71,11 @@ pkgs.testers.runNixOSTest {
     assert "Hello, world!" in out, f"injected tool did not run: {out!r}"
     # The injected systemd service is active.
     machine.wait_for_unit("scooter-demo-service.service")
+
+    # The contrib survives, and the pod built the predicted toplevel.
+    assert_contrib_ext()
+    current = machine.succeed("readlink -f /run/current-system").strip()
+    assert current == "${reconverged}", f"the pod built {current}, not the pre-built ${reconverged}"
 
     # The sandbox's own rebuild tools must survive the switch.
     machine.succeed("command -v scooter-rebuild")

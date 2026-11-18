@@ -8,10 +8,21 @@
 let
   scooterFixture = ./fixtures/scooter;
 
+  # An out-of-tree contrib, composed as pkgs/sandbox-os does.
+  contribSandbox = import ../contrib/sandbox-modules.nix {
+    inherit lib;
+    extraModules = [ ./fixtures/contrib-ext/contrib.nix ];
+  };
+
   # The exact inputs the in-pod build feeds base-config.nix, from the helper runtime-converge.nix uses.
-  reconvergeInputs = import ../modules/sandbox-os/runtime-converge/reconverge-inputs.nix { inherit pkgs lib; };
+  reconvergeInputs = import ../modules/sandbox-os/runtime-converge/reconverge-inputs.nix {
+    inherit pkgs lib;
+    contribSrcs = contribSandbox.outOfTreeSrcs;
+  };
 in
 rec {
+  inherit contribSandbox;
+
   # The nixpkgs source the in-pod build imports, copied into the store as a realised derivation output the VM definitely has.
   nixpkgsSrc = pkgs.runCommand "nixpkgs-src" { } ''
     cp -r ${pkgs.path} $out
@@ -31,17 +42,21 @@ rec {
     ''}"
   ];
 
+  # Layers as the pod renders them: VM modules, then contrib.
+  layers = vmModules
+    ++ map (f: "${reconvergeInputs.modulesTree}/${f}") contribSandbox.treeRelative;
+
   # The carry list as the pod embeds it, with the string context discarded so reconverge-modules.json and the toplevel hash identically.
-  carry = map (m: builtins.unsafeDiscardStringContext "${m}") vmModules;
+  carry = map (m: builtins.unsafeDiscardStringContext "${m}") layers;
 
   # Mirrors what scooter-apply-module builds exactly, passing `nixpkgs` and `modulesPath` with their store context so pure eval can import them.
   toplevel = (import reconvergeInputs.baseConfig {
     nixpkgs = toString nixpkgsSrc;
     modulesPath = reconvergeInputs.modulesSrc;
     system = pkgs.system;
-    # The same order the in-pod build uses: the layered VM modules, the carry module scooter-apply-module emits, then the mounted module last.
+    # The same order the in-pod build uses: the layers, the carry module scooter-apply-module emits, then the mounted module last.
     extraModules =
-      vmModules
+      layers
       ++ [{ programs.scooterModule.extraReconvergeModules = carry; }]
       ++ [ "${scooterFixture}/module.nix" ];
   }).toplevel;

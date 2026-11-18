@@ -16,6 +16,7 @@ let
     inherit pkgs lib nixStubs;
     # Only read at image build: in the pod the baked tree is used (effTree below).
     skillDirs = config.scooter.skillDirs;
+    inherit (cfg) contribSrcs;
   })
     baseConfig modulesTree modulesSrc;
 
@@ -421,6 +422,14 @@ in
       type = lib.types.nullOr lib.types.str;
       default = null;
       description = "Store path of the baked sandbox-os source tree; null = re-derive it (image build).";
+    };
+
+    contribSrcs = lib.mkOption {
+      # Image build only; the pod uses the baked tree.
+      type = lib.types.attrsOf lib.types.path;
+      default = { };
+      internal = true;
+      description = "Out-of-tree contribs' source directories, vendored into the baked tree at contrib-ext/<name>.";
     };
   };
 

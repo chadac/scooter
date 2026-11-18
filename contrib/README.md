@@ -159,8 +159,8 @@ same files repo-relative. The second list is baked into the sandbox as the
 re-converge's module list (`programs.scooterModule.extraReconvergeModuleFiles`),
 so a self-modify replays those files from the *vendored copy of the repo* instead
 of re-evaluating the registry in a pod that has neither a flake nor a network.
-That is why the module must live in the repo, and why anything it refers to
-relatively (`../../pkgs/…`) resolves identically on both sides. Why: #717.
+That is why the module must live in the vendored tree, and why anything it refers
+to relatively (`../../pkgs/…`) resolves identically on both sides. Why: #717.
 
 That eval gets **`lib` and nothing else** — free now that the schema itself is
 lib-only (#711). A sandbox half is still built in the pod on every self-modify,
@@ -171,6 +171,39 @@ See `contrib/aws/sandbox.nix` for the shipped one and `contrib/echo/sandbox.nix`
 for the fixture (echo is `enable = false`, so it covers the disabled-contrib path
 an enabled contrib cannot), and the `dev-env-contrib-sandbox` check for what is
 asserted.
+
+#### A sandbox half outside this repo
+
+A deployment can declare a contrib of its own, from its own flake, through
+`deploymentModules`, and give it a sandbox half like any other:
+
+```nix
+# my-deployment/contribs/acme/contrib.nix
+{
+  contribs.acme = {
+    enable = true;
+    src = ./.;
+    sandbox.module = ./sandbox.nix;
+  };
+}
+```
+
+The image build vendors that contrib's whole `src` into the re-converge's tree at
+`contrib-ext/acme/`, and bakes `contrib-ext/acme/sandbox.nix` into its module list,
+so a self-modify rebuilds the same module from the same files. That sets the rules:
+
+- **The module sits directly in `src`.** Anything else throws at image build,
+  naming the path the re-converge would have looked for.
+- **Everything it refers to lives under `src`.** Siblings (`./etc.nix`,
+  `builtins.readFile ./demo.sh`) travel with it; a `../` outside `src` does not
+  exist in the pod. The module is imported as a file with NixOS's own arguments,
+  so it cannot reach your flake's inputs either.
+- **Refer to files, not to `./.`**: a file's store path depends only on its name
+  and content, but the vendored directory is named `acme`, not whatever `src`'s
+  own directory is called, so `"${./.}"` would differ after a self-modify.
+
+The fixture is `nixos-tests/fixtures/contrib-ext/`, used by `dev-env-contrib-sandbox`
+and `dev-env-scooter-module`.
 
 #### Embedding the conversation (`/chat/<id>`)
 
