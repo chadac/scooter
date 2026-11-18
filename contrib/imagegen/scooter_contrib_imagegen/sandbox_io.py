@@ -12,6 +12,8 @@ import logging
 
 import httpx
 
+from scooter_broker_lib.autolink import router_headers
+
 logger = logging.getLogger(__name__)
 
 # Where generated images land in the sandbox.
@@ -27,7 +29,7 @@ async def write_image(agent_host_url: str, conversation_id: str, name: str, data
     if not agent_host_url:
         raise SandboxIOError("no agent-host URL configured (AGENT_HOST_URL) — cannot write the image anywhere")
     url = f"{agent_host_url.rstrip('/')}/conversations/{conversation_id}/files"
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=30, headers=router_headers()) as client:
         resp = await client.post(url, json={"dir": IMAGES_DIR, "name": name, "data": base64.b64encode(data).decode()})
     if resp.status_code >= 300:
         raise SandboxIOError(f"agent-host rejected the write (HTTP {resp.status_code}): {resp.text}")
@@ -39,7 +41,7 @@ async def read_reference_image(agent_host_url: str, conversation_id: str, path: 
     if not agent_host_url:
         raise SandboxIOError("no agent-host URL configured (AGENT_HOST_URL) — cannot read reference_image_path")
     url = f"{agent_host_url.rstrip('/')}/conversations/{conversation_id}/files"
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=30, headers=router_headers()) as client:
         resp = await client.get(url, params={"path": path})
     if resp.status_code >= 300:
         raise SandboxIOError(f"agent-host could not read {path!r} (HTTP {resp.status_code}): {resp.text}")
