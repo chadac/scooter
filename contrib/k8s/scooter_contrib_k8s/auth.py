@@ -9,31 +9,66 @@ import asyncio
 import base64
 import os
 import tempfile
+from dataclasses import dataclass
 from typing import Any, Callable, Protocol
 
 import yaml
-from kubernetes import client, config
+
+SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
+
+
+@dataclass(frozen=True)
+class Endpoint:
+    """Where a cluster's API server is and how to prove who we are to it."""
+
+    server: str
+    ca_file: str = ""
+    cert_file: str = ""
+    key_file: str = ""
+    verify: bool = True
+    tls_server_name: str = ""
+    token: str = ""
+    # Read per call, so a rotated token takes effect.
+    token_file: str = ""
+    basic: str = ""
+
+    def authorization(self) -> str:
+        """The Authorization header's value; "" for client certificates alone."""
+        if self.token_file:
+            with open(self.token_file) as f:
+                return f"Bearer {f.read().strip()}"
+        if self.token:
+            return f"Bearer {self.token}"
+        return f"Basic {self.basic}" if self.basic else ""
+
+    @property
+    def tls_key(self) -> tuple:
+        return (self.server, self.ca_file, self.cert_file, self.key_file, self.verify, self.tls_server_name)
 
 
 class ClusterAuth(Protocol):
-    #: Seconds a built client stays valid; None means forever.
+    #: Seconds a built endpoint stays valid; None means forever.
     ttl: float | None
 
-    async def configuration(self) -> client.Configuration: ...
+    async def endpoint(self) -> Endpoint: ...
 
 
 class InCluster:
-    """The broker pod's own ServiceAccount; the loader re-reads the rotated token."""
+    """The broker pod's own ServiceAccount."""
 
     ttl: float | None = None
 
-    def __init__(self, spec: dict) -> None:
-        pass
+    def __init__(self, spec: dict, sa_dir: str = SA_DIR) -> None:
+        self._dir = sa_dir
 
-    async def configuration(self) -> client.Configuration:
-        c = client.Configuration()
-        config.load_incluster_config(client_configuration=c)
-        return c
+    async def endpoint(self) -> Endpoint:
+        host, port = os.environ.get("KUBERNETES_SERVICE_HOST", ""), os.environ.get("KUBERNETES_SERVICE_PORT", "")
+        if not host or not port:
+            raise ValueError("not running in a cluster: KUBERNETES_SERVICE_HOST is unset")
+        if ":" in host:
+            host = f"[{host}]"
+        return Endpoint(server=f"https://{host}:{port}", ca_file=os.path.join(self._dir, "ca.crt"),
+                        token_file=os.path.join(self._dir, "token"))
 
 
 class Kubeconfig:
@@ -50,13 +85,43 @@ class Kubeconfig:
         self._context = spec.get("context") or None
         refuse_plugins(self._doc)
 
-    async def configuration(self) -> client.Configuration:
-        c = client.Configuration()
-        config.load_kube_config_from_dict(
-            self._doc, context=self._context, client_configuration=c,
-            persist_config=False, temp_file_path=tempfile.gettempdir(),
-        )
-        return c
+    async def endpoint(self) -> Endpoint:
+        return from_kubeconfig(self._doc, self._context)
+
+
+def _named(doc: dict, section: str, name: str) -> dict:
+    for entry in doc.get(section) or []:
+        if entry.get("name") == name:
+            return entry.get(section.removesuffix("s")) or {}
+    raise ValueError(f"kubeconfig has no {section.removesuffix('s')} {name!r}")
+
+
+def from_kubeconfig(doc: dict, context: str | None = None) -> Endpoint:
+    """The endpoint one context of a kubeconfig names; `*-data` fields become private files."""
+    name = context or doc.get("current-context") or ""
+    if not name:
+        raise ValueError("kubeconfig names no context")
+    ctx = _named(doc, "contexts", name)
+    cluster = _named(doc, "clusters", ctx.get("cluster") or "")
+    user = _named(doc, "users", ctx["user"]) if ctx.get("user") else {}
+    server = cluster.get("server") or ""
+    if not server:
+        raise ValueError(f"kubeconfig cluster {ctx.get('cluster')!r} has no server")
+
+    def file(section: dict, key: str, label: str) -> str:
+        data = section.get(f"{key}-data")
+        return _write_private(f"{name}-{label}", base64.b64decode(data)) if data else section.get(key) or ""
+
+    basic = ""
+    if user.get("username"):
+        basic = base64.b64encode(f"{user['username']}:{user.get('password') or ''}".encode()).decode()
+    return Endpoint(
+        server=server, ca_file=file(cluster, "certificate-authority", "ca"),
+        cert_file=file(user, "client-certificate", "cert"), key_file=file(user, "client-key", "key"),
+        verify=not cluster.get("insecure-skip-tls-verify", False),
+        tls_server_name=cluster.get("tls-server-name") or "",
+        token=user.get("token") or "", token_file=user.get("tokenFile") or "", basic=basic,
+    )
 
 
 class Eks:
@@ -78,22 +143,18 @@ class Eks:
         self._ca = spec.get("certificate_authority") or ""
         self._new_session = session or _boto_session
 
-    async def configuration(self) -> client.Configuration:
+    async def endpoint(self) -> Endpoint:
         return await asyncio.to_thread(self._build)
 
-    def _build(self) -> client.Configuration:
+    def _build(self) -> Endpoint:
         session = self._session()
         endpoint, ca = self._endpoint, self._ca
         if not endpoint or not ca:
             found = session.client("eks", region_name=self._region).describe_cluster(name=self._cluster)["cluster"]
             endpoint = endpoint or found["endpoint"]
             ca = ca or found["certificateAuthority"]["data"]
-        c = client.Configuration()
-        c.host = endpoint
-        c.ssl_ca_cert = _write_ca(self._cluster, ca)
-        c.api_key = {"authorization": self.token(session)}
-        c.api_key_prefix = {"authorization": "Bearer"}
-        return c
+        return Endpoint(server=endpoint, ca_file=_write_private(f"eks-{self._cluster}-ca", base64.b64decode(ca)),
+                        token=self.token(session))
 
     def _session(self) -> Any:
         session = self._new_session()
@@ -126,12 +187,12 @@ def _boto_session(**creds: str) -> Any:
     return boto3.Session(**creds)
 
 
-def _write_ca(cluster: str, data: str) -> str:
-    """The base64 CA bundle as a file, since the client takes a path."""
-    path = os.path.join(tempfile.gettempdir(), f"scooter-k8s-{cluster}-ca.crt")
+def _write_private(label: str, data: bytes) -> str:
+    """`data` in a file only the broker can read, since ssl takes paths."""
+    path = os.path.join(tempfile.gettempdir(), f"scooter-k8s-{label}.pem")
     fd, tmp = tempfile.mkstemp(dir=tempfile.gettempdir())
     with os.fdopen(fd, "wb") as f:
-        f.write(base64.b64decode(data))
+        f.write(data)
     os.replace(tmp, path)
     return path
 

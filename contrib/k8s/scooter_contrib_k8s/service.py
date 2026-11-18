@@ -54,6 +54,13 @@ def iso(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000, timezone.utc).isoformat(timespec="seconds")
 
 
+def _check_keys(secret: dict, keys: list[str]) -> None:
+    meta = secret.get("metadata") or {}
+    missing = sorted(set(keys) - set(secret.get("data") or {}))
+    if missing:
+        raise Refused(f"Secret {meta.get('namespace')}/{meta.get('name')} has no key {', '.join(missing)}")
+
+
 def _reveal(data: dict, keys: list[str]) -> dict:
     out = {}
     for k in keys or sorted(data):
@@ -101,7 +108,8 @@ class K8sService:
             raise Refused("no conversation for this caller")
         grant = await self._grant_for(conversation_id, op)
         if grant is not None:
-            result = await self.run(op, Actor(conversation_id, grant.approved_by))
+            # No approver: KubePolicy finds the grant and its approver itself.
+            result = await self.run(op, Actor(conversation_id))
             logger.info("k8s write under grant", extra=self._audit(op, conversation_id, grant=grant.id))
             return {"status": "done", "grant_id": grant.id, "result": result}
         access = await self.owners.access(conversation_id) if self.owners else None
@@ -141,7 +149,7 @@ class K8sService:
     async def lookup(self, c: Cluster, kind: str, name: str, namespace: str, api_version: str):
         res = await c.kube.resource(kind, api_version)
         ns = self.namespace(c, namespace) if res.namespaced else ""
-        obj = await c.kube.get(res, name, ns or None)
+        obj = await c.kube.get(res, name, ns or None, redacted=True)
         return res, ns, obj
 
     async def plan_apply(self, conversation_id: str, cluster: str, manifests: str) -> Op:
@@ -168,7 +176,7 @@ class K8sService:
             else:
                 meta.pop("namespace", None)
             try:
-                live = await c.kube.get(res, meta["name"], meta.get("namespace"))
+                live = await c.kube.get(res, meta["name"], meta.get("namespace"), redacted=True)
             except K8sError as e:
                 if e.status != 404:
                     raise
@@ -228,10 +236,14 @@ class K8sService:
     async def plan_reveal(self, conversation_id: str, cluster: str, name: str, keys: list[str], namespace: str) -> Op:
         c = self.cluster(cluster)
         ns = self.namespace(c, namespace)
-        secret = await c.kube.get(await c.kube.resource("Secret", "v1"), name, ns, actor=Actor(conversation_id))
-        missing = sorted(set(keys) - set(secret.get("data") or {}))
-        if missing:
-            raise Refused(f"Secret {ns}/{name} has no key {', '.join(missing)}")
+        try:
+            # Only key names are used; values are read after approval.
+            secret = await c.kube.get(await c.kube.resource("Secret", "v1"), name, ns, redacted=True)
+            _check_keys(secret, keys)
+        except K8sError as e:
+            # The broker may not read Secrets; run checks keys then.
+            if e.status != 403:
+                raise
         return self._op(c, "reveal", namespace=ns, kind="Secret", api_version="v1", name=name, keys=list(keys),
                         preview="The values go to the agent, and so into this conversation's transcript.")
 
@@ -280,8 +292,9 @@ class K8sService:
     async def run(self, op: Op, actor: Actor) -> Any:
         """Carry out `op` for real, for `actor`; its result as the agent sees it."""
         kube = self.cluster(op.cluster).kube
-        res = Resource(api_version=op.api_version, kind=op.kind, name="", namespaced=bool(op.namespace))
         ns = op.namespace or None
+        if op.verb in ("delete", "scale", "restart"):
+            res = await kube.resource(op.kind, op.api_version)
         match op.verb:
             case "apply":
                 done = []
@@ -306,6 +319,7 @@ class K8sService:
             case "reveal":
                 secret = await kube.get(Resource(api_version="v1", kind="Secret", name="secrets", namespaced=True),
                                         op.name, op.namespace, actor=actor)
+                _check_keys(secret, op.keys)
                 return _reveal(secret.get("data") or {}, op.keys)
         raise Refused(f"unknown verb {op.verb!r}")
 

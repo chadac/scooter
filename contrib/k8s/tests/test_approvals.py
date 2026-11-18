@@ -178,15 +178,16 @@ async def test_privileged_calls_carry_the_conversation_then_the_approver(configu
     assert kube.actors == [("apply", Actor("conv")), ("apply", Actor("conv", "alice"))]
 
 
-async def test_reveal_reads_the_secret_as_the_actor(configured, kube, http):
+async def test_reveal_reads_the_values_only_once_approved(configured, kube, http):
     rid = pending(await k8s_secret_reveal("db", ["password"], cluster="home", ctx=ctx()))
+    assert kube.actors == []
     await http.post(f"/k8s/approvals/{rid}/approve", json=who("alice"))
-    assert kube.actors == [("get", Actor("conv")), ("get", Actor("conv", "alice"))]
+    assert kube.actors == [("get", Actor("conv", "alice"))]
 
 
-async def test_grant_writes_carry_the_grants_approver(granted, kube):
+async def test_grant_writes_leave_the_approver_to_the_policy(granted, kube):
     await k8s_scale("deploy", "web", 3, cluster="home", ctx=ctx())
-    assert kube.actors[-1] == ("patch", Actor("conv", "alice"))
+    assert kube.actors[-1] == ("patch", Actor("conv"))
 
 
 async def test_a_secret_grant_reveals_its_names_without_a_card(configured, kube, cards, http):
@@ -197,7 +198,7 @@ async def test_a_secret_grant_reveals_its_names_without_a_card(configured, kube,
     raised = len(cards.raised)
     out = json.loads((await k8s_secret_reveal("db", ["password"], cluster="home", ctx=ctx())).text)
     assert out["status"] == "done" and out["result"] == {"password": "hunter2"}
-    assert kube.actors[-1] == ("get", Actor("conv", "alice"))
+    assert kube.actors[-1] == ("get", Actor("conv"))
     assert len(cards.raised) == raised
     pending(await k8s_secret_reveal("db", cluster="home", ctx=ctx("other")))
     pending(await k8s_apply(CM, cluster="home", ctx=ctx()))
@@ -212,3 +213,12 @@ async def test_secret_grant_limits(configured):
     assert "read-only" in (await ask(["db"], 10, "x", cluster="ro", ctx=ctx())).text
     assert "by name" in (await ask([" "], 10, "x", cluster="home", ctx=ctx())).text
     assert "reason" in (await ask(["db"], 10, " ", cluster="home", ctx=ctx())).text
+
+
+async def test_reveal_names_a_missing_key_before_and_after_approval(configured, kube, http):
+    r = await k8s_secret_reveal("db", ["nope"], cluster="home", ctx=ctx())
+    assert "has no key nope" in r.text
+    kube.redacted_error = K8sError("403 secrets is forbidden", 403)
+    rid = pending(await k8s_secret_reveal("db", ["nope"], cluster="home", ctx=ctx()))
+    r = (await http.post(f"/k8s/approvals/{rid}/approve", json=who("alice"))).json()
+    assert "has no key nope" in json.dumps(r), r

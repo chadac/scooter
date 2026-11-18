@@ -21,7 +21,7 @@ import httpx
 from scooter_broker_lib.forge import Decision, ForgeRequest
 from scooter_broker_lib.types import Credential, Identity
 
-from .auth import ClusterAuth
+from .auth import ClusterAuth, Endpoint
 from .config import ClusterConfig
 from .store import GrantStore
 
@@ -115,81 +115,109 @@ def parse(method: str, path: str, query: str = "") -> KubeRequest:
     )
 
 
+@dataclass(frozen=True)
+class Verdict:
+    """A policy decision, and whom an allowed call runs as."""
+
+    decision: Decision
+    # Run as the cluster's `impersonate` user rather than the broker.
+    impersonate: bool = False
+    approver: str = ""
+
+    @classmethod
+    def deny(cls, reason: str) -> "Verdict":
+        return cls(Decision.deny(reason))
+
+
 class KubePolicy:
-    """Reads pass; writes need a write grant; Secrets need a Secret grant; streams stay on k8s_exec."""
+    """Reads pass; writes need a write grant; Secrets need a Secret grant; streams stay on k8s_exec.
+
+    Two inputs only the broker's own tools can set: `approver`, for a call a person
+    approved on its card, and `redacted`, for a Secret read whose values the tool hides.
+    """
 
     def __init__(self, clusters: dict[str, ClusterConfig], grants: GrantStore | None) -> None:
         self._clusters = clusters
         self._grants = grants
 
     async def check(self, request: ForgeRequest) -> Decision:
-        cfg = self._clusters.get(cluster_of(request.host))
-        if cfg is None:
-            return Decision.deny(f"no cluster for host {request.host}")
         r = parse(request.method, request.path, request.query)
+        v = await self.evaluate(cluster_of(request.host), request.identity.conversation_id, r)
+        return v.decision
+
+    async def evaluate(self, cluster: str, cid: str, r: KubeRequest, *, approver: str = "",
+                       redacted: bool = False) -> Verdict:
+        cfg = self._clusters.get(cluster)
+        if cfg is None:
+            return Verdict.deny(f"no cluster {cluster or '(none)'}")
         sub = r.subresource.partition("/")[0]
         if sub in _STREAMS:
-            return Decision.deny(f"{sub} is not carried by the proxy; use the k8s_exec tool")
+            if approver and not cfg.read_only:
+                return Verdict(Decision.allow("approved"), impersonate=True, approver=approver)
+            return Verdict.deny(f"{sub} is not carried by the proxy; use the k8s_exec tool")
         if sub == "proxy":
-            return Decision.deny("API server proxying is not carried by the proxy")
+            return Verdict.deny("API server proxying is not carried by the proxy")
         if r.group is None:
-            return Decision.allow() if not r.write else Decision.deny("only reads of non-resource paths")
+            return Verdict(Decision.allow()) if not r.write else Verdict.deny("only reads of non-resource paths")
+        if redacted and r.secret and not r.write and not r.watch:
+            return Verdict(Decision.allow("values redacted"))
         if not r.privileged:
-            return Decision.allow()
+            return Verdict(Decision.allow())
         if cfg.read_only:
-            return Decision.deny(f"cluster {cfg.name} is read-only here")
+            return Verdict.deny(f"cluster {cfg.name} is read-only here")
+        if approver:
+            return Verdict(Decision.allow("approved"), impersonate=True, approver=approver)
         if r.write and r.dry_run:
-            return Decision.allow("dry run")
-        cid = request.identity.conversation_id
+            return Verdict(Decision.allow("dry run"), impersonate=True)
         if not cid or self._grants is None:
-            return Decision.deny("no conversation to hold a grant")
+            return Verdict.deny("no conversation to hold a grant")
         if r.write:
             return await self._write(cfg, cid, r)
         return await self._secret_read(cfg, cid, r)
 
-    async def _write(self, cfg: ClusterConfig, cid: str, r: KubeRequest) -> Decision:
+    async def _write(self, cfg: ClusterConfig, cid: str, r: KubeRequest) -> Verdict:
         if not r.namespace:
-            return Decision.deny("cluster-scoped writes need their own approval: use k8s_apply or k8s_delete")
-        if await self._grant(cid, cfg.name, r.namespace, "write"):
-            return Decision.allow("write grant")
-        return Decision.deny(self._no_grant(cfg, r.namespace))
+            return Verdict.deny("cluster-scoped writes need their own approval: use k8s_apply or k8s_delete")
+        found = await self._grants.active(cid, cfg.name, r.namespace, kind="write")
+        if found:
+            return Verdict(Decision.allow("write grant"), impersonate=True, approver=found[0].approved_by)
+        return Verdict.deny(self._no_grant(cfg, r.namespace))
 
-    async def _secret_read(self, cfg: ClusterConfig, cid: str, r: KubeRequest) -> Decision:
+    async def _secret_read(self, cfg: ClusterConfig, cid: str, r: KubeRequest) -> Verdict:
         if not r.namespace:
-            return Decision.deny("Secrets are read one namespace at a time")
+            return Verdict.deny("Secrets are read one namespace at a time")
         if r.name and not r.subresource:
             for g in await self._grants.active(cid, cfg.name, r.namespace, kind="secret"):
                 if r.name in g.names:
-                    return Decision.allow("secret grant")
-            return Decision.deny(
+                    return Verdict(Decision.allow("secret grant"), impersonate=True, approver=g.approved_by)
+            return Verdict.deny(
                 f"reading Secret {r.namespace}/{r.name} needs a grant: call k8s_request_secret_access"
             )
-        return Decision.deny("Secrets can't be listed or watched; read them by name under k8s_request_secret_access")
-
-    async def _grant(self, cid: str, cluster: str, namespace: str, kind: str):
-        found = await self._grants.active(cid, cluster, namespace, kind=kind)
-        return found[0] if found else None
+        return Verdict.deny("Secrets can't be listed or watched; read them by name under k8s_request_secret_access")
 
     def _no_grant(self, cfg: ClusterConfig, namespace: str) -> str:
         if not cfg.grants_enabled:
             return f"cluster {cfg.name} takes writes only through k8s_apply and the other k8s_* tools"
         return f"writes in {namespace} need a write grant: call k8s_request_grant (then retry)"
 
-    async def approver(self, identity: Identity, host: str, r: KubeRequest) -> str:
-        """Who approved the grant a privileged call runs under; "" when none applies."""
-        if not r.namespace or self._grants is None or not identity.conversation_id:
-            return ""
-        kind = "secret" if r.secret and not r.write else "write"
-        g = await self._grant(identity.conversation_id, cluster_of(host), r.namespace, kind)
-        return g.approved_by if g else ""
+
+def auth_headers(token: str, impersonate: str | None, cid: str, v: Verdict) -> dict[str, str]:
+    """The cluster's token, plus `Impersonate-*` when the verdict runs as the cluster's user."""
+    headers = {"Authorization": token} if token else {}
+    if impersonate and v.impersonate:
+        headers["Impersonate-User"] = impersonate
+        headers["Impersonate-Extra-scooter-conversation"] = cid
+        if v.approver:
+            headers["Impersonate-Extra-scooter-approver"] = v.approver
+    return headers
 
 
 @dataclass(frozen=True)
 class _Conn:
     base: httpx.URL
-    config: object
+    endpoint: Endpoint
     transport: httpx.AsyncBaseTransport
-    tls_key: tuple
+    ssl: ssl.SSLContext | None
 
 
 class ClusterLink:
@@ -206,24 +234,28 @@ class ClusterLink:
         async with self._lock:
             ttl = self._auth.ttl
             if self._conn is None or (ttl is not None and time.monotonic() - self._built > ttl):
-                cfg = await self._auth.configuration()
-                key = (cfg.host, cfg.ssl_ca_cert, cfg.cert_file, cfg.key_file, cfg.verify_ssl)
-                transport = (self._conn.transport if self._conn and self._conn.tls_key == key
-                             else self._inner or httpx.AsyncHTTPTransport(verify=_ssl(cfg)))
-                self._conn = _Conn(httpx.URL(cfg.host), cfg, transport, key)
+                ep = await self._auth.endpoint()
+                if self._conn and self._conn.endpoint.tls_key == ep.tls_key:
+                    transport, ctx = self._conn.transport, self._conn.ssl
+                elif self._inner is not None:
+                    transport, ctx = self._inner, None
+                else:
+                    ctx = _ssl(ep)
+                    transport = httpx.AsyncHTTPTransport(verify=ctx)
+                self._conn = _Conn(httpx.URL(ep.server), ep, transport, ctx)
                 self._built = time.monotonic()
             return self._conn
 
     async def token(self) -> str:
-        # Read per call: inCluster's hook re-reads the rotated token.
-        return (await self.current()).config.get_api_key_with_prefix("authorization") or ""
+        # Read per call: inCluster's token file rotates.
+        return (await self.current()).endpoint.authorization()
 
 
-def _ssl(cfg) -> ssl.SSLContext:
-    ctx = ssl.create_default_context(cafile=cfg.ssl_ca_cert or certifi.where())
-    if cfg.cert_file:
-        ctx.load_cert_chain(cfg.cert_file, cfg.key_file)
-    if not cfg.verify_ssl:
+def _ssl(ep: Endpoint) -> ssl.SSLContext:
+    ctx = ssl.create_default_context(cafile=ep.ca_file or certifi.where())
+    if ep.cert_file:
+        ctx.load_cert_chain(ep.cert_file, ep.key_file or None)
+    if not ep.verify:
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
     return ctx
@@ -243,6 +275,8 @@ class KubeTransport(httpx.AsyncBaseTransport):
             raw_path=base.raw_path.rstrip(b"/") + request.url.raw_path,
         )
         request.headers["Host"] = base.netloc.decode("ascii")
+        if conn.endpoint.tls_server_name:
+            request.extensions = {**request.extensions, "sni_hostname": conn.endpoint.tls_server_name}
         r = parse(request.method, request.url.path, request.url.query.decode("ascii", "replace"))
         if not r.helm_read:
             return await conn.transport.handle_async_request(request)
@@ -275,7 +309,7 @@ def _forbidden(message: str) -> httpx.Response:
 
 
 class KubeCredential:
-    """The cluster's token, plus `Impersonate-*` for writes and Secret reads."""
+    """The proxy's credential step: the token, plus `Impersonate-*` when the policy runs it as the user."""
 
     def __init__(self, clusters: dict[str, ClusterConfig], links: dict[str, ClusterLink],
                  policy: KubePolicy) -> None:
@@ -287,16 +321,7 @@ class KubeCredential:
         if request is None:
             raise ValueError("a k8s credential is for one request")
         name = cluster_of(request.host)
-        headers: dict[str, str] = {}
-        token = await self._links[name].token()
-        if token:
-            headers["Authorization"] = token
-        user = self._clusters[name].impersonate
-        r = parse(request.method, request.path, request.query)
-        if user and r.privileged:
-            headers["Impersonate-User"] = user
-            headers["Impersonate-Extra-scooter-conversation"] = identity.conversation_id
-            approver = await self._policy.approver(identity, request.host, r)
-            if approver:
-                headers["Impersonate-Extra-scooter-approver"] = approver
+        cid = identity.conversation_id
+        v = await self._policy.evaluate(name, cid, parse(request.method, request.path, request.query))
+        headers = auth_headers(await self._links[name].token(), self._clusters[name].impersonate, cid, v)
         return Credential(kind="multi-header", value=json.dumps(headers))

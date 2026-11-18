@@ -6,11 +6,11 @@ import json
 
 import httpx
 import pytest
-from kubernetes import client
 
 from scooter_broker_lib.forge import ForgeRequest
 from scooter_broker_lib.testing import create_schema, sqlite_config
 from scooter_broker_lib.types import Identity
+from scooter_contrib_k8s.auth import Endpoint
 from scooter_contrib_k8s.broker_provider import forge_hosts
 from scooter_contrib_k8s.config import ClusterConfig
 from scooter_contrib_k8s.forge import ClusterLink, KubeCredential, KubePolicy, KubeTransport, parse
@@ -132,13 +132,9 @@ class FakeAuth:
         self.host = host
         self.built = 0
 
-    async def configuration(self):
+    async def endpoint(self):
         self.built += 1
-        c = client.Configuration()
-        c.host = self.host
-        c.api_key = {"authorization": "real-token"}
-        c.api_key_prefix = {"authorization": "Bearer"}
-        return c
+        return Endpoint(server=self.host, token="real-token")
 
 
 async def test_transport_sends_to_the_real_api_server():

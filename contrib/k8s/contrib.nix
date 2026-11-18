@@ -225,7 +225,7 @@ in
 
       services.broker = {
         enable = true;
-        pythonDeps = ps: [ ps.kubernetes ps.pyyaml ps.boto3 ];
+        pythonDeps = ps: [ ps.httpx ps.websocket-client ps.certifi ps.pyyaml ps.boto3 ];
         env = {
           # No clusters: tools stay off, so shipping enabled is safe.
           K8S_ENABLED = lib.boolToString (config.clusters != { });

@@ -96,7 +96,7 @@ async def k8s_list(
         res = await c.kube.resource(kind, api_version)
         ns = None if all_namespaces or not res.namespaced else svc.namespace(c, namespace)
         items = await c.kube.list(res, ns, label_selector=label_selector, field_selector=field_selector,
-                                  limit=max(1, min(limit, 1000)))
+                                  limit=max(1, min(limit, 1000)), redacted=True)
         rows = [objects.summary(i, res.kind) for i in items]
         return rows if rows else f"No {res.name} found."
     return await _answer(run())

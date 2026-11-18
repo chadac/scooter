@@ -1,39 +1,39 @@
-"""One cluster's API: the few calls the tools make, over the kubernetes dynamic client.
+"""One cluster's API: the few calls the tools make, through KubeGateway.
 
-Every call is the sync client run in a thread. Kinds resolve by kind, plural, singular
-or short name, so `deploy` finds apps/v1 Deployment; subresources never resolve.
-
-Writes, exec and Secret reads take an Actor. When the cluster names an `impersonate`
-user, they run as that user, with the conversation and approver as audit extras.
+The gateway does what the forge proxy does for kubectl: it classifies the request,
+checks it against KubePolicy and adds the credential, so both paths obey one policy.
+Kinds resolve by kind, plural, singular or short name, so `deploy` finds apps/v1
+Deployment; subresources never resolve.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import ssl
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import quote, urlencode
 
-import certifi
+import httpx
 import websocket
 
-from kubernetes import client
-from kubernetes.client.rest import ApiException
-from kubernetes.dynamic import DynamicClient
-from kubernetes.dynamic.exceptions import DynamicApiError
-from kubernetes.stream.ws_client import get_websocket_url
+from .config import ClusterConfig
+from .forge import ClusterLink, KubePolicy, KubeTransport, auth_headers, host_for, parse
 
-from .auth import ClusterAuth
+logger = logging.getLogger(__name__)
 
 FIELD_MANAGER = "scooter"
 _DRY = "All"
+DISCOVERY_TTL = 300
+# Aggregated discovery (Kubernetes 1.26+) answers each root in one request.
+_AGGREGATED = ("application/json;g=apidiscovery.k8s.io;v=v2;as=APIGroupDiscoveryList,"
+               "application/json;g=apidiscovery.k8s.io;v=v2beta1;as=APIGroupDiscoveryList,application/json")
 
 
 class K8sError(Exception):
-    """An API call failed; the message is fit for the agent."""
+    """An API call failed or was refused; the message is fit for the agent."""
 
     def __init__(self, message: str, status: int | None = None) -> None:
         super().__init__(message)
@@ -54,7 +54,12 @@ class Resource:
 
 @dataclass(frozen=True)
 class Actor:
-    """Whom a privileged call is for, as the audit log records it."""
+    """The conversation a call is for and, once a person approved its card, who did.
+
+    `approver` lets KubePolicy allow what only a card can (exec, cluster-scoped writes),
+    so set it only for the exact request that was approved. Calls under a grant leave it
+    empty: the policy finds the grant itself.
+    """
 
     conversation: str
     approver: str = ""
@@ -67,144 +72,219 @@ class ExecResult:
     exit_code: int | None
 
 
-def _error(e: Exception) -> K8sError:
-    status = getattr(e, "status", None)
-    body = getattr(e, "body", None)
-    message = str(getattr(e, "reason", "") or e)
+def _error(resp: httpx.Response) -> K8sError:
+    message = resp.reason_phrase
     try:
-        message = json.loads(body).get("message") or message
-    except (TypeError, ValueError, AttributeError):
+        message = resp.json().get("message") or message
+    except (ValueError, AttributeError):
         pass
-    return K8sError(f"{status} {message}" if status else message, status)
+    return K8sError(f"{resp.status_code} {message}", resp.status_code)
+
+
+class KubeGateway:
+    """The tools' path to every cluster: classify, enforce KubePolicy, add the credential."""
+
+    def __init__(self, clusters: dict[str, ClusterConfig], links: dict[str, ClusterLink],
+                 policy: KubePolicy) -> None:
+        self._clusters = clusters
+        self._links = links
+        self._policy = policy
+        self._http = {
+            name: httpx.AsyncClient(transport=KubeTransport(link), base_url=f"https://{host_for(name)}",
+                                    timeout=httpx.Timeout(30, read=120))
+            for name, link in links.items()
+        }
+
+    async def _authorize(self, cluster: str, method: str, path: str, query: str, actor: Actor | None,
+                         redacted: bool) -> dict[str, str]:
+        cid, approver = (actor.conversation, actor.approver) if actor else ("", "")
+        v = await self._policy.evaluate(cluster, cid, parse(method, path, query), approver=approver,
+                                        redacted=redacted)
+        if not v.decision.allowed:
+            raise K8sError(f"403 denied by the Scooter forge policy: {v.decision.reason}", 403)
+        return auth_headers(await self._links[cluster].token(), self._clusters[cluster].impersonate, cid, v)
+
+    async def request(self, cluster: str, method: str, path: str, *, actor: Actor | None = None,
+                      params: dict | None = None, body: Any = None, content_type: str = "application/json",
+                      accept: str = "application/json", redacted: bool = False) -> httpx.Response:
+        params = {k: v for k, v in (params or {}).items() if v not in (None, "")}
+        headers = await self._authorize(cluster, method, path, urlencode(params), actor, redacted)
+        headers["Accept"] = accept
+        content = None
+        if body is not None:
+            content = json.dumps(body).encode()
+            headers["Content-Type"] = content_type
+        resp = await self._http[cluster].request(method, path, params=params, content=content, headers=headers)
+        if resp.status_code >= 400:
+            raise _error(resp)
+        return resp
+
+    async def stream(self, cluster: str, path: str, query: list[tuple[str, str]], *, actor: Actor):
+        """The URL, headers and TLS for a websocket to `path`, once the policy allows it."""
+        q = urlencode(query)
+        headers = await self._authorize(cluster, "GET", path, q, actor, False)
+        conn = await self._links[cluster].current()
+        base = conn.base
+        scheme = "wss" if base.scheme == "https" else "ws"
+        url = f"{scheme}://{base.netloc.decode('ascii')}{base.raw_path.decode('ascii').rstrip('/')}{path}?{q}"
+        sslopt: dict[str, Any] = {"context": conn.ssl} if conn.ssl else {}
+        if conn.endpoint.tls_server_name:
+            sslopt["server_hostname"] = conn.endpoint.tls_server_name
+        return url, headers, sslopt
+
+    async def aclose(self) -> None:
+        for c in self._http.values():
+            await c.aclose()
+
+
+def _path(res: Resource, namespace: str | None, name: str = "", sub: str = "") -> str:
+    out = f"/apis/{res.api_version}" if "/" in res.api_version else f"/api/{res.api_version}"
+    if res.namespaced and namespace:
+        out += f"/namespaces/{quote(namespace, safe='')}"
+    out += f"/{res.name}"
+    if name:
+        out += f"/{quote(name, safe='')}"
+    return out + (f"/{sub}" if sub else "")
+
+
+def _from_aggregated(items: list[dict]) -> list[Resource]:
+    out = []
+    for g in items:
+        group = (g.get("metadata") or {}).get("name") or ""
+        for i, v in enumerate(g.get("versions") or []):
+            gv = f"{group}/{v['version']}" if group else v["version"]
+            for r in v.get("resources") or []:
+                kind = (r.get("responseKind") or {}).get("kind") or ""
+                out.append(Resource(api_version=gv, kind=kind, name=r.get("resource") or "",
+                                    namespaced=r.get("scope") == "Namespaced",
+                                    short_names=tuple(r.get("shortNames") or ()), verbs=tuple(r.get("verbs") or ()),
+                                    preferred=i == 0))
+    return out
+
+
+def _from_list(doc: dict, preferred: bool) -> list[Resource]:
+    gv = doc.get("groupVersion") or ""
+    return [
+        Resource(api_version=gv, kind=r.get("kind") or "", name=r.get("name") or "",
+                 namespaced=bool(r.get("namespaced")), short_names=tuple(r.get("shortNames") or ()),
+                 verbs=tuple(r.get("verbs") or ()), preferred=preferred)
+        for r in doc.get("resources") or []
+    ]
 
 
 class Kube:
-    """The real cluster, built lazily from its auth and rebuilt after `auth.ttl`."""
+    """One cluster, as the tools use it."""
 
-    def __init__(self, auth: ClusterAuth, impersonate: str | None = None) -> None:
-        self._auth = auth
-        self._impersonate = impersonate
-        self._built: tuple[float, client.ApiClient, DynamicClient] | None = None
+    def __init__(self, gateway: KubeGateway, cluster: str) -> None:
+        self._gw = gateway
+        self._cluster = cluster
+        self._found: tuple[float, list[Resource]] | None = None
         self._lock = asyncio.Lock()
 
-    async def _clients(self) -> tuple[client.ApiClient, DynamicClient]:
-        async with self._lock:
-            ttl = self._auth.ttl
-            if self._built is None or (ttl is not None and time.monotonic() - self._built[0] > ttl):
-                api = client.ApiClient(await self._auth.configuration())
-                dyn = await asyncio.to_thread(DynamicClient, api)
-                self._built = (time.monotonic(), api, dyn)
-            return self._built[1], self._built[2]
+    async def _call(self, method: str, path: str, **kw) -> httpx.Response:
+        return await self._gw.request(self._cluster, method, path, **kw)
 
-    def _headers(self, actor: Actor | None) -> dict[str, str]:
-        if not self._impersonate or actor is None:
-            return {}
-        out = {"Impersonate-User": self._impersonate, "Impersonate-Extra-scooter-conversation": actor.conversation}
-        if actor.approver:
-            out["Impersonate-Extra-scooter-approver"] = actor.approver
-        return out
-
-    async def _call(self, fn, *args, **kwargs) -> Any:
-        try:
-            return await asyncio.to_thread(fn, *args, **kwargs)
-        except (ApiException, DynamicApiError) as e:
-            raise _error(e) from None
+    async def _json(self, method: str, path: str, **kw) -> dict:
+        return (await self._call(method, path, **kw)).json()
 
     # --- discovery ------------------------------------------------------------------
 
     async def api_resources(self) -> list[Resource]:
-        _, dyn = await self._clients()
-        found = await self._call(dyn.resources.search)
+        async with self._lock:
+            if self._found is None or time.monotonic() - self._found[0] > DISCOVERY_TTL:
+                self._found = (time.monotonic(), await self._discover())
+            found = self._found[1]
         out = {
-            (r.group_version, r.kind): Resource(
-                api_version=r.group_version, kind=r.kind, name=r.name, namespaced=bool(r.namespaced),
-                short_names=tuple(r.short_names or ()), verbs=tuple(r.verbs or ()),
-                preferred=bool(getattr(r, "preferred", True)),
-            )
-            for r in found
-            if getattr(r, "kind", None) and "/" not in (r.name or "") and not r.kind.endswith("List")
+            (r.api_version, r.kind): r for r in found
+            if r.kind and "/" not in r.name and not r.kind.endswith("List")
         }
         return sorted(out.values(), key=lambda r: (r.api_version, r.kind))
+
+    async def _discover(self) -> list[Resource]:
+        core, apis = await asyncio.gather(self._json("GET", "/api", accept=_AGGREGATED),
+                                          self._json("GET", "/apis", accept=_AGGREGATED))
+        if core.get("kind") == apis.get("kind") == "APIGroupDiscoveryList":
+            return _from_aggregated(core.get("items") or []) + _from_aggregated(apis.get("items") or [])
+        wanted = [(f"/api/{v}", True) for v in core.get("versions") or []]
+        for g in apis.get("groups") or []:
+            pref = (g.get("preferredVersion") or {}).get("groupVersion")
+            wanted += [(f"/apis/{v['groupVersion']}", v["groupVersion"] == pref) for v in g.get("versions") or []]
+        docs = await asyncio.gather(*(self._json("GET", p) for p, _ in wanted), return_exceptions=True)
+        out = []
+        for (p, preferred), doc in zip(wanted, docs):
+            if isinstance(doc, K8sError):
+                # A down aggregated API (metrics, say) hides only itself.
+                logger.warning("k8s discovery skipped a group", extra={"cluster": self._cluster, "path": p,
+                                                                       "error": str(doc)})
+                continue
+            if isinstance(doc, BaseException):
+                raise doc
+            out += _from_list(doc, preferred)
+        return out
 
     async def resource(self, kind: str, api_version: str = "") -> Resource:
         return resolve(await self.api_resources(), kind, api_version)
 
-    async def _dyn(self, res: Resource):
-        _, dyn = await self._clients()
-        return await self._call(dyn.resources.get, api_version=res.api_version, kind=res.kind)
-
     # --- reads ----------------------------------------------------------------------
 
     async def list(self, res: Resource, namespace: str | None, *, label_selector: str = "",
-                   field_selector: str = "", limit: int = 0) -> list[dict]:
-        r = await self._dyn(res)
-        got = await self._call(
-            r.get, namespace=namespace if res.namespaced else None,
-            label_selector=label_selector or None, field_selector=field_selector or None, limit=limit or None,
-        )
-        return got.to_dict().get("items") or []
+                   field_selector: str = "", limit: int = 0, actor: Actor | None = None,
+                   redacted: bool = False) -> list[dict]:
+        """`redacted`: the caller hides Secret values, so the policy lets Secrets list."""
+        got = await self._json("GET", _path(res, namespace), actor=actor, redacted=redacted, params={
+            "labelSelector": label_selector, "fieldSelector": field_selector, "limit": limit or None,
+        })
+        return got.get("items") or []
 
-    async def get(self, res: Resource, name: str, namespace: str | None, *, actor: Actor | None = None) -> dict:
-        """`actor` for reads `view` can't do, such as Secrets."""
-        r = await self._dyn(res)
-        got = await self._call(r.get, name=name, namespace=namespace if res.namespaced else None,
-                               header_params=self._headers(actor))
-        return got.to_dict()
+    async def get(self, res: Resource, name: str, namespace: str | None, *, actor: Actor | None = None,
+                  redacted: bool = False) -> dict:
+        """`actor` for a Secret read a grant or card covers; `redacted` when the caller hides values."""
+        return await self._json("GET", _path(res, namespace, name), actor=actor, redacted=redacted)
 
     async def logs(self, pod: str, namespace: str, *, container: str = "", tail: int = 200,
                    since_seconds: int = 0, previous: bool = False) -> str:
-        api, _ = await self._clients()
-        core = client.CoreV1Api(api)
-        return await self._call(
-            core.read_namespaced_pod_log, pod, namespace, container=container or None, tail_lines=tail or None,
-            since_seconds=since_seconds or None, previous=previous,
-        )
+        res = Resource("v1", "Pod", "pods", True)
+        r = await self._call("GET", _path(res, namespace, pod, "log"), accept="*/*", params={
+            "container": container, "tailLines": tail or None, "sinceSeconds": since_seconds or None,
+            "previous": "true" if previous else None,
+        })
+        return r.text
 
     # --- writes ---------------------------------------------------------------------
 
     async def apply(self, res: Resource, body: dict, *, dry_run: bool, actor: Actor) -> dict:
-        r = await self._dyn(res)
-        ns = body.get("metadata", {}).get("namespace") if res.namespaced else None
-        out = await self._call(
-            r.server_side_apply, body=body, namespace=ns, field_manager=FIELD_MANAGER,
-            force_conflicts=False, dry_run=_DRY if dry_run else None, header_params=self._headers(actor),
+        meta = body.get("metadata") or {}
+        ns = meta.get("namespace") if res.namespaced else None
+        return await self._json(
+            "PATCH", _path(res, ns, meta.get("name") or ""), actor=actor, body=body,
+            content_type="application/apply-patch+yaml",
+            params={"fieldManager": FIELD_MANAGER, "force": "false", "dryRun": _DRY if dry_run else None},
         )
-        return out.to_dict()
 
     async def delete(self, res: Resource, name: str, namespace: str | None, *, dry_run: bool,
                      actor: Actor) -> None:
-        r = await self._dyn(res)
-        await self._call(
-            r.delete, name=name, namespace=namespace if res.namespaced else None,
-            propagation_policy="Background", dry_run=_DRY if dry_run else None,
-            header_params=self._headers(actor),
-        )
+        await self._call("DELETE", _path(res, namespace, name), actor=actor,
+                         body={"kind": "DeleteOptions", "apiVersion": "v1", "propagationPolicy": "Background"},
+                         params={"dryRun": _DRY if dry_run else None})
 
     async def patch(self, res: Resource, name: str, namespace: str | None, patch: dict, *, dry_run: bool,
                     actor: Actor) -> None:
-        r = await self._dyn(res)
-        await self._call(
-            r.patch, body=patch, name=name, namespace=namespace if res.namespaced else None,
-            content_type="application/merge-patch+json", field_manager=FIELD_MANAGER,
-            dry_run=_DRY if dry_run else None, header_params=self._headers(actor),
-        )
+        await self._call("PATCH", _path(res, namespace, name), actor=actor, body=patch,
+                         content_type="application/merge-patch+json",
+                         params={"fieldManager": FIELD_MANAGER, "dryRun": _DRY if dry_run else None})
 
     async def exec(self, pod: str, namespace: str, argv: list[str], *, actor: Actor, container: str = "",
                    timeout: int = 60, limit: int = 64 * 1024) -> ExecResult:
-        api, _ = await self._clients()
-        cfg = api.configuration
         query = [("command", a) for a in argv] + [("stdout", "true"), ("stderr", "true")]
         if container:
             query.append(("container", container))
-        path = f"/api/v1/namespaces/{quote(namespace, safe='')}/pods/{quote(pod, safe='')}/exec"
-        url = get_websocket_url(f"{cfg.host}{path}?{urlencode(query)}")
-        headers = self._headers(actor)
-        auth = cfg.auth_settings().get("BearerToken")
-        if auth:
-            headers[auth["key"]] = auth["value"]
+        path = _path(Resource("v1", "Pod", "pods", True), namespace, pod, "exec")
+        url, headers, sslopt = await self._gw.stream(self._cluster, path, query, actor=actor)
 
         def run() -> ExecResult:
-            ws = _connect(cfg, url, headers)
+            ws = websocket.WebSocket(sslopt=sslopt, skip_utf8_validation=True)
+            ws.connect(url, header=[f"{k}: {v}" for k, v in headers.items()]
+                       + ["Sec-WebSocket-Protocol: v4.channel.k8s.io"])
             out, err, status, closed = bytearray(), bytearray(), None, False
             deadline = time.monotonic() + timeout
             try:
@@ -241,29 +321,6 @@ class Kube:
                            e.status_code) from None
         except (websocket.WebSocketException, OSError) as e:
             raise K8sError(f"exec failed: {e}") from None
-
-
-def _connect(cfg: client.Configuration, url: str, headers: dict[str, str]) -> websocket.WebSocket:
-    """An exec socket with our headers; kubernetes.stream drops Impersonate-*."""
-    ssl_opts: dict[str, Any] = {"cert_reqs": ssl.CERT_NONE}
-    if url.startswith("wss://") and cfg.verify_ssl:
-        ssl_opts = {"cert_reqs": ssl.CERT_REQUIRED, "ca_certs": cfg.ssl_ca_cert or certifi.where()}
-        if cfg.assert_hostname is not None:
-            ssl_opts["check_hostname"] = cfg.assert_hostname
-    if cfg.cert_file:
-        ssl_opts["certfile"] = cfg.cert_file
-    if cfg.key_file:
-        ssl_opts["keyfile"] = cfg.key_file
-    if cfg.tls_server_name:
-        ssl_opts["server_hostname"] = cfg.tls_server_name
-    opts: dict[str, Any] = {}
-    if cfg.proxy:
-        proxy = urlparse(cfg.proxy)
-        opts = {"http_proxy_host": proxy.hostname, "http_proxy_port": proxy.port, "proxy_type": "http"}
-    ws = websocket.WebSocket(sslopt=ssl_opts, skip_utf8_validation=True)
-    ws.connect(url, header=[f"{k}: {v}" for k, v in headers.items()] + ["Sec-WebSocket-Protocol: v4.channel.k8s.io"],
-               **opts)
-    return ws
 
 
 def _exit_code(status: bytes | None) -> int | None:

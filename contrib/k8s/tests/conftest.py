@@ -47,6 +47,8 @@ class FakeKube:
     #: Raised by every dry run, as validation or admission would.
     dry_run_error: K8sError | None = None
     version: int = 0
+    #: Raised by every redacted read, as when the broker can't read Secrets.
+    redacted_error: K8sError | None = None
 
     def add(self, obj: dict) -> None:
         m = obj["metadata"]
@@ -64,11 +66,13 @@ class FakeKube:
             raise K8sError(f'404 {res.name} "{name}" not found', 404)
         return obj
 
-    async def list(self, res, namespace, *, label_selector="", field_selector="", limit=0):
+    async def list(self, res, namespace, *, label_selector="", field_selector="", limit=0, actor=None, redacted=False):
         return [copy.deepcopy(o) for (k, ns, _), o in self.objects.items()
                 if k == res.kind and (namespace is None or ns == namespace)]
 
-    async def get(self, res, name, namespace, *, actor=None):
+    async def get(self, res, name, namespace, *, actor=None, redacted=False):
+        if redacted and self.redacted_error:
+            raise self.redacted_error
         if actor is not None:
             self.actors.append(("get", actor))
         return copy.deepcopy(self._find(res, name, namespace))
