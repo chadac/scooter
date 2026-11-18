@@ -15,6 +15,9 @@ MANIFESTS_COPILOT="@manifestsCopilot@"
 CREDENTIALS="@credentials@"
 # The agent-sandbox release the platform targets (same as test/support/cluster-up.sh).
 AGENT_SANDBOX_VERSION="@agentSandboxVersion@"
+# Set by scooter.lib.mkLocal for each scooter.images.<name>.local.build: a line of the
+# image's ref in the render and the derivation that writes it out (n2c's copyTo).
+LOCAL_IMAGES="@localImages@"
 
 CLUSTER="${SCOOTER_LOCAL_CLUSTER:-scooter}"
 NAMESPACE="scooter"
@@ -441,6 +444,73 @@ check_images() {
   fi
 }
 
+# --- locally built images (scooter.images.<name>.local.build) ---------------------
+
+# A tar per image and tag. Under $STATE, which is under $HOME by default: on macOS the
+# Docker VM (colima, Docker Desktop) only shares $HOME with containers.
+image_tar() { local ref="$1" name="${1%:*}"; echo "$STATE/images/${name##*/}-${ref##*:}.tar"; }
+
+# A Mac has no Linux builder: a nixos/nix container in the Docker VM builds the exported
+# derivations instead, keeping its /nix in a volume.
+build_images() {
+  [ -n "$LOCAL_IMAGES" ] || return 0
+  local ref drv todo=() keep=()
+  while read -r ref drv; do
+    keep+=("$(image_tar "$ref")")
+    [ -s "$(image_tar "$ref")" ] || todo+=("$ref" "$drv")
+  done <<< "$LOCAL_IMAGES"
+  mkdir -p "$STATE/images"
+  # Drop the tars of earlier tags.
+  local f; for f in "$STATE"/images/*.tar; do
+    [ -e "$f" ] && [[ " ${keep[*]} " != *" $f "* ]] && rm -f "$f"
+  done
+  [ ${#todo[@]} -gt 0 ] || return 0
+  command -v nix-store >/dev/null 2>&1 || die "nix is not on PATH, and building images (local.build) needs it."
+  local i
+  if [ "$(uname -s)" = Linux ]; then
+    for ((i = 0; i < ${#todo[@]}; i += 2)); do
+      ref=${todo[i]}; drv=${todo[i+1]}
+      log "building ${ref} (the first build takes several minutes)..."
+      local copy_to; copy_to=$(nix-store --realise "$drv") || die "building ${ref} failed"
+      "$copy_to/bin/copy-to" "docker-archive:$(image_tar "$ref").tmp:$ref" >/dev/null || die "exporting ${ref} failed"
+      mv "$(image_tar "$ref").tmp" "$(image_tar "$ref")"
+    done
+  else
+    local drvs=() args=()
+    for ((i = 0; i < ${#todo[@]}; i += 2)); do
+      drvs+=("${todo[i+1]}")
+      args+=("${todo[i+1]}" "$(basename "$(image_tar "${todo[i]}")")" "${todo[i]}")
+    done
+    log "building ${#drvs[@]} image(s) in Docker (the first build takes several minutes)..."
+    # shellcheck disable=SC2046
+    nix-store --export $(nix-store --query --requisites "${drvs[@]}") > "$STATE/images/drvs.nar" \
+      || die "exporting the images' derivations failed"
+    # shellcheck disable=SC2016
+    docker run --rm -v scooter-local-nix:/nix -v "$STATE/images:/work" nixos/nix sh -ec '
+      nix-store --import < /work/drvs.nar >/dev/null
+      while [ $# -gt 0 ]; do
+        out=$(nix-store --realise "$1")
+        "$out/bin/copy-to" "docker-archive:/work/$2.tmp:$3" >/dev/null
+        mv "/work/$2.tmp" "/work/$2"
+        shift 3
+      done' sh "${args[@]}" \
+      || die "building the images in Docker failed; the output above says why."
+    rm -f "$STATE/images/drvs.nar"
+  fi
+}
+
+import_images() {
+  [ -n "$LOCAL_IMAGES" ] || return 0
+  local ref drv have
+  have=$(docker exec "k3d-${CLUSTER}-server-0" crictl images 2>/dev/null || true)
+  while read -r ref drv; do
+    # crictl's own filter ignores the tag, so match the repository and tag columns.
+    grep -qE "^(docker\.io/)?${ref%:*} +${ref##*:} " <<< "$have" && continue
+    log "importing ${ref} into the cluster..."
+    k3d image import -c "$CLUSTER" "$(image_tar "$ref")" >/dev/null || die "importing ${ref} failed"
+  done <<< "$LOCAL_IMAGES"
+}
+
 # --- deploy ------------------------------------------------------------------
 
 ensure_namespace() {
@@ -549,7 +619,9 @@ cmd_up() {
   need_docker
   check_docker_size
   mkdir -p "$STATE"
+  build_images
   cluster_up
+  import_images
   install_controller
   local provider; provider=$(current_provider)
   if [ -z "$provider" ]; then choose_provider; provider=$(current_provider); fi
@@ -595,6 +667,8 @@ cmd_destroy() {
     log "no cluster '$CLUSTER'"
   fi
   rm -rf "$STATE"
+  # The nix store local.build uses on a Mac.
+  docker volume rm scooter-local-nix >/dev/null 2>&1 || true
   log "removed $STATE"
 }
 

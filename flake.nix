@@ -64,9 +64,21 @@
       # misses a shell's environment) agrees with the terminal.
       mkLocal = { system, module, buildSystem ? "x86_64-linux", port ? 8080 }:
         let
-          render = evalPlatformWith {
+          modules = [ ./local/preset.nix { scooter.agent.skills = scooterSkills; } module ];
+          published = evalPlatformWith { inherit system buildSystem modules; };
+          # images.<name>.local.build: built for the Docker VM's Linux; the rest keep ghcr's tags.
+          built = nixpkgs.lib.attrNames (nixpkgs.lib.filterAttrs (_: img: img.local.build) published.config.scooter.images);
+          vmSystem = { aarch64-darwin = "aarch64-linux"; x86_64-darwin = "x86_64-linux"; }.${system} or system;
+          vmImages = (evalPlatformWith { inherit system modules; buildSystem = vmSystem; }).config.scooter.images;
+          vmPackage = name: if vmImages.${name}.package != null then vmImages.${name}.package
+            else throw "scooter.images.${name}.local.build: the image has no package to build.";
+          render = if built == [ ] then published else evalPlatformWith {
             inherit system buildSystem;
-            modules = [ ./local/preset.nix { scooter.agent.skills = scooterSkills; } module ];
+            modules = modules ++ [{
+              scooter.images = nixpkgs.lib.genAttrs built (name: {
+                ref.tag = nixpkgs.lib.mkForce (published.config.scooter.imagesContentTag (vmPackage name));
+              });
+            }];
           };
           provider = render.config.scooter.local.provider;
         in
@@ -79,6 +91,12 @@
           fixedProvider = provider;
           inherit port;
           inherit (render.config.scooter.local) credentials;
+          localImages = map (name: {
+            ref = render.config.scooter.images.${name}.ref.fullUrl;
+            # The .drv closure, not its outputs: a Mac can't build a Linux image, so
+            # `up` does, in Docker.
+            copyToDrv = builtins.unsafeDiscardOutputDependency (vmPackage name).copyTo.drvPath;
+          }) built;
         };
     in
     flake-parts.lib.mkFlake { inherit inputs; } {
@@ -641,6 +659,15 @@
             local-manifests = import ./local/check.nix { pkgs = hostPkgs; inherit lib; renders = localRenders; };
             # `scooter.lib.mkLocal` on the template's configuration: the declared shape builds.
             local-example = mkLocal { inherit system; module = ./local/template/scooter.nix; };
+            # images.<name>.local.build: the broker from the cluster's own image, the rest from ghcr.
+            local-image-build =
+              let l = mkLocal { inherit system; module = { scooter.local.provider = "anthropic"; scooter.images.agent-broker.local.build = true; }; };
+              in hostPkgs.runCommand "local-image-build" { } ''
+                grep -q 'image: scooter-local/agent-broker:' ${l.manifests.anthropic}
+                if grep -q 'ghcr.io/.*/agent-broker:' ${l.manifests.anthropic}; then echo "broker still on ghcr"; exit 1; fi
+                grep -q '^LOCAL_IMAGES="scooter-local/agent-broker:[a-z0-9]\{12\} /nix/store/[^ ]*-copy-to.drv"$' ${l}/bin/scooter-local
+                touch $out
+              '';
           } // lib.optionalAttrs hostPkgs.stdenv.hostPlatform.isLinux {
             # nixosModules.local evaluates into a service running that build.
             local-nixos-module =
