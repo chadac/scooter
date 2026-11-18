@@ -86,8 +86,8 @@ def _body(request: GenerateRequest) -> dict[str, Any]:
                 "data": base64.b64encode(request.reference_image).decode(),
             }
         )
-    # Generated files are named *.png, so ask for PNG rather than the model's default.
-    response_format: dict[str, Any] = {"type": "image", "mime_type": "image/png"}
+    # No mime_type: the Interactions API accepts only image/jpeg, the default.
+    response_format: dict[str, Any] = {"type": "image"}
     for key in ("aspect_ratio", "image_size"):
         if key in request.params:
             response_format[key] = request.params[key]

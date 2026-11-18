@@ -180,3 +180,9 @@ async def test_successful_generation_writes_each_image_and_records_one_usage_row
 
 async def _ok_path(*args, **kwargs):
     return "/workspace/images/out.png"
+
+
+def test_default_name_matches_the_image_format() -> None:
+    assert mcp_tools._image_name(None, 0, 1, b"\xff\xd8\xff\xe0").endswith(".jpg")
+    assert mcp_tools._image_name(None, 1, 2, b"\x89PNG\r\n").endswith("-1.png")
+    assert mcp_tools._image_name("cat.png", 0, 1, b"\xff\xd8\xff\xe0") == "cat.png"

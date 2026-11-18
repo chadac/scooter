@@ -56,7 +56,7 @@ async def test_text_to_image_body_and_fan_out() -> None:
     assert json.loads(seen[0].content) == {
         "model": _MODEL,
         "input": [{"type": "text", "text": "a cat"}],
-        "response_format": {"type": "image", "mime_type": "image/png", "aspect_ratio": "16:9"},
+        "response_format": {"type": "image", "aspect_ratio": "16:9"},
         "store": False,
     }
 

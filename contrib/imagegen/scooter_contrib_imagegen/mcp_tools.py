@@ -165,7 +165,9 @@ def build_generate_image_tool(
 
             try:
                 paths = [
-                    await write_image(agent_host_url, conversation_id, _image_name(out_path, i, len(images)), data)
+                    await write_image(
+                        agent_host_url, conversation_id, _image_name(out_path, i, len(images), data), data
+                    )
                     for i, data in enumerate(images)
                 ]
             except SandboxIOError as e:
@@ -189,11 +191,20 @@ def build_generate_image_tool(
     )
 
 
-def _image_name(out_path: str | None, index: int, total: int) -> str:
+def _image_name(out_path: str | None, index: int, total: int, data: bytes) -> str:
     """The filename to save image `index` of `total` under, honoring `out_path` as a hint."""
     if total == 1:
-        return out_path or f"{uuid4().hex}.png"
+        return out_path or f"{uuid4().hex}.{_extension(data)}"
     if not out_path:
-        return f"{uuid4().hex}-{index}.png"
+        return f"{uuid4().hex}-{index}.{_extension(data)}"
     stem, _, ext = out_path.rpartition(".")
     return f"{stem or out_path}-{index}.{ext}" if ext else f"{out_path}-{index}"
+
+
+def _extension(data: bytes) -> str:
+    """The file extension for the image bytes' format (backends differ: PNG, JPEG, WebP)."""
+    if data.startswith(b"\xff\xd8"):
+        return "jpg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    return "png"
