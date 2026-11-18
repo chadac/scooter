@@ -105,6 +105,16 @@ in
         user.email`, else empty, which sends none).
       '';
     };
+    dns.forward = mkOption {
+      type = types.attrsOf (types.nonEmptyListOf types.str);
+      default = { };
+      example = { "corp.example.com" = [ "192.168.5.1" ]; };
+      description = ''
+        Nameservers for some domains, in place of the cluster's upstream DNS: names only
+        a VPN's split DNS knows, say. The addresses are as the Docker VM sees them (on
+        colima the host is `192.168.5.1`).
+      '';
+    };
     assetsHostPath = mkOption {
       type = types.str;
       default = "/var/lib/scooter/assets";
@@ -228,6 +238,17 @@ in
         ${config.scooter.auth.userHeader} = cfg.user;
         ${config.scooter.auth.emailHeader} = cfg.email;
       };
+    };
+
+    # k3s's CoreDNS imports the `*.server` blocks of this optional ConfigMap.
+    kubernetes.resources.configMaps.coredns-custom = lib.mkIf (cfg.dns.forward != { }) {
+      metadata.namespace = "kube-system";
+      data = lib.mapAttrs' (domain: servers: lib.nameValuePair "${domain}.server" ''
+        ${domain}:53 {
+          forward . ${toString servers}
+          cache 30
+        }
+      '') cfg.dns.forward;
     };
 
     # The contribs that need no credentials.

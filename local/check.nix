@@ -82,7 +82,19 @@ let
     ++ lib.optional (!(lib.hasInfix "\"copilot\"" (toString (envValue "copilot" "AGENT_MODELS_JSON"))))
       "copilot: the catalog has no copilot-tagged model";
 
-  problems = structural ++ perProvider ++ providerWiring;
+  # dns.forward adds a CoreDNS server block per domain.
+  dnsRender = renders.anthropic.extendModules {
+    modules = [{ scooter.local.dns.forward = { "corp.example.com" = [ "192.168.5.1" ]; "vpn.test" = [ "10.0.0.2" "10.0.0.3" ]; }; }];
+  };
+  dnsData = (lib.findFirst (o: o.kind == "ConfigMap" && o.metadata.name == "coredns-custom") { } dnsRender.config.kubernetes.objects).data or { };
+  dns =
+    lib.optional (find "anthropic" "ConfigMap" "coredns-custom" != null) "dns: coredns-custom rendered without dns.forward"
+    ++ lib.optional (!(lib.hasInfix "corp.example.com:53 {" (dnsData."corp.example.com.server" or "")
+                    && lib.hasInfix "forward . 192.168.5.1\n" (dnsData."corp.example.com.server" or "")
+                    && lib.hasInfix "forward . 10.0.0.2 10.0.0.3\n" (dnsData."vpn.test.server" or "")))
+      "dns: coredns-custom does not forward each domain to its nameservers:\n${builtins.toJSON dnsData}";
+
+  problems = structural ++ perProvider ++ providerWiring ++ dns;
 in
 # The verdict lives in an attribute, not around the derivation: `nix flake show`
 # reads only `type` and `name`, and each render it would otherwise force is a full
