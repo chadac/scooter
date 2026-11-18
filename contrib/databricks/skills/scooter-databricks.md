@@ -33,5 +33,12 @@ write to, run jobs in, or change a production workspace without the user saying
 so in this conversation. A SQL statement is a POST either way, so treat any
 production statement that isn't a plain `SELECT` as a write.
 
+**Access may need the user's approval.** A 403 with `X-Scooter-Policy` saying
+"waiting for the user to allow … access" means an approval card is in front of the
+user: stop, tell them which workspace and why, and retry when you're told they
+approved. Reads (GET) and read-write (anything else, including running SQL) are
+approved separately, so a first write may ask again. If they deny it, don't retry
+or work around it.
+
 A 401 means that workspace's token is missing or expired: tell the user, don't
 retry. A 403 means they lack the permission.

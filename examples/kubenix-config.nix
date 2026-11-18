@@ -325,6 +325,8 @@
       dev.host = "https://example-dev.cloud.databricks.com";
       prod.host = "https://example-prod.cloud.databricks.com";
     };
+    # Each conversation's first call to a workspace asks its owner for 4h of access.
+    databricks.grantHours = 4;
 
     # Mounts only when url and token both resolve.
     grafana = {

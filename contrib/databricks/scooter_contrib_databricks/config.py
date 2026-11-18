@@ -11,6 +11,8 @@ class DatabricksSettings(ScooterBaseSettings):
     # JSON {name: host}.
     databricks_workspaces: str = "{}"
     databricks_tokens_dir: str = "/var/run/scooter/databricks"
+    # How long an approval lasts; 0 sends every call without asking.
+    databricks_grant_minutes: int = 0
 
     @property
     def workspaces(self) -> dict[str, str]:
