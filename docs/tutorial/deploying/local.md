@@ -124,6 +124,21 @@ Docker volume, and the uploads in the state directory. `destroy` removes all of 
 **No GPU on macOS.** Sandboxes run in Docker's Linux VM, which cannot reach the Mac's
 GPU, so a sandbox size with `gpu` set never schedules there. Ollama on the Mac itself uses
 Metal.
+To let code in a sandbox use that Ollama, open the port to the host (sandboxes can't
+reach private addresses by default) and pass the address in.
+`docker exec k3d-scooter-server-0 getent hosts host.k3d.internal` prints the host's IP.
+
+```nix
+scooter = {
+  networkPolicy.extraEgress = [
+    {
+      to = [ { ipBlock.cidr = "192.168.5.2/32"; } ];
+      ports = [ { protocol = "TCP"; port = 11434; } ];
+    }
+  ];
+  deployTools.env.OLLAMA_HOST = "http://host.k3d.internal:11434";
+};
+```
 
 ## Declare it instead
 
