@@ -13,6 +13,7 @@
     brave.enable = true;
     code-server.enable = true;
     commits.enable = true;
+    databricks.enable = true;
     datadog.enable = true;
     docker.enable = true;
     duckduckgo.enable = true;

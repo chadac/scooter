@@ -418,6 +418,7 @@
             contrib-airtable = contribs.packages.airtable.broker;
             contrib-atlassian = contribs.packages.atlassian.broker;
             contrib-brave = contribs.packages.brave.broker;
+            contrib-databricks = contribs.packages.databricks.broker;
             contrib-datadog = contribs.packages.datadog.broker;
             contrib-duckduckgo = contribs.packages.duckduckgo.broker;
             contrib-github = contribs.packages.github.broker;
@@ -630,6 +631,7 @@
             contrib-airtable = contribs.packages.airtable.broker;
             contrib-atlassian = contribs.packages.atlassian.broker;
             contrib-brave = contribs.packages.brave.broker;
+            contrib-databricks = contribs.packages.databricks.broker;
             contrib-datadog = contribs.packages.datadog.broker;
             contrib-duckduckgo = contribs.packages.duckduckgo.broker;
             contrib-github = contribs.packages.github.broker;

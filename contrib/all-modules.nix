@@ -13,6 +13,7 @@
     ./brave/contrib.nix
     ./code-server/contrib.nix
     ./commits/contrib.nix
+    ./databricks/contrib.nix
     ./datadog/contrib.nix
     ./docker/contrib.nix
     ./duckduckgo/contrib.nix
