@@ -23,7 +23,7 @@ services.
 
 ## An API and a token, with no package
 
-When the integration is just "this HTTPS API, this token, these paths", declare it in
+When the integration is just "this HTTP API, this token, these paths", declare it in
 the deployment instead of writing a contrib:
 
 ```nix
@@ -42,7 +42,9 @@ contribs.billing = {
 The broker serves it as provider `billing`, built from `ForgeHosts`, `HttpProxy` and
 `FileTokenSource` (`services/broker/broker/providers/tokenproxy.py`), so it needs no
 image rebuild. The token is re-read from the mounted Secret on every request.
-`credential.kind` is `bearer` (the default), `header` with `headerName`, or `basic`.
+`credential.kind` is `bearer` (the default), `header` with `headerName`, `basic`, or
+`none`. A plain `http://` URL, such as a Service in the cluster, works too: it is
+reached only as `agent-broker billing/…`, since the forge proxy intercepts TLS alone.
 
 ## Layout
 

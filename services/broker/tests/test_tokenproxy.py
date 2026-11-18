@@ -19,6 +19,8 @@ PROVIDERS = {
     "billing": {"url": "https://billing.example.com/", "apiPrefixes": ["/v1/"], "credential": {"kind": "bearer"}},
     "metrics": {"url": "https://metrics.example.com", "apiPrefixes": ["/"],
                 "credential": {"kind": "header", "headerName": "X-Api-Key"}},
+    "inventory": {"url": "http://inventory.tools.svc.cluster.local:8080", "apiPrefixes": ["/"],
+                  "credential": {"kind": "none"}},
 }
 
 
@@ -48,6 +50,19 @@ def test_a_provider_per_entry_named_for_its_contrib(tokens):
     assert (h.host, h.api_prefixes) == ("billing.example.com", ("/v1/",))
     (proxy,) = [t for t in p.transports if isinstance(t, HttpProxy)]
     assert proxy.upstream == "https://billing.example.com"
+
+
+def test_plain_http_skips_the_forge_proxy(tokens):
+    p = build("inventory")
+    assert find_forge_hosts(p) is None
+    (proxy,) = p.transports
+    assert isinstance(proxy, HttpProxy) and proxy.upstream == "http://inventory.tools.svc.cluster.local:8080"
+
+
+async def test_kind_none_sends_no_credential(tokens):
+    req = httpx.Request("GET", "http://inventory.tools.svc.cluster.local:8080/items")
+    (await build("inventory").credential.get(IDENT)).inject(req)
+    assert "authorization" not in req.headers
 
 
 def test_none_without_config(monkeypatch):

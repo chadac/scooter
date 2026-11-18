@@ -1499,6 +1499,13 @@ let
           credential = { kind = "header"; headerName = "X-Api-Key"; };
         } then [ ]
      else [ "broker.env.TOKENPROXY_PROVIDERS lacks contribs.billing: ${builtins.toJSON tokenproxyCfg}" ])
+    ++ (if (tokenproxyCfg.inventory or null) == {
+          url = "http://inventory.tools.svc.cluster.local:8080"; apiPrefixes = [ "/" ];
+          credential = { kind = "none"; headerName = null; };
+        } then [ ]
+        else [ "broker.env.TOKENPROXY_PROVIDERS lacks contribs.inventory: ${builtins.toJSON tokenproxyCfg}" ])
+    ++ (if builtins.any (v: v.name == "tokenproxy-inventory") (res.deployments.agent-broker.spec.template.spec.volumes or [ ]) then
+          [ "kind = \"none\" mounted a token volume for contribs.inventory" ] else [ ])
     ++ (if map (v: v.secret) tokenproxyVol == [ {
           secretName = "billing-token"; optional = true; items = [ { key = "api-key"; path = "token"; } ];
         } ] then [ ]

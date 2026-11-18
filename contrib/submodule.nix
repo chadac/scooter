@@ -928,7 +928,7 @@ in
       type = types.enum [ "python" "tokenproxy" ];
       default = "python";
       description = ''
-        `python` is a contrib with a Python package in `src`. `tokenproxy` is one HTTPS
+        `python` is a contrib with a Python package in `src`. `tokenproxy` is one HTTP
         API and its token, declared entirely under `tokenproxy`: the broker serves it as
         provider `${name}` with no package, image build or `src`. Like any contrib it
         ships only with `enable = true`.
@@ -942,8 +942,12 @@ in
         options = {
           url = mkOption {
             type = types.str;
-            example = "https://billing.internal.example.com";
-            description = "The API's base URL; its host is what the forge proxy intercepts.";
+            example = "http://billing.tools.svc.cluster.local:8080";
+            description = ''
+              The API's base URL. An `https://` host is also intercepted by the forge proxy, so
+              its own URL works in the sandbox; a plain `http://` one (a Service in the cluster,
+              say) is reached only as `agent-broker <name>/…`.
+            '';
           };
           apiPrefixes = mkOption {
             type = types.listOf types.str;
@@ -953,11 +957,12 @@ in
           };
           credential = {
             kind = mkOption {
-              type = types.enum [ "bearer" "header" "basic" ];
+              type = types.enum [ "bearer" "header" "basic" "none" ];
               default = "bearer";
               description = ''
                 How the token is sent: `Authorization: Bearer <token>`, the raw token in
-                `headerName`, or `Authorization: Basic <token>` (the token already base64 `user:password`).
+                `headerName`, `Authorization: Basic <token>` (the token already base64
+                `user:password`), or `none`: nothing, for an API that trusts the network.
               '';
             };
             headerName = mkOption {
@@ -970,8 +975,8 @@ in
               type = contribLib.secretRef { key = "token"; holds = "the token"; };
               example = { name = "billing-token"; key = "token"; };
               description = ''
-                Secret in the broker namespace holding the token. Mounted as a file and
-                re-read on every request, so a rotated token applies without a restart.
+                Secret in the broker namespace holding the token, unless `kind = "none"`. Mounted as a
+                file and re-read on every request, so a rotated token applies without a restart.
                 A missing Secret or key sends no credential, and the upstream answers 401.
               '';
             };

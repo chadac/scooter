@@ -6,6 +6,7 @@
 let
   dir = "/var/run/scooter/tokenproxy";
   proxies = lib.filterAttrs (_: c: c.enable && c.type == "tokenproxy") config.contribs;
+  withToken = lib.filterAttrs (_: c: c.tokenproxy.credential.kind != "none") proxies;
   volume = name: "tokenproxy-${name}";
 in
 {
@@ -24,11 +25,11 @@ in
         items = [ { key = c.tokenproxy.credential.secret.key; path = "token"; } ];
         optional = true;
       };
-    }) proxies;
+    }) withToken;
     scooter.broker.extraVolumeMounts = lib.mapAttrsToList (name: _: {
       name = volume name;
       mountPath = "${dir}/${name}";
       readOnly = true;
-    }) proxies;
+    }) withToken;
   };
 }

@@ -227,6 +227,12 @@
         credential = { kind = "header"; headerName = "X-Api-Key"; secret = { name = "billing-token"; key = "api-key"; }; };
       };
     };
+    # One in the cluster that trusts the network: plain http, no token, no Secret.
+    inventory = {
+      enable = true;
+      type = "tokenproxy";
+      tokenproxy = { url = "http://inventory.tools.svc.cluster.local:8080"; credential.kind = "none"; };
+    };
 
     # Opt in: `enable` defaults false, so a deployment names what it ships.
     atlassian.enable = true;
