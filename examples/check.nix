@@ -794,6 +794,7 @@ let
       contribs.aws = lib.mkForce { enable = false; };
       contribs.shares = lib.mkForce { enable = false; };
       contribs.ssh = lib.mkForce { enable = false; };
+      contribs.apikeys = lib.mkForce { enable = false; };
       contribs.mcpservers = lib.mkForce { enable = false; };
       contribs.gcp = lib.mkForce { enable = false; };
       contribs.atlassian = lib.mkForce { enable = false; };
@@ -893,6 +894,26 @@ let
             ctrs = if off == null then [ ] else builtins.filter (c: c.name == "sandbox") off.containers;
         in if !(builtins.any (c: hasName (c.env or [ ]) "SSH_AUTH_SOCK") ctrs) then [ ]
         else [ "ssh-off: sandboxPod.extraEnv still sets SSH_AUTH_SOCK — contrib/ssh/deployment.nix is not gated on the contrib" ])
+    # apikeys wiring: present when on, absent when off.
+    ++ (let
+          wiring = r:
+            let
+              spec = r.deployments.agent-webhooks.spec.template.spec;
+              tokens = builtins.concatMap (v: v.projected.sources or [ ]) (spec.volumes or [ ]);
+              envOf = dep: builtins.concatMap (c: c.env or [ ]) (builtins.attrValues (r.deployments.${dep}.spec.template.spec.containers or { }));
+            in {
+              token = builtins.any (s: (s.serviceAccountToken.audience or "") == "agent-broker") tokens;
+              brokerUrl = hasName (envOf "agent-webhooks") "BROKER_URL";
+              verifiers = builtins.filter (e: e.name == "APIKEYS_VERIFIER_SERVICE_ACCOUNTS") (envOf "agent-broker");
+            };
+          on = wiring res;
+          off = wiring awsOffPlatform.config.kubernetes.resources;
+        in
+        (if on.token && on.brokerUrl then [ ] else [ "apikeys on: webhooks lacks the agent-broker token or BROKER_URL, so keys can't be verified" ])
+        ++ (if map (e: e.value) on.verifiers == [ "system:serviceaccount:${platform.config.scooter.namespace}:agent-webhooks" ] then [ ]
+            else [ "apikeys on: APIKEYS_VERIFIER_SERVICE_ACCOUNTS is not exactly the webhooks SA" ])
+        ++ (if !off.token && !off.brokerUrl && off.verifiers == [ ] then [ ]
+            else [ "apikeys-off: webhooks or broker still carry apikeys wiring — contrib/apikeys/deployment.nix is not gated" ]))
     ++ (if contribCtr != null && hasName (contribCtr.env or [ ]) "CLOUDSDK_AUTH_ACCESS_TOKEN_FILE" then [ ]
         else [ "sandboxPod.extraEnv CLOUDSDK_AUTH_ACCESS_TOKEN_FILE missing with gcp on — sandbox gcloud has no token to send" ])
     ++ (let off = contribOverlayOf awsOffPlatform;

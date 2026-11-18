@@ -6,6 +6,7 @@
   imports = [
     ./spec.nix
 
+    ./apikeys/contrib.nix
     ./airtable/contrib.nix
     ./ask-user/contrib.nix
     ./atlassian/contrib.nix
