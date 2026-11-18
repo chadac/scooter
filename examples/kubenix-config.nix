@@ -217,6 +217,17 @@
 
   # --- Contribs: each integration's own options ---
   contribs = {
+    # A provider declared only in Nix: no package, no image change.
+    billing = {
+      enable = true;
+      type = "tokenproxy";
+      tokenproxy = {
+        url = "https://billing.internal.example.com";
+        apiPrefixes = [ "/v1/" ];
+        credential = { kind = "header"; headerName = "X-Api-Key"; secret = { name = "billing-token"; key = "api-key"; }; };
+      };
+    };
+
     # Opt in: `enable` defaults false, so a deployment names what it ships.
     atlassian.enable = true;
     aws.enable = true;

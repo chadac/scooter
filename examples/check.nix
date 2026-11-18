@@ -440,8 +440,9 @@ let
     allNamespaces;
   coverageProblems = map (n: "example never sets scooter.${n} (add it, or add to coverageExempt with a reason)") uncovered;
 
-  # Same guard for `contribs.*`, exempting no-option and unshipped contribs.
-  contribNames = builtins.attrNames platform.config.contribs;
+  # Same guard for `contribs.*`, exempting no-option and unshipped contribs. Only the
+  # registry's: a deployment-declared one (a tokenproxy) is configured by definition.
+  contribNames = builtins.filter (n: bareContribs ? ${n}) (builtins.attrNames platform.config.contribs);
   # Own options = resolved fields minus the shared spec's.
   bareContribs = (nixpkgsLib.evalModules {
     specialArgs = { lib = nixpkgsLib; };
@@ -1487,6 +1488,25 @@ let
     in builtins.concatMap (c: c.env or [ ]) ctrs;
   k8sEnv = name: builtins.filter (e: e.name == name) k8sBrokerEnv;
   k8sClusters = builtins.fromJSON ((builtins.head (k8sEnv "K8S_CLUSTERS_JSON" ++ [ { value = "{}"; } ])).value);
+  # contribs.billing (type = "tokenproxy") reaches the broker as config and a token file.
+  tokenproxyCfg = builtins.fromJSON (builtins.head (map (e: e.value)
+    (builtins.filter (e: e.name == "TOKENPROXY_PROVIDERS") brokerEnv) ++ [ "{}" ]));
+  tokenproxyVol = builtins.filter (v: v.name == "tokenproxy-billing")
+    (res.deployments.agent-broker.spec.template.spec.volumes or [ ]);
+  tokenproxyProblems =
+    (if (tokenproxyCfg.billing or null) == {
+          url = "https://billing.internal.example.com"; apiPrefixes = [ "/v1/" ];
+          credential = { kind = "header"; headerName = "X-Api-Key"; };
+        } then [ ]
+     else [ "broker.env.TOKENPROXY_PROVIDERS lacks contribs.billing: ${builtins.toJSON tokenproxyCfg}" ])
+    ++ (if map (v: v.secret) tokenproxyVol == [ {
+          secretName = "billing-token"; optional = true; items = [ { key = "api-key"; path = "token"; } ];
+        } ] then [ ]
+        else [ "broker.volumes tokenproxy-billing is not billing-token's api-key as `token`: ${builtins.toJSON tokenproxyVol}" ])
+    ++ (if builtins.any (m: m.name == "tokenproxy-billing" && m.mountPath == "/var/run/scooter/tokenproxy/billing")
+          (brokerCtr.volumeMounts or [ ]) then [ ]
+        else [ "broker.volumeMounts tokenproxy-billing not at /var/run/scooter/tokenproxy/billing" ]);
+
   k8sProblems =
     (if (builtins.head (k8sEnv "K8S_ENABLED" ++ [ { value = ""; } ])).value == "true" then [ ]
      else [ "contribs.k8s with clusters did not set K8S_ENABLED=true on the broker" ])
@@ -1879,7 +1899,7 @@ let
               (envOf bothAgents.config.kubernetes.resources "agent-host" "GOOSE_BIN") true)).success then [ ]
         else [ "agent.command with fakeAgent should fail the render" ]);
 
-  allProblems = commandProblems ++ packageProblems ++ uploadsProblems ++ sysTaskProblems ++ askUserProblems ++ hookProblems ++ providerProblems ++ disabledContribProblems ++ settingsTabProblems ++ uiManifestProblems ++ conversationUiProblems ++ mathProblems ++ contribApiProblems ++ dirSkillProblems ++ legacyRootProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ imagegenProblems ++ atProblems ++ googleProblems ++ ghOwnersProblems ++ sharesProblems ++ cfProblems ++ themeProblems ++ csProblems ++ dbProblems ++ poolerProblems ++ puProblems ++ mdProblems ++ ngProblems' ++ rolloutProblems ++ availabilityProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ contribCoverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ atlassianProblems ++ volumeProblems ++ approvalProblems ++ awaitingNotifyProblems ++ stage2Problems ++ contribDbProblems ++ contribGrantProblems ++ retireProblems ++ initGrantProblems ++ schemaGateProblems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems ++ conversationServiceProblems ++ selfAccessProblems ++ npProblems ++ sandboxOriginProblems ++ enforceProblems ++ uaProblems ++ folderServiceProblems ++ k8sProblems;
+  allProblems = commandProblems ++ packageProblems ++ uploadsProblems ++ sysTaskProblems ++ askUserProblems ++ hookProblems ++ providerProblems ++ disabledContribProblems ++ settingsTabProblems ++ uiManifestProblems ++ conversationUiProblems ++ mathProblems ++ contribApiProblems ++ dirSkillProblems ++ legacyRootProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ imagegenProblems ++ atProblems ++ googleProblems ++ ghOwnersProblems ++ sharesProblems ++ cfProblems ++ themeProblems ++ csProblems ++ dbProblems ++ poolerProblems ++ puProblems ++ mdProblems ++ ngProblems' ++ rolloutProblems ++ availabilityProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ contribCoverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ atlassianProblems ++ volumeProblems ++ approvalProblems ++ awaitingNotifyProblems ++ stage2Problems ++ contribDbProblems ++ contribGrantProblems ++ retireProblems ++ initGrantProblems ++ schemaGateProblems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems ++ conversationServiceProblems ++ selfAccessProblems ++ npProblems ++ sandboxOriginProblems ++ enforceProblems ++ uaProblems ++ folderServiceProblems ++ k8sProblems ++ tokenproxyProblems;
 in
 if allProblems == [ ]
 then "ok: deployments = ${haveDeps}; datadog + airtable + brave + kagi + duckduckgo (three search providers, each with its own tool) + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every scooter.* namespace and every shipped contrib's own options; skills gated on the contrib being built; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; the renamed root (agentSandbox.*) fails the render; contribs reach the platform eval and configuring an unshipped one fails the render; deploy-time Jobs are spec-hash named; the stateless Deployments carry PDBs and soft topology spread; a scooter.packages override reaches exactly the images that use it; agent.command sets GOOSE_BIN to a wrapper the agent-host image ships\n"

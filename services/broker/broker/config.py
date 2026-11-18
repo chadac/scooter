@@ -52,6 +52,11 @@ class BrokerSettings(ScooterBaseSettings):
     # The `test` whoami provider, off in prod.
     test_provider_enabled: bool = False
 
+    # `contribs.<name>.type = "tokenproxy"` providers, as JSON {name: {url, apiPrefixes,
+    # credential}}; each one's token is the file <tokenproxy_dir>/<name>/token.
+    tokenproxy_providers: str = "{}"
+    tokenproxy_dir: str = "/var/run/scooter/tokenproxy"
+
     # --- The shared `broker` database ---------------------------------------
     # Components for the platform Postgres database named `broker`, which every broker
     # store uses; the SQLite default is the dev path and a set password wins (see store_config).

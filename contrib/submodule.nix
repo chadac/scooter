@@ -5,6 +5,7 @@
 
 let
   inherit (lib) mkOption mkEnableOption types literalExpression;
+  contribLib = import ./lib.nix { inherit lib; };
 
   # The services a contrib can plug into, as names only; the packages live in
   # contrib/build.nix.
@@ -920,6 +921,62 @@ in
           default = { };
           description = "The ${svc} half of this contrib.";
         });
+      };
+    };
+
+    type = mkOption {
+      type = types.enum [ "python" "tokenproxy" ];
+      default = "python";
+      description = ''
+        `python` is a contrib with a Python package in `src`. `tokenproxy` is one HTTPS
+        API and its token, declared entirely under `tokenproxy`: the broker serves it as
+        provider `${name}` with no package, image build or `src`. Like any contrib it
+        ships only with `enable = true`.
+      '';
+    };
+
+    tokenproxy = mkOption {
+      default = { };
+      description = "The API a `type = \"tokenproxy\"` contrib proxies. Read only for that type.";
+      type = types.submodule {
+        options = {
+          url = mkOption {
+            type = types.str;
+            example = "https://billing.internal.example.com";
+            description = "The API's base URL; its host is what the forge proxy intercepts.";
+          };
+          apiPrefixes = mkOption {
+            type = types.listOf types.str;
+            default = [ "/" ];
+            example = [ "/v1/" ];
+            description = "Paths on that host that get the token; any other path passes through untouched.";
+          };
+          credential = {
+            kind = mkOption {
+              type = types.enum [ "bearer" "header" "basic" ];
+              default = "bearer";
+              description = ''
+                How the token is sent: `Authorization: Bearer <token>`, the raw token in
+                `headerName`, or `Authorization: Basic <token>` (the token already base64 `user:password`).
+              '';
+            };
+            headerName = mkOption {
+              type = types.nullOr types.str;
+              default = null;
+              example = "X-Api-Key";
+              description = "The header for `kind = \"header\"`.";
+            };
+            secret = mkOption {
+              type = contribLib.secretRef { key = "token"; holds = "the token"; };
+              example = { name = "billing-token"; key = "token"; };
+              description = ''
+                Secret in the broker namespace holding the token. Mounted as a file and
+                re-read on every request, so a rotated token applies without a restart.
+                A missing Secret or key sends no credential, and the upstream answers 401.
+              '';
+            };
+          };
+        };
       };
     };
   };

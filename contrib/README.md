@@ -21,6 +21,29 @@ edit to `app.py`, the broker core, or the flake's service definitions.
 See `contrib/echo/` for the reference implementation that plugs into **both**
 services.
 
+## An API and a token, with no package
+
+When the integration is just "this HTTPS API, this token, these paths", declare it in
+the deployment instead of writing a contrib:
+
+```nix
+contribs.billing = {
+  enable = true;
+  type = "tokenproxy";
+  tokenproxy = {
+    url = "https://billing.internal.example.com";
+    apiPrefixes = [ "/v1/" ];
+    credential.secret = { name = "billing-token"; key = "token"; };
+  };
+  skills."billing.md" = ./skills/billing.md;   # optional
+};
+```
+
+The broker serves it as provider `billing`, built from `ForgeHosts`, `HttpProxy` and
+`FileTokenSource` (`services/broker/broker/providers/tokenproxy.py`), so it needs no
+image rebuild. The token is re-read from the mounted Secret on every request.
+`credential.kind` is `bearer` (the default), `header` with `headerName`, or `basic`.
+
 ## Layout
 
 ```
