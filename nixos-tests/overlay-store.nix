@@ -6,6 +6,9 @@
 
 { pkgs, lib, sandboxModule }:
 
+let
+  hostDriver = pkgs.runCommand "host-driver" { } "mkdir $out";
+in
 pkgs.testers.runNixOSTest {
   name = "dev-env-overlay-store";
 
@@ -55,6 +58,21 @@ pkgs.testers.runNixOSTest {
       '';
     };
 
+    # Stand in for a CDI device plugin binding a host driver onto a store path.
+    systemd.services.seed-store-submount = {
+      wantedBy = [ "overlay-store-setup.service" ];
+      before = [ "overlay-store-setup.service" ];
+      unitConfig.DefaultDependencies = false;
+      serviceConfig = { Type = "oneshot"; RemainAfterExit = true; };
+      path = [ pkgs.util-linux ];
+      # The store is read-only here, so bind onto an existing empty store path.
+      script = ''
+        mkdir -p /run/host-driver
+        echo driver > /run/host-driver/libcuda.so.1
+        mount --bind -o ro /run/host-driver ${hostDriver}
+      '';
+    };
+
     virtualisation.diskSize = 4096;
   };
 
@@ -74,6 +92,9 @@ pkgs.testers.runNixOSTest {
     # PID 1 survived the overlay and running store paths are still visible.
     machine.succeed("test \"$(ps -o comm= -p 1)\" = systemd")
     machine.succeed("ls /run/current-system/sw/bin >/dev/null")
+
+    # A mount on a store path made before setup still shows through the overlay.
+    machine.succeed("grep -q driver ${hostDriver}/libcuda.so.1")
 
     # The bind-pinned lower is read-only.
     machine.fail(f"touch {lo}/canary 2>/dev/null")

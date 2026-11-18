@@ -74,7 +74,7 @@ in
         # A timeout leaves the store as-is rather than hanging the boot.
         TimeoutStartSec = "30s";
       };
-      path = [ pkgs.util-linux pkgs.coreutils pkgs.gnugrep ];
+      path = [ pkgs.util-linux pkgs.coreutils pkgs.gnugrep pkgs.gawk ];
       script = ''
         set -eu
         lower=${lib.escapeShellArg cfg.lowerPath}
@@ -105,11 +105,15 @@ in
 
         mkdir -p "$lower" "$upper_root/upper" "$upper_root/work" "$upper_root/state"
 
+        # Mounts on store paths (a CDI GPU plugin binds the host driver closure
+        # here) would be hidden by the overlay; re-bound onto it below.
+        submounts=$(awk '$5 ~ "^/nix/store/" { print $5 }' /proc/self/mountinfo | sort -u)
+
         # Bind-pin the current /nix/store at $lower as a read-only lowerdir.
         if ! mountpoint -q "$lower"; then
-          mount --bind /nix/store "$lower"
+          mount --rbind /nix/store "$lower"
           # A shared peer group could propagate writes around the ro flag.
-          mount --make-private "$lower"
+          mount --make-rprivate "$lower"
           mount -o remount,bind,ro "$lower"
         fi
 
@@ -122,6 +126,10 @@ in
 
         # Mount the overlay over /nix/store; reads fall through to the lower.
         mount -t overlay scooter-store -o "$opts" /nix/store
+        # Overlayfs doesn't follow mounts in its lower; sorted, parents bind first.
+        for t in $submounts; do
+          if [ -e "$t" ]; then mount --bind "$lower''${t#/nix/store}" "$t"; fi
+        done
         echo "overlay-store: /nix/store = ro($lower) + rw($upper_root/upper)"
       '';
     };
