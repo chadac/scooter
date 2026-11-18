@@ -79,7 +79,9 @@ def github(ctx: BrokerContext | None = None) -> Provider:
         credential = UserFirstSource(resolver=ctx.owners, user_credential=auth.credential, fallback=credential)
         transports.append(auth)
     if enabled:
-        _register_commit_identity(bot, auth)
+        fixed = Person(settings.github_commit_name, settings.github_commit_email) \
+            if settings.github_commit_name and settings.github_commit_email else None
+        _register_commit_identity(bot, auth, fixed)
 
     return Provider(
         name="github",
@@ -129,10 +131,14 @@ def _user_auth(settings: GitHubSettings, ctx: BrokerContext | None) -> user_auth
     return auth
 
 
-def _register_commit_identity(bot: user_auth.GitHubBot | None, auth: user_auth.UserAuth | None) -> None:
+def _register_commit_identity(
+    bot: user_auth.GitHubBot | None, auth: user_auth.UserAuth | None, fixed: Person | None = None
+) -> None:
     @register_commit_identity
     async def _github_identity(user: str | None) -> Person | None:
         if user is None:
+            if fixed is not None:
+                return fixed
             return await bot.person() if bot is not None else None
         profile = await auth.profile(user) if auth is not None else None
         return Person(profile.name, profile.email) if profile else None

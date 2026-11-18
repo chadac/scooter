@@ -180,3 +180,12 @@ async def test_the_commit_identity_names_a_linked_user(token_env, monkeypatch):
     got = await commit_identity.resolve("alice")
     assert got == commit_identity.CommitIdentity(author=Person("Alice", "42+alice-gh@users.noreply.github.com"))
     assert await commit_identity.resolve("bob") == commit_identity.CommitIdentity(author=None)
+
+
+async def test_a_token_deployment_commits_as_commit_as(token_env, monkeypatch):
+    monkeypatch.setenv("GITHUB_COMMIT_NAME", "Alice")
+    monkeypatch.setenv("GITHUB_COMMIT_EMAIL", "alice@example.com")
+    github()
+    alice = Person("Alice", "alice@example.com")
+    assert await commit_identity.resolve(None) == commit_identity.CommitIdentity(author=alice)
+    assert await commit_identity.resolve("bob", owner="bob") == commit_identity.CommitIdentity(author=alice)

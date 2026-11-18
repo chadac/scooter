@@ -93,12 +93,38 @@ in
       privateKeySecret = clib.mkSecretOption {
         key = "private-key";
         holds = "the PEM";
+        nullable = true;
         description = ''
           Secret holding the GitHub App private key (PEM). The secret must exist in
           the broker namespace.
 
           Enabling this contrib enables the GitHub provider, backed by a GitHub App:
-          it vends installation tokens for git/HTTPS and the API.
+          it vends installation tokens for git/HTTPS and the API. Set this or
+          `tokenSecret`.
+        '';
+      };
+      tokenSecret = clib.mkSecretOption {
+        key = "token";
+        holds = "the token";
+        nullable = true;
+        description = ''
+          Secret holding a GitHub token (a PAT, say) the broker uses for every agent
+          request in place of an App, so agents act as that token's user. Set this instead of
+          `privateKeySecret`; with a token, set `commitAs` too, since there is no App
+          bot to author commits.
+        '';
+      };
+      commitAs = lib.mkOption {
+        type = lib.types.nullOr (lib.types.submodule {
+          options = {
+            name = lib.mkOption { type = lib.types.str; example = "Alice"; };
+            email = lib.mkOption { type = lib.types.str; example = "alice@example.com"; };
+          };
+        });
+        default = null;
+        description = ''
+          Who sandbox commits are authored by when no linked account applies, in
+          place of the App's bot. Mostly for `tokenSecret`: the token's user.
         '';
       };
     };
@@ -138,7 +164,13 @@ in
           # Empty would fail the broker's int parse.
           GITHUB_APP_INSTALLATION_ID = lib.mkIf (config.installationId != "") config.installationId;
           GITHUB_APP_OWNERS = lib.concatStringsSep "," config.owners;
-          GITHUB_APP_PRIVATE_KEY = config.privateKeySecret;
+          # A throw only when rendered: the repo's own build enables github with neither.
+          GITHUB_APP_PRIVATE_KEY = lib.mkIf (config.tokenSecret == null) (
+            if config.privateKeySecret != null then config.privateKeySecret
+            else throw "contribs.github: set privateKeySecret (a GitHub App) or tokenSecret (a token).");
+          GITHUB_TOKEN = lib.mkIf (config.tokenSecret != null) config.tokenSecret;
+          GITHUB_COMMIT_NAME = lib.mkIf (config.commitAs != null) config.commitAs.name;
+          GITHUB_COMMIT_EMAIL = lib.mkIf (config.commitAs != null) config.commitAs.email;
           GITHUB_FORGE_POLICY = lib.mkIf (config.forgePolicy != "") config.forgePolicy;
         };
       };
@@ -151,7 +183,7 @@ in
           GITHUB_ENABLED = lib.boolToString config.webhooksEnabled;
           GITHUB_APP_ID = config.appId;
           GITHUB_APP_OWNERS = lib.concatStringsSep "," config.owners;
-          GITHUB_APP_PRIVATE_KEY = config.privateKeySecret;
+          GITHUB_APP_PRIVATE_KEY = lib.mkIf (config.privateKeySecret != null) config.privateKeySecret;
         };
       };
     };

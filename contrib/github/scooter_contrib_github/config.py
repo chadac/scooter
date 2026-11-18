@@ -16,6 +16,9 @@ class GitHubSettings(ScooterBaseSettings):
 
     # PAT fallback when github_app_* is unset, and the optional token on the public email lookup.
     github_token: str = ""
+    # Who commits are authored by in place of the App bot; a token has none.
+    github_commit_name: str = ""
+    github_commit_email: str = ""
     # github.com, or a GHES hostname.
     github_host: str = "github.com"
     # A `module:attr` ForgePolicy (scooter_broker_lib.forge) checked on every request the broker makes to GitHub; empty allows all.
