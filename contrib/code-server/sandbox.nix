@@ -1,7 +1,7 @@
 # code-server's sandbox half: a browser VS Code (code-server) served as
 # webServices.vscode under /c/<id>/vscode/, with the proxy stripping that prefix
 # because code-server has no base-path flag. `pkgs.code-server` is a nix-stubs shim
-# (./code-server-bin, declared in modules/sandbox-os/stubs.nix) built on first start.
+# (./code-server-bin, declared in ./stubs.nix) built on first start.
 # When the pod has router self-access (SCOOTER_SELF_URL), VS Code's chat is bridged to
 # this conversation through scooter-vscode-ahp (./ahp). Like every web service the unit
 # is explicit-start, so declaring it costs a manifest entry and no running process.

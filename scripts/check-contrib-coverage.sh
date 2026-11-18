@@ -40,9 +40,19 @@ done
 # contrib directory is a half nothing imports.
 for f in contrib/*/*.nix; do
   case "${f##*/}" in
-    contrib.nix | deployment.nix | sandbox.nix | module.nix) ;;
-    *) note "$f is not one of contrib.nix / deployment.nix / sandbox.nix / module.nix — no eval imports it (see contrib/README.md)" ;;
+    contrib.nix | deployment.nix | sandbox.nix | module.nix | stubs.nix) ;;
+    *) note "$f is not one of contrib.nix / deployment.nix / sandbox.nix / module.nix / stubs.nix — no eval imports it (see contrib/README.md)" ;;
   esac
+done
+
+# A stub set needs both stubs.nix and stubs.lock.
+for d in contrib/*/; do
+  d=${d%/}
+  if [ -f "$d/stubs.nix" ] && [ ! -f "$d/stubs.lock" ]; then
+    note "$d/stubs.nix has no stubs.lock beside it — run \`just stubs\`"
+  elif [ -f "$d/stubs.lock" ] && [ ! -f "$d/stubs.nix" ]; then
+    note "$d/stubs.lock has no stubs.nix beside it — delete it, or restore stubs.nix"
+  fi
 done
 
 # Settings-tab code is linted, type-checked and chunked only as contrib/<name>/ui/*.tsx,

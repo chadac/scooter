@@ -1,6 +1,4 @@
-# Tools the sandbox ships as nix-stubs shims: the image carries the build recipe
-# and the tool arrives on first use. Lives under modules/sandbox-os/ so the in-pod
-# re-converge evaluates the same declarations.
+# Stubs the sandbox or several contribs use; others live per contrib.
 
 # `uvNixSrc` is the source of the uv-nix flake's `bin` branch: the image build passes the
 # flake input, the re-converge the copy vendored at stub-args/uvNixSrc.
@@ -27,39 +25,13 @@
   # the agent-host's filesystem.
   tree = pkgs.tree;
 
-  marimo = pkgs.marimo;
-
   # Multi-output (out + man); the shim must target `out` or it execs a directory.
   ttyd = { package = pkgs.ttyd; output = "out"; };
 
-  # The prebuilt release, not nixpkgs: the VS Code agent-host bridge needs VS Code >= 1.141.
-  code-server = pkgs.callPackage ../../contrib/code-server/code-server-bin { };
-
-  # The Agent Host Protocol server code-server bridges to (contrib/code-server/sandbox.nix).
-  scooter-vscode-ahp = pkgs.callPackage ../../contrib/code-server/ahp { };
-
-  awscli2 = { package = pkgs.awscli2; bins = [ "aws" "aws_completer" ]; };
-
-  # The forge CLIs (contrib/github, contrib/gitlab), authenticated by the broker's forge proxy.
-  gh = pkgs.gh;
-  glab = pkgs.glab;
-
-  # contrib/gcp's CLIs, authenticated the same way.
-  google-cloud-sdk = { package = pkgs.google-cloud-sdk; bins = [ "gcloud" "gsutil" "bq" ]; };
-
-  # contrib/k8s's helm, against the clusters behind the forge proxy.
-  kubernetes-helm = { package = pkgs.kubernetes-helm; bins = [ "helm" ]; };
-
-  # Node for contribs' npm packages, fetched on first use.
+  # Node for contribs' npm packages (skills, mcpservers).
   scooter-node = { package = pkgs.nodejs; bins = [ "node" "npm" "npx" ]; };
 }
-# contrib/docker's tools; dockerd and crun build only on Linux.
+# Shared by contrib/docker and contrib/k8s.
 // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
-  docker = { package = pkgs.docker; bins = [ "docker" "dockerd" ]; };
-  crun = pkgs.crun;
-  k3d = pkgs.k3d;
   kubectl = { package = pkgs.kubectl; output = "out"; };
-  # contrib/web-review's headless screenshots, when no review page is open.
-  chromium = pkgs.chromium;
 }
-

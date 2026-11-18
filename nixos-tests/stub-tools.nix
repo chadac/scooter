@@ -1,14 +1,17 @@
-# nixosTest: the image-time stubs (modules/sandbox-os/stubs.nix) are shims in a
+# nixosTest: the image-time stubs (every active stub set) are shims in a
 # booted system, and the system closure carries their recipes but not their
 # packages. The VM has no network, so the real `uv` output is pre-seeded.
 
-{ pkgs, lib, sandboxModule, stubOverlay, deploymentModules ? [ ] }:
+{ pkgs, lib, sandboxModule, stubOverlayFor, deploymentModules ? [ ] }:
 
 let
+  # The repo's contribs plus one out-of-tree, with stubs.
+  testModules = deploymentModules ++ [ ./fixtures/contrib-ext/contrib.nix ];
+
   # The overlay the image is built with, applied through `node.pkgs` because the framework's `nixpkgs.pkgs` conflicts with `nixpkgs.overlays`.
   stubbedPkgs = import pkgs.path {
     inherit (pkgs.stdenv.hostPlatform) system;
-    overlays = [ stubOverlay ];
+    overlays = [ (stubOverlayFor testModules) ];
   };
 
   # What the uv stub wraps (uv-nix), read off the stub so the seed follows stubs.nix.
@@ -19,7 +22,7 @@ let
   # `aws` stub asserted below is declared by contrib/aws/sandbox.nix.
   contribSandbox = import ../contrib/sandbox-modules.nix {
     inherit lib;
-    extraModules = deploymentModules;
+    extraModules = testModules;
   };
 in
 pkgs.testers.runNixOSTest {
@@ -42,7 +45,8 @@ pkgs.testers.runNixOSTest {
 
     with subtest("the stubbed tools on PATH are shims, not packages"):
         # Assert on the shim's content, resolving the path in its own succeed() so a tool missing from PATH fails here rather than blocking `cat` on stdin.
-        for tool in ("uv", "aws"):
+        # Base set, in-tree contrib, out-of-tree contrib.
+        for tool in ("uv", "aws", "hello"):
             path = machine.succeed(f"command -v {tool}").strip()
             shim = machine.succeed(f"cat {path}")
             assert "nix-stubs exec" in shim, f"{tool} on PATH is not a stub:\n{shim}"

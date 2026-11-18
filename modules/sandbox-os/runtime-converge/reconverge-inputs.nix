@@ -13,6 +13,10 @@
 , skillDirs ? { }
   # name -> out-of-tree contrib src, copied to contrib-ext/<name>.
 , contribSrcs ? { }
+  # The image's stub sets (contrib/sandbox-modules.nix), listed in stub-sets.json.
+, stubSets ? { }
+  # The contribs' extra stubs.nix arguments, vendored with the base set's.
+, stubArgs ? { }
 }:
 
 let
@@ -45,7 +49,13 @@ let
     mkdir -p $out/stub-args
     ${lib.concatStrings (lib.mapAttrsToList (name: src: ''
       cp -r ${src} $out/stub-args/${name}
-    '') (nixStubs.stubArgs or { }))}
+    '') (lib.attrsets.unionOfDisjoint (nixStubs.stubArgs or { }) stubArgs))}
+    # Each set's flake.lock that isn't scooter's, read back through stub-sets.json.
+    mkdir -p $out/stub-flake-locks
+    ${lib.concatStrings (lib.mapAttrsToList (name: s: ''
+      cp ${s.flakeLock} $out/stub-flake-locks/${name}.lock
+    '') (lib.filterAttrs (_: s: !ownFlakeLock s) stubSets))}
+    cp ${stubSetsFile} $out/stub-sets.json
   '' + lib.optionalString (skillDirs != { }) ''
     mkdir -p $out/skill-dirs
     ${lib.concatStrings (lib.mapAttrsToList (name: src: ''
@@ -59,6 +69,16 @@ let
       cp -r ${src} $out/contrib-ext/${name}
     '') contribSrcs)}
   '');
+
+  ownFlakeLock = s: toString s.flakeLock == toString (repoRoot + "/flake.lock");
+
+  # Each stub set's directory and flake.lock, relative to the tree.
+  stubSetsFile = pkgs.writeText "stub-sets.json" (builtins.toJSON (lib.mapAttrs
+    (name: s: {
+      dir = s.tree;
+      flakeLock = if ownFlakeLock s then "flake.lock" else "stub-flake-locks/${name}.lock";
+    })
+    stubSets));
 
   # Same content and same name as at image build, so the store paths match and a
   # self-modify does not churn /etc.

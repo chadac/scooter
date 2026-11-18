@@ -43,15 +43,11 @@ jobs:
             echo 'FLAKE_UPDATE_EOF'
           } >> "$GITHUB_OUTPUT"
 
-      # stubs.lock pins its own nixpkgs and stub-overlay.nix asserts it matches
-      # flake.lock, so a bump that skips this fails flake evaluation.
-      - name: Regenerate stubs.lock against the bumped nixpkgs
+      # Every stubs.lock must match the bumped flake.lock, or eval fails.
+      - name: Regenerate every stubs.lock against the bumped nixpkgs
         run: |
-          # Match `just check-stubs`; `gen` defaults to the runner's system only.
-          nix run github:chadac/nix-stubs#gen -- \
-            --flake . --attr stubs \
-            --lock modules/sandbox-os/stubs.lock \
-            --flake-lock flake.lock \
+          # Every set in `stubSets`, as `just stubs` does.
+          nix run --inputs-from . nix-stubs#nix-stubs -- gen \
             --system x86_64-linux --system aarch64-linux --system aarch64-darwin
 
       # Mirrors `just check-flake`; advisory, since CI on the PR is the real gate.

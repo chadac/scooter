@@ -1,7 +1,7 @@
 { lib, buildNpmPackage, nodejs, makeWrapper, ... }:
 
 # The in-sandbox Agent Host Protocol server code-server bridges to (see src/main.ts). Shipped
-# as a nix-stubs shim (modules/sandbox-os/stubs.nix), so it costs nothing until VS Code starts.
+# as a nix-stubs shim (../stubs.nix), so it costs nothing until VS Code starts.
 buildNpmPackage {
   pname = "scooter-vscode-ahp";
   version = "0.0.0";

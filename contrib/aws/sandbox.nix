@@ -35,7 +35,7 @@ in
   environment.systemPackages = [
     scooter-aws
     scooter-aws-credentials
-    # A nix-stubs shim (modules/sandbox-os/stubs.nix): the real aws-cli materialises
+    # A nix-stubs shim (./stubs.nix): the real aws-cli materialises
     # into the writable store on the agent's first `aws`.
     pkgs.awscli2
   ];

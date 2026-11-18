@@ -663,6 +663,34 @@ in
             declared outside it has only its `src`, vendored to `contrib-ext/<name>/`.
           '';
         };
+
+        options.stubs = {
+          flakeLock = mkOption {
+            type = types.nullOr types.path;
+            default = null;
+            example = literalExpression "../flake.lock";
+            description = ''
+              The flake.lock this contrib's stub set is synced to. A contrib with a
+              `stubs.nix` and `stubs.lock` in `src` ships those tools as nix-stubs shims
+              whenever it is enabled; regenerate the lock with
+              `nix run github:chadac/nix-stubs#gen`. `null` means scooter's own
+              flake.lock, which is right for a contrib in this repo. A contrib declared
+              outside it names its own flake's, whose nixpkgs must follow scooter's.
+            '';
+          };
+
+          args = mkOption {
+            type = types.attrsOf types.path;
+            default = { };
+            example = literalExpression "{ acmeToolsSrc = inputs.acme-tools.outPath; }";
+            description = ''
+              Extra arguments for this contrib's `stubs.nix` beyond `pkgs`, such as a
+              flake input's source. Each is a directory vendored into the in-pod
+              re-converge. The names are shared with every other stub set, and a
+              `stubs.nix` receives only the ones it declares.
+            '';
+          };
+        };
       };
     };
 

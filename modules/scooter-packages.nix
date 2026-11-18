@@ -135,6 +135,12 @@ in
           description = "The nix-stubs overlay `sandboxPkgs` is built with.";
         };
 
+        stubOverlayFor = mkOption {
+          type = types.raw;
+          internal = true;
+          description = "deploymentModules -> the nix-stubs overlay for the stub sets those contribs enable.";
+        };
+
         nixStubs = mkOption {
           type = types.raw;
           internal = true;

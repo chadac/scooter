@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "inputs": {
+    "nixpkgs": {
+      "lastModified": 1793876309,
+      "narHash": "sha256-Wojg9lIH/hDH91iDVH2/EPw8oDSpxjxhXONbU1yf4Zg=",
+      "owner": "NixOS",
+      "repo": "nixpkgs",
+      "rev": "f9a75f41be3a74eab55d3a7679d34ad6cc0da977",
+      "type": "github"
+    }
+  },
+  "packages": {
+    "aarch64-darwin": {
+      "code-server": {
+        "attr": "code-server",
+        "drv": "/nix/store/62h511zsdbqzax8h7s9xdn1i5s9b11qc-code-server-4.141.0.drv",
+        "output": "out",
+        "bins": [
+          "code-server"
+        ],
+        "name": "code-server-4.141.0"
+      },
+      "scooter-vscode-ahp": {
+        "attr": "scooter-vscode-ahp",
+        "drv": "/nix/store/yff8k0372lbcxx0idk8zcbryrxcj1n9y-scooter-vscode-ahp-0.0.0.drv",
+        "output": "out",
+        "bins": [
+          "scooter-vscode-ahp"
+        ],
+        "name": "scooter-vscode-ahp-0.0.0"
+      }
+    },
+    "aarch64-linux": {
+      "code-server": {
+        "attr": "code-server",
+        "drv": "/nix/store/r12hjnbszli7mcd4dxqxh7iyyc1rfs1y-code-server-4.141.0.drv",
+        "output": "out",
+        "bins": [
+          "code-server"
+        ],
+        "name": "code-server-4.141.0"
+      },
+      "scooter-vscode-ahp": {
+        "attr": "scooter-vscode-ahp",
+        "drv": "/nix/store/5zkk38mjjpgkn9iwkxv32h5kp6hsgqbq-scooter-vscode-ahp-0.0.0.drv",
+        "output": "out",
+        "bins": [
+          "scooter-vscode-ahp"
+        ],
+        "name": "scooter-vscode-ahp-0.0.0"
+      }
+    },
+    "x86_64-linux": {
+      "code-server": {
+        "attr": "code-server",
+        "drv": "/nix/store/pkqy8rgqf53362dkxb6sb8n11wi2n883-code-server-4.141.0.drv",
+        "output": "out",
+        "bins": [
+          "code-server"
+        ],
+        "name": "code-server-4.141.0"
+      },
+      "scooter-vscode-ahp": {
+        "attr": "scooter-vscode-ahp",
+        "drv": "/nix/store/s9a1lw0fbc3anmsdsbwdg8w2y91pbivg-scooter-vscode-ahp-0.0.0.drv",
+        "output": "out",
+        "bins": [
+          "scooter-vscode-ahp"
+        ],
+        "name": "scooter-vscode-ahp-0.0.0"
+      }
+    }
+  }
+}

@@ -119,10 +119,15 @@
               contribsWithExamples.all);
 
           # The sandbox image, with the shipped build's inputs unless overridden.
+          # Stub sets follow the contribs, so each test gets matching pkgs.
+          sandboxPkgsFor = deploymentModules: import build.config.buildPkgs.path {
+            inherit system;
+            overlays = [ (build.config.stubOverlayFor deploymentModules) ];
+          };
           mkSandboxOs = args: import ./pkgs/sandbox-os/image.nix ({
             inherit lib;
             inherit (build.config) n2c nixStubs deploymentModules;
-            pkgs = build.config.sandboxPkgs;
+            pkgs = if args ? deploymentModules then sandboxPkgsFor args.deploymentModules else build.config.sandboxPkgs;
           } // args);
 
           # What the test renders ship
@@ -198,7 +203,7 @@
             if pkgs.stdenv.isLinux
             then import ./nixos-tests {
               inherit pkgs lib;
-              inherit (build.config) stubOverlay deploymentModules;
+              inherit (build.config) stubOverlayFor deploymentModules;
               byocController = p.scooter-byoc-controller;
               agentHost = p.scooter-agent-host;
               broker = p.scooter-broker;
@@ -277,8 +282,21 @@
                   (throw "contrib-ext-demo is not in environment.systemPackages")
                   cfg.environment.systemPackages).outPath;
                 etc = "${cfg.environment.etc."scooter/contrib-ext-demo".source}";
+                # Its shim; a rebuild must reuse the image's store path.
+                stub = (lib.findFirst (p: (p.name or "") == "stub-hello")
+                  (throw "hello in environment.systemPackages is not a stub")
+                  cfg.environment.systemPackages).outPath;
               };
+
+              # A stub set ships only while its contrib is enabled.
+              isStub = p: p ? real;
+              withoutGcp = sandboxPkgsFor (build.config.deploymentModules
+                ++ [{ contribs.gcp.enable = lib.mkForce false; }]);
             in
+            assert isStub build.config.sandboxPkgs.google-cloud-sdk;
+            assert !isStub withoutGcp.google-cloud-sdk;
+            # A set another contrib still uses stays.
+            assert isStub withoutGcp.awscli2;
             assert builtins.elem "contrib-ext/ext-demo/sandbox.nix"
               extCfg.programs.scooterModule.extraReconvergeModuleFiles;
             assert sandboxWithEcho.nixos.config.environment.etc ? "scooter/contrib-echo";
@@ -484,7 +502,7 @@
             conversation-controller = p.scooter-conversation-controller;
             conversation-router = p.scooter-conversation-router;
             byoc-controller = p.scooter-byoc-controller;
-            # contrib/code-server's pieces (stubs in modules/sandbox-os/stubs.nix), built in CI
+            # contrib/code-server's pieces (stubs in contrib/code-server/stubs.nix), built in CI
             # because nix-stubs check only compares their .drv paths.
             inherit (p) scooter-vscode-ahp;
             code-server-bin = p.scooter-code-server-bin;
@@ -711,12 +729,28 @@
         };
 
       flake = {
-        # The stub set, per system, for `nix-stubs gen` / `check`
-        stubs = nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ]
-          (system: import ./modules/sandbox-os/stubs.nix {
-            pkgs = nixpkgs.legacyPackages.${system};
-            uvNixSrc = uv-nix.outPath;
-          });
+        # Every stub set in the repo, for `nix-stubs gen`/`check`.
+        stubSets =
+          let
+            set = dir: {
+              lock = "${dir}/stubs.lock";
+              stubs = nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ]
+                (system:
+                  let f = import (./. + "/${dir}/stubs.nix"); in
+                  f (builtins.intersectAttrs (builtins.functionArgs f) {
+                    pkgs = nixpkgs.legacyPackages.${system};
+                    uvNixSrc = uv-nix.outPath;
+                  }));
+            };
+            contribs = nixpkgs.lib.filterAttrs
+              (name: type: type == "directory" && builtins.pathExists (./contrib + "/${name}/stubs.nix"))
+              (builtins.readDir ./contrib);
+          in
+          {
+            base = set "modules/sandbox-os";
+            # The out-of-tree fixture, locked here so CI checks it.
+            ext-demo = set "nixos-tests/fixtures/contrib-ext";
+          } // builtins.mapAttrs (name: _: set "contrib/${name}") contribs;
 
         # The built-in agent skills as a `filename -> content` attrset
         lib.scooterSkills = scooterSkills;

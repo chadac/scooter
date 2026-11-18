@@ -1,20 +1,22 @@
-# The nix-stubs overlay for a stub set, shared by the image build (flake.nix) and
-# the in-pod re-converge (stub-set.nix) so a self-modify never re-fattens the
-# system with the real packages.
+# The stub overlay, shared by image build and re-converge.
 
 { lockLib # nix-stubs' pure-Nix lib (the flake's `lib`, or the vendored nix/lock.nix)
-, flakeLock # the flake.lock that stubs.lock is synced to
 , nix-stubs # the prebuilt binary, since a callPackage here would compile Rust in-pod
-, stubs ? ./stubs.nix
-, lock ? ./stubs.lock
-  # Extra arguments for stubs.nix beyond `pkgs` (e.g. `uvNixSrc`). A stubs.nix gets only
-  # the ones it declares, so a deployment's own `{ pkgs }:` set still works.
+  # name -> { dir; flakeLock; }; `dir` holds stubs.nix and stubs.lock.
+, sets
+  # Extra stubs.nix arguments; each gets only those it declares.
 , stubArgs ? { }
 }:
 
 lockLib.mkOverlay {
-  stubs = p:
-    let f = import stubs; in
-    f (builtins.intersectAttrs (builtins.functionArgs f) ({ pkgs = p; } // stubArgs));
-  inherit lock flakeLock nix-stubs;
+  sets = builtins.mapAttrs
+    (_: s: {
+      stubs = p:
+        let f = import (s.dir + "/stubs.nix"); in
+        f (builtins.intersectAttrs (builtins.functionArgs f) ({ pkgs = p; } // stubArgs));
+      lock = s.dir + "/stubs.lock";
+      inherit (s) flakeLock;
+    })
+    sets;
+  inherit nix-stubs;
 }

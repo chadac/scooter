@@ -51,7 +51,10 @@ let
       lockLib = import (stubBitsRoot + "/nix-stubs/nix/lock.nix") {
         lib = import (nixpkgsPath + "/lib");
       };
-      flakeLock = stubBitsRoot + "/flake.lock";
+      # The image's stub sets, resolved against the tree.
+      sets = builtins.mapAttrs
+        (_: s: { dir = stubBitsRoot + "/${s.dir}"; flakeLock = stubBitsRoot + "/${s.flakeLock}"; })
+        (builtins.fromJSON (builtins.readFile (stubBitsRoot + "/stub-sets.json")));
       # stubs.nix's extra arguments, vendored by reconverge-inputs.nix.
       stubArgs =
         let dir = stubBitsRoot + "/stub-args"; in

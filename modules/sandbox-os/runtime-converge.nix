@@ -16,7 +16,7 @@ let
     inherit pkgs lib nixStubs;
     # Only read at image build: in the pod the baked tree is used (effTree below).
     skillDirs = config.scooter.skillDirs;
-    inherit (cfg) contribSrcs;
+    inherit (cfg) contribSrcs stubSets stubArgs;
   })
     baseConfig modulesTree modulesSrc;
 
@@ -430,6 +430,21 @@ in
       default = { };
       internal = true;
       description = "Out-of-tree contribs' source directories, vendored into the baked tree at contrib-ext/<name>.";
+    };
+
+    stubSets = lib.mkOption {
+      # Image build only, like contribSrcs.
+      type = lib.types.attrsOf lib.types.raw;
+      default = { };
+      internal = true;
+      description = "The stub sets the image's overlay composes (contrib/sandbox-modules.nix), listed in the baked tree.";
+    };
+
+    stubArgs = lib.mkOption {
+      type = lib.types.attrsOf lib.types.path;
+      default = { };
+      internal = true;
+      description = "The contribs' extra stubs.nix arguments, vendored into the baked tree beside the base set's.";
     };
   };
 

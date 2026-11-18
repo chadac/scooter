@@ -20,72 +20,6 @@
   },
   "packages": {
     "aarch64-darwin": {
-      "awscli2": {
-        "attr": "awscli2",
-        "drv": "/nix/store/ygl12qhxz4v6h2hn7irfjy3f9p7mgvz3-awscli2-2.36.31.drv",
-        "output": "out",
-        "bins": [
-          "aws",
-          "aws_completer"
-        ],
-        "name": "awscli2-2.36.31"
-      },
-      "code-server": {
-        "attr": "code-server",
-        "drv": "/nix/store/62h511zsdbqzax8h7s9xdn1i5s9b11qc-code-server-4.141.0.drv",
-        "output": "out",
-        "bins": [
-          "code-server"
-        ],
-        "name": "code-server-4.141.0"
-      },
-      "gh": {
-        "attr": "gh",
-        "drv": "/nix/store/5ch05vzfn1w767sirzrk27z7lm99jh8d-gh-2.103.3.drv",
-        "output": "out",
-        "bins": [
-          "gh"
-        ],
-        "name": "gh-2.103.3"
-      },
-      "glab": {
-        "attr": "glab",
-        "drv": "/nix/store/ciib5qnmm94mg76gkby7zm1y9nzv4smm-glab-1.126.0.drv",
-        "output": "out",
-        "bins": [
-          "glab"
-        ],
-        "name": "glab-1.126.0"
-      },
-      "google-cloud-sdk": {
-        "attr": "google-cloud-sdk",
-        "drv": "/nix/store/cyj9ag0vc79j6gyrb64vryn8y4jx1wlm-google-cloud-sdk-591.0.0.drv",
-        "output": "out",
-        "bins": [
-          "gcloud",
-          "gsutil",
-          "bq"
-        ],
-        "name": "google-cloud-sdk-591.0.0"
-      },
-      "kubernetes-helm": {
-        "attr": "kubernetes-helm",
-        "drv": "/nix/store/infrsp03gcf2nnb45cwn48zw6ly9s7iv-kubernetes-helm-4.3.1.drv",
-        "output": "out",
-        "bins": [
-          "helm"
-        ],
-        "name": "kubernetes-helm-4.3.1"
-      },
-      "marimo": {
-        "attr": "marimo",
-        "drv": "/nix/store/nzx28vwdh5rw48cmzvr3xijjwdfv8xb8-python3.14-marimo-0.25.1.drv",
-        "output": "out",
-        "bins": [
-          "marimo"
-        ],
-        "name": "marimo-0.25.1"
-      },
       "scooter-node": {
         "attr": "scooter-node",
         "drv": "/nix/store/i2p2vcalxpyikyrihlf83ccvyn73rfg4-nodejs-24.21.0.drv",
@@ -96,15 +30,6 @@
           "npx"
         ],
         "name": "nodejs-24.21.0"
-      },
-      "scooter-vscode-ahp": {
-        "attr": "scooter-vscode-ahp",
-        "drv": "/nix/store/m9b2km88874q0y611vghga5mi9dkk71y-scooter-vscode-ahp-0.0.0.drv",
-        "output": "out",
-        "bins": [
-          "scooter-vscode-ahp"
-        ],
-        "name": "scooter-vscode-ahp-0.0.0"
       },
       "tree": {
         "attr": "tree",
@@ -135,91 +60,6 @@
       }
     },
     "aarch64-linux": {
-      "awscli2": {
-        "attr": "awscli2",
-        "drv": "/nix/store/8pf1153682y1yj5lcm121m3lg6p80608-awscli2-2.36.31.drv",
-        "output": "out",
-        "bins": [
-          "aws",
-          "aws_completer"
-        ],
-        "name": "awscli2-2.36.31"
-      },
-      "chromium": {
-        "attr": "chromium",
-        "drv": "/nix/store/mwh92namz9lpir1lz94xcfvg5na5a18b-chromium-157.0.8103.38.drv",
-        "output": "out",
-        "bins": [
-          "chromium"
-        ],
-        "name": "chromium-157.0.8103.38"
-      },
-      "code-server": {
-        "attr": "code-server",
-        "drv": "/nix/store/r12hjnbszli7mcd4dxqxh7iyyc1rfs1y-code-server-4.141.0.drv",
-        "output": "out",
-        "bins": [
-          "code-server"
-        ],
-        "name": "code-server-4.141.0"
-      },
-      "crun": {
-        "attr": "crun",
-        "drv": "/nix/store/xmy5kqybaxy18p8f7130fk62lg8m0i9x-crun-1.30.1.drv",
-        "output": "out",
-        "bins": [
-          "crun"
-        ],
-        "name": "crun-1.30.1"
-      },
-      "docker": {
-        "attr": "docker",
-        "drv": "/nix/store/hwbxnbckmp4i6xm5gkd9rb3dy6nc9aqa-docker-29.9.2.drv",
-        "output": "out",
-        "bins": [
-          "docker",
-          "dockerd"
-        ],
-        "name": "docker-29.9.2"
-      },
-      "gh": {
-        "attr": "gh",
-        "drv": "/nix/store/3w6hc10jizi1x77sd3z76s2mgxrpdghx-gh-2.103.3.drv",
-        "output": "out",
-        "bins": [
-          "gh"
-        ],
-        "name": "gh-2.103.3"
-      },
-      "glab": {
-        "attr": "glab",
-        "drv": "/nix/store/c3q5acvqdpnxvf08xmrz24cm7hphsa4g-glab-1.126.0.drv",
-        "output": "out",
-        "bins": [
-          "glab"
-        ],
-        "name": "glab-1.126.0"
-      },
-      "google-cloud-sdk": {
-        "attr": "google-cloud-sdk",
-        "drv": "/nix/store/42527h5glb2lsldkr4vwk3ccwjrppsm9-google-cloud-sdk-591.0.0.drv",
-        "output": "out",
-        "bins": [
-          "gcloud",
-          "gsutil",
-          "bq"
-        ],
-        "name": "google-cloud-sdk-591.0.0"
-      },
-      "k3d": {
-        "attr": "k3d",
-        "drv": "/nix/store/hb0ld4vk74ya599isbffh29qv6ijbgar-k3d-5.9.0.drv",
-        "output": "out",
-        "bins": [
-          "k3d"
-        ],
-        "name": "k3d-5.9.0"
-      },
       "kubectl": {
         "attr": "kubectl",
         "drv": "/nix/store/2vdvqyzfc91qc8izkv4airhgqw9jbjv0-kubectl-1.37.2.drv",
@@ -228,24 +68,6 @@
           "kubectl"
         ],
         "name": "kubectl-1.37.2"
-      },
-      "kubernetes-helm": {
-        "attr": "kubernetes-helm",
-        "drv": "/nix/store/af3vbxw752wyn53mwqww6c0arcwliwxb-kubernetes-helm-4.3.1.drv",
-        "output": "out",
-        "bins": [
-          "helm"
-        ],
-        "name": "kubernetes-helm-4.3.1"
-      },
-      "marimo": {
-        "attr": "marimo",
-        "drv": "/nix/store/k5wayxhw0p6k8mdkp6xd83xm5vx3n80g-python3.14-marimo-0.25.1.drv",
-        "output": "out",
-        "bins": [
-          "marimo"
-        ],
-        "name": "marimo-0.25.1"
       },
       "scooter-node": {
         "attr": "scooter-node",
@@ -257,15 +79,6 @@
           "npx"
         ],
         "name": "nodejs-24.21.0"
-      },
-      "scooter-vscode-ahp": {
-        "attr": "scooter-vscode-ahp",
-        "drv": "/nix/store/hj7hvcbdfc46p4s1smzfm7fmak4d629v-scooter-vscode-ahp-0.0.0.drv",
-        "output": "out",
-        "bins": [
-          "scooter-vscode-ahp"
-        ],
-        "name": "scooter-vscode-ahp-0.0.0"
       },
       "tree": {
         "attr": "tree",
@@ -296,91 +109,6 @@
       }
     },
     "x86_64-linux": {
-      "awscli2": {
-        "attr": "awscli2",
-        "drv": "/nix/store/4ljgwfivvpfkycqmv5g20dplxx3lw4ng-awscli2-2.36.31.drv",
-        "output": "out",
-        "bins": [
-          "aws",
-          "aws_completer"
-        ],
-        "name": "awscli2-2.36.31"
-      },
-      "chromium": {
-        "attr": "chromium",
-        "drv": "/nix/store/ggx2892ksvw4ympnvhhkamdsyz137nca-chromium-157.0.8103.38.drv",
-        "output": "out",
-        "bins": [
-          "chromium"
-        ],
-        "name": "chromium-157.0.8103.38"
-      },
-      "code-server": {
-        "attr": "code-server",
-        "drv": "/nix/store/pkqy8rgqf53362dkxb6sb8n11wi2n883-code-server-4.141.0.drv",
-        "output": "out",
-        "bins": [
-          "code-server"
-        ],
-        "name": "code-server-4.141.0"
-      },
-      "crun": {
-        "attr": "crun",
-        "drv": "/nix/store/g8l71d07dnbamzghjwbvvgfgij1d8jm2-crun-1.30.1.drv",
-        "output": "out",
-        "bins": [
-          "crun"
-        ],
-        "name": "crun-1.30.1"
-      },
-      "docker": {
-        "attr": "docker",
-        "drv": "/nix/store/8p8biwaf38mj09wmx29f099ivczq4brw-docker-29.9.2.drv",
-        "output": "out",
-        "bins": [
-          "docker",
-          "dockerd"
-        ],
-        "name": "docker-29.9.2"
-      },
-      "gh": {
-        "attr": "gh",
-        "drv": "/nix/store/l0j0vwm6mh1bbq6hbp608h5iy467z3ck-gh-2.103.3.drv",
-        "output": "out",
-        "bins": [
-          "gh"
-        ],
-        "name": "gh-2.103.3"
-      },
-      "glab": {
-        "attr": "glab",
-        "drv": "/nix/store/bd0gxpf2yw7shjm987hn1hxz8g44gfpn-glab-1.126.0.drv",
-        "output": "out",
-        "bins": [
-          "glab"
-        ],
-        "name": "glab-1.126.0"
-      },
-      "google-cloud-sdk": {
-        "attr": "google-cloud-sdk",
-        "drv": "/nix/store/cf89py94lql653vfixnsljablayd1i93-google-cloud-sdk-591.0.0.drv",
-        "output": "out",
-        "bins": [
-          "gcloud",
-          "gsutil",
-          "bq"
-        ],
-        "name": "google-cloud-sdk-591.0.0"
-      },
-      "k3d": {
-        "attr": "k3d",
-        "drv": "/nix/store/5wqn0zgiklw7flgn34ca4f0fxlr6mzf1-k3d-5.9.0.drv",
-        "output": "out",
-        "bins": [
-          "k3d"
-        ],
-        "name": "k3d-5.9.0"
-      },
       "kubectl": {
         "attr": "kubectl",
         "drv": "/nix/store/mhb72cpcx5a48jdvzyv378lgrs4bqsrk-kubectl-1.37.2.drv",
@@ -389,24 +117,6 @@
           "kubectl"
         ],
         "name": "kubectl-1.37.2"
-      },
-      "kubernetes-helm": {
-        "attr": "kubernetes-helm",
-        "drv": "/nix/store/jfc88q6w29byyca75f9qv35m9zvarrj8-kubernetes-helm-4.3.1.drv",
-        "output": "out",
-        "bins": [
-          "helm"
-        ],
-        "name": "kubernetes-helm-4.3.1"
-      },
-      "marimo": {
-        "attr": "marimo",
-        "drv": "/nix/store/x1x8rlkf0qs13i7dgv7g0nh57jqcjb9m-python3.14-marimo-0.25.1.drv",
-        "output": "out",
-        "bins": [
-          "marimo"
-        ],
-        "name": "marimo-0.25.1"
       },
       "scooter-node": {
         "attr": "scooter-node",
@@ -418,15 +128,6 @@
           "npx"
         ],
         "name": "nodejs-24.21.0"
-      },
-      "scooter-vscode-ahp": {
-        "attr": "scooter-vscode-ahp",
-        "drv": "/nix/store/yhmvr9v0iql7rxm5kbpr69gppld4a99n-scooter-vscode-ahp-0.0.0.drv",
-        "output": "out",
-        "bins": [
-          "scooter-vscode-ahp"
-        ],
-        "name": "scooter-vscode-ahp-0.0.0"
       },
       "tree": {
         "attr": "tree",

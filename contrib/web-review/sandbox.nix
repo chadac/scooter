@@ -54,7 +54,7 @@ in
 {
   options.webReview.chromium = lib.mkOption {
     type = lib.types.nullOr lib.types.package;
-    # A stub (modules/sandbox-os/stubs.nix): built on the first headless screenshot.
+    # A stub (./stubs.nix): built on the first headless screenshot.
     default = pkgs.chromium;
     defaultText = lib.literalExpression "pkgs.chromium";
     description = "The browser for headless screenshots when no review page is open; null disables them.";

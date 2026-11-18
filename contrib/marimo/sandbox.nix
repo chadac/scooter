@@ -4,7 +4,7 @@
 # sidebar, its Agent panel: notebook/launch.py turns the panel on and loads
 # notebook/agent-panel.js, which opens it on this conversation and points its socket
 # at agent-host's ACP endpoint (services/agent-host/src/acp/conversationSocket.ts).
-# `pkgs.marimo` is a nix-stubs shim (modules/sandbox-os/stubs.nix) that materializes
+# `pkgs.marimo` is a nix-stubs shim (./stubs.nix) that materializes
 # on first start, so declaring the service costs a manifest entry and no running
 # process. curl and jq are here for marimo-pair's scripts
 # (/etc/scooter/skills/marimo-pair), and marimo-open starts a kernel for them

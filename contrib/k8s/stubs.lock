@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "inputs": {
+    "nixpkgs": {
+      "lastModified": 1793876309,
+      "narHash": "sha256-Wojg9lIH/hDH91iDVH2/EPw8oDSpxjxhXONbU1yf4Zg=",
+      "owner": "NixOS",
+      "repo": "nixpkgs",
+      "rev": "f9a75f41be3a74eab55d3a7679d34ad6cc0da977",
+      "type": "github"
+    }
+  },
+  "packages": {
+    "aarch64-darwin": {
+      "kubernetes-helm": {
+        "attr": "kubernetes-helm",
+        "drv": "/nix/store/infrsp03gcf2nnb45cwn48zw6ly9s7iv-kubernetes-helm-4.3.1.drv",
+        "output": "out",
+        "bins": [
+          "helm"
+        ],
+        "name": "kubernetes-helm-4.3.1"
+      }
+    },
+    "aarch64-linux": {
+      "kubernetes-helm": {
+        "attr": "kubernetes-helm",
+        "drv": "/nix/store/af3vbxw752wyn53mwqww6c0arcwliwxb-kubernetes-helm-4.3.1.drv",
+        "output": "out",
+        "bins": [
+          "helm"
+        ],
+        "name": "kubernetes-helm-4.3.1"
+      }
+    },
+    "x86_64-linux": {
+      "kubernetes-helm": {
+        "attr": "kubernetes-helm",
+        "drv": "/nix/store/jfc88q6w29byyca75f9qv35m9zvarrj8-kubernetes-helm-4.3.1.drv",
+        "output": "out",
+        "bins": [
+          "helm"
+        ],
+        "name": "kubernetes-helm-4.3.1"
+      }
+    }
+  }
+}

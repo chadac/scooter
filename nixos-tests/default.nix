@@ -4,8 +4,8 @@
 # privileged boot stay in the Tier 2 cluster tests.
 
 { pkgs, lib ? pkgs.lib
-  # The stub overlay the image is built with, so stub-tools.nix asserts against the shims production ships.
-, stubOverlay ? null
+  # deploymentModules -> the stub overlay production builds with.
+, stubOverlayFor ? null
   # The BYOC controller for byoc-tunnel.nix, which runs the real binary over real
   # sockets.
 , byocController ? null
@@ -25,7 +25,7 @@ in
   dev-env-systemd-boot = runTest ./systemd-boot.nix;
   # Takes the stub overlay, so not a plain runTest.
   dev-env-stub-tools = import ./stub-tools.nix {
-    inherit pkgs lib sandboxModule stubOverlay deploymentModules;
+    inherit pkgs lib sandboxModule stubOverlayFor deploymentModules;
   };
   dev-env-service = runTest ./service.nix;
   # Commit author and Co-authored-by trailer follow the broker; repo hooks still run.

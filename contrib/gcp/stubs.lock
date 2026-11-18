@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "inputs": {
+    "nixpkgs": {
+      "lastModified": 1793876309,
+      "narHash": "sha256-Wojg9lIH/hDH91iDVH2/EPw8oDSpxjxhXONbU1yf4Zg=",
+      "owner": "NixOS",
+      "repo": "nixpkgs",
+      "rev": "f9a75f41be3a74eab55d3a7679d34ad6cc0da977",
+      "type": "github"
+    }
+  },
+  "packages": {
+    "aarch64-darwin": {
+      "google-cloud-sdk": {
+        "attr": "google-cloud-sdk",
+        "drv": "/nix/store/cyj9ag0vc79j6gyrb64vryn8y4jx1wlm-google-cloud-sdk-591.0.0.drv",
+        "output": "out",
+        "bins": [
+          "gcloud",
+          "gsutil",
+          "bq"
+        ],
+        "name": "google-cloud-sdk-591.0.0"
+      }
+    },
+    "aarch64-linux": {
+      "google-cloud-sdk": {
+        "attr": "google-cloud-sdk",
+        "drv": "/nix/store/42527h5glb2lsldkr4vwk3ccwjrppsm9-google-cloud-sdk-591.0.0.drv",
+        "output": "out",
+        "bins": [
+          "gcloud",
+          "gsutil",
+          "bq"
+        ],
+        "name": "google-cloud-sdk-591.0.0"
+      }
+    },
+    "x86_64-linux": {
+      "google-cloud-sdk": {
+        "attr": "google-cloud-sdk",
+        "drv": "/nix/store/cf89py94lql653vfixnsljablayd1i93-google-cloud-sdk-591.0.0.drv",
+        "output": "out",
+        "bins": [
+          "gcloud",
+          "gsutil",
+          "bq"
+        ],
+        "name": "google-cloud-sdk-591.0.0"
+      }
+    }
+  }
+}

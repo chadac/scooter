@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "inputs": {
+    "nixpkgs": {
+      "lastModified": 1793876309,
+      "narHash": "sha256-Wojg9lIH/hDH91iDVH2/EPw8oDSpxjxhXONbU1yf4Zg=",
+      "owner": "NixOS",
+      "repo": "nixpkgs",
+      "rev": "f9a75f41be3a74eab55d3a7679d34ad6cc0da977",
+      "type": "github"
+    }
+  },
+  "packages": {
+    "aarch64-darwin": {
+      "awscli2": {
+        "attr": "awscli2",
+        "drv": "/nix/store/ygl12qhxz4v6h2hn7irfjy3f9p7mgvz3-awscli2-2.36.31.drv",
+        "output": "out",
+        "bins": [
+          "aws",
+          "aws_completer"
+        ],
+        "name": "awscli2-2.36.31"
+      }
+    },
+    "aarch64-linux": {
+      "awscli2": {
+        "attr": "awscli2",
+        "drv": "/nix/store/8pf1153682y1yj5lcm121m3lg6p80608-awscli2-2.36.31.drv",
+        "output": "out",
+        "bins": [
+          "aws",
+          "aws_completer"
+        ],
+        "name": "awscli2-2.36.31"
+      }
+    },
+    "x86_64-linux": {
+      "awscli2": {
+        "attr": "awscli2",
+        "drv": "/nix/store/4ljgwfivvpfkycqmv5g20dplxx3lw4ng-awscli2-2.36.31.drv",
+        "output": "out",
+        "bins": [
+          "aws",
+          "aws_completer"
+        ],
+        "name": "awscli2-2.36.31"
+      }
+    }
+  }
+}

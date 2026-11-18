@@ -9,16 +9,20 @@ let
     nixpkgs = cfg.buildPkgs.path;
     src = inputs.nix-stubs.outPath;
   };
-  # stubs.nix's arguments beyond `pkgs`, also vendored for the in-pod re-converge.
+  # The base stubs.nix's extra arguments, vendored for re-converge.
   stubArgs = { uvNixSrc = inputs.uv-nix.outPath; };
 in
 {
   scooter.config = {
-    stubOverlay = import ../../modules/sandbox-os/stub-overlay.nix {
-      inherit stubArgs nix-stubs;
-      lockLib = inputs.nix-stubs.lib;
-      flakeLock = ../../flake.lock;
-    };
+    stubOverlayFor = deploymentModules:
+      let contribSandbox = import ../../contrib/sandbox-modules.nix { inherit lib; extraModules = deploymentModules; };
+      in import ../../modules/sandbox-os/stub-overlay.nix {
+        inherit nix-stubs;
+        lockLib = inputs.nix-stubs.lib;
+        sets = contribSandbox.stubSets;
+        stubArgs = lib.attrsets.unionOfDisjoint stubArgs contribSandbox.stubArgs;
+      };
+    stubOverlay = cfg.stubOverlayFor cfg.deploymentModules;
     sandboxPkgs = lib.mkDefault (import cfg.buildPkgs.path { inherit system; overlays = [ cfg.stubOverlay ]; });
     nixStubs = {
       src = inputs.nix-stubs;

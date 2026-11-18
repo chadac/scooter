@@ -51,6 +51,9 @@ let
 
     scooter.skillDirs = contribSandbox.skillDirs;
     programs.scooterModule.contribSrcs = contribSandbox.outOfTreeSrcs;
+    # The sets `pkgs` was stubbed with, for the re-converge.
+    programs.scooterModule.stubSets = contribSandbox.stubSets;
+    programs.scooterModule.stubArgs = contribSandbox.stubArgs;
 
     # The nix-stubs source for runtime-converge.nix to vendor.
     _module.args.nixStubs = nixStubs;

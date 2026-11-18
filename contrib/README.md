@@ -29,6 +29,7 @@ contrib/<name>/
   contrib.nix               # the DECLARATION: `contribs.<name>` (see schema below)
   deployment.nix            # optional: a KUBENIX module -> renders manifests
   sandbox.nix               # optional: a NIXOS module  -> goes into the sandbox-os image
+  stubs.nix, stubs.lock     # optional: tools shipped as nix-stubs shims (see "Tools that download on first use")
   module.nix                # optional: its own packages -> scooter.packages, for the platform eval
   scooter_contrib_<name>/
     __init__.py             # neutral; imports NEITHER broker nor webhooks
@@ -204,6 +205,37 @@ so a self-modify rebuilds the same module from the same files. That sets the rul
 
 The fixture is `nixos-tests/fixtures/contrib-ext/`, used by `dev-env-contrib-sandbox`
 and `dev-env-scooter-module`.
+
+#### Tools that download on first use (`stubs.nix`)
+
+A big CLI the agent only sometimes runs (`aws`, `gcloud`, `chromium`) should be a
+[nix-stubs](https://github.com/chadac/nix-stubs) shim: the image carries a few
+kilobytes of build recipe, and the real package is fetched the first time it runs.
+A contrib declares its own, in a **stub set** beside `sandbox.nix`:
+
+```
+contrib/aws/
+  sandbox.nix     # environment.systemPackages = [ pkgs.awscli2 ];
+  stubs.nix       # { pkgs }: { awscli2 = { package = pkgs.awscli2; bins = [ "aws" ]; }; }
+  stubs.lock      # written by `just stubs aws`; commit it
+```
+
+Every enabled contrib's set is composed into one overlay on the image's `pkgs`, so
+`pkgs.awscli2` *is* the shim wherever it's used. A disabled contrib's set is left
+out, along with its recipes. The base set (`modules/sandbox-os/stubs.nix`) holds
+the tools the sandbox itself or several contribs use (`uv`, `kubectl`); an
+attribute stubbed by two sets fails the build.
+
+- **Relock with `just stubs`** (or `just stubs <set>`), after editing a stubs.nix
+  or bumping nixpkgs. CI runs `just check-stubs`, which fails on a stale lock.
+- **No `sandbox.nix`, no stubs**: a set ships with its contrib's sandbox half and
+  throws without one.
+- **Out of this repo**, a contrib's `stubs.nix` and `stubs.lock` sit in its `src`
+  the same way, and are vendored with it. Its lock is synced to its own flake's
+  `flake.lock`, named by `sandbox.stubs.flakeLock`; that flake's `nixpkgs` must
+  follow scooter's, or the overlay throws until it is relocked. Generate it in
+  that repo with `nix run github:chadac/nix-stubs#gen`. Extra `stubs.nix`
+  arguments (a flake input's source, say) go in `sandbox.stubs.args`.
 
 #### Embedding the conversation (`/chat/<id>`)
 

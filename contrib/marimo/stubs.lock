@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "inputs": {
+    "nixpkgs": {
+      "lastModified": 1793876309,
+      "narHash": "sha256-Wojg9lIH/hDH91iDVH2/EPw8oDSpxjxhXONbU1yf4Zg=",
+      "owner": "NixOS",
+      "repo": "nixpkgs",
+      "rev": "f9a75f41be3a74eab55d3a7679d34ad6cc0da977",
+      "type": "github"
+    }
+  },
+  "packages": {
+    "aarch64-darwin": {
+      "marimo": {
+        "attr": "marimo",
+        "drv": "/nix/store/nzx28vwdh5rw48cmzvr3xijjwdfv8xb8-python3.14-marimo-0.25.1.drv",
+        "output": "out",
+        "bins": [
+          "marimo"
+        ],
+        "name": "marimo-0.25.1"
+      }
+    },
+    "aarch64-linux": {
+      "marimo": {
+        "attr": "marimo",
+        "drv": "/nix/store/k5wayxhw0p6k8mdkp6xd83xm5vx3n80g-python3.14-marimo-0.25.1.drv",
+        "output": "out",
+        "bins": [
+          "marimo"
+        ],
+        "name": "marimo-0.25.1"
+      }
+    },
+    "x86_64-linux": {
+      "marimo": {
+        "attr": "marimo",
+        "drv": "/nix/store/x1x8rlkf0qs13i7dgv7g0nh57jqcjb9m-python3.14-marimo-0.25.1.drv",
+        "output": "out",
+        "bins": [
+          "marimo"
+        ],
+        "name": "marimo-0.25.1"
+      }
+    }
+  }
+}

@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "inputs": {
+    "nixpkgs": {
+      "lastModified": 1793876309,
+      "narHash": "sha256-Wojg9lIH/hDH91iDVH2/EPw8oDSpxjxhXONbU1yf4Zg=",
+      "owner": "NixOS",
+      "repo": "nixpkgs",
+      "rev": "f9a75f41be3a74eab55d3a7679d34ad6cc0da977",
+      "type": "github"
+    }
+  },
+  "packages": {
+    "aarch64-darwin": {},
+    "aarch64-linux": {
+      "crun": {
+        "attr": "crun",
+        "drv": "/nix/store/xmy5kqybaxy18p8f7130fk62lg8m0i9x-crun-1.30.1.drv",
+        "output": "out",
+        "bins": [
+          "crun"
+        ],
+        "name": "crun-1.30.1"
+      },
+      "docker": {
+        "attr": "docker",
+        "drv": "/nix/store/hwbxnbckmp4i6xm5gkd9rb3dy6nc9aqa-docker-29.9.2.drv",
+        "output": "out",
+        "bins": [
+          "docker",
+          "dockerd"
+        ],
+        "name": "docker-29.9.2"
+      },
+      "k3d": {
+        "attr": "k3d",
+        "drv": "/nix/store/hb0ld4vk74ya599isbffh29qv6ijbgar-k3d-5.9.0.drv",
+        "output": "out",
+        "bins": [
+          "k3d"
+        ],
+        "name": "k3d-5.9.0"
+      }
+    },
+    "x86_64-linux": {
+      "crun": {
+        "attr": "crun",
+        "drv": "/nix/store/g8l71d07dnbamzghjwbvvgfgij1d8jm2-crun-1.30.1.drv",
+        "output": "out",
+        "bins": [
+          "crun"
+        ],
+        "name": "crun-1.30.1"
+      },
+      "docker": {
+        "attr": "docker",
+        "drv": "/nix/store/8p8biwaf38mj09wmx29f099ivczq4brw-docker-29.9.2.drv",
+        "output": "out",
+        "bins": [
+          "docker",
+          "dockerd"
+        ],
+        "name": "docker-29.9.2"
+      },
+      "k3d": {
+        "attr": "k3d",
+        "drv": "/nix/store/5wqn0zgiklw7flgn34ca4f0fxlr6mzf1-k3d-5.9.0.drv",
+        "output": "out",
+        "bins": [
+          "k3d"
+        ],
+        "name": "k3d-5.9.0"
+      }
+    }
+  }
+}

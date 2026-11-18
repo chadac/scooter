@@ -446,12 +446,15 @@ typecheck:
 lint: typecheck
     npm -w services/ui run lint:contrib
 
-# Guard against a stale stubs.lock: re-evaluate stubs.nix and fail if any recorded .drv
+# Relock every stub set in `stubSets`, or the named ones.
+stubs *sets:
+    nix run --inputs-from . nix-stubs#nix-stubs -- gen --system x86_64-linux --system aarch64-linux --system aarch64-darwin {{ prepend("--set ", sets) }}
+
+# Guard against a stale stubs.lock: re-evaluate every stub set and fail if any recorded .drv
 # differs. An in-repo stub (contrib/code-server/ahp) changes its .drv with every source edit, and a
-# stale lock would silently ship the old build. Fix: nix run --inputs-from . nix-stubs#nix-stubs --
-# gen --system x86_64-linux --system aarch64-linux --system aarch64-darwin --lock modules/sandbox-os/stubs.lock
+# stale lock would silently ship the old build. Fix: just stubs
 check-stubs:
-    nix run --inputs-from . nix-stubs#nix-stubs -- check --lock modules/sandbox-os/stubs.lock
+    nix run --inputs-from . nix-stubs#nix-stubs -- check
 
 # Guard against a stale package-lock.json: regenerate every lockfile
 # (package-lock-only) with the flake's npm and fail if anything changes; the

@@ -20,7 +20,24 @@ let
 
   # In-tree contribs are already in the vendored tree.
   inTree = c: toString c.src == toString (./.. + "/contrib/${baseNameOf c.src}");
+
+  # Where `src` lands in the vendored tree.
+  treeDir = name: c: if inTree c then "contrib/${baseNameOf c.src}" else "contrib-ext/${name}";
+
+  hasStubs = c: builtins.pathExists (c.src + "/stubs.nix");
+
+  # Stubs ship with a sandbox half; nothing else is vendored.
+  stubsWithoutModule = lib.attrNames (lib.filterAttrs
+    (_: c: c.enable && c.sandbox.module == null && hasStubs c)
+    eval.config.contribs);
+
+  withStubs = lib.filterAttrs (_: hasStubs) enabled;
+
+  scooterFlakeLock = ../flake.lock;
 in
+assert stubsWithoutModule == [ ] || throw ("contribs ${toString stubsWithoutModule} have a "
+  + "stubs.nix but no `sandbox.module`; a stub set ships with its contrib's sandbox half.");
+assert !(withStubs ? base) || throw "contrib `base` can't have stubs: the name is the base stub set's.";
 {
   modules = lib.mapAttrsToList (_: c: c.sandbox.module) enabled;
 
@@ -30,12 +47,27 @@ in
   # Vendored to contrib-ext/<name> by reconverge-inputs.nix.
   outOfTreeSrcs = lib.mapAttrs (_: c: c.src) (lib.filterAttrs (_: c: !inTree c) enabled);
 
+  # The base set plus each enabled contrib's; `tree` is `dir` vendored.
+  stubSets = {
+    base = { dir = ../modules/sandbox-os; tree = "modules/sandbox-os"; flakeLock = scooterFlakeLock; };
+  } // lib.mapAttrs
+    (name: c: {
+      dir = c.src;
+      tree = treeDir name c;
+      flakeLock = if c.sandbox.stubs.flakeLock != null then c.sandbox.stubs.flakeLock else scooterFlakeLock;
+    })
+    withStubs;
+
+  # Extra stubs.nix arguments, one namespace across sets.
+  stubArgs = lib.foldl lib.attrsets.unionOfDisjoint { }
+    (lib.mapAttrsToList (_: c: c.sandbox.stubs.args) withStubs);
+
   # Base names, not `toString`, keep the repo out of closures.
   treeRelative = lib.mapAttrsToList
     (name: c:
       let
         file = baseNameOf c.sandbox.module;
-        rel = if inTree c then "contrib/${baseNameOf c.src}/${file}" else "contrib-ext/${name}/${file}";
+        rel = "${treeDir name c}/${file}";
         # Where the module must be for `rel` to match.
         expected = if inTree c then toString (./.. + "/${rel}") else "${toString c.src}/${file}";
       in

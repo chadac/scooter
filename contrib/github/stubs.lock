@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "inputs": {
+    "nixpkgs": {
+      "lastModified": 1793876309,
+      "narHash": "sha256-Wojg9lIH/hDH91iDVH2/EPw8oDSpxjxhXONbU1yf4Zg=",
+      "owner": "NixOS",
+      "repo": "nixpkgs",
+      "rev": "f9a75f41be3a74eab55d3a7679d34ad6cc0da977",
+      "type": "github"
+    }
+  },
+  "packages": {
+    "aarch64-darwin": {
+      "gh": {
+        "attr": "gh",
+        "drv": "/nix/store/5ch05vzfn1w767sirzrk27z7lm99jh8d-gh-2.103.3.drv",
+        "output": "out",
+        "bins": [
+          "gh"
+        ],
+        "name": "gh-2.103.3"
+      }
+    },
+    "aarch64-linux": {
+      "gh": {
+        "attr": "gh",
+        "drv": "/nix/store/3w6hc10jizi1x77sd3z76s2mgxrpdghx-gh-2.103.3.drv",
+        "output": "out",
+        "bins": [
+          "gh"
+        ],
+        "name": "gh-2.103.3"
+      }
+    },
+    "x86_64-linux": {
+      "gh": {
+        "attr": "gh",
+        "drv": "/nix/store/l0j0vwm6mh1bbq6hbp608h5iy467z3ck-gh-2.103.3.drv",
+        "output": "out",
+        "bins": [
+          "gh"
+        ],
+        "name": "gh-2.103.3"
+      }
+    }
+  }
+}
