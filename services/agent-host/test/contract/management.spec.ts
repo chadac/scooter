@@ -1156,6 +1156,53 @@ describe("management API", () => {
     expect(sessions.end).toHaveBeenCalledWith("c1");
   });
 
+  it("DELETE /conversations/:id ends its grants before the conversation", async () => {
+    const sessions = fakeSessions();
+    const order: string[] = [];
+    vi.mocked(sessions.end).mockImplementation(async () => void order.push("end"));
+    const grants = { list: vi.fn(), act: vi.fn(), revokeConversation: vi.fn(async (id: string) => void order.push(`revoke ${id}`)) };
+    const api = createManagementApi({ sessions, store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }), grants });
+    expect((await call(api, "DELETE", "/conversations/c1")).status).toBe(204);
+    expect(order).toEqual(["revoke c1", "end"]);
+  });
+
+  describe("grants routes", () => {
+    const setup = (anonymous = false) => {
+      const grants = {
+        list: vi.fn(async () => [{ contrib: "k8s", id: "g1" }] as never),
+        act: vi.fn(async () => ({ status: 200, json: { grant: { id: "g1" } } })),
+        revokeConversation: vi.fn(),
+      };
+      const api = createManagementApi({
+        sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }),
+        resolveUser: () => ({ id: anonymous ? "" : "alice", anonymous }), grants,
+      });
+      return { api, grants };
+    };
+
+    it("lists the grants as the viewer", async () => {
+      const { api, grants } = setup();
+      expect((await call(api, "GET", "/conversations/c1/grants")).json).toEqual({ grants: [{ contrib: "k8s", id: "g1" }] });
+      expect(grants.list).toHaveBeenCalledWith("c1", expect.objectContaining({ id: "alice" }));
+    });
+
+    it("relays a verb with its minutes", async () => {
+      const { api, grants } = setup();
+      const { status } = await call(api, "POST", "/conversations/c1/grants/k8s/g1/extend", { minutes: 60 });
+      expect(status).toBe(200);
+      expect(grants.act).toHaveBeenCalledWith("c1", "k8s", "g1", "extend", expect.objectContaining({ id: "alice" }), 60);
+    });
+
+    it("refuses fractional minutes and anonymous viewers", async () => {
+      const { api } = setup();
+      expect((await call(api, "POST", "/conversations/c1/grants/k8s/g1/extend", { minutes: 1.5 })).status).toBe(400);
+      const anon = setup(true);
+      expect((await call(anon.api, "GET", "/conversations/c1/grants")).json).toEqual({ grants: [] });
+      expect((await call(anon.api, "POST", "/conversations/c1/grants/k8s/g1/revoke")).status).toBe(403);
+      expect(anon.grants.list).not.toHaveBeenCalled();
+    });
+  });
+
   it("404 on an unknown conversation", async () => {
     const api = createManagementApi({ sessions: fakeSessions(), store: fakeStore([]), server: stubServer, answerInterrupt: async () => ({ ok: true }) });
     const { status } = await call(api, "GET", "/conversations/nope");

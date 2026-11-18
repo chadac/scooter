@@ -131,6 +131,11 @@ the delta) — the approved grant is exactly that policy.
 account — use `escalate` instead. (A second plain request now supersedes the first anyway,
 so piling them up only wastes approvals; escalate makes the intent — expanding — explicit.)
 
+Your grants show in the conversation's Approvals tab. A person there can extend one,
+make it indefinite, revive an expired one (as a new request with the same policy),
+or revoke it, and a message tells you when they do. When a grant you still need has
+expired, asking the user to revive it there is quicker than a fresh `request`.
+
 If `aws --profile … ` ever fails with an expired/invalid token even though your
 request is `active`, force a fresh token instead of re-requesting:
 ```bash

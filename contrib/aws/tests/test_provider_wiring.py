@@ -75,11 +75,11 @@ def test_service_gets_the_authorizer_it_was_given(_aws_env, monkeypatch):
 
 
 def test_the_transport_is_mounted_on_the_provider(_aws_env):
-    """The provider must carry its permissions transport."""
+    """The provider must carry its permissions and grants transports."""
     import scooter_contrib_aws.broker_provider as aws_provider
 
     provider = aws_provider.aws(_context(_aws_env, _Sentinel()))
-    assert [t.name for t in provider.transports] == ["aws-permissions"]
+    assert [t.name for t in provider.transports] == ["aws-permissions", "grants"]
 
 
 async def test_startup_seeds_account_and_rule_approvers(_aws_env):

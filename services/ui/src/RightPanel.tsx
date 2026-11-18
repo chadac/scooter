@@ -2,7 +2,8 @@
  * RightPanel: the single right-side panel with two tabs. Session holds the sandbox
  * status and collapsible sections (Services, Chats, then one per enabled contrib
  * that declares a `ui.panel`), so adding a section never widens the tab bar.
- * Approvals is a gate the user cannot miss, so a new interrupt auto-focuses that tab.
+ * Approvals is a gate the user cannot miss, so a new interrupt auto-focuses that tab;
+ * below the pending cards it lists the grants earlier approvals left standing.
  * (Queued messages render inline in the thread.) The tab bodies are existing
  * components, e.g. InterruptList (data-testid `interrupt-panel`).
  */
@@ -12,6 +13,7 @@ import { X } from "lucide-react";
 
 import { mobileNav, useDrawer } from "./mobileNav.js";
 import { InterruptList } from "./InterruptPanel.js";
+import { GrantsPanel } from "./GrantsPanel.js";
 import { SandboxPanel, useSandboxStatus } from "./SandboxPanel.js";
 import { ChatsPanel } from "./ChatsPanel.js";
 import { canStartSession, familyOf } from "./family.js";
@@ -74,7 +76,7 @@ function TabButton({
 }
 
 export function RightPanel() {
-  const { interrupts } = useConversationInterrupts();
+  const { interrupts, conversationId, baseUrl } = useConversationInterrupts();
   const sandbox = useSandboxStatus();
   const { sessions, currentId } = useSessions();
   const user = useCurrentUser();
@@ -178,13 +180,17 @@ export function RightPanel() {
           </SandboxPanel>
         </div>
         {active === "approvals" ? (
-          nInterrupts > 0 ? (
-            <InterruptList />
-          ) : (
-            <p className="text-sm text-muted-foreground" data-testid="approvals-empty">
-              No pending approvals.
-            </p>
-          )
+          <>
+            {nInterrupts > 0 ? (
+              <InterruptList />
+            ) : (
+              <p className="text-sm text-muted-foreground" data-testid="approvals-empty">
+                No pending approvals.
+              </p>
+            )}
+            {/* Answering an approval may create a grant. */}
+            <GrantsPanel conversationId={conversationId} baseUrl={baseUrl} refreshKey={nInterrupts} />
+          </>
         ) : null}
       </div>
     </aside>

@@ -21,9 +21,11 @@ from . import rules
 from scooter_broker_lib.authz import NoopAuthorizer, user_object
 from scooter_broker_lib.autolink import router_headers
 from scooter_broker_lib.context import BrokerContext
+from scooter_broker_lib.grants import Grants
 from scooter_broker_lib.registry import register_provider
 from scooter_broker_lib.types import Provider
 from scooter_lib.logging_config import format_error
+from .grants import AwsGrants
 from .permissions_transport import AwsPermissions
 
 logger = logging.getLogger(__name__)
@@ -286,7 +288,7 @@ def aws(ctx: BrokerContext) -> Provider:
 
     return Provider(
         name="aws",
-        transports=[transport],
+        transports=[transport, Grants(contrib="aws", source=AwsGrants(service))],
         enabled=True,
         on_startup=on_startup,
         on_shutdown=on_shutdown,

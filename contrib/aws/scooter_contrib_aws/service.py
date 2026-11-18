@@ -156,36 +156,7 @@ class PermissionService:
         parent_request_id: str | None = None,
     ) -> PermissionRequest:
         managed_policy_arns = managed_policy_arns or []
-        acct = self._registry.get(target_account)
-        if acct is None or not acct.get("enabled", False):
-            raise RequestError([f"Account '{target_account}' is not available"])
-        if policy_document is None and not managed_policy_arns:
-            raise RequestError(["Must supply policy_document and/or managed_policy_arns"])
-        account_rules = self._rules_for(target_account)
-
-        # Managed-policy ARNs must be allowlisted for the account.
-        allowed_managed = set(acct.get("allowed_managed_policies", []))
-        for arn in managed_policy_arns:
-            if arn not in allowed_managed:
-                raise RequestError([f"Managed policy '{arn}' is not allowed for this account"])
-
-        errors: list[str] = []
-        if policy_document is not None:
-            errors += policy.validate_policy(policy_document, target_account)
-            allowed_policy = acct.get("allowed_policy") or {"Statement": [{"Action": ["*"], "Resource": ["*"]}]}
-            errors += policy.validate_policy_within_bounds(policy_document, allowed_policy)
-        parts = rules.request_parts(policy_document, managed_policy_arns)
-        errors += rules.denials(account_rules, parts)
-        if errors:
-            raise RequestError(errors)
-
-        risk = RiskLevel.LOW
-        summary = ""
-        if policy_document is not None:
-            risk = policy.classify_risk(policy_document, target_account)
-            summary = policy.summarize_policy(policy_document)
-
-        needed = rules.obligations(target_account, account_rules, parts)
+        risk, summary, needed = self._vet(target_account, policy_document, managed_policy_arns)
 
         request_id = uuid.uuid4().hex[:12]
         # IAM provisioning is deferred to _provision so a request always appears as pending even when the account's broker IAM is not set up yet.
@@ -224,6 +195,42 @@ class PermissionService:
 
         await self._notify(req)
         return req
+
+    def _vet(
+        self, target_account: str, policy_document: dict | None, managed_policy_arns: list[str],
+    ) -> tuple[RiskLevel, str, list[rules.Obligation]]:
+        """Check a policy against the account's bounds and rules: its risk, summary and obligations."""
+        acct = self._registry.get(target_account)
+        if acct is None or not acct.get("enabled", False):
+            raise RequestError([f"Account '{target_account}' is not available"])
+        if policy_document is None and not managed_policy_arns:
+            raise RequestError(["Must supply policy_document and/or managed_policy_arns"])
+        account_rules = self._rules_for(target_account)
+
+        # Managed-policy ARNs must be allowlisted for the account.
+        allowed_managed = set(acct.get("allowed_managed_policies", []))
+        for arn in managed_policy_arns:
+            if arn not in allowed_managed:
+                raise RequestError([f"Managed policy '{arn}' is not allowed for this account"])
+
+        errors: list[str] = []
+        if policy_document is not None:
+            errors += policy.validate_policy(policy_document, target_account)
+            allowed_policy = acct.get("allowed_policy") or {"Statement": [{"Action": ["*"], "Resource": ["*"]}]}
+            errors += policy.validate_policy_within_bounds(policy_document, allowed_policy)
+        parts = rules.request_parts(policy_document, managed_policy_arns)
+        errors += rules.denials(account_rules, parts)
+        if errors:
+            raise RequestError(errors)
+
+        risk = RiskLevel.LOW
+        summary = ""
+        if policy_document is not None:
+            risk = policy.classify_risk(policy_document, target_account)
+            summary = policy.summarize_policy(policy_document)
+
+        needed = rules.obligations(target_account, account_rules, parts)
+        return risk, summary, needed
 
     def _rules_for(self, target_account: str) -> list[rules.Rule]:
         """The account's approval rules; refuses a registry rendered without them."""
@@ -480,6 +487,74 @@ class PermissionService:
             return bool(await self._eligible(approver, self._unmet(req, self._obligations(req))))
         except Exception:
             return False
+
+    # --- standing grants (approver, from the Approvals tab) ----------------
+    @property
+    def role_ttl_hours(self) -> int:
+        return self._config.role_ttl_hours
+
+    async def get(self, request_id: str) -> PermissionRequest | None:
+        return await self._store.get(request_id)
+
+    async def may_manage(self, *, request_id: str, approver: str) -> bool:
+        """Could `approver` have approved this grant on their own? Fails closed."""
+        req = await self._store.get(request_id)
+        if req is None:
+            return False
+        # Auto-approved grants are managed by the account's approvers.
+        obligations = self._obligations(req) or [rules.Obligation(
+            id="0", rules=[rules.ACCOUNT_DEFAULT], objects=[aws_account_object(req.target_account)])]
+        try:
+            return bool(await self._eligible(approver, obligations))
+        except Exception:
+            return False
+
+    async def set_role_expiry(self, *, request_id: str, until: str | None) -> PermissionRequest:
+        """Move an active grant's role TTL; None keeps the role until revoked."""
+        req = await self._store.get(request_id)
+        if req is None or req.status != RequestStatus.ACTIVE:
+            raise RequestError(["The grant is not active; revive it instead"])
+        if req.role_expires_at and req.role_expires_at <= _now():
+            raise RequestError(["The grant has expired; revive it instead"])
+        await self._store.update(request_id, role_expires_at=until)
+        return await self._store.get(request_id)  # type: ignore[return-value]
+
+    async def revive(self, *, request_id: str, approver: str, minutes: int) -> PermissionRequest:
+        """Provision an ended grant's policy again as a new, linked request."""
+        old = await self._store.get(request_id)
+        if old is None or old.status not in (RequestStatus.EXPIRED, RequestStatus.REVOKED, RequestStatus.SUPERSEDED):
+            raise RequestError(["Only an expired or revoked grant can be revived"])
+        # Today's bounds and rules must still allow the policy.
+        risk, summary, _ = self._vet(old.target_account, old.policy_document, old.managed_policy_arns)
+        new = PermissionRequest(
+            request_id=uuid.uuid4().hex[:12], conversation_id=old.conversation_id,
+            target_account=old.target_account, justification=old.justification, risk_level=risk,
+            policy_document=old.policy_document, managed_policy_arns=old.managed_policy_arns,
+            policy_summary=summary, conversation_url=old.conversation_url, parent_request_id=old.request_id,
+            requested_at=_now(), approval_obligations=old.approval_obligations,
+        )
+        await self._store.insert(new)
+        new = await self._provision(new, approver)
+        until = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat()
+        await self._store.update(new.request_id, role_expires_at=until)
+        return await self._store.get(new.request_id)  # type: ignore[return-value]
+
+    async def revoke_conversation(self, conversation_id: str) -> int:
+        """Tear down every live grant of a deleted conversation; failures stay for the sweeper."""
+        n = 0
+        for req in await self._store.list_for_conversation(conversation_id):
+            if req.status not in (RequestStatus.ACTIVE, RequestStatus.APPROVED):
+                continue
+            # Give a pinned role a TTL so the sweeper retries.
+            if req.role_expires_at is None:
+                await self._store.update(req.request_id, role_expires_at=_now())
+            try:
+                await self.revoke(request_id=req.request_id, conversation_id=conversation_id)
+                n += 1
+            except RequestError:
+                logger.exception("revoking a deleted conversation's grant failed",
+                                 extra={"conversation_id": conversation_id, "request_id": req.request_id})
+        return n
 
     # --- retrieve / refresh / revoke (agent) -------------------------------
     async def status(

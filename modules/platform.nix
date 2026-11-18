@@ -416,6 +416,19 @@ in
               silently on a rollout. Set it unless the requests are truly ephemeral.
             '';
           };
+          grantsPrefix = mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            example = "/aws/grants";
+            description = ''
+              Where this contrib's standing grants live (`scooter_broker_lib.grants`):
+              the agent-host lists them at `<grantsPrefix>/list` for the Approvals tab
+              and relays extend, pin, revive and revoke to `<grantsPrefix>/{id}/{verb}`.
+              Deleting a conversation calls `<grantsPrefix>/revoke-conversation`.
+
+              `null` means the contrib's approvals leave no grant behind.
+            '';
+          };
         };
       });
     };

@@ -809,6 +809,16 @@ in
             default = "You don't have permission to approve this — an admin must.";
             description = "Text shown under the options when this viewer may not use the gated one.";
           };
+          grants = mkOption {
+            type = types.bool;
+            default = false;
+            description = ''
+              Whether approving creates standing grants that the Approvals tab lists
+              and lets a person extend, pin, revive or revoke. The broker half mounts
+              `scooter_broker_lib.grants.Grants` at `/<name>/grants`, and the derived
+              `scooter.approvals.<name>.grantsPrefix` points the agent-host there.
+            '';
+          };
         };
       });
     };

@@ -252,7 +252,7 @@ in
       };
 
       # Writes, exec and reveals are approved in-conversation, at /k8s/approvals.
-      approvals = { };
+      approvals.grants = true;
 
       sandbox.module = ./sandbox.nix;
       skills."scooter-k8s.md" = ./skills/scooter-k8s.md;

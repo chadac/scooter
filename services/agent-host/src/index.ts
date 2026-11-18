@@ -18,12 +18,14 @@ import { tmpdir } from "node:os";
 
 import { createAguiServer, interruptResult } from "./agui/server.js";
 import { parseBlockingTools } from "./agent/blockingTools.js";
+import { createGrantsRelay } from "./grants.js";
 import {
   createManagementApi,
   raiseApprovalInterrupt,
   fetchPendingApprovalsByKeys,
   approvalAgentMessage,
   type ApprovalContrib,
+  type ManagementDeps,
 } from "./api/management.js";
 import { createSessionManager, isPlaceholderTitle, sandboxKey } from "./session/manager.js";
 import { createRemoteAgentRegistry, createRemotePersonalizedProvider } from "./acp/remoteAgentRegistry.js";
@@ -1870,6 +1872,37 @@ export async function main(
     return { url, headers: await brokerAuthHeaders() };
   };
 
+  const grantsRelay = createGrantsRelay({
+    contribs: approvalContribs,
+    brokerAuth,
+    notify: (sessionId, message) =>
+      void sessions
+        .prompt(sessionId as SessionId, message, undefined, undefined, undefined, undefined, undefined, "broker")
+        .catch((e) => hostLog.errorWith("failed to tell the agent its grant changed", e, { conversation_id: sessionId })),
+    warn: (msg, fields) => hostLog.warn(msg, fields),
+  });
+  /** The broker keys a conversation's grants are filed under; `own` leaves out a subagent's shared root key. */
+  const grantKeys = async (id: string, own = false): Promise<{ id: string; keys: string[] } | null> => {
+    const conv = sessions.get(id as SessionId) ?? (await sessions.getBySandboxKey(id));
+    if (!conv) return null;
+    return { id: conv.id, keys: own && conv.parentId ? [conv.id] : [...new Set([keyOf(conv.id), conv.id])] };
+  };
+  const grants: NonNullable<ManagementDeps["grants"]> = {
+    list: async (id, approver) => {
+      const conv = await grantKeys(id);
+      return conv ? grantsRelay.list(conv.keys, approver) : [];
+    },
+    act: async (id, contrib, grantId, verb, approver, minutes) => {
+      const conv = await grantKeys(id);
+      if (!conv) return { status: 404, json: { error: "not found" } };
+      return grantsRelay.act(conv.id, conv.keys, contrib, grantId, verb, approver, minutes);
+    },
+    revokeConversation: async (id) => {
+      const conv = await grantKeys(id, true);
+      if (conv) await grantsRelay.revokeConversation(conv.keys);
+    },
+  };
+
   // In-pod web-service registry shared by the management API and the reverse proxy;
   // undefined for a fake sandbox, which has no pod.
   const webServices = config.fakeSandbox
@@ -1988,6 +2021,7 @@ export async function main(
       answerInterrupt: resumeInterrupt,
       // Relay the user's answer to the contrib that asked, shared with the revive re-raise.
       resolveApproval,
+      grants,
       canApproveRequest: async (sessionId, contrib, requestId, approver) => {
         if (contrib === UNTAINT_CONTRIB || contrib === WORKSPACE_EXPAND_CONTRIB) {
           const owner = (await rootAccess(sessionId))?.owner;

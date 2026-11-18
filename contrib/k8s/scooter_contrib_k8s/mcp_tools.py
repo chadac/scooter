@@ -237,5 +237,5 @@ async def k8s_grants(cluster: str = "", ctx: ToolContext = ToolContextDep) -> To
         found = await svc.grants.active(ctx.identity.conversation_id, cluster or None)
         return [{"grant_id": g.id, "kind": g.kind, "secrets": list(g.names) or None,
                  "cluster": g.cluster, "namespace": g.namespace,
-                 "expires_at": iso(g.expires_at), "approved_by": g.approved_by} for g in found] or "No active grants."
+                 "expires_at": iso(g.expires_at) if g.expires_at is not None else "until revoked", "approved_by": g.approved_by} for g in found] or "No active grants."
     return await _answer(run())

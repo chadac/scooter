@@ -41,6 +41,7 @@ import type { SandboxSizePreset } from "../session/resources.js";
 import type { WorkspaceVolume } from "../session/workspaceVolume.js";
 import { PRIORITY_INTERRUPT, userAssertionOf, type AguiEvent, type ApproverIdentity, type SessionBridge } from "../bridge.js";
 import { formatError, logger } from "../log.js";
+import type { Grant } from "../grants.js";
 import type { AccessCheck } from "../session/access.js";
 import { isVisibility } from "../session/visibility.js";
 import { serviceUrl, type SandboxOrigins } from "../proxy/sandboxOrigin.js";
@@ -164,6 +165,19 @@ export interface ManagementDeps {
     requestId: string,
     approver: ApproverIdentity,
   ) => Promise<{ canApprove: boolean; pending?: boolean }>;
+  /** The conversation's standing grants and the verbs that change them; absent means none. */
+  grants?: {
+    list(conversationId: string, approver: ApproverIdentity): Promise<Grant[]>;
+    act(
+      conversationId: string,
+      contrib: string,
+      grantId: string,
+      verb: string,
+      approver: ApproverIdentity,
+      minutes?: number,
+    ): Promise<{ status: number; json: unknown }>;
+    revokeConversation(conversationId: string): Promise<void>;
+  };
   /** Model catalog for per-conversation selection; an empty `available` list means only the default is selectable. */
   models?: {
     default?: string;
@@ -292,6 +306,8 @@ export interface ApprovalContrib {
   brokerPrefix: string;
   /** Where to list still-pending requests for a conversation; null means no re-raise. */
   pendingPath?: string | null;
+  /** Where the contrib's standing grants live; null means its approvals leave none. */
+  grantsPrefix?: string | null;
 }
 
 /** The default verbs, the pair the UI's gating (`gatedOption` in the contrib manifest) understands. */
@@ -669,6 +685,8 @@ export function createManagementApi(deps: ManagementDeps): Router {
     // A starred conversation is protected from deletion; the caller must unstar first.
     await sessions.refreshRouterMeta(conv.id);
     if (sessions.get(conv.id)?.starred) return { status: 409, json: { error: "conversation is starred; unstar before deleting" } };
+    // Before end(), which forgets the grants' sandbox key.
+    await deps.grants?.revokeConversation(conv.id);
     await sessions.end(ctx.params.id);
     return { status: 204, json: null };
   });
@@ -1233,6 +1251,25 @@ export function createManagementApi(deps: ManagementDeps): Router {
       }
     }
     return { json: answer };
+  });
+
+  // Each grant's verbs say whether this viewer may use them.
+  r.get("/conversations/:id/grants", async (ctx) => {
+    if (!deps.grants || ctx.user.anonymous) return { json: { grants: [] } };
+    const approver = { id: ctx.user.id, email: ctx.user.email, name: ctx.user.name, assertion: userAssertionOf(ctx.req) };
+    return { json: { grants: await deps.grants.list(ctx.params.id, approver) } };
+  });
+
+  r.post("/conversations/:id/grants/:contrib/:grantId/:verb", async (ctx) => {
+    if (!deps.grants) return { status: 404, json: { error: "grants are not configured" } };
+    if (ctx.user.anonymous) return { status: 403, json: { error: "sign in to change a grant" } };
+    const body = (await ctx.body<{ minutes?: unknown }>().catch(() => undefined)) ?? {};
+    if (body.minutes !== undefined && (typeof body.minutes !== "number" || !Number.isInteger(body.minutes))) {
+      return { status: 400, json: { error: "minutes must be a whole number" } };
+    }
+    const approver = { id: ctx.user.id, email: ctx.user.email, name: ctx.user.name, assertion: userAssertionOf(ctx.req) };
+    const { contrib, grantId, verb } = ctx.params;
+    return deps.grants.act(ctx.params.id, contrib, grantId, verb, approver, body.minutes as number | undefined);
   });
 
   // External resource links (the GitHub PR / Slack thread a conversation came from): the

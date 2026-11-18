@@ -65,7 +65,7 @@ in
       # A grant needs a human to say yes; only the UI half is here, with the defaults
       # being what aws wants, and the broker verbs are deployment config under
       # scooter.approvals in ./deployment.nix.
-      approvals = { };
+      approvals.grants = true;
       # Draws the grant's full policy instead of the plain Approve/Deny card.
       ui.interruptRenderers."aws.permissions".entry = "ui/PermissionsCard.tsx";
     };

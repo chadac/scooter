@@ -1081,12 +1081,16 @@ let
     ++ (if approvalsJson == null || (approvalsJson.aws.pendingPath or null) != null then [ ]
         else [ ("aws.pendingPath is null — an approval window lost to a pod rollout would"
                 + " never be re-raised, leaving a blocked agent and a user with nothing to click") ])
+    ++ (if approvalsJson == null || (approvalsJson.aws.grantsPrefix or null) == "/aws/grants" then [ ]
+        else [ "aws.grantsPrefix must be /aws/grants, where its role grants are listed and changed" ])
     ++ (if approvalsJson == null || (approvalsJson.commits.pendingPath or null) == "/commits/approvals/pending" then [ ]
         else [ "APPROVAL_CONTRIBS_JSON has no commits row at /commits/approvals/pending" ])
     # Every enabled contrib declaring approvals gets a row, by default at /<name>/approvals.
     ++ map (n: "contribs.${n} declares approvals but APPROVAL_CONTRIBS_JSON has no row with a pendingPath for it")
         (builtins.filter (n: (approvalsJson.${n}.pendingPath or null) == null)
           (builtins.attrNames (nixpkgsLib.filterAttrs (_: c: c.enable && c.approvals != null) platform.config.contribs)))
+    ++ (if (echoApprovalRow.grantsPrefix or null) == null then [ ]
+        else [ "echo leaves no grants, yet its APPROVAL_CONTRIBS_JSON row has a grantsPrefix" ])
     ++ (if (echoApprovalRow.brokerPrefix or null) == "/echo/approvals" then [ ]
         else [ "enabling echo, which declares approvals, did not route it to the derived /echo/approvals" ])
     ++ (if !(platform.config.scooter.approvals ? echo) then [ ]

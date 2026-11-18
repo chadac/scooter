@@ -82,6 +82,11 @@ ask once with `k8s_request_grant(namespace, minutes, reason)`. Once it's
 approved, apply, delete, scale and rollout restart calls in that namespace run
 immediately and return their result. `k8s_grants` lists your active grants.
 
+People can see your grants in the conversation's Approvals tab, where they can
+extend one (or make it indefinite), revive an expired one, or revoke it. A
+message tells you when they do. Before asking again for an expired grant,
+consider asking the user to revive it there.
+
 `k8s_exec`, `k8s_secret_reveal` and cluster-scoped objects (Namespaces, CRDs,
 ClusterRoles) always need their own card, even under a grant.
 

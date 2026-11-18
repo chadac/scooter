@@ -1,5 +1,5 @@
-"""The k8s provider: the configured clusters, their approvals at /k8s/approvals, the agent tools
-and each cluster's forge-proxy host for kubectl and helm.
+"""The k8s provider: the configured clusters, their approvals at /k8s/approvals and grants
+at /k8s/grants, the agent tools and each cluster's forge-proxy host for kubectl and helm.
 
 Off unless `k8s_enabled`; the registry then drops the routes and tools.
 """
@@ -11,6 +11,7 @@ import logging
 import httpx
 
 from scooter_broker_lib.approvals import HostCards
+from scooter_broker_lib.grants import Grants
 from scooter_broker_lib.context import BrokerContext
 from scooter_broker_lib.forge import ForgeHost, ForgeHosts
 from scooter_broker_lib.registry import register_provider
@@ -22,6 +23,7 @@ from .auth import auth_for
 from .config import parse_clusters, settings
 from .forge import ClusterLink, KubeCredential, KubePolicy, KubeTransport, host_for, status_body
 from .kube import Kube
+from .grants import K8sGrants
 from .service import Cluster, K8sService
 from .store import GrantStore
 
@@ -71,7 +73,8 @@ def k8s(ctx: BrokerContext) -> Provider:
     mcp_tools.configure(service)
     configs = {name: c.config for name, c in clusters.items()}
     policy = KubePolicy(configs, grants)
+    listed = Grants(contrib="k8s", source=K8sGrants(grants, service.approvals, configs))
     return Provider(
         name="k8s", credential=KubeCredential(configs, links, policy),
-        transports=[service.approvals, tools, forge_hosts(links)], forge_policy=policy, enabled=True,
+        transports=[service.approvals, listed, tools, forge_hosts(links)], forge_policy=policy, enabled=True,
     )
