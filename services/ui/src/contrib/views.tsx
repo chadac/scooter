@@ -4,7 +4,7 @@
  * anything twice. Re-exported from ./sdk, the only module a contrib may import.
  */
 
-import { useEffect, useMemo, useRef } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, type ReactNode } from "react";
 
 import { promptConversation } from "../client.js";
 import { contribEvents } from "../contribEvents.js";
@@ -14,17 +14,41 @@ import { sessionStore, turnDot, useSessions, type SessionLink, type TurnDot } fr
 import { useRoute, viewStore } from "../view.js";
 
 import { ChatPanel as Panel } from "../ChatPage.js";
-import { RuntimeProvider } from "../RuntimeProvider.js";
+import { RuntimeProvider, useConversationInterrupts } from "../RuntimeProvider.js";
 
-/** The open conversation's thread, composer and approvals, as /chat/<id> shows them.
- *  Its own runtime, so switching conversations remounts the panel, not the view. */
-export function ChatPanel(props: { conversationId?: string }) {
+const InRuntime = createContext(false);
+
+/** The open conversation's runtime, for a view that shows more of it than `<ChatPanel />`:
+ *  inside it the panel shares this one rather than starting its own. */
+export function ConversationRuntime({ children }: { children: ReactNode }) {
   return (
     <RuntimeProvider>
-      <Panel {...props} />
+      <InRuntime.Provider value={true}>{children}</InRuntime.Provider>
     </RuntimeProvider>
   );
 }
+
+/** The open conversation's thread, composer and approvals, as /chat/<id> shows them.
+ *  Its own runtime unless in a `<ConversationRuntime>`, so switching conversations
+ *  remounts the panel, not the view. */
+export function ChatPanel(props: { conversationId?: string }) {
+  if (useContext(InRuntime)) return <Panel {...props} />;
+  return (
+    <ConversationRuntime>
+      <Panel {...props} />
+    </ConversationRuntime>
+  );
+}
+
+/** The chat's Session and Approvals tab bodies, for the open conversation; inside a
+ *  `<ConversationRuntime>`. */
+export { ApprovalsPanel, SessionPanel } from "../RightPanel.js";
+
+/** How many approvals the open conversation waits on; 0 outside a `<ConversationRuntime>`. */
+export function usePendingApprovals(): number {
+  return useConversationInterrupts().interrupts.length;
+}
+
 export { Sidebar as ConversationSidebar, StatusDot } from "../Sidebar.js";
 
 /** Where a view is: its id, and the URL below `/<id>` without slashes at either end. */

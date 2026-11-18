@@ -4,8 +4,8 @@
  * that declares a `ui.panel`), so adding a section never widens the tab bar.
  * Approvals is a gate the user cannot miss, so a new interrupt auto-focuses that tab;
  * below the pending cards it lists the grants earlier approvals left standing.
- * (Queued messages render inline in the thread.) The tab bodies are existing
- * components, e.g. InterruptList (data-testid `interrupt-panel`).
+ * (Queued messages render inline in the thread.) The tab bodies, SessionPanel and
+ * ApprovalsPanel, are also what a contrib view shows for its open conversation.
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -75,12 +75,11 @@ function TabButton({
   );
 }
 
-export function RightPanel() {
-  const { interrupts, conversationId, baseUrl } = useConversationInterrupts();
+/** The Session tab's body: sandbox status, then Chats and each contrib's panel. */
+export function SessionPanel() {
   const sandbox = useSandboxStatus();
   const { sessions, currentId } = useSessions();
   const user = useCurrentUser();
-  const nInterrupts = interrupts.length;
   const family = useMemo(() => familyOf(sessions, currentId), [sessions, currentId]);
   // Shown once there is another chat, or one could start.
   const showChats = family.length > 1 || canStartSession(family[0]?.session, user);
@@ -98,6 +97,52 @@ export function RightPanel() {
     }
     return set;
   };
+  return (
+    <SandboxPanel status={sandbox}>
+      {showChats && (
+        <PanelSection id="chats" label="Chats" count={family.length - 1}>
+          <ChatsPanel members={family} />
+        </PanelSection>
+      )}
+      {panels.map((p) => (
+        <PanelSection
+          key={p.contrib}
+          id={`contrib-${p.contrib}`}
+          label={p.label}
+          count={panelCounts[p.contrib] ?? 0}
+        >
+          <div data-testid={`contrib-panel-${p.contrib}`}>
+            <ContribPanelBody panel={p} setCount={counterFor(p.contrib)} />
+          </div>
+        </PanelSection>
+      ))}
+    </SandboxPanel>
+  );
+}
+
+/** The Approvals tab's body: pending approvals, then the grants left standing. */
+export function ApprovalsPanel() {
+  const { interrupts, conversationId, baseUrl } = useConversationInterrupts();
+  const nInterrupts = interrupts.length;
+  return (
+    <>
+      {nInterrupts > 0 ? (
+        <InterruptList />
+      ) : (
+        <p className="text-sm text-muted-foreground" data-testid="approvals-empty">
+          No pending approvals.
+        </p>
+      )}
+      {/* Answering an approval may create a grant. */}
+      <GrantsPanel conversationId={conversationId} baseUrl={baseUrl} refreshKey={nInterrupts} />
+    </>
+  );
+}
+
+export function RightPanel() {
+  const { interrupts } = useConversationInterrupts();
+  const { currentId } = useSessions();
+  const nInterrupts = interrupts.length;
 
   // Session is the leftmost, always-present tab, so it is the default.
   const [active, setActive] = useState<Tab>("session");
@@ -115,7 +160,7 @@ export function RightPanel() {
   }, [nInterrupts]);
 
   // Only an app with no conversation hides the panel.
-  if (!sandbox.hasConversation) return null;
+  if (!currentId) return null;
 
   return (
     <aside
@@ -159,39 +204,9 @@ export function RightPanel() {
       <div className="flex-1 overflow-y-auto px-4 py-3">
         {/* Session stays mounted while hidden, so contrib sections keep their counts. */}
         <div hidden={active !== "session"}>
-          <SandboxPanel status={sandbox}>
-            {showChats && (
-              <PanelSection id="chats" label="Chats" count={family.length - 1}>
-                <ChatsPanel members={family} />
-              </PanelSection>
-            )}
-            {panels.map((p) => (
-              <PanelSection
-                key={p.contrib}
-                id={`contrib-${p.contrib}`}
-                label={p.label}
-                count={panelCounts[p.contrib] ?? 0}
-              >
-                <div data-testid={`contrib-panel-${p.contrib}`}>
-                  <ContribPanelBody panel={p} setCount={counterFor(p.contrib)} />
-                </div>
-              </PanelSection>
-            ))}
-          </SandboxPanel>
+          <SessionPanel />
         </div>
-        {active === "approvals" ? (
-          <>
-            {nInterrupts > 0 ? (
-              <InterruptList />
-            ) : (
-              <p className="text-sm text-muted-foreground" data-testid="approvals-empty">
-                No pending approvals.
-              </p>
-            )}
-            {/* Answering an approval may create a grant. */}
-            <GrantsPanel conversationId={conversationId} baseUrl={baseUrl} refreshKey={nInterrupts} />
-          </>
-        ) : null}
+        {active === "approvals" ? <ApprovalsPanel /> : null}
       </div>
     </aside>
   );
