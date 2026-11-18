@@ -115,6 +115,43 @@ in
         colima the host is `192.168.5.1`).
       '';
     };
+    credentials = mkOption {
+      type = types.attrsOf (types.attrsOf (types.submodule {
+        options = {
+          file = mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            example = "/run/secrets/github_token";
+            description = "A host file holding the value; trailing whitespace is dropped.";
+          };
+          command = mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            example = "databricks auth token --profile dev -o json | jq -r .access_token";
+            description = "A `bash -c` command whose stdout is the value. Runs on the host, with its PATH.";
+          };
+          fix = mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            example = "databricks auth login --profile dev";
+            description = "What to run when the source fails, shown by `scooter-local status`.";
+          };
+        };
+      }));
+      default = { };
+      example = literalExpression ''
+        {
+          github-pat.token.file = "/run/secrets/github_token";
+          databricks-tokens.dev.command = "databricks auth token --profile dev -o json | jq -r .access_token";
+        }
+      '';
+      description = ''
+        Secrets read from the host: `<secret>.<key>` is one key, from a `file` or a
+        `command`. `scooter-local up` writes them before deploying and `scooter-local
+        sync` refreshes them. A source that fails keeps the key's current value; a
+        changed Secret restarts the Deployments that read it as env.
+      '';
+    };
     assetsHostPath = mkOption {
       type = types.str;
       default = "/var/lib/scooter/assets";

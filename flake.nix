@@ -78,6 +78,7 @@
           manifests = { ${provider} = render.config.kubernetes.resultYAML; };
           fixedProvider = provider;
           inherit port;
+          inherit (render.config.scooter.local) credentials;
         };
     in
     flake-parts.lib.mkFlake { inherit inputs; } {
@@ -651,7 +652,11 @@
                     {
                       services.scooter-local = {
                         enable = true;
-                        settings.scooter.local = { provider = "ollama"; ollama.model = "qwen2.5-coder:7b"; };
+                        settings.scooter.local = {
+                          provider = "ollama";
+                          ollama.model = "qwen2.5-coder:7b";
+                          credentials.github-pat.token.file = "/run/secrets/github_token";
+                        };
                         environmentFile = "/run/secrets/scooter-local";
                       };
                       boot.loader.grub.enable = false;
@@ -661,8 +666,14 @@
                   ];
                 };
                 svc = os.config.systemd.services.scooter-local.serviceConfig;
+                sync = os.config.systemd.services.scooter-local-sync.serviceConfig;
+                watched = os.config.systemd.paths.scooter-local-sync.pathConfig.PathChanged;
               in
-              hostPkgs.runCommand "local-nixos-module-check" { start = svc.ExecStart; stop = svc.ExecStop; } ''
+              hostPkgs.runCommand "local-nixos-module-check" {
+                start = svc.ExecStart; stop = svc.ExecStop; sync = sync.ExecStart; watched = toString watched;
+              } ''
+                case "$sync" in */bin/scooter-local\ sync) ;; *) echo "the sync ExecStart is $sync" >&2; exit 1 ;; esac
+                [ "$watched" = /run/secrets/github_token ] || { echo "the path unit watches '$watched'" >&2; exit 1; }
                 case "$start" in */bin/scooter-local\ up) ;; *) echo "ExecStart is $start" >&2; exit 1 ;; esac
                 case "$stop" in */bin/scooter-local\ down) ;; *) echo "ExecStop is $stop" >&2; exit 1 ;; esac
                 echo ok > $out

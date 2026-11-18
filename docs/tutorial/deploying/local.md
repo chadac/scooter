@@ -46,7 +46,8 @@ and takes a few minutes; later runs take about a minute.
 | `scooter-local up` | Create or start the cluster and deploy. Asks for the provider and its credential the first time. Safe to re-run. |
 | `scooter-local down` | Stop the cluster. Conversations, sandboxes and uploaded files are kept; `up` brings them back. |
 | `scooter-local destroy` | Delete the cluster and everything in it. |
-| `scooter-local status` | The cluster's state, its pods, and the URL. |
+| `scooter-local status` | The cluster's state, its pods, the URL, and any stale [credential](#credentials-from-the-host). |
+| `scooter-local sync` | Refresh the Secrets in [`scooter.local.credentials`](#credentials-from-the-host) from their sources. |
 | `scooter-local logs [deploy]` | Follow a deployment's log: the agent-host's by default, or e.g. `agent-broker`. |
 | `scooter-local config` | Choose the provider or credential again; the next `up` applies it. |
 | `scooter-local kubeconfig` | The kubeconfig path, for `kubectl` against the cluster. |
@@ -196,6 +197,51 @@ This enables Docker, installs the `scooter-local` built for `settings`, and runs
 as `scooter-local.service` at boot (`down` when it stops); `port` and `stateDir`
 (default `/var/lib/scooter-local`) are options too. The service has no terminal, so the
 credential comes from `environmentFile`.
+
+### Credentials from the host
+
+Contribs read their tokens from Secrets. `scooter.local.credentials` fills them from
+files or commands on your machine, so the values never enter the Nix store:
+
+```nix
+# scooter.nix
+{
+  scooter.local.credentials = {
+    github-pat.token.file = "/run/secrets/github_token";
+    databricks-tokens.dev = {
+      command = "databricks auth token --profile dev -o json | jq -r .access_token";
+      fix = "databricks auth login --profile dev";
+    };
+  };
+}
+```
+
+`<secret>.<key>` is one key of a Secret, and the Secret holds just the keys listed.
+`up` writes them before deploying, and `scooter-local sync` refreshes them:
+
+- A file that's unreadable, or a command that fails or prints nothing, keeps that
+  key's current value, so a working token is never blanked.
+- A Secret that changed restarts the Deployments that read it as env. Pods that mount
+  it, like the Databricks broker, see the new value without a restart.
+- `scooter-local status` lists each key, and for a stale one the error and its `fix`.
+
+To keep short-lived tokens fresh, run `sync` on a schedule. The NixOS module does this
+with a timer (`services.scooter-local.credentials.refreshInterval`, default `5min`)
+and whenever one of the files changes. On macOS, a launchd agent does the same:
+
+```nix
+# home-manager
+launchd.agents.scooter-local-sync = {
+  enable = true;
+  config = {
+    ProgramArguments = [ "${scooterLocal}/bin/scooter-local" "sync" ];
+    StartInterval = 60;
+    WatchPaths = [ "/Users/you/.databricks/token-cache.json" ];
+  };
+};
+```
+
+launchd and systemd give commands a minimal PATH, so name programs by absolute path.
 
 ## From here to a deployment
 

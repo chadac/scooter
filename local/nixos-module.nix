@@ -13,6 +13,10 @@
 let
   inherit (lib) mkOption mkEnableOption mkIf mkDefault types literalExpression;
   cfg = config.services.scooter-local;
+  credentials = cfg.package.credentials or { };
+  files = lib.unique (lib.concatMap (keys: lib.filter (f: f != null) (lib.mapAttrsToList (_: k: k.file) keys))
+    (lib.attrValues credentials));
+  refresh = credentials != { } && cfg.credentials.refreshInterval != null;
 in
 {
   options.services.scooter-local = {
@@ -68,6 +72,18 @@ in
       description = "The kubeconfig, the chosen provider and the uploads (SCOOTER_LOCAL_STATE).";
     };
 
+    credentials.refreshInterval = mkOption {
+      type = types.nullOr types.str;
+      default = "5min";
+      example = "1min";
+      description = ''
+        How often `scooter-local sync` refreshes the Secrets in `settings`'
+        `scooter.local.credentials` (a systemd time span), besides whenever one of
+        their files changes. Null refreshes them only at `up`. Commands run as root
+        with a minimal PATH, so name programs by absolute path.
+      '';
+    };
+
     docker.enable = mkOption {
       type = types.bool;
       default = true;
@@ -103,6 +119,25 @@ in
         TimeoutStopSec = "5min";
         StateDirectory = mkIf (lib.hasPrefix "/var/lib/" cfg.stateDir) (lib.removePrefix "/var/lib/" cfg.stateDir);
       };
+    };
+
+    systemd.services.scooter-local-sync = mkIf refresh {
+      description = "Refresh scooter-local's Secrets from their host sources";
+      after = [ "scooter-local.service" ];
+      requisite = [ "scooter-local.service" ];
+      inherit (config.systemd.services.scooter-local) environment path;
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${lib.getExe cfg.package} sync";
+      };
+    };
+    systemd.timers.scooter-local-sync = mkIf refresh {
+      wantedBy = [ "timers.target" ];
+      timerConfig = { OnActiveSec = cfg.credentials.refreshInterval; OnUnitActiveSec = cfg.credentials.refreshInterval; };
+    };
+    systemd.paths.scooter-local-sync = mkIf (refresh && files != [ ]) {
+      wantedBy = [ "paths.target" ];
+      pathConfig.PathChanged = files;
     };
   };
 }

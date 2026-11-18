@@ -11,6 +11,8 @@ MANIFESTS_CLAUDE_CODE="@manifestsClaudeCode@"
 MANIFESTS_ANTHROPIC="@manifestsAnthropic@"
 MANIFESTS_OLLAMA="@manifestsOllama@"
 MANIFESTS_COPILOT="@manifestsCopilot@"
+# Set by scooter.lib.mkLocal: scooter.local.credentials as JSON (empty for the generic app).
+CREDENTIALS="@credentials@"
 # The agent-sandbox release the platform targets (same as test/support/cluster-up.sh).
 AGENT_SANDBOX_VERSION="@agentSandboxVersion@"
 
@@ -36,7 +38,8 @@ scooter-local ${VERSION} — Scooter on this machine (k3d + the published images
   scooter-local up         create or start the cluster and deploy; asks for a provider the first time
   scooter-local down       stop the cluster; conversations, sandboxes and files are kept
   scooter-local destroy    delete the cluster and everything in it
-  scooter-local status     cluster, pods and the URL
+  scooter-local status     cluster, pods, the URL and any stale credential
+  scooter-local sync       refresh the Secrets in scooter.local.credentials from their sources
   scooter-local logs [D]   follow a deployment's log (default agent-host; e.g. agent-broker)
   scooter-local config     choose the provider or credential again (then \`up\` applies it)
   scooter-local kubeconfig print the kubeconfig path, for kubectl
@@ -451,6 +454,76 @@ ensure_conv_token() {
   put_secret agent-conv-token-secret secret "$(openssl rand -hex 32)"
 }
 
+# --- credentials (scooter.local.credentials) ---------------------------------
+
+# A failing source keeps the key's current value, so a working token is never blanked.
+# Mounted Secrets reach their pods without a restart; env-reading Deployments need one.
+sync_credentials() {
+  [ -s "$CREDENTIALS" ] || return 0
+  local dir status now secret key file command fix value err old out d
+  local restart=()
+  dir=$(mktemp -d) && chmod 700 "$dir"
+  status='{}'
+  now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  while read -r secret; do
+    old=$(kubectl -n "$NAMESPACE" get secret "$secret" -o json 2>/dev/null || echo '{}')
+    local args=()
+    while read -r key; do
+      file=$(jq -r --arg s "$secret" --arg k "$key" '.[$s][$k].file // empty' "$CREDENTIALS")
+      command=$(jq -r --arg s "$secret" --arg k "$key" '.[$s][$k].command // empty' "$CREDENTIALS")
+      fix=$(jq -r --arg s "$secret" --arg k "$key" '.[$s][$k].fix // empty' "$CREDENTIALS")
+      value="" err=""
+      if [ -n "$file" ]; then
+        if [ -r "$file" ]; then value=$(cat "$file"); else err="$file is unreadable"; fi
+      elif [ -n "$command" ]; then
+        if ! value=$(bash -c "$command" 2>"$dir/stderr" </dev/null); then
+          value="" err="the command failed: $(tail -n 1 "$dir/stderr")"
+        fi
+      else
+        err="neither file nor command is set"
+      fi
+      value="${value%"${value##*[![:space:]]}"}"
+      [ -n "$value" ] || [ -n "$err" ] || err="the source is empty"
+      if [ -z "$err" ]; then
+        printf %s "$value" > "$dir/value"
+      else
+        jq -r --arg k "$key" '.data[$k] // empty' <<<"$old" | base64 -d > "$dir/value"
+        log "WARN: $secret/$key: $err; ${fix:+run \`$fix\`; }keeping its current value" >&2
+      fi
+      if [ -s "$dir/value" ]; then
+        mv "$dir/value" "$dir/$secret.$key"
+        args+=(--from-file="$key=$dir/$secret.$key")
+      fi
+      status=$(jq --arg id "$secret/$key" --arg at "$now" --arg err "$err" --arg fix "$fix" \
+        '.[$id] = {ok: ($err == ""), checked: $at}
+          + (if $err == "" then {} else {error: $err} end)
+          + (if $fix == "" then {} else {fix: $fix} end)' <<<"$status")
+    done < <(jq -r --arg s "$secret" '.[$s] | keys[]' "$CREDENTIALS")
+    [ "${#args[@]}" -gt 0 ] || continue
+    # `up` rewrites the kubeconfig as it starts; a refresher reading it mid-write fails once.
+    for _ in 1 2 3; do
+      out=$(kubectl -n "$NAMESPACE" create secret generic "$secret" "${args[@]}" --dry-run=client -o yaml \
+        | kubectl apply -f - 2>&1) && break
+      out="" && sleep 3
+    done
+    [ -n "$out" ] || log "WARN: could not write the $secret Secret" >&2
+    case "$out" in
+      *unchanged*|"") ;;
+      *) while read -r d; do restart+=("$d"); done < <(kubectl -n "$NAMESPACE" get deploy -o json | jq -r --arg s "$secret" \
+           '.items[] | select([.spec.template.spec | (.containers + (.initContainers // []))[]
+             | ((.env // [])[].valueFrom.secretKeyRef.name?), ((.envFrom // [])[].secretRef.name?)]
+             | index($s)) | .metadata.name') ;;
+    esac
+  done < <(jq -r 'keys[]' "$CREDENTIALS")
+  rm -rf "$dir"
+  mkdir -p "$STATE" && printf '%s\n' "$status" > "$STATE/credentials.json"
+  [ "${#restart[@]}" -gt 0 ] || return 0
+  for d in $(printf '%s\n' "${restart[@]}" | sort -u); do
+    log "restarting $d (it reads a changed Secret as env)"
+    kubectl -n "$NAMESPACE" rollout restart "deploy/$d" >/dev/null
+  done
+}
+
 apply() {
   local manifests="$1"
   log "applying the platform..."
@@ -485,6 +558,7 @@ cmd_up() {
   ensure_namespace
   ensure_conv_token
   ensure_provider_secret "$provider"
+  sync_credentials
   local manifests; manifests=$(render "$provider")
   check_images "$manifests"
   wait_for_traefik_crd "$manifests"
@@ -537,6 +611,21 @@ cmd_status() {
   echo "provider: $(current_provider | grep . || echo '?')"
   echo
   kubectl -n "$NAMESPACE" get pods 2>/dev/null || echo "(platform not deployed)"
+  if [ -s "$STATE/credentials.json" ]; then
+    echo
+    jq -r 'to_entries[] | "credential \(.key): " + (if .value.ok then "ok (\(.value.checked))"
+      else "STALE (checked \(.value.checked)): \(.value.error)" + (if .value.fix then "; run `\(.value.fix)`" else "" end) end)' \
+      "$STATE/credentials.json"
+  fi
+}
+
+cmd_sync() {
+  [ -s "$CREDENTIALS" ] || { log "no scooter.local.credentials in this build"; return; }
+  if ! cluster_running || ! kubectl get ns "$NAMESPACE" >/dev/null 2>&1; then
+    log "the platform is not up; nothing to sync"
+    return
+  fi
+  sync_credentials
 }
 
 cmd_logs() {
@@ -575,6 +664,7 @@ main() {
     down|stop) cmd_down ;;
     destroy|delete) cmd_destroy ;;
     status) cmd_status ;;
+    sync) cmd_sync ;;
     logs) shift; cmd_logs "$@" ;;
     kubectl) shift; cmd_kubectl "$@" ;;
     config|configure) cmd_config ;;
