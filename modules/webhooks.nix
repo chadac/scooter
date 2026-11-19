@@ -258,6 +258,9 @@ in
                   # Projected SA token presented to /agui so the agent-host honors a
                   # webhook-resolved `owner`.
                   { name = "agent-host-token"; mountPath = "/var/run/secrets/agent-host"; readOnly = true; }
+                ] ++ lib.optionals config.contribs.apikeys.enable [
+                  # apikeys: verifies keys with the broker.
+                  { name = "broker-token"; mountPath = "/var/run/secrets/broker"; readOnly = true; }
                 ];
                 readinessProbe.httpGet = { path = "/health"; port = "http"; };
                 livenessProbe.httpGet = { path = "/health"; port = "http"; };
@@ -274,7 +277,12 @@ in
                     serviceAccountToken = { audience = "scooter-router"; path = "token"; expirationSeconds = 3600; };
                   }];
                 }
-              ];
+              ] ++ lib.optionals config.contribs.apikeys.enable [{
+                name = "broker-token";
+                projected.sources = [{
+                  serviceAccountToken = { audience = "agent-broker"; path = "token"; expirationSeconds = 3600; };
+                }];
+              }];
             };
           };
         };

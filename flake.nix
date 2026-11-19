@@ -511,6 +511,8 @@
             contrib-handoff = contribs.packages.handoff.broker;
             contrib-personalization = contribs.packages.personalization.broker;
             contrib-shares = contribs.packages.shares.broker;
+            contrib-apikeys = contribs.packages.apikeys.broker;
+            contrib-apikeys-webhooks = contribs.packages.apikeys.webhooks;
             contrib-ssh = contribs.packages.ssh.broker;
             contrib-skills = contribs.packages.skills.broker;
             contrib-mcpservers = contribs.packages.mcpservers.broker;
@@ -741,6 +743,8 @@
             contrib-handoff = contribs.packages.handoff.broker;
             contrib-personalization = contribs.packages.personalization.broker;
             contrib-shares = contribs.packages.shares.broker;
+            contrib-apikeys = contribs.packages.apikeys.broker;
+            contrib-apikeys-webhooks = contribs.packages.apikeys.webhooks;
             contrib-ssh = contribs.packages.ssh.broker;
             contrib-skills = contribs.packages.skills.broker;
             contrib-mcpservers = contribs.packages.mcpservers.broker;

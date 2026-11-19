@@ -257,6 +257,8 @@
     commits.enable = true;
     # Per-user SSH key: a broker-backed ssh-agent in each sandbox, a Settings tab.
     ssh.enable = true;
+    # Personal API keys: a Settings tab and a webhooks endpoint.
+    apikeys.enable = true;
     # Per-user skill sources, installed into each sandbox; a Settings tab.
     skills.enable = true;
     # Per-user MCP servers, started in each sandbox; a Settings tab.
