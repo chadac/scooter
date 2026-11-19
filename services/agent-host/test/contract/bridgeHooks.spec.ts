@@ -61,7 +61,15 @@ function scriptedHooks(answer: (event: HookEvent, input: Record<string, unknown>
 function makeBridge(
   agent: AcpClient,
   hooks: HookRunner,
-  extra: { maxStopBlocks?: number; parentId?: () => string | undefined; untitled?: () => boolean; folder?: () => Promise<HookFolder | null> } = {},
+  extra: {
+    maxStopBlocks?: number;
+    parentId?: () => string | undefined;
+    untitled?: () => boolean;
+    folder?: () => Promise<HookFolder | null>;
+    setupTimeoutMs?: number;
+    deathRetryMax?: number;
+    deathRetryBaseMs?: number;
+  } = {},
 ) {
   const exec = createSandboxExecBackend(createFakeSandboxApi());
   const bridge = createSessionBridge({
@@ -253,6 +261,62 @@ describe("bridge conversation hooks", () => {
     const { bridge } = makeBridge(agent.client, hooks.runner);
     await bridge.prompt({ threadId: "t", text: "go" });
     expect(hooks.calls.filter((c) => c.event === "Stop")).toEqual([]);
+  });
+});
+
+/** A UserPromptSubmit hook that waits until aborted, like a failClosed hook on a pod that never schedules. */
+function hangingSubmit(hangs: (call: number) => boolean) {
+  const signals: Array<AbortSignal | undefined> = [];
+  let call = 0;
+  const runner: HookRunner = {
+    has: async (e) => e === "UserPromptSubmit",
+    run: async (event, _input, _target, signal) => {
+      const empty: HookOutcome = { context: [], systemMessages: [], runs: [] };
+      if (event !== "UserPromptSubmit" || !hangs(++call)) return empty;
+      signals.push(signal);
+      // Settles only on abort, and late, so the bridge can't rely on it.
+      await new Promise<void>((resolve) => signal?.addEventListener("abort", () => setTimeout(resolve, 500)));
+      return { ...empty, runs: [{ id: "wait-gate", event, decision: "error", ms: 0 }] };
+    },
+  };
+  return { runner, signals };
+}
+
+const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+describe("bridge hooks on a sandbox that never starts", () => {
+  it("lets a Stop end the run while a UserPromptSubmit hook waits, without a retry", async () => {
+    const agent = scriptedAgent([]);
+    const hooks = hangingSubmit(() => true);
+    const { bridge, events } = makeBridge(agent.client, hooks.runner, { deathRetryMax: 3, deathRetryBaseMs: 1 });
+    const done = bridge.prompt({ threadId: "t", text: "hello" });
+    await tick(20);
+    await bridge.cancel(undefined, true);
+    await done;
+
+    expect(events.map((e) => e.type)).toContain("CANCEL_REQUESTED");
+    expect(finishes(events)).toEqual([expect.objectContaining({ type: "RUN_FINISHED", cancelled: true })]);
+    expect(hooks.signals[0]?.aborted, "the hook is told to stop waiting").toBe(true);
+    expect(agent.prompts).toHaveLength(0);
+    expect(events.filter((e) => e.type === "RUN_STARTED"), "a stopped run is not retried").toHaveLength(1);
+  });
+
+  it("frees the run when setup times out during a hook, then retries", async () => {
+    const agent = scriptedAgent([{ text: "answered" }]);
+    const hooks = hangingSubmit((call) => call === 1);
+    const { bridge, events } = makeBridge(agent.client, hooks.runner, {
+      setupTimeoutMs: 40,
+      deathRetryMax: 1,
+      deathRetryBaseMs: 1,
+    });
+    const started = Date.now();
+    await bridge.prompt({ threadId: "t", text: "hello" });
+
+    expect(Date.now() - started, "the retry doesn't wait for the hung hook").toBeLessThan(400);
+    expect(hooks.signals[0]?.aborted).toBe(true);
+    expect((events.find((e) => e.type === "RUN_ERROR") as { code?: string }).code).toBe("setup_timeout");
+    expect(agent.prompts).toEqual([expect.stringContaining("hello")]);
+    expect(events.filter((e) => e.type === "RUN_FINISHED")).toHaveLength(1);
   });
 });
 

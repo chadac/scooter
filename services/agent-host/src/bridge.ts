@@ -768,6 +768,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
     runId: RunId;
     /** Ends the run as cancelled; set only until its prompt is sent. */
     abortSetup?: () => void;
+    /** Aborted when setup ends early (a Stop or the setup watchdog), so its hooks stop waiting. */
+    setupSignal?: AbortSignal;
     /** Set once the first prompt is sent to the agent. */
     promptSent?: boolean;
     /** The thread this run belongs to, required on RUN_STARTED/FINISHED. */
@@ -1090,7 +1092,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         },
       },
       target,
-      undefined,
+      st?.setupSignal,
       only,
     );
     for (const m of out.systemMessages) emitHookNote(m);
@@ -1201,6 +1203,10 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       }, firstActivityTimeoutMs);
     };
 
+    // Ended by a Stop or the setup watchdog, so a hook waiting on a cold pod gives up too.
+    const setupAbort = new AbortController();
+    st.setupSignal = setupAbort.signal;
+
     // Setup timeout: nothing reached the agent, so nothing to cancel.
     if (setupTimeoutMs > 0) {
       st.setupTimer = setTimeout(() => {
@@ -1223,6 +1229,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         });
         st.retryable = true;
         dropCachedSession("setup did not finish before the deadline");
+        setupAbort.abort();
         signalWedged();
       }, setupTimeoutMs);
     }
@@ -1310,6 +1317,13 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       }
     }
 
+    // Undefined once a Stop or a watchdog ends the run, whether or not `p` ever settles.
+    const untilEnded = async <T>(p: Promise<T>): Promise<T | undefined> => {
+      const out = await Promise.race([p, wedged.then(() => undefined)]);
+      // A hook that settles as the run ends still loses.
+      return st.terminated ? undefined : out;
+    };
+
     // Ended during setup: skip the rest, nothing was sent.
     const endedBeforeSend = () => {
       log.warn("run ended before its prompt was sent; not sending it", { run_id: st.runId });
@@ -1323,6 +1337,7 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       st.terminated = true;
       st.cancelled = true;
       emit({ type: "RUN_FINISHED", threadId: input.threadId, runId, cancelled: true });
+      setupAbort.abort();
       signalWedged();
     };
 
@@ -1346,7 +1361,6 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
       // Raced so the setup watchdog frees the pump.
       await Promise.race([resolving, wedged]);
       if (st.terminated) return endedBeforeSend();
-      st.abortSetup = undefined;
       debug("[bridge] prompt: sending to goose, session=%s", acpSessionId);
       // Seed new sessions fully, returning ones with missed turns.
       let historyPreamble = "";
@@ -1421,14 +1435,22 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         const skipped: string[] = [];
         if (ready && !ready.sessionStartFired) {
           ready.sessionStartFired = true;
-          const started = await fireHooks(st, "SessionStart", { source: "startup" }, "startup", {}, ready.sessionStartRetry);
+          const started = await untilEnded(
+            fireHooks(st, "SessionStart", { source: "startup" }, "startup", {}, ready.sessionStartRetry),
+          );
+          if (!started) {
+            // Never ran to the end, so the next run fires it again.
+            ready.sessionStartFired = false;
+            return endedBeforeSend();
+          }
           hookContext.push(...started.context);
           skipped.push(...(started.skipped ?? []));
           // Hooks a cold pod skipped run next turn.
           ready.sessionStartFired = !started.skipped;
           ready.sessionStartRetry = started.skipped && new Set(started.skipped);
         }
-        const submit = await fireHooks(st, "UserPromptSubmit", { prompt: combined });
+        const submit = await untilEnded(fireHooks(st, "UserPromptSubmit", { prompt: combined }));
+        if (!submit) return endedBeforeSend();
         skipped.push(...(submit.skipped ?? []));
         if (skipped.length) hookContext.push(coldHookNote(skipped));
         if (submit.block || submit.stop) {
@@ -1453,6 +1475,8 @@ export function createSessionBridge(deps: BridgeDeps): SessionBridge {
         // Never send for an ended run; it would run unseen.
         if (st.terminated) return endedBeforeSend();
         if (stopBlocks === 0) {
+          // Sent from here on: a Stop cancels the agent's turn instead.
+          st.abortSetup = undefined;
           if (st.setupTimer) clearTimeout(st.setupTimer);
           st.setupTimer = undefined;
           if (!st.sawActivity) armActivityWatchdog();
