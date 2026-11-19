@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"k8s.io/client-go/rest"
 
 	"github.com/chadac-me/scooter/conversation-router/svcauth"
 )
@@ -486,5 +489,70 @@ func TestGatewayEnforceWithoutBrowserProofFailsClosed(t *testing.T) {
 	}
 	if len(l.lines(t)) != 1 {
 		t.Fatalf("refusal not logged: %s", l.buf.String())
+	}
+}
+
+func TestAlbModeSandboxProvesSessions(t *testing.T) {
+	status, calls := 0, int32(0)
+	g, _ := testGateway(t, authProxy(t, &status, &calls).URL)
+	g.identity = identityConfig{mode: "alb-oidc", albIdentityHeader: "x-amzn-oidc-identity", albDataHeader: "x-amzn-oidc-data"}
+	g.alb, _ = testAlb(t)
+	g.enforce, g.services, g.legacy = true, nil, nil
+	var seenUser, seenData string
+	h := g.wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenUser, seenData = r.Header.Get("x-amzn-oidc-identity"), r.Header.Get("x-amzn-oidc-data")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	// The session names the user; forged ALB headers are replaced or dropped.
+	r := browserReq("alice")
+	r.Header.Set("x-amzn-oidc-identity", "mallory")
+	r.Header.Set("x-amzn-oidc-data", "forged.jwt.claims")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusNoContent || seenUser != "alice" || seenData != "" {
+		t.Fatalf("session: %d %q %q", rec.Code, seenUser, seenData)
+	}
+
+	// An ALB JWT alone proves nothing on a session-checked listener.
+	r = httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("x-amzn-oidc-identity", "alice")
+	r.Header.Set("x-amzn-oidc-data", "forged.jwt.claims")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("ALB headers only: %d", rec.Code)
+	}
+}
+
+func TestBuildGatewaysPicksProofPerListener(t *testing.T) {
+	cfg := &rest.Config{Host: "https://127.0.0.1:1"}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cases := []struct {
+		name, mode, check, sandboxCheck string
+		mainSession, sandboxSession     bool
+	}{
+		{"header inherits", "header", "http://proxy/oauth2/auth", "", true, true},
+		{"header override", "header", "http://proxy/oauth2/auth", "http://sbx/oauth2/auth", true, true},
+		{"alb ignores main check", "alb-oidc", "http://proxy/oauth2/auth", "", false, false},
+		{"alb sandbox check", "alb-oidc", "", "http://sbx/oauth2/auth", false, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("AUTH_MODE", c.mode)
+			t.Setenv("AUTH_ALB_REGION", "us-east-1")
+			t.Setenv("AUTH_SESSION_CHECK_URL", c.check)
+			t.Setenv("AUTH_SANDBOX_SESSION_CHECK_URL", c.sandboxCheck)
+			main, sandbox := buildGateways(cfg, log)
+			if (main.session != nil) != c.mainSession || (sandbox.session != nil) != c.sandboxSession {
+				t.Fatalf("main session %v, sandbox session %v", main.session != nil, sandbox.session != nil)
+			}
+			if !main.browserProof() || !sandbox.browserProof() {
+				t.Fatal("a listener has no browser proof")
+			}
+			if c.sandboxCheck != "" && sandbox.session.url != c.sandboxCheck {
+				t.Fatalf("sandbox checks %q", sandbox.session.url)
+			}
+		})
 	}
 }
