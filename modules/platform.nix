@@ -1309,16 +1309,24 @@ in
           stops treating a caller with no identity as the single user, so it cannot
           change another user's conversation. Requires
           `sessionCheckUrl` in header mode, or `albRegion` in alb-oidc mode; the
-          render fails without one. Setting it to `false` trusts the identity
-          header as sent, so any client that reaches the router can claim to be
-          any user; the router then only logs what it would refuse ("auth would
-          reject", "auth identity mismatch").
+          render fails without one. In alb-oidc mode, set `sandboxSessionCheckUrl`
+          too when sandbox hosts sit behind an auth proxy rather than the ALB.
+          Setting it to `false` trusts the identity header as sent, so any client
+          that reaches the router can claim to be any user; the router then only
+          logs what it would refuse ("auth would reject", "auth identity mismatch").
         '';
       };
       sandboxSessionCheckUrl = mkOption {
         type = types.nullOr types.str;
         default = null;
-        description = "As `sessionCheckUrl`, for requests to `ingress.sandboxDomain` hosts; defaults to `sessionCheckUrl`.";
+        description = ''
+          As `sessionCheckUrl`, for requests to `ingress.sandboxDomain` hosts;
+          defaults to `sessionCheckUrl` in header mode. It applies in alb-oidc mode
+          too, for sandbox hosts behind an auth proxy rather than the ALB: the
+          router then proves their sessions with it, and the proxy's
+          `X-Auth-Request-User` must be the same id the ALB puts in
+          `x-amzn-oidc-identity`, or one person becomes two users.
+        '';
       };
       userAssertionSecret = mkOption {
         type = types.nullOr types.str;

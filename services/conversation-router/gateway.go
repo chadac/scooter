@@ -72,15 +72,17 @@ func newGateway(listener string, identity identityConfig) *gateway {
 }
 
 func (g *gateway) browserProof() bool {
-	if g.identity.mode == "alb-oidc" {
-		return g.alb != nil
-	}
-	return g.session != nil
+	return g.session != nil || g.alb != nil
+}
+
+// viaAlb: this listener proves browsers by ALB JWT, not session check.
+func (g *gateway) viaAlb() bool {
+	return g.session == nil && g.identity.mode == "alb-oidc"
 }
 
 // fromBrowser reports whether r carries the ingress's browser credential.
 func (g *gateway) fromBrowser(r *http.Request) bool {
-	if g.identity.mode == "alb-oidc" {
+	if g.viaAlb() {
 		return strings.TrimSpace(r.Header.Get(g.identity.albDataHeader)) != ""
 	}
 	return sessionCookies(r, g.prefixes) != ""
@@ -111,7 +113,7 @@ func (g *gateway) authenticateBrowser(ctx context.Context, r *http.Request) (gat
 	if !g.browserProof() {
 		return gatewayPrincipal{}, errUnverifiable
 	}
-	if g.identity.mode == "alb-oidc" {
+	if g.viaAlb() {
 		sub, email, err := g.alb.verify(ctx, strings.TrimSpace(r.Header.Get(g.identity.albDataHeader)))
 		return gatewayPrincipal{kind: "user", via: "alb", user: sub, email: email}, err
 	}
@@ -158,6 +160,9 @@ func (g *gateway) stamp(r *http.Request, p gatewayPrincipal) {
 	r.Header.Del(header)
 	if g.identity.mode != "alb-oidc" {
 		r.Header.Del(g.identity.emailHeader)
+	} else if !g.viaAlb() {
+		// Nothing verified these claims on a session-checked listener.
+		r.Header.Del(g.identity.albDataHeader)
 	}
 	if p.user == "" {
 		return

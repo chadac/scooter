@@ -38,20 +38,24 @@ func buildGateways(kubeCfg *rest.Config, log *slog.Logger) (main, sandbox *gatew
 	mk := func(listener, checkURL string) *gateway {
 		g := newGateway(listener, identity)
 		g.prefixes, g.alb, g.enforce = prefixes, alb, enforce
-		if checkURL != "" && identity.mode != "alb-oidc" {
+		if checkURL != "" {
 			g.session = newSessionChecker(checkURL, prefixes)
 		}
 		if !g.browserProof() && enforce {
 			log.Error("browser identity cannot be verified on this listener, so every browser request is refused",
 				slog.String("listener", listener))
 		} else if !g.browserProof() {
-			log.Warn("browser identity is not verified on this listener: set scooter.auth.sessionCheckUrl (or albRegion in alb-oidc mode)",
+			log.Warn("browser identity is not verified on this listener: set scooter.auth.sessionCheckUrl, sandboxSessionCheckUrl or albRegion",
 				slog.String("listener", listener))
 		}
 		return g
 	}
 
-	main = mk("main", env("AUTH_SESSION_CHECK_URL", ""))
+	mainCheck := env("AUTH_SESSION_CHECK_URL", "")
+	if identity.mode == "alb-oidc" {
+		mainCheck = "" // the ALB JWT proves main-host browsers
+	}
+	main = mk("main", mainCheck)
 	main.public = healthPaths
 	main.assertions = newAssertionMinter(env("USER_ASSERTION_SECRET", ""),
 		svcauth.ParseAllowlist(env("USER_ASSERTION_SERVICE_ACCOUNTS", "")))
@@ -74,7 +78,8 @@ func buildGateways(kubeCfg *rest.Config, log *slog.Logger) (main, sandbox *gatew
 		}
 	}
 
-	sandbox = mk("sandbox", env("AUTH_SANDBOX_SESSION_CHECK_URL", env("AUTH_SESSION_CHECK_URL", "")))
+	// Sandbox hosts may sit behind an auth proxy even in alb-oidc mode.
+	sandbox = mk("sandbox", env("AUTH_SANDBOX_SESSION_CHECK_URL", mainCheck))
 	mode := "shadow"
 	if enforce {
 		mode = "enforce"
