@@ -42,6 +42,9 @@ class FakeRouter:
             return httpx.Response(200, json=[{"id": c, "owner": o} for c, o in CONVS.items()])
         if path == "/conversations" and req.method == "POST":
             return httpx.Response(200, json={"id": "c-new", "body": json.loads(req.content)})
+        if path == "/folders":
+            return httpx.Response(200, json={"folders": [{"id": "f-design", "name": "Design"}],
+                                             "placements": {"c-bob": "f-design"}})
         if path.endswith("/events.integrity"):
             return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=self._events())
         conv = path.split("/")[2] if path.startswith("/conversations/") else ""
@@ -119,6 +122,25 @@ async def test_another_users_conversation_is_not_found(gw):
 async def test_the_list_holds_only_owned_conversations(gw):
     async with client() as c:
         assert [r["id"] for r in (await c.get("/conversations?scope=all")).json()] == ["c-alice"]
+
+
+async def test_folders_are_listed_without_placements(gw):
+    async with client("sct_ro") as c:
+        r = await c.get("/folders")
+    assert r.json() == {"folders": [{"id": "f-design", "name": "Design"}]}
+
+
+async def test_a_key_files_only_its_own_conversations(gw, router):
+    async with client() as c:
+        assert (await c.put("/conversations/c-alice/folder", json={"folderId": "f-design", "x": 1})).status_code == 200
+        assert router.calls[-1].method == "PUT"
+        assert json.loads(router.calls[-1].content) == {"folderId": "f-design"}
+        assert (await c.put("/conversations/c-alice/folder", json={"folderId": None})).status_code == 200
+        assert json.loads(router.calls[-1].content) == {"folderId": None}
+        assert (await c.put("/conversations/c-alice/folder", json={"folderId": 3})).status_code == 400
+        assert (await c.put("/conversations/c-bob/folder", json={"folderId": "f-design"})).status_code == 404
+    async with client("sct_ro") as c:
+        assert (await c.put("/conversations/c-alice/folder", json={"folderId": "f-design"})).status_code == 403
 
 
 async def test_a_new_conversation_never_takes_an_owner_from_the_body(gw):

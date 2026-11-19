@@ -252,6 +252,29 @@ async def models(caller: Caller = read, gw: Gateway = Depends(gateway)) -> Respo
     return _relay(await gw.upstream.get("/models", headers=gw.headers(caller)))
 
 
+@router.get("/folders")
+async def folders(caller: Caller = read, gw: Gateway = Depends(gateway)) -> Response:
+    """The caller's folders, without placements: those can name others' conversations."""
+    resp = await gw.upstream.get("/folders", headers=gw.headers(caller))
+    if resp.status_code != 200:
+        return _relay(resp)
+    found = resp.json().get("folders")
+    if not isinstance(found, list):
+        raise HTTPException(status_code=502, detail="unexpected folder list")
+    return Response(content=json.dumps({"folders": found}), media_type="application/json")
+
+
+@router.put("/conversations/{conv_id}/folder")
+async def file(conv_id: str, request: Request, caller: Caller = write, gw: Gateway = Depends(gateway)) -> Response:
+    """File an owned conversation in one of the caller's folders; null unfiles it."""
+    folder = (await _json_body(request)).get("folderId")
+    if folder is not None and (not isinstance(folder, str) or not folder):
+        raise HTTPException(status_code=400, detail="folderId must be a folder id or null")
+    await _owned(gw, caller, conv_id)
+    return _relay(await gw.upstream.put(f"/conversations/{conv_id}/folder", json={"folderId": folder},
+                                        headers=gw.headers(caller)))
+
+
 @router.patch("/conversations/{conv_id}/{field}")
 async def edit(conv_id: str, field: str, request: Request, caller: Caller = write, gw: Gateway = Depends(gateway)) -> Response:
     """Star or retitle: one field, of the type it takes."""
