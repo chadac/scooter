@@ -4,6 +4,71 @@ Each release's section becomes its GitHub Release notes. Images keep their
 content tags and also gain `vX.Y.Z`; the flake is published to
 [FlakeHub](https://flakehub.com/flake/chadac-me/scooter).
 
+## v1.5.0
+
+### Features
+
+- **`kubectl` and `helm` in the sandbox**: each `contribs.k8s` cluster is a
+  forge-proxy host, so the agent runs `kubectl` and `helm` as they are while
+  the broker holds the credentials. Reads go through; writes need a grant and
+  Secret reads a Secret grant (#1389, #1390, #1395). `helm list` and `status`
+  work without a grant (#1397), and the `k8s_*` tools now follow the same
+  policy as `kubectl` (#1427).
+- **Grants in the Approvals tab**: active and expired permission grants (k8s
+  namespaces, AWS roles, Databricks workspaces) are listed with a countdown,
+  and can be ended early. (#1398)
+- **Databricks contrib**: `contribs.databricks.workspaces` lets sandboxes use
+  the Databricks SDK and CLI as they are, with the broker adding each
+  workspace's token (#1418). With `grantHours` set, workspace access is
+  approved per workspace as a stored grant. (#1422)
+- **API proxies declared in Nix**: `contribs.<name>.type = "tokenproxy"` puts
+  an API behind the broker with a token from a Secret, with no Python to write
+  (#1437). It also covers plain-`http://` services and APIs that need no
+  credential. (#1435)
+- **Personal API keys**: the `apikeys` contrib adds Settings → API keys, so
+  local agents such as `scooter-cli` reach Scooter with a key instead of a
+  browser cookie. (#1440)
+- **Session and Approvals tabs on kanban cards**: a card's panel shows its
+  sandbox and answers its approvals without opening the chat (#1436, #1438).
+- **Diagrams in the files viewer**: Mermaid and Graphviz render, both in
+  markdown fences and as `.mmd`/`.dot` files. (#1394)
+- **GitHub with a token**: `contribs.github.tokenSecret` uses a token (a PAT,
+  say) in place of a GitHub App, and `commitAs` sets the commit author. (#1433)
+- **Contribs from outside the repo** can have a sandbox half (#1393), and each
+  contrib ships its own command stubs, only when it's enabled. (#1425)
+- **scooter-local**:
+  - `scooter.images.<name>.local.build` builds an image from your checkout and
+    imports it into the cluster, for branches with no published images. (#1434)
+  - Secrets filled from host files or commands and kept in sync. (#1430)
+  - `dns.forward` sends a domain to its own nameservers, for VPN split DNS.
+    (#1419)
+  - `SCOOTER_LOCAL_CA_BUNDLE` for TLS-intercepting proxies. (#1417)
+  - Docs on VM sizing and on reaching the host's Ollama. (#1399, #1424)
+- **Configurable GPU resource name**: `scooter.sandboxGpuResource` for CDI
+  device plugins that don't advertise `nvidia.com/gpu`. (#1414)
+- **Broker library**: `FileTokenSource` re-reads a token from a mounted file
+  (#1400), and `register_provider` takes an explicit `name`. (#1406)
+
+### Bug fixes
+
+- **Adding a forge host no longer breaks running sandboxes**: each new host
+  gets its own CA, so sandboxes keep trusting the existing one. (#1404)
+- **goose agents no longer stop early** because of goose's compaction
+  countdown. (#1396)
+- **Linked PRs show on cards and in the sidebar under scooter-local**, which
+  now enables webhooks. (#1408)
+- **GPU sandboxes on NixOS hosts** see the driver files a CDI plugin mounts.
+  (#1428)
+- **Image generation**: Gemini images save as JPEG (#1415), and saving works
+  with router auth enforced. (#1431)
+- **Claude SDK traces name the conversation owner** in Langfuse. (#1388)
+- **Faster agent-host restarts**: resuming reads run markers instead of whole
+  event logs. (#1387)
+- Plus fixes to revoked AWS approval cards (#1391), GitHub Enterprise link
+  parsing (#1402), empty credentials (#1405), a stopped k3d load balancer
+  (#1416), stub rebuilds after a self-modify (#1426) and a BSD `find` script
+  (#1407).
+
 ## v1.4.3
 
 ### Features
