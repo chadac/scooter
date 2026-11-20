@@ -352,6 +352,49 @@ fastOnly("the kanban broker routes are stubbed in the browser")("kanban /boards 
     await expect.poll(order, { timeout: 20_000 }).toEqual([ids[0], ids[2], ids[1]]);
   });
 
+  test("dragging the card panel's edge resizes it, the width is kept, and a double-click resets it", async ({ page, request, baseURL }) => {
+    const base = baseURL ?? "http://localhost:5173";
+    const kanban = await serveKanban(page, request, base);
+    const board = await kanban.board(`e2e-board-resize-${Date.now()}`);
+    await page.setViewportSize({ width: 1920, height: 900 });
+    await page.goto(`/boards/${board.folder}`);
+    await lane(page, board.stages[0].id).getByTestId("kanban-stage-new").click();
+    const side = page.getByTestId("kanban-chat");
+    await expect(side).toBeVisible();
+    const width = async () => (await side.boundingBox())!.width;
+    const before = await width();
+    if (process.env.KANBAN_SHOTS) await page.screenshot({ path: `${process.env.KANBAN_SHOTS}/resize-before.png` });
+
+    const handle = page.getByTestId("kanban-chat-resize");
+    const box = (await handle.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x - 500, box.y + box.height / 2, { steps: 5 });
+    await page.mouse.up();
+    await expect.poll(width).toBeGreaterThan(before + 450);
+    if (process.env.KANBAN_SHOTS) await page.screenshot({ path: `${process.env.KANBAN_SHOTS}/resize-after.png` });
+
+    // It never squeezes the board below a lane's room.
+    await page.mouse.move(box.x - 500, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(0, box.y + box.height / 2, { steps: 5 });
+    await page.mouse.up();
+    await expect.poll(width).toBeLessThanOrEqual(1920 - 280);
+
+    // The arrow keys resize it too, and the width outlives a reload.
+    await handle.focus();
+    await page.keyboard.press("ArrowRight");
+    const kept = await width();
+    expect(kept).toBeLessThan(1920 - 280);
+    await page.reload();
+    await lane(page, board.stages[0].id).getByTestId("kanban-stage-new").click();
+    await expect(side).toBeVisible({ timeout: 20_000 });
+    await expect.poll(width).toBe(kept);
+
+    await page.getByTestId("kanban-chat-resize").dblclick();
+    await expect.poll(width).toBe(before);
+  });
+
   test("the user adds, renames, reorders and deletes a board's stages", async ({ page, request, baseURL }) => {
     const base = baseURL ?? "http://localhost:5173";
     const kanban = await serveKanban(page, request, base);

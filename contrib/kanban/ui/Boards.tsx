@@ -6,7 +6,7 @@
 // from /kanban/user/boards. Each lane shows its most recent cards, more as it scrolls, read
 // with POST /kanban/user/boards/<id>/cards and again when kanban pushes a change to them. Moving a card files the
 // conversation in the stage, then tells it as the user.
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { type CSSProperties, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { DropdownMenu } from "radix-ui";
 import {
   ArrowLeft,
@@ -192,6 +192,10 @@ const LANE_PAGE = 50;
 const MAX_READ_CARDS = 200;
 // Scrolling this close to a lane's end shows its next page.
 const SCROLL_SLACK_PX = 200;
+// The card panel: its narrowest, and the board it always leaves showing.
+const CHAT_MIN_PX = 320;
+const BOARD_MIN_PX = 280;
+const CHAT_WIDTH_KEY = "kanban.chatWidth";
 
 // Literal class strings, so Tailwind sees each palette key's classes.
 const TAG_CLASS: Record<string, string> = {
@@ -720,6 +724,7 @@ function Board({
   const [dropAt, setDropAt] = useState<{ column: string; before?: string } | null>(null);
   // A URL naming a conversation opens its chat; main.tsx selects it.
   const [panel, setPanel] = useState(() => threadInUrl() !== null);
+  const [chatWidth, setChatWidth] = useChatWidth();
   // Edit board's unsaved stages, tags and skills; null when not editing.
   const [draft, setDraft] = useState<Draft | null>(null);
   const [saving, setSaving] = useState(false);
@@ -1763,7 +1768,15 @@ function Board({
           )}
         </div>
         {showing && (
-          <aside data-testid="kanban-chat" className="flex w-full shrink-0 flex-col md:w-[min(42rem,50%)] md:border-s">
+          <aside
+            data-testid="kanban-chat"
+            className={cn(
+              "relative flex w-full shrink-0 flex-col md:max-w-[calc(100%-280px)] md:border-s",
+              chatWidth === null ? "md:w-[min(42rem,50%)]" : "md:w-(--kanban-chat-w)",
+            )}
+            style={chatWidth === null ? undefined : ({ "--kanban-chat-w": `${chatWidth}px` } as CSSProperties)}
+          >
+            <ResizeHandle width={chatWidth} resize={setChatWidth} />
             <ConversationRuntime>
             <div className="flex items-center gap-1 border-b px-2 text-sm">
               <CardTabs shown={shownTab} open={!!openConv} select={setTab} />
@@ -2096,5 +2109,72 @@ function SaveChanges({
         </div>
       </div>
     </div>
+  );
+}
+
+/** The card panel's width the user dragged it to, or null for the default; kept per browser. */
+function useChatWidth(): [number | null, (w: number | null) => void] {
+  const [width, setWidth] = useState<number | null>(() => {
+    try {
+      const n = Number(localStorage.getItem(CHAT_WIDTH_KEY));
+      return n >= CHAT_MIN_PX ? n : null;
+    } catch {
+      return null;
+    }
+  });
+  const save = useCallback((w: number | null) => {
+    setWidth(w);
+    try {
+      if (w === null) localStorage.removeItem(CHAT_WIDTH_KEY);
+      else localStorage.setItem(CHAT_WIDTH_KEY, String(Math.round(w)));
+    } catch {
+      // Not kept past this page.
+    }
+  }, []);
+  return [width, save];
+}
+
+/** The card panel's left edge: drag or use the arrow keys to resize it, double-click to reset. */
+function ResizeHandle({ width, resize }: { width: number | null; resize: (w: number | null) => void }) {
+  const clamp = (el: HTMLElement, w: number) => {
+    const room = (el.parentElement?.parentElement?.clientWidth ?? window.innerWidth) - BOARD_MIN_PX;
+    return Math.round(Math.max(CHAT_MIN_PX, Math.min(w, room)));
+  };
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="Resize chat panel"
+      aria-valuenow={width ?? undefined}
+      tabIndex={0}
+      data-testid="kanban-chat-resize"
+      title="Drag to resize, double-click to reset"
+      className="absolute inset-y-0 -start-1 z-10 w-2 cursor-col-resize touch-none outline-none hover:bg-primary/30 focus-visible:bg-primary/50 max-md:hidden"
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        const el = e.currentTarget;
+        el.setPointerCapture(e.pointerId);
+        const startX = e.clientX;
+        const startW = el.parentElement?.offsetWidth ?? CHAT_MIN_PX;
+        const onMove = (m: PointerEvent) => resize(clamp(el, startW + startX - m.clientX));
+        const onUp = () => {
+          el.removeEventListener("pointermove", onMove);
+          el.removeEventListener("pointerup", onUp);
+          el.removeEventListener("pointercancel", onUp);
+        };
+        el.addEventListener("pointermove", onMove);
+        el.addEventListener("pointerup", onUp);
+        el.addEventListener("pointercancel", onUp);
+      }}
+      onDoubleClick={() => resize(null)}
+      onKeyDown={(e) => {
+        const step = e.key === "ArrowLeft" ? 32 : e.key === "ArrowRight" ? -32 : 0;
+        if (!step) return;
+        e.preventDefault();
+        const el = e.currentTarget;
+        resize(clamp(el, (el.parentElement?.offsetWidth ?? CHAT_MIN_PX) + step));
+      }}
+    />
   );
 }
