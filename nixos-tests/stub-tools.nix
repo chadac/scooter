@@ -46,7 +46,7 @@ pkgs.testers.runNixOSTest {
     with subtest("the stubbed tools on PATH are shims, not packages"):
         # Assert on the shim's content, resolving the path in its own succeed() so a tool missing from PATH fails here rather than blocking `cat` on stdin.
         # Base set, in-tree contrib, out-of-tree contrib.
-        for tool in ("uv", "aws", "hello"):
+        for tool in ("uv", "uvx", "aws", "hello"):
             path = machine.succeed(f"command -v {tool}").strip()
             shim = machine.succeed(f"cat {path}")
             assert "nix-stubs exec" in shim, f"{tool} on PATH is not a stub:\n{shim}"

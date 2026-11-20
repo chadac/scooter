@@ -18,7 +18,7 @@
     }).overrideAttrs (old: {
       meta = old.meta // { inherit (pkgs.uv.meta) license; };
     });
-    bins = [ "uv" ];
+    bins = [ "uv" "uvx" ];
   };
 
   # The skills steer the agent to `shell` + `tree`, since goose's built-in reads
