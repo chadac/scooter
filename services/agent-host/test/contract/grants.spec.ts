@@ -14,7 +14,7 @@ function broker(answer: (url: string, body: Record<string, unknown>) => { status
   const calls: Call[] = [];
   const fetch = vi.fn(async (url: string, init: RequestInit) => {
     const body = JSON.parse(String(init.body)) as Record<string, unknown>;
-    calls.push({ url, body, headers: init.headers as Record<string, string> });
+    calls.push({ url, body, headers: Object.fromEntries(new Headers(init.headers)) });
     const { status = 200, json } = answer(url, body);
     return new Response(JSON.stringify(json), { status });
   });
@@ -35,7 +35,8 @@ function relay(answer: Parameters<typeof broker>[0]) {
   const warn = vi.fn();
   const r = createGrantsRelay({
     contribs,
-    brokerAuth: async () => ({ url: "http://broker", headers: { authorization: "Bearer sa" } }),
+    // The real auth headers carry Content-Type; never send it twice.
+    brokerAuth: async () => ({ url: "http://broker", headers: { authorization: "Bearer sa", "Content-Type": "application/json" } }),
     notify,
     warn,
     fetch: b.fetch,
@@ -53,7 +54,7 @@ describe("grants relay", () => {
     expect(calls.map((c) => c.url).sort()).toEqual(["http://broker/aws/grants/list", "http://broker/k8s/grants/list"]);
     // The assertion travels as a header, never in the body.
     expect(calls[0].body).toEqual({ approver: { id: "u-alice", email: "alice@x" }, conversation_ids: ["key", "conv"] });
-    expect(calls[0].headers).toMatchObject({ authorization: "Bearer sa" });
+    expect(calls[0].headers).toMatchObject({ authorization: "Bearer sa", "content-type": "application/json" });
     expect(warn).toHaveBeenCalledWith("grants list returned a non-2xx", { contrib: "aws", status: 500 });
   });
 

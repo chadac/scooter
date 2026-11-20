@@ -67,11 +67,11 @@ export function createGrantsRelay(deps: GrantsRelayDeps): GrantsRelay {
   const post = async (path: string, body: unknown, headers: Record<string, string> = {}) => {
     const auth = await deps.brokerAuth();
     if (!auth) return null;
-    return doFetch(`${auth.url}${path}`, {
-      method: "POST",
-      headers: { ...auth.headers, "content-type": "application/json", ...headers },
-      body: JSON.stringify(body),
-    });
+    // set() is case-insensitive; duplicates merge into a value FastAPI rejects.
+    const merged = new Headers(auth.headers);
+    merged.set("content-type", "application/json");
+    for (const [k, v] of Object.entries(headers)) merged.set(k, v);
+    return doFetch(`${auth.url}${path}`, { method: "POST", headers: merged, body: JSON.stringify(body) });
   };
 
   const asBroker = (approver: ApproverIdentity) => {
