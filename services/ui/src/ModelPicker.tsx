@@ -1,28 +1,25 @@
 /**
  * Per-conversation model picker. Fetches the agent-host's model catalog (GET /models)
  * per conversation and lets the user choose the model for the current conversation; the choice is
- * stored on the session (sessions.ts) and rides the next prompt via the X-Agent-Model
- * header (RuntimeProvider), so it works both at new-chat time and as a
- * mid-conversation switch. Hidden entirely when the server offers no models.
+ * applied to a server-backed conversation at once (PATCH /conversations/:id/model), while a
+ * new chat's pick rides its first prompt via the X-Agent-Model header (RuntimeProvider).
+ * Hidden entirely when the server offers no models.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { loadModels, type ModelCatalog } from "./client.js";
 import { modelOptionLabel, modelOptionValue, defaultServingProvider, groupModelsByProvider } from "./modelGroups.js";
-import { sessionStore, useSessions } from "./sessions.js";
-import { useConversationInterrupts } from "./RuntimeProvider.js";
+import { useSessions } from "./sessions.js";
+import { pickModel } from "./sessionActions.js";
 
 const BASE_URL = (import.meta.env.VITE_AGENT_HOST_URL ?? "").replace(/\/$/, "");
 
 export function ModelPicker() {
   const { sessions, currentId } = useSessions();
-  const { isRunning } = useConversationInterrupts();
   const [catalog, setCatalog] = useState<ModelCatalog>({ default: null, available: [] });
-  // "switching" is true from the user's pick until the next run finishes, since the
-  // server rebuilds the agent with the new model on that run.
+  // True while the server is taking the pick.
   const [switching, setSwitching] = useState(false);
-  const wasRunning = useRef(false);
 
   useEffect(() => {
     let alive = true;
@@ -35,12 +32,6 @@ export function ModelPicker() {
     };
   }, [currentId]);
 
-  // A run that began while switching has now finished -> the switch took effect.
-  useEffect(() => {
-    if (wasRunning.current && !isRunning) setSwitching(false);
-    wasRunning.current = isRunning;
-  }, [isRunning]);
-
   // Clear the pending switch when the conversation changes (it's per-conversation).
   useEffect(() => setSwitching(false), [currentId]);
 
@@ -49,7 +40,8 @@ export function ModelPicker() {
 
   // An unset conversation shows the host default so the select has a value, but is
   // marked inherited so it reads differently from an explicit pick.
-  const explicitModel = sessions.find((s) => s.id === currentId)?.model;
+  const session = sessions.find((s) => s.id === currentId);
+  const explicitModel = session?.model;
   const current = explicitModel ?? catalog.default ?? "";
   /** The <select> value for a stored pick: provider-scoped when the catalog groups by
    *  provider, so a round-trip selects the option the user actually chose. */
@@ -84,8 +76,9 @@ export function ModelPicker() {
         title={inherited ? "Using the host default (not set for this conversation)" : "Model set for this conversation"}
         value={selectValue}
         onChange={(e) => {
-          if (e.target.value !== selectValue) setSwitching(true);
-          sessionStore.setModel(currentId, e.target.value);
+          if (!session || e.target.value === selectValue) return;
+          setSwitching(true);
+          void pickModel(session, e.target.value).finally(() => setSwitching(false));
         }}
       >
         {(() => {

@@ -50,6 +50,24 @@ test.describe("model selection", () => {
     await chat.send("~model");
     await expect(chat.assistantMessages().last()).toContainText(/model=model-smart/, { timeout: 45_000 });
   });
+
+  test("a mid-conversation switch is saved without sending a message", async ({ chat, page }) => {
+    await chat.open();
+    await chat.send("~model");
+    await expect(chat.assistantMessages().last()).toContainText(/model=model-default/, { timeout: 45_000 });
+
+    const saved = page.waitForResponse((r) => r.request().method() === "PATCH" && /\/conversations\/[^/]+\/model$/.test(r.url()));
+    await page.getByTestId("model-picker").selectOption("model-smart");
+    expect((await saved).ok()).toBe(true);
+    await expect(page.getByTestId("model-switching")).toHaveCount(0);
+    await expect(chat.userMessages()).toHaveCount(1);
+
+    // The server holds the pick, so it survives a reload.
+    await page.reload();
+    await expect(page.getByTestId("model-picker")).toHaveValue(/model-smart$/);
+    await chat.send("~model");
+    await expect(chat.assistantMessages().last()).toContainText(/model=model-smart/, { timeout: 45_000 });
+  });
 });
 
 // --- Provider grouping ----------------------------------------------------------

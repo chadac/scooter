@@ -4,7 +4,7 @@
  * started in this browser), while the server must be addressed by `serverId`.
  */
 
-import { createSession, deleteConversation, renameConversation, setConversationVisibility } from "./client.js";
+import { createSession, deleteConversation, renameConversation, setConversationModel, setConversationVisibility } from "./client.js";
 import { agentHostConfig } from "./config.js";
 import { conversationFor, sessionStore, type Session } from "./sessions.js";
 
@@ -58,6 +58,15 @@ export async function toggleVisibility(s: Session, confirmShared: (msg: string) 
   if ((sessionStore.get().sessions.find((x) => x.id === s.id)?.visibility ?? "shared") === next) {
     sessionStore.setVisibility(s.id, current);
   }
+}
+
+/** Pick a model: switch now if server-backed, else on next prompt. */
+export async function pickModel(s: Session, model: string): Promise<void> {
+  sessionStore.setModel(s.id, model); // pending, by local key
+  const id = serverIdOf(s);
+  if (id === undefined) return;
+  // A refused switch stays pending for the next prompt's header.
+  if (await setConversationModel(agentHostConfig, id, model)) sessionStore.modelSent(s.id, model);
 }
 
 /** The confirm text before the owner clears a taint. */

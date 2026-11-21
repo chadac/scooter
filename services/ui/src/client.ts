@@ -357,6 +357,25 @@ export async function setConversationVisibility(
   }
 }
 
+/** Switch a conversation's model now; true when the server accepted. */
+export async function setConversationModel(config: AgentHostConfig, conversationId: string, model: string): Promise<boolean> {
+  try {
+    const res = await fetch(
+      `${config.baseUrl.replace(/\/$/, "")}/conversations/${encodeURIComponent(conversationId)}/model`,
+      {
+        method: "PATCH",
+        headers: { ...authHeaders(config), "content-type": "application/json" },
+        body: JSON.stringify({ model }),
+      },
+    );
+    if (!res.ok) console.warn(`[client] setConversationModel ${conversationId}: HTTP ${res.status}`);
+    return res.ok;
+  } catch (e) {
+    console.warn(`[client] setConversationModel ${conversationId} failed:`, e);
+    return false;
+  }
+}
+
 /** End and delete a conversation, returning true when it is gone (204 or 404). */
 export async function deleteConversation(
   config: AgentHostConfig,
