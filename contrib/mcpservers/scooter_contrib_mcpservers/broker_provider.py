@@ -7,6 +7,7 @@ from scooter_broker_lib.registry import register_provider
 from scooter_broker_lib.types import Provider
 
 from .config import McpServersSettings
+from .registry import RegistrySearch
 from .store import McpServerStore
 from .transport import McpServers
 
@@ -14,8 +15,10 @@ from .transport import McpServers
 @register_provider
 def mcpservers(ctx: BrokerContext) -> Provider:
     transport = McpServers()
-    if not McpServersSettings().mcpservers_enabled or ctx.owners is None:
+    settings = McpServersSettings()
+    if not settings.mcpservers_enabled or ctx.owners is None:
         return Provider(name="mcpservers", transports=[transport], enabled=False)
     transport.store = McpServerStore(ctx.contrib_store_config("mcpservers"))
     transport.owners = ctx.owners
+    transport.registry = RegistrySearch(url=settings.mcpservers_registry_url)
     return Provider(name="mcpservers", transports=[transport], enabled=True)

@@ -4,6 +4,8 @@
     POST   /user/servers         {name, kind, spec, args?, enabled?}
     PATCH  /user/servers/{id}    {name?, kind?, spec?, args?, enabled?}
     DELETE /user/servers/{id}
+    GET    /user/catalog         the curated catalog (catalog.json)
+    GET    /user/registry?q=     live search over the official MCP registry
     GET    /servers              the conversation owner's enabled servers, for its sandbox
     POST   /servers/status       {servers: [{name, state}], error?}, from that sandbox
     GET    /conversation/{id}/servers   the owner's servers with their last reported state
@@ -19,17 +21,21 @@ import re
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
+import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException
 
 from scooter_broker_lib.owner import OwnerResolver
 from scooter_broker_lib.types import AuthDependency, Identity, Provider, Transport
 from scooter_broker_lib.user import user_identity
 
+from .catalog import catalog
+from .registry import RegistrySearch
 from .store import MAX_SERVERS, InvalidServer, McpServerStore, parse_args, valid_name
 
 # `systemctl is-active` words: active, failed, activating...
 _STATE = re.compile(r"^[a-z-]{1,16}$")
 MAX_ERROR_LEN = 300
+MAX_QUERY_LEN = 100
 
 
 def parse_report(body: object) -> dict:
@@ -59,6 +65,7 @@ class McpServers(Transport):
     name: str = "mcpservers"
     store: McpServerStore | None = field(default=None)
     owners: OwnerResolver | None = None
+    registry: RegistrySearch | None = None
     # The relayed user; None means user_identity(authed). Tests may inject a fake.
     user: Callable[..., Awaitable[str]] | None = None
 
@@ -118,6 +125,22 @@ class McpServers(Transport):
             if not await self._store().delete(owner, server_id):
                 raise HTTPException(status_code=404, detail="no such server")
             return {"deleted": server_id}
+
+        @router.get("/user/catalog")
+        async def curated_catalog(_owner: str = user) -> dict:
+            return {"servers": catalog()}
+
+        @router.get("/user/registry")
+        async def search_registry(q: str = "", _owner: str = user) -> dict:
+            q = q.strip()
+            if not 2 <= len(q) <= MAX_QUERY_LEN:
+                raise HTTPException(status_code=400, detail=f"q is 2 to {MAX_QUERY_LEN} characters")
+            if self.registry is None:
+                raise HTTPException(status_code=503, detail="registry search is not configured")
+            try:
+                return {"servers": await self.registry.search(q)}
+            except httpx.HTTPError as e:
+                raise HTTPException(status_code=502, detail="the MCP registry is unreachable") from e
 
         @router.get("/servers")
         async def sandbox_servers(identity: Identity = Depends(authed)) -> dict:

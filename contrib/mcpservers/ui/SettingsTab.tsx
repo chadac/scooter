@@ -2,9 +2,18 @@
 //
 // Calls go through contribFetch, relayed to /mcpservers/user/<path> as the signed-in user.
 import { useCallback, useEffect, useState } from "react";
-import { Button, cn, contribFetch, ErrorState, monoInputClass, Spinner, textareaClass } from "@/src/contrib/sdk";
+import { Button, cn, contribFetch, ErrorState, inputClass, monoInputClass, Spinner, textareaClass } from "@/src/contrib/sdk";
 
-type Kind = "npm" | "pypi" | "nixpkgs";
+import {
+  type CatalogEntry,
+  CatalogList,
+  type Kind,
+  KIND_LABEL,
+  nameFromSpec,
+  parseCatalog,
+  parseRegistry,
+  specKey,
+} from "./Catalog.js";
 
 interface Server {
   id: string;
@@ -15,33 +24,23 @@ interface Server {
   enabled: boolean;
 }
 
-const KINDS: Array<{ kind: Kind; label: string; placeholder: string; hint: string }> = [
+const KINDS: Array<{ kind: Kind; placeholder: string; hint: string }> = [
   {
     kind: "npm",
-    label: "npm",
     placeholder: "@modelcontextprotocol/server-everything",
     hint: "An npm package, optionally @version. Runs with npx -y.",
   },
   {
     kind: "pypi",
-    label: "PyPI",
     placeholder: "mcp-server-fetch",
     hint: "A PyPI package, optionally ==version. Runs with uv tool run.",
   },
   {
     kind: "nixpkgs",
-    label: "nixpkgs",
     placeholder: "mcp-server-time",
     hint: "A nixpkgs attribute. Runs its main program with nix run.",
   },
 ];
-
-/** A default name: the package's last segment, unversioned. */
-function nameFromSpec(spec: string): string {
-  const bare = spec.trim().replace(/^@[^/]*\//, "").split(/[@=[]/)[0] ?? "";
-  const last = bare.split(/[./]/).pop() ?? "";
-  return last.replace(/^(mcp-server-|server-)/, "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 32);
-}
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await contribFetch("mcpservers", path, {
@@ -55,11 +54,19 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
-function ServerForm({ onAdded, onCancel }: { onAdded: () => Promise<void>; onCancel: () => void }) {
-  const [kind, setKind] = useState<Kind>("npm");
-  const [spec, setSpec] = useState("");
-  const [name, setName] = useState<string | null>(null);
-  const [args, setArgs] = useState("");
+function ServerForm({
+  initial,
+  onAdded,
+  onCancel,
+}: {
+  initial?: Partial<CatalogEntry>;
+  onAdded: () => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [kind, setKind] = useState<Kind>(initial?.kind ?? "npm");
+  const [spec, setSpec] = useState(initial?.spec ?? "");
+  const [name, setName] = useState<string | null>(initial?.name || null);
+  const [args, setArgs] = useState((initial?.args ?? []).join("\n"));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const meta = KINDS.find((k) => k.kind === kind)!;
@@ -97,7 +104,7 @@ function ServerForm({ onAdded, onCancel }: { onAdded: () => Promise<void>; onCan
               data-testid={`mcp-server-kind-${k.kind}`}
               onClick={() => setKind(k.kind)}
             >
-              {k.label}
+              {KIND_LABEL[k.kind]}
             </Button>
           ))}
         </div>
@@ -163,6 +170,141 @@ function ServerForm({ onAdded, onCancel }: { onAdded: () => Promise<void>; onCan
   );
 }
 
+/** Add-server browser: catalog, registry search and custom form. */
+function AddPanel({
+  servers,
+  refresh,
+  onClose,
+}: {
+  servers: Server[];
+  refresh: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const [catalog, setCatalog] = useState<CatalogEntry[] | null>(null);
+  const [query, setQuery] = useState("");
+  const [registryRows, setRegistryRows] = useState<CatalogEntry[]>([]);
+  const [registryError, setRegistryError] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [form, setForm] = useState<Partial<CatalogEntry> | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void api("catalog")
+      .then((body) => setCatalog(parseCatalog(body)))
+      .catch(() => setCatalog([]));
+  }, []);
+
+  const q = query.trim().toLowerCase();
+  useEffect(() => {
+    if (q.length < 2) {
+      setRegistryRows([]);
+      setRegistryError(false);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    const t = setTimeout(async () => {
+      try {
+        setRegistryRows(parseRegistry(await api(`registry?q=${encodeURIComponent(q)}`)));
+        setRegistryError(false);
+      } catch {
+        setRegistryRows([]);
+        setRegistryError(true);
+      } finally {
+        setSearching(false);
+      }
+    }, 300);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  if (form) {
+    return (
+      <ServerForm
+        initial={form}
+        onCancel={() => setForm(null)}
+        onAdded={async () => {
+          await refresh();
+          onClose();
+        }}
+      />
+    );
+  }
+
+  const addedSpecs = new Set(servers.map((s) => specKey(s.kind, s.spec)));
+  const catalogShown = (catalog ?? []).filter(
+    (e) => !q || e.name.includes(q) || e.spec.toLowerCase().includes(q) || e.description.toLowerCase().includes(q),
+  );
+  const catalogKeys = new Set((catalog ?? []).map((e) => specKey(e.kind, e.spec)));
+  const registryShown = registryRows.filter((e) => !catalogKeys.has(specKey(e.kind, e.spec)));
+
+  const addNow = async (e: CatalogEntry) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api("servers", {
+        method: "POST",
+        body: JSON.stringify({ name: e.name || nameFromSpec(e.spec), kind: e.kind, spec: e.spec, args: e.args }),
+      });
+      await refresh();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div data-testid="mcp-catalog-panel" className="flex flex-col gap-3 rounded-md border bg-muted/30 p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          data-testid="mcp-catalog-search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search the catalog and the MCP registry"
+          className={cn(inputClass, "min-w-48 flex-1")}
+        />
+        <Button variant="outline" size="sm" data-testid="mcp-server-custom" onClick={() => setForm({})}>
+          Custom package
+        </Button>
+        <Button variant="outline" size="sm" data-testid="mcp-catalog-close" onClick={onClose}>
+          Close
+        </Button>
+      </div>
+      {error && (
+        <p data-testid="mcp-catalog-error" className="text-sm text-destructive">
+          {error}
+        </p>
+      )}
+      {catalog === null ? (
+        <Spinner />
+      ) : catalogShown.length > 0 ? (
+        <CatalogList entries={catalogShown} addedSpecs={addedSpecs} busy={busy} onAdd={addNow} onEdit={setForm} />
+      ) : (
+        <p className="text-sm text-muted-foreground">Nothing in the catalog matches.</p>
+      )}
+      {q.length >= 2 && (
+        <div className="flex flex-col gap-1.5">
+          <span className="text-xs font-medium text-muted-foreground">From the MCP registry</span>
+          {searching ? (
+            <Spinner />
+          ) : registryError ? (
+            <p data-testid="mcp-registry-error" className="text-sm text-muted-foreground">
+              The MCP registry is unreachable right now.
+            </p>
+          ) : registryShown.length === 0 ? (
+            <p data-testid="mcp-registry-empty" className="text-sm text-muted-foreground">
+              No runnable registry match.
+            </p>
+          ) : (
+            <CatalogList entries={registryShown} addedSpecs={addedSpecs} busy={busy} onEdit={setForm} />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ServerRow({ server, onChanged }: { server: Server; onChanged: () => Promise<void> }) {
   const [busy, setBusy] = useState(false);
   const run = async (fn: () => Promise<unknown>) => {
@@ -174,7 +316,7 @@ function ServerRow({ server, onChanged }: { server: Server; onChanged: () => Pro
       setBusy(false);
     }
   };
-  const label = KINDS.find((k) => k.kind === server.kind)?.label ?? server.kind;
+  const label = KIND_LABEL[server.kind] ?? server.kind;
   return (
     <li
       data-testid="mcp-server-item"
@@ -270,18 +412,10 @@ export default function McpServersSettingsTab() {
           </Button>
         )}
       </div>
-      {adding && (
-        <ServerForm
-          onCancel={() => setAdding(false)}
-          onAdded={async () => {
-            setAdding(false);
-            await refresh();
-          }}
-        />
-      )}
+      {adding && <AddPanel servers={servers} refresh={refresh} onClose={() => setAdding(false)} />}
       {servers.length === 0 ? (
         <p data-testid="mcp-servers-empty" className="rounded-md border bg-muted/30 p-4 text-sm text-muted-foreground">
-          No servers yet. Add one, such as the PyPI package <code className="font-mono text-xs">mcp-server-fetch</code>.
+          No servers yet. Add one from the catalog, such as <code className="font-mono text-xs">fetch</code>.
         </p>
       ) : (
         <ul data-testid="mcp-server-list" className="flex flex-col gap-2">

@@ -105,12 +105,16 @@ def valid_name(name: object) -> bool:
     return isinstance(name, str) and bool(_NAME.match(name))
 
 
+def valid_spec(kind: str, spec: str) -> bool:
+    return kind in _SPEC and bool(_SPEC[kind].match(spec))
+
+
 def validate(name: str, kind: str, spec: str, args: tuple[str, ...]) -> None:
     if not valid_name(name):
         raise InvalidServer("a name is up to 32 letters, digits, '_' or '-', starting with a letter or digit")
     if kind not in KINDS:
         raise InvalidServer(f"kind must be one of {', '.join(KINDS)}")
-    if not _SPEC[kind].match(spec):
+    if not valid_spec(kind, spec):
         raise InvalidServer(f"expected {_SPEC_HINT[kind]}")
     if len(args) > MAX_ARGS:
         raise InvalidServer(f"at most {MAX_ARGS} arguments")

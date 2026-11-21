@@ -6,6 +6,9 @@ with `nix run`), each with optional arguments. Every sandbox of theirs starts th
 their tools reach you as `mcp__sandbox-<name>__<tool>` from the next message after one
 is running.
 
+- **Adding one.** Settings offers a curated catalog of common servers and a live
+  search of the official MCP registry; point the user there rather than dictating
+  package specs. Entries needing an API key stay greyed out until secrets land.
 - **Commands.** `scooter-mcp-servers list` shows each server, its state and the last
   sync. `scooter-mcp-servers sync` applies a Settings change now instead of within two
   minutes.
