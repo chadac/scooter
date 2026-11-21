@@ -77,6 +77,23 @@ test.describe("Stop button + thinking indicator", () => {
     await expect(page.locator('[data-testid="composer-stop"]')).toHaveCount(0, { timeout: 15_000 });
   });
 
+  test("a draft typed mid-run turns the composer's Stop back into Send", async ({ chat, page }) => {
+    // Phones need a tappable Send to queue mid-run.
+    await chat.open();
+    await chat.send("!sleep 20");
+    const stop = page.locator('[data-testid="composer-stop"]');
+    const send = page.locator('.aui-composer-send');
+    await expect(stop).toBeVisible({ timeout: FIRST_TURN_MS });
+    const input = page.getByLabel("Message input");
+    await input.fill("next one");
+    await expect(send).toBeVisible();
+    await expect(stop).toHaveCount(0);
+    // The run bar's Stop is still offered while drafting.
+    await expect(page.locator(bar.stop)).toBeVisible();
+    await input.fill("");
+    await expect(stop).toBeVisible();
+  });
+
   test("a running tool call shows a spinner; it clears when the tool finishes", async ({ chat, page }) => {
     // The ceiling must clear the cold boot plus the 20s sleep before the spinner clears.
     test.setTimeout(180_000);

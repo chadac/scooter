@@ -420,7 +420,9 @@ const ComposerAction: FC = () => {
 
 const ComposerSendOrStop: FC = () => {
   const { isRunning, cancel } = useConversationInterrupts();
-  if (isRunning) {
+  // Drafts keep Send mid-run; phones lack a handy Enter.
+  const empty = useAuiState((s) => s.composer.isEmpty);
+  if (isRunning && empty) {
     return (
       <Button
         type="button"
