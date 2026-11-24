@@ -8,8 +8,13 @@ import { Writable, Readable, PassThrough } from "node:stream";
 import { debugError } from "../debug.js";
 import { logger } from "../log.js";
 import { existsSync } from "node:fs";
+import net from "node:net";
+import http from "node:http";
+import https from "node:https";
 
 import { KubeConfig, Exec, CoreV1Api, type V1Pod, type V1Status } from "@kubernetes/client-node";
+import { WebSocketHandler } from "@kubernetes/client-node/dist/web-socket-handler.js";
+import WebSocket from "ws";
 
 import type { ExecRequest, ExecResult, SandboxRef } from "../types.js";
 import type { SandboxApiClient } from "./sandboxExec.js";
@@ -71,10 +76,18 @@ export class K8sExecError extends Error {
   }
 }
 
-/** Backoff between upgrades; a refused upgrade never ran its command. */
-const UPGRADE_RETRY_DELAYS_MS = [250, 1_000];
+/** Backoff between opens; a failed open never ran its command. */
+const OPEN_RETRY_DELAYS_MS = [250, 1_000];
 
-/** Open an exec stream, retrying transient 5xx upgrade refusals. */
+/** TCP+TLS connect deadline; the kernel default is ~130s. */
+const CONNECT_TIMEOUT_MS = 5_000;
+
+/** A failed connect sent no request, so retrying is safe. */
+function isConnectFailure(err: K8sExecError): boolean {
+  return (err.cause as NodeJS.ErrnoException | undefined)?.syscall === "connect";
+}
+
+/** Open an exec stream, retrying failed connects and 5xx upgrades. */
 export async function openExecWithRetry<T>(
   open: () => Promise<T>,
   sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -85,11 +98,46 @@ export async function openExecWithRetry<T>(
     } catch (e) {
       const err = toExecError(e);
       const status = err.httpStatus;
-      if (status === undefined || status < 500 || attempt >= UPGRADE_RETRY_DELAYS_MS.length) throw err;
-      log.info("exec upgrade refused; retrying", { http_status: status, attempt: attempt + 1 });
-      await sleep(UPGRADE_RETRY_DELAYS_MS[attempt]!);
+      const retryable = isConnectFailure(err) || (status !== undefined && status >= 500);
+      if (!retryable || attempt >= OPEN_RETRY_DELAYS_MS.length) throw err;
+      log.info("exec open failed; retrying", {
+        http_status: status ?? null,
+        code: (err.cause as NodeJS.ErrnoException | undefined)?.code ?? null,
+        attempt: attempt + 1,
+      });
+      await sleep(OPEN_RETRY_DELAYS_MS[attempt]!);
     }
   }
+}
+
+/** Fail a plain http(s).Agent connect slower than `timeoutMs`. */
+export function boundAgentConnect(agent: unknown, timeoutMs = CONNECT_TIMEOUT_MS): void {
+  // Proxy agents return already-connected sockets, so skip them.
+  const proto = agent ? Object.getPrototypeOf(agent) : undefined;
+  const readyEvent = proto === https.Agent.prototype ? "secureConnect" : proto === http.Agent.prototype ? "connect" : undefined;
+  if (!readyEvent) return;
+  const a = agent as { createConnection: (o: { host?: string; port?: number }, cb?: unknown) => net.Socket };
+  const connect = a.createConnection.bind(a);
+  a.createConnection = (o, cb) => {
+    const socket = connect(o, cb);
+    const timer = setTimeout(() => {
+      const msg = `connect ETIMEDOUT ${o.host}:${o.port} (no answer in ${timeoutMs}ms)`;
+      socket.destroy(Object.assign(new Error(msg), { code: "ETIMEDOUT", syscall: "connect" }));
+    }, timeoutMs);
+    socket.once(readyEvent, () => clearTimeout(timer));
+    socket.once("close", () => clearTimeout(timer));
+    return socket;
+  };
+}
+
+/** An Exec whose connect gives up instead of hanging. */
+function boundedExec(kc: KubeConfig): Exec {
+  // client-node makes a fresh agent per connect, wrapped once.
+  const handler = new WebSocketHandler(kc, (uri, protocols, opts) => {
+    boundAgentConnect(opts.agent);
+    return new WebSocket(uri, protocols, opts as WebSocket.ClientOptions) as never;
+  });
+  return new Exec(kc, handler);
 }
 
 const isStatus = (v: unknown): v is V1Status =>
@@ -427,7 +475,7 @@ export function createK8sSandboxApiClient(
 
   // A fresh Exec per call picks up the rotating projected SA token, which the client-node
   // Exec caches at construction.
-  const freshExec = (): Exec => new Exec(opts.kubeConfig ?? defaultKubeConfig());
+  const freshExec = (): Exec => boundedExec(opts.kubeConfig ?? defaultKubeConfig());
 
   const execRaw = (
     command: string[],
