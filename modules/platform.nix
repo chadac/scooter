@@ -7,6 +7,7 @@
 
 let
   cfg = config.scooter;
+  gitIdentityGuard = import ./git-identity-env-guard.nix { inherit lib; };
 
   # Every contrib's declaration and deployment half, imported whether or not it is
   # enabled, since `enable` only gates what ships.
@@ -691,7 +692,15 @@ in
           merge (serviceAccountName, the broker-token volume/mount, volumeClaimTemplates,
           and the CONVERSATION_ID / BROKER_* identity env), so a bad overlay can't detach
           a conversation from its identity, auth, or storage.
+
+          GIT_AUTHOR_* / GIT_COMMITTER_* in a container's env are rejected: they
+          would override the commit identity the sandbox reads from the broker.
         '';
+        apply = overlay:
+          let containers = overlay.spec.podTemplate.spec.containers or [ ];
+          in builtins.deepSeq
+            (map (c: gitIdentityGuard "scooter.deployTools.sandboxManifestOverlay" (c.env or [ ])) containers)
+            overlay;
       };
     };
     uiImage = mkOption {

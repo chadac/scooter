@@ -6,6 +6,7 @@
 
 let
   inherit (lib) mkOption types literalExpression;
+  gitIdentityGuard = import ./git-identity-env-guard.nix { inherit lib; };
 in
 {
   options.scooter.sandboxPod = {
@@ -20,7 +21,11 @@ in
         Merged UNDER the consumer's deployTools.sandboxManifestOverlay, so a
         deployment can still override a contrib's value by name
         (session/sandboxOverlay.ts merges env strategically).
+
+        GIT_AUTHOR_* / GIT_COMMITTER_* are rejected: they would override the
+        commit identity the sandbox reads from the broker.
       '';
+      apply = gitIdentityGuard "scooter.sandboxPod.extraEnv";
     };
     extraVolumes = mkOption {
       type = types.listOf (types.attrsOf types.anything);

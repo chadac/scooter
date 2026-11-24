@@ -646,6 +646,18 @@ let
         then [ "a config on the OLD root (agentSandbox.*) still rendered — the #710 guard is a no-op, so that deployment silently gets every option at its default" ]
         else [ ]);
 
+  # Pod-level GIT_AUTHOR_* / GIT_COMMITTER_* outrank the broker's commit identity.
+  gitEnv = [ { name = "GIT_AUTHOR_NAME"; value = "bot[bot]"; } ];
+  gitIdentityEnvProblems =
+    (if renders { scooter.sandboxPod.extraEnv = [ { name = "GIT_SSL_CAINFO"; value = "/ca.crt"; } ]; } then [ ]
+     else [ "a sandboxPod.extraEnv GIT_SSL_CAINFO failed to render — the git-identity guard rejects more than GIT_AUTHOR_* / GIT_COMMITTER_*" ])
+    ++ (if renders { scooter.sandboxPod.extraEnv = gitEnv; }
+        then [ "sandboxPod.extraEnv GIT_AUTHOR_NAME rendered — every commit, the owner's included, would be authored as that name instead of the broker's identity" ]
+        else [ ])
+    ++ (if renders { scooter.deployTools.sandboxManifestOverlay.spec.podTemplate.spec.containers = [ { name = "sandbox"; env = gitEnv; } ]; }
+        then [ "a sandboxManifestOverlay GIT_AUTHOR_NAME rendered — every commit, the owner's included, would be authored as that name instead of the broker's identity" ]
+        else [ ]);
+
   # The router stamps spec.owner on create, so it needs the agent-host's identity
   # config plus the SA allowlist and TokenReview grant that let webhooks/scheduler
   # pass a resolved owner.
@@ -1927,7 +1939,7 @@ let
               (envOf bothAgents.config.kubernetes.resources "agent-host" "GOOSE_BIN") true)).success then [ ]
         else [ "agent.command with fakeAgent should fail the render" ]);
 
-  allProblems = commandProblems ++ packageProblems ++ uploadsProblems ++ sysTaskProblems ++ askUserProblems ++ hookProblems ++ providerProblems ++ disabledContribProblems ++ settingsTabProblems ++ uiManifestProblems ++ conversationUiProblems ++ mathProblems ++ contribApiProblems ++ dirSkillProblems ++ legacyRootProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ imagegenProblems ++ atProblems ++ googleProblems ++ ghOwnersProblems ++ sharesProblems ++ cfProblems ++ themeProblems ++ csProblems ++ dbProblems ++ poolerProblems ++ puProblems ++ mdProblems ++ ngProblems' ++ rolloutProblems ++ availabilityProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ contribCoverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ atlassianProblems ++ volumeProblems ++ approvalProblems ++ awaitingNotifyProblems ++ stage2Problems ++ contribDbProblems ++ contribGrantProblems ++ retireProblems ++ initGrantProblems ++ schemaGateProblems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems ++ conversationServiceProblems ++ selfAccessProblems ++ npProblems ++ sandboxOriginProblems ++ enforceProblems ++ uaProblems ++ folderServiceProblems ++ k8sProblems ++ tokenproxyProblems;
+  allProblems = commandProblems ++ packageProblems ++ uploadsProblems ++ sysTaskProblems ++ askUserProblems ++ hookProblems ++ providerProblems ++ disabledContribProblems ++ settingsTabProblems ++ uiManifestProblems ++ conversationUiProblems ++ mathProblems ++ contribApiProblems ++ dirSkillProblems ++ legacyRootProblems ++ gitIdentityEnvProblems ++ searchProblems ++ oneEntrypointProblems ++ ownerProblems ++ jobImmutabilityProblems ++ sizeGuardProblems ++ skillProblems ++ problems ++ ddProblems ++ imagegenProblems ++ atProblems ++ googleProblems ++ ghOwnersProblems ++ sharesProblems ++ cfProblems ++ themeProblems ++ csProblems ++ dbProblems ++ poolerProblems ++ puProblems ++ mdProblems ++ ngProblems' ++ rolloutProblems ++ availabilityProblems ++ testProblems ++ schedProblems ++ otelProblems ++ coverageProblems ++ contribCoverageProblems ++ brokerDbProblems ++ dupEnvProblems ++ contribSeamProblems ++ sandboxSeamProblems ++ atlassianProblems ++ volumeProblems ++ approvalProblems ++ awaitingNotifyProblems ++ stage2Problems ++ contribDbProblems ++ contribGrantProblems ++ retireProblems ++ initGrantProblems ++ schemaGateProblems ++ fgaProblems ++ sslProblems ++ vacuityProblems ++ approverProblems ++ conversationServiceProblems ++ selfAccessProblems ++ npProblems ++ sandboxOriginProblems ++ enforceProblems ++ uaProblems ++ folderServiceProblems ++ k8sProblems ++ tokenproxyProblems;
 in
 if allProblems == [ ]
 then "ok: deployments = ${haveDeps}; datadog + airtable + brave + kagi + duckduckgo (three search providers, each with its own tool) + configFiles + broker config-rollout + models + scheduler + otel wired; example covers every scooter.* namespace and every shipped contrib's own options; skills gated on the contrib being built; sandbox-shaping env is agent-host-only (one provisioning entrypoint); sandbox size default guard fires on 0 and 2 defaults; the renamed root (agentSandbox.*) fails the render; contribs reach the platform eval and configuring an unshipped one fails the render; deploy-time Jobs are spec-hash named; the stateless Deployments carry PDBs and soft topology spread; a scooter.packages override reaches exactly the images that use it; agent.command sets GOOSE_BIN to a wrapper the agent-host image ships\n"
