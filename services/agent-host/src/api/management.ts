@@ -134,6 +134,8 @@ function view(c: Conversation, now = Date.now()) {
     kind: c.kind,
     // Where a session was started from, e.g. "vscode" or "web".
     origin: c.origin,
+    // Deleted, with its sandbox and volumes, once its last run ends.
+    oneshot: c.oneshot,
     // Set by a user rename; the agent's <title> does not override it.
     userTitled: c.userTitled ?? false,
     starred: c.starred ?? false,
@@ -666,9 +668,13 @@ export function createManagementApi(deps: ManagementDeps): Router {
   // event-log key and a k8s resource name); in multi-replica the conversation-router serves
   // this path itself, so this route serves single-replica deployments and e2e.
   r.post("/conversations", async (ctx) => {
-    const body = await ctx.body<{ title?: string; model?: string; owner?: string; visibility?: unknown }>();
+    const body = await ctx.body<{ title?: string; model?: string; owner?: string; visibility?: unknown; oneshot?: unknown }>();
     if (body.visibility !== undefined && !isVisibility(body.visibility)) {
       return { status: 400, json: { error: "visibility must be shared or private" } };
+    }
+    // Same contract as the router's create (services/conversation-router/create.go).
+    if (body.oneshot !== undefined && typeof body.oneshot !== "boolean") {
+      return { status: 400, json: { error: "oneshot must be a boolean" } };
     }
     // Reject an unknown model rather than silently falling back.
     if (body.model && body.model !== models.default && !models.available.includes(body.model)) {
@@ -687,7 +693,10 @@ export function createManagementApi(deps: ManagementDeps): Router {
     if (body.visibility === "private" && !owner) {
       return { status: 400, json: { error: "a private conversation needs a signed-in owner" } };
     }
-    const conv = await sessions.start(randomUUID(), body.model, owner, { visibility: body.visibility ?? "shared" });
+    const conv = await sessions.start(randomUUID(), body.model, owner, {
+      visibility: body.visibility ?? "shared",
+      ...(body.oneshot ? { oneshot: true } : {}),
+    });
     if (body.title) sessions.setTitle(conv.id, body.title);
     return { status: 201, json: view(sessions.get(conv.id)!) };
   });

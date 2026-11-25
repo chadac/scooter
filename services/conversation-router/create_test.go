@@ -326,3 +326,42 @@ func TestCreateWithoutAWriteStoreIsRefused(t *testing.T) {
 		t.Fatalf("want 502, got %d (%s)", w.Code, w.Body.String())
 	}
 }
+
+func TestCreateStoresOneshot(t *testing.T) {
+	c := &fakeCreator{}
+	w := postCreate(t, c, `{"oneshot":true}`, nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	if got := c.calls[0].spec["oneshot"]; got != true {
+		t.Errorf("spec oneshot = %v", got)
+	}
+	var resp createResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if !resp.Oneshot {
+		t.Error("response oneshot = false")
+	}
+	if !conversationRowOf(NewConversation{Name: "x", Spec: c.calls[0].spec}, 1).Oneshot {
+		t.Error("row oneshot = false")
+	}
+}
+
+func TestCreateOmitsOneshotByDefault(t *testing.T) {
+	c := &fakeCreator{}
+	if w := postCreate(t, c, `{}`, nil); w.Code != http.StatusCreated {
+		t.Fatalf("status %d", w.Code)
+	}
+	if _, ok := c.calls[0].spec["oneshot"]; ok {
+		t.Errorf("spec has oneshot without asking: %v", c.calls[0].spec)
+	}
+}
+
+func TestCreateRejectsAOneshotSubagent(t *testing.T) {
+	c := &fakeCreator{}
+	if w := postCreate(t, c, `{"oneshot":true,"parentId":"p1"}`, nil); w.Code != http.StatusBadRequest {
+		t.Errorf("status %d, want 400", w.Code)
+	}
+	if len(c.calls) != 0 {
+		t.Error("created anyway")
+	}
+}

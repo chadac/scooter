@@ -776,6 +776,7 @@ export async function main(
           readRouterMeta: (id: SessionId) => metaStore.readRouterMeta(id),
           readLifetimes: (ids: SessionId[]) => metaStore.readLifetimes(ids),
           setVisibility: (id: SessionId, v: Visibility) => metaStore.setVisibility(id, v),
+          setOneshot: (id: SessionId) => metaStore.setOneshot(id),
           readAccess: (id: SessionId) => metaStore.readAccess(id),
           listConversations: () => metaStore.listConversations(),
           readMeta: (id: SessionId) => metaStore.readMeta(id),
@@ -784,6 +785,8 @@ export async function main(
           removeConversation: async (id: SessionId) => {
             await metaStore.removeConversation(id);
             await fileStore.removeConversation?.(id);
+            // withPgEvents leaves the event rows to this caller (#683).
+            await eventStore?.removeConversation(id);
             // Its links and hidden vars live in the webhooks database, beyond any foreign key.
             await linkStore?.deleteByConversation(id);
             // Outside any foreign key; best-effort, and set already logs.
@@ -2130,6 +2133,25 @@ export async function main(
   };
   reportSandboxCounts();
 
+  // One-shot conversations: delete everything once the last run ends.
+  const cleaningUp = new Set<SessionId>();
+  const cleanupOneshot = async (id: SessionId): Promise<void> => {
+    const conv = sessions.get(id);
+    if (!conv || conv.starred || conv.parentId || cleaningUp.has(id)) return;
+    cleaningUp.add(id);
+    try {
+      // Before end(), which forgets the grants' sandbox key.
+      await grants.revokeConversation(id);
+      await sessions.end(id, { volumes: true });
+      hostLog.info("one-shot conversation cleaned up", { conversation_id: id });
+    } catch (e) {
+      hostLog.errorWith("one-shot cleanup failed", e, { conversation_id: id });
+    } finally {
+      cleaningUp.delete(id);
+    }
+  };
+  sessions.onCleanupDue((id) => void cleanupOneshot(id));
+
   // Idle-suspend sweep: the agent-host owns the activity signal, so it suspends idle
   // conversations itself (drops the pod, keeps the PVCs).
   let sweepTimer: ReturnType<typeof setInterval> | undefined;
@@ -2137,6 +2159,10 @@ export async function main(
     sweepTimer = setInterval(() => {
       void sessions.sweepIdle(config.idleSuspendMs).then((ids) => {
         if (ids.length) hostLog.info("idle-suspended conversations", { count: ids.length, conversation_ids: ids });
+        // Backstop for a one-shot whose run-end trigger was missed (a restart mid-run).
+        for (const id of ids) {
+          if (sessions.get(id)?.oneshot) void cleanupOneshot(id);
+        }
         reportSandboxCounts();
       });
     }, config.idleSweepIntervalMs);

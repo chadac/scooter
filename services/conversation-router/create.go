@@ -64,6 +64,8 @@ type createRequest struct {
 	Owner string `json:"owner"`
 	// Visibility is "shared" (the default) or "private"; private needs an owner to be private for.
 	Visibility string `json:"visibility"`
+	// Oneshot deletes the conversation, its sandbox and its volumes once its last run ends.
+	Oneshot bool `json:"oneshot"`
 }
 
 type createResponse struct {
@@ -74,6 +76,7 @@ type createResponse struct {
 	CreatedAt  int64  `json:"createdAt"`
 	Owner      string `json:"owner,omitempty"`
 	Visibility string `json:"visibility"`
+	Oneshot    bool   `json:"oneshot,omitempty"`
 }
 
 // IsConversationCreate reports whether to handle here rather than proxy.
@@ -123,6 +126,12 @@ func serveConversationCreate(w http.ResponseWriter, r *http.Request, creator Con
 		return
 	}
 
+	// A subagent already dies with its parent.
+	if req.Oneshot && req.ParentID != "" {
+		writeJSONError(w, http.StatusBadRequest, "oneshot applies only to a top-level conversation")
+		return
+	}
+
 	id := uuid.NewString()
 	spec := map[string]interface{}{}
 	if owner != "" {
@@ -136,6 +145,9 @@ func serveConversationCreate(w http.ResponseWriter, r *http.Request, creator Con
 	}
 	if visibility == VisibilityPrivate {
 		spec["visibility"] = visibility
+	}
+	if req.Oneshot {
+		spec["oneshot"] = true
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
@@ -158,6 +170,7 @@ func serveConversationCreate(w http.ResponseWriter, r *http.Request, creator Con
 		Owner:     owner,
 		// As requested; a subagent of a private parent is stored private regardless.
 		Visibility: visibility,
+		Oneshot:    req.Oneshot,
 	})
 }
 

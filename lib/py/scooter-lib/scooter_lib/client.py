@@ -178,12 +178,16 @@ class ScooterClient:
         title: str | None = None,
         model: str | None = None,
         source: str = "system",
+        oneshot: bool = False,
     ) -> str:
         """Create a conversation as `owner`, then prompt it; returns the server-assigned id.
 
+        A `oneshot` conversation is deleted, with its sandbox and volumes, once its last run ends.
         Raises SpawnError when either call is refused or fails, so a task fails visibly.
         """
         create: dict[str, Any] = {}
+        if oneshot:
+            create["oneshot"] = True
         if title:
             create["title"] = title
         if owner:

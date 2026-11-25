@@ -47,6 +47,7 @@ export const conversations = pgTable("conversations", {
 	parentId: text("parent_id"),
 	kind: text(),
 	origin: text(),
+	oneshot: boolean().default(false).notNull(),
 	userTitled: boolean("user_titled"),
 	starred: boolean(),
 	pendingQueue: jsonb("pending_queue"),

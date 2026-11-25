@@ -866,7 +866,7 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
       return result;
     },
 
-    async destroy(ref: SandboxRef): Promise<void> {
+    async destroy(ref: SandboxRef, opts?: { volumes?: boolean }): Promise<void> {
       const id = ref.name.replace(/^conv-/, "");
       // A 404 means the object is already gone; any other failure is rethrown so end() does not
       // report a clean teardown that leaked resources.
@@ -888,6 +888,12 @@ export function createK8sProvisioner(opts: K8sProvisionerOptions): K8sProvisione
       await core
         .deleteNamespacedConfigMap({ name: moduleCmName(id), namespace: dns })
         .catch(ignoreDeleteNotFound);
+      // The same pair the controller's sandbox reaper deletes.
+      if (opts?.volumes) {
+        for (const name of [`workspace-${ref.name}`, overlayPvc(ref)]) {
+          await core.deleteNamespacedPersistentVolumeClaim({ name, namespace: dns }).catch(ignoreDeleteNotFound);
+        }
+      }
     },
 
     // --- size: the Sandbox CR is the store -----------------------------------

@@ -20,6 +20,8 @@ export interface ConversationSpec {
   kind?: ConversationKind;
   /** Read-only here: set by the router's insert. */
   origin?: string;
+  /** Read-only here: delete everything once the last run ends; set by the router's insert. */
+  oneshot?: boolean;
   /** The backing Sandbox name, if known at start (sandbox_ref). */
   sandboxRef?: string;
   /** The pod that created the conversation (creator_pod), a placement hint the controller

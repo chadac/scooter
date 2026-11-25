@@ -37,6 +37,7 @@ export interface MetaStore {
   readLifetimes(ids: SessionId[]): Promise<Map<SessionId, number>>;
   /** Set the visibility of `rootId` and all its descendants in one statement; throws on failure. */
   setVisibility(rootId: SessionId, visibility: Visibility): Promise<void>;
+  setOneshot(id: SessionId): Promise<void>;
   /** The row's owner and visibility, undefined when there is no row; throws on a failed read. */
   readAccess(id: SessionId): Promise<AccessFacts | undefined>;
   listConversations(): Promise<ConversationMeta[]>;
@@ -72,6 +73,7 @@ type MetaRow = {
   parentId: string | null;
   kind?: string | null;
   origin?: string | null;
+  oneshot?: boolean | null;
   userTitled: boolean | null;
   starred: boolean | null;
   visibility?: string | null;
@@ -97,6 +99,7 @@ export function createPgMetaStore(config: PgMetaStoreConfig): MetaStore {
     ...(row.parentId == null ? {} : { parentId: row.parentId as SessionId }),
     ...(row.kind === "subagent" || row.kind === "session" ? { kind: row.kind } : {}),
     ...(row.origin ? { origin: row.origin } : {}),
+    ...(row.oneshot ? { oneshot: true } : {}),
     ...(row.userTitled == null ? {} : { userTitled: row.userTitled }),
     ...(row.starred == null ? {} : { starred: row.starred }),
     ...(row.visibility === "private" ? { visibility: "private" as const } : {}),
@@ -246,6 +249,10 @@ export function createPgMetaStore(config: PgMetaStoreConfig): MetaStore {
         )
         UPDATE ${conversations} SET visibility = ${visibility}
          WHERE id IN (SELECT id FROM tree)`);
+    },
+
+    async setOneshot(id) {
+      await db.update(conversations).set({ oneshot: true }).where(eq(conversations.id, id));
     },
 
     async readAccess(id) {

@@ -141,6 +141,7 @@ class Conversations(Base):
     title: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     last_activity_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    oneshot: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text('false'))
     visibility: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'shared'::text"))
     host_generation: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default=text('0'))
     model: Mapped[Optional[str]] = mapped_column(Text)
