@@ -65,5 +65,11 @@ telling the truth.
   learn something every card on the board should know, write it with
   `kanban_set_skill(name, body)` (an empty `body` deletes one). Keep them short and
   lasting; notes on this card belong in its description.
+- **The board's For you shows what waits on the user**: an approval gate you asked for,
+  a question you asked with the `AskUserQuestion` tool, and a PR or MR linked to the
+  card. A question asked only in your reply text doesn't show there, so when you need
+  the user to decide something, ask it with `AskUserQuestion` (say what you found and
+  what you'd pick) and end your turn. Don't use it to ask whether to go on with agreed
+  work. Open PRs through the forge tools or CLI so they get linked to the conversation.
 - Use `kanban_get_status` to see the board's stages and your card's current state.
 - Don't mention the board or these reminders to the user unless they ask.
