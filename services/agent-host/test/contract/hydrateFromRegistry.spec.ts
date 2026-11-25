@@ -435,4 +435,21 @@ describe("on-demand hydration reads only its own rows", () => {
     expect((await sessions.getBySandboxKey(shortId(legacyId)))?.id).toBe(legacyId);
     expect(store.listConversations).not.toHaveBeenCalled();
   });
+
+  it("getBySandboxKey answers each user's sandbox with that user's conversation", async () => {
+    const carol = "0a1b2c3d-1111-4222-8333-000000000001";
+    const dave = "0a1b2c3d-1111-4222-8333-000000000002";
+    const { sessions } = singleRowWorld(
+      [
+        meta(carol, { owner: "carol", sandboxRef: `conv-${shortId(carol)}` }),
+        meta(dave, { owner: "dave", sandboxRef: `conv-${shortId(dave)}` }),
+      ],
+      { [`conv-${shortId(carol)}`]: true, [`conv-${shortId(dave)}`]: true },
+    );
+    // Before and after both are hydrated.
+    for (let round = 0; round < 2; round++) {
+      expect(await sessions.getBySandboxKey(shortId(dave))).toMatchObject({ id: dave, owner: "dave" });
+      expect(await sessions.getBySandboxKey(shortId(carol))).toMatchObject({ id: carol, owner: "carol" });
+    }
+  });
 });

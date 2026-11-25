@@ -38,3 +38,7 @@ and the conversation's owner is credited in a `Co-authored-by` trailer.
 `[bot]`). If the user wants commits under their own name, see
 `make_conversation_private` in the `scooter-ssh` skill. The same skill covers a private
 conversation that is tainted, and `request_untaint`.
+
+**Never write a `Co-authored-by` trailer yourself**, even if the repo's history is
+full of them. A hook adds the right one for this conversation, and a trailer you
+copy from `git log` credits whoever it named, not the person you're working for.

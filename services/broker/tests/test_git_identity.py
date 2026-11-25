@@ -67,3 +67,55 @@ def test_the_bot_authors_alone_in_an_unknown_conversation():
         "author": {"name": BOT.name, "email": BOT.email},
         "co_author": None,
     }
+
+
+# carol chose an identity; dave has none. Both use one broker.
+CAROL = Person("Carol", "carol@example.com")
+TWO_USERS = {
+    "carol-priv": {"owner": "carol", "visibility": "private", "authors": [{"user": "carol"}]},
+    "carol-shared": {"owner": "carol", "visibility": "shared"},
+    "dave-priv": {"owner": "dave", "visibility": "private", "authors": [{"user": "dave"}]},
+    "dave-shared": {"owner": "dave", "visibility": "shared"},
+    # carol wrote in dave's private conversation, so it is tainted.
+    "dave-tainted": {"owner": "dave", "visibility": "private", "authors": [{"user": "dave"}, {"user": "carol"}]},
+}
+
+
+@pytest.fixture
+def two_users():
+    VIEWS.update(TWO_USERS)
+    saved = ci._chosen
+
+    async def chosen(user):
+        return {"carol": CAROL}.get(user)
+
+    ci.provide_chosen(chosen)
+    yield
+    ci.provide_chosen(saved)
+    for k in TWO_USERS:
+        VIEWS.pop(k)
+
+
+def shared_client():
+    """One app for all conversations, sharing the owner cache."""
+    app = create_app()
+    current = {}
+    app.dependency_overrides[authenticate] = lambda: Identity(
+        conversation_id=current["conv"], namespace="ns", service_account=f"sandbox-{current['conv']}"
+    )
+    c = TestClient(app)
+
+    def get(conv):
+        current["conv"] = conv
+        return c.get("/git/identity").json()
+
+    return get
+
+
+@pytest.mark.parametrize("conv", ["dave-priv", "dave-shared", "dave-tainted"])
+def test_another_users_chosen_identity_never_reaches_their_sandbox(two_users, conv):
+    get = shared_client()
+    # Warm the cache with carol's conversations first.
+    assert get("carol-priv")["author"]["email"] == CAROL.email
+    assert get("carol-shared")["co_author"] == CAROL.ident()
+    assert get(conv) == {"author": {"name": BOT.name, "email": BOT.email}, "co_author": None}
