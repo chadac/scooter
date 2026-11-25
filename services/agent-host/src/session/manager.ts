@@ -390,6 +390,8 @@ export interface SessionManager {
    *  in-flight run, rebuilding goose on the new model and re-nudging it to continue; a no-op if
    *  `model` is current, throws on an unknown conversation, and returns whether a switch happened. */
   switchModelNow(id: SessionId, model: string): Promise<boolean>;
+  /** Switch models without a prompt, deferring a busy bridge's rebuild. */
+  setModel(id: SessionId, model: string, provider?: string): Promise<{ deferred: boolean }>;
   /** Pending restart changes for this conversation's sandbox. */
   pendingRestart?(id: SessionId): Promise<PendingRestart | undefined>;
   /** Restarts the sandbox (the root's, for a subagent). */
@@ -506,6 +508,8 @@ interface Entry {
   pendingQueue?: Array<{ text: string; priority: number; source?: string; sender?: MessageSender; humanInitiated?: boolean }>;
   /** Suspend the sandbox when this run ends (in memory). */
   stopAfterRun?: boolean;
+  /** The live bridge runs an older model (in memory). */
+  modelStale?: boolean;
   /** No recorded Sandbox, so a fresh one is no reset. */
   neverProvisioned?: boolean;
 }
@@ -970,6 +974,11 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       ) {
         void finishDeferredStop(e);
       }
+      if (e.modelStale && (event.type === "RUN_FINISHED" || event.type === "RUN_ERROR")) {
+        void finishDeferredModelSwitch(e).catch((err: unknown) =>
+          log.warn("deferred model switch failed", { conversation_id: e.id, error: formatError(err) }),
+        );
+      }
       // Cheap synchronous pre-filter; the store's AppendFence is the authority.
       if (!ownershipGuard.canWrite(e.id)) {
         // Loud: this drop truncates the run's log.
@@ -987,28 +996,44 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
 
   /** Switch a conversation's model: update entry.model, tear down the live bridge fire-and-forget
    *  so the next prompt's revive relaunches goose with the new GOOSE_MODEL, and persist the
-   *  change; a no-op when `model` is undefined or already current. */
+   *  change; `deferWhileBusy` marks a busy bridge stale instead. */
   const applyModelSwitch = async (
     e: Entry,
     model?: string,
     provider?: string,
     setBy: ModelSetBy = "user",
+    opts?: { deferWhileBusy?: boolean },
   ): Promise<void> => {
     // A provider-only switch must rebuild too: `model` has not moved.
     const providerMoved = provider !== undefined && provider !== e.pickedProvider;
-    if ((model === undefined || model === e.model) && !providerMoved) return;
+    const changed = (model !== undefined && model !== e.model) || providerMoved;
+    // Never rebuild a merely stale bridge mid-run.
+    if (!changed && (!e.modelStale || busy(e))) return;
     if (model !== undefined && model !== e.model) {
       e.model = model;
       e.modelSetBy = setBy;
     }
     if (provider !== undefined) e.pickedProvider = provider;
-    if (e.bridge) {
-      const old = e.bridge;
-      e.bridge = undefined; // the next revive rebuilds with e.model
-      // Fire-and-forget: don't block the next prompt on the old goose's exit.
-      void old.stop().catch(() => {});
+    if (e.bridge && opts?.deferWhileBusy && busy(e)) {
+      e.modelStale = true;
+    } else {
+      e.modelStale = false;
+      if (e.bridge) {
+        const old = e.bridge;
+        e.bridge = undefined; // the next revive rebuilds with e.model
+        // Fire-and-forget: don't block the next prompt on the old goose's exit.
+        void old.stop().catch(() => {});
+      }
     }
-    await saveMeta(e);
+    if (changed) await saveMeta(e);
+  };
+
+  /** Applies a deferred model switch once the bridge has drained. */
+  const finishDeferredModelSwitch = async (e: Entry): Promise<void> => {
+    // RUN_FINISHED lands before the bridge clears running.
+    for (let i = 0; i < 50 && e.bridge?.queueState().running; i++) await new Promise((r) => setTimeout(r, 100));
+    if (!e.modelStale || entries.get(e.id) !== e) return;
+    await inArrivalOrder(e.threadId, () => applyModelSwitch(e, undefined, undefined, "user", { deferWhileBusy: true }));
   };
 
   /** Find or revive the thread's conversation and queue the prompt. The run comes back boxed:
@@ -1710,6 +1735,14 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
       // source "resume" persists as a UI-hidden SYSTEM_MESSAGE.
       await this.prompt(id, MODEL_SWITCH_NUDGE, undefined, undefined, undefined, undefined, undefined, "resume");
       return true;
+    },
+
+    async setModel(id, model, provider) {
+      const entry = entries.get(id);
+      if (!entry) throw new Error(`unknown conversation: ${id}`);
+      touch(entry);
+      await inArrivalOrder(entry.threadId, () => applyModelSwitch(entry, model, provider, "user", { deferWhileBusy: true }));
+      return { deferred: !!entry.modelStale };
     },
 
     async pendingRestart(id) {

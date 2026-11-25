@@ -1551,6 +1551,32 @@ export function createManagementApi(deps: ManagementDeps): Router {
     return { json: { size: size.trim() } };
   });
 
+  // The model picker's switch; mid-run it lands at run end.
+  r.patch("/conversations/:id/model", async (ctx) => {
+    if (!sessions.get(ctx.params.id)) await sessions.ensureReadable(ctx.params.id);
+    const { conv, error } = mutableFor(ctx.params.id, ctx.user);
+    if (error === 404) return { status: 404, json: { error: "not found" } };
+    if (error === 403) return { status: 403, json: { error: "not your conversation" } };
+    const raw = (await ctx.body<{ model?: unknown }>().catch(() => undefined))?.model;
+    if (typeof raw !== "string" || !raw.trim()) {
+      return { status: 400, json: { error: "body must be {model: \"[<provider>:]<model>\"}" } };
+    }
+    // Same "<provider>:<model>" form as the X-Agent-Model header.
+    const sep = raw.indexOf(":");
+    const model = sep > 0 ? raw.slice(sep + 1) : raw;
+    const provider = sep > 0 ? raw.slice(0, sep) : undefined;
+    if (model !== models.default && !models.available.includes(model)) {
+      return { status: 400, json: { error: `unknown model: ${model}` } };
+    }
+    const offeredBy = models.providers?.[model];
+    if (provider && offeredBy?.length && !offeredBy.includes(provider)) {
+      return { status: 400, json: { error: `${provider} does not offer ${model}` } };
+    }
+    const { deferred } = await sessions.setModel(conv!.id, model, provider);
+    stateHub.nudge(conv!.id);
+    return { json: { model, provider: provider ?? null, deferred } };
+  });
+
   r.post("/conversations/:id/web-services/:name/start", async (ctx) => {
     const id = await resolveLiveConvId(ctx.params.id);
     if (!id) return { status: 404, json: { error: "unknown conversation" } };
