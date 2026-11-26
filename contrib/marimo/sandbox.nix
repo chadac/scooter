@@ -79,6 +79,10 @@ in
         prefix="''${SCOOTER_SERVICE_PREFIX-/c/''${CONVERSATION_ID:-unknown}}"
         proxy_args=()
         if [ -n "''${PUBLIC_HOST:-}" ]; then proxy_args+=(--proxy "''${PUBLIC_HOST}"); fi
+        # marimo accepts kernel sockets only from origins it's told.
+        origin="''${SCOOTER_SERVICES_ORIGIN:-}"
+        if [ -z "$origin" ] && [[ "''${CONVERSATION_URL:-}" =~ ^https?://[^/?#]+ ]]; then origin="''${BASH_REMATCH[0]}"; fi
+        if [ -n "$origin" ]; then proxy_args+=(--allow-origins "$origin"); fi
         # The Agent panel's socket, on this page's origin; agent-host serves it, not the pod.
         SCOOTER_MARIMO_HEAD="<script>window.SCOOTER_ACP_PATH=\"$prefix/_scooter/acp\";</script><script>$(${pkgs.coreutils}/bin/cat ${./notebook/agent-panel.js})</script>"
         export SCOOTER_MARIMO_HEAD

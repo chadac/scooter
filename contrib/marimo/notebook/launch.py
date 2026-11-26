@@ -21,9 +21,9 @@ def _warn(what: str, err: BaseException) -> None:
 def _patch() -> None:
     head = os.environ.get("SCOOTER_MARIMO_HEAD", "")
     try:
-        from marimo._server import start
+        from marimo._server import main, start
 
-        create = start.create_starlette_app
+        create = main.create_starlette_app
 
         def create_with_head(*args, **kwargs):
             app = create(*args, **kwargs)
@@ -31,7 +31,10 @@ def _patch() -> None:
             return app
 
         if head:
-            start.create_starlette_app = create_with_head
+            main.create_starlette_app = create_with_head
+            # start may hold its own reference, bound at import.
+            if hasattr(start, "create_starlette_app"):
+                start.create_starlette_app = create_with_head
     except Exception as err:  # noqa: BLE001
         _warn("page head", err)
 
