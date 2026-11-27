@@ -303,6 +303,16 @@ in
         Applies to each sort or hash, so concurrent queries can use several times this.
       '';
     };
+    slowStatementMs = mkOption {
+      type = types.nullOr types.ints.positive;
+      default = 1000;
+      description = ''
+        Log every statement slower than this, with its plan via auto_explain, and every
+        lock wait past `deadlock_timeout` (ignored when `external` is set); null turns both off.
+        pg_stat_statements keeps a statement's maximum but not when it happened, so these log
+        lines are what ties an outlier to a lock, a checkpoint or a disk stall.
+      '';
+    };
     storage = mkOption {
       type = types.str;
       default = "2Gi";
@@ -568,11 +578,17 @@ in
                   args = [
                     "-c" "max_connections=${toString pcfg.maxConnections}"
                     # Per-query stats, for finding the expensive ones.
-                    "-c" "shared_preload_libraries=pg_stat_statements"
+                    "-c" "shared_preload_libraries=pg_stat_statements${lib.optionalString (pcfg.slowStatementMs != null) ",auto_explain"}"
                     "-c" "pg_stat_statements.track=all"
                     "-c" "shared_buffers=${pcfg.sharedBuffers}"
                     "-c" "effective_cache_size=${pcfg.effectiveCacheSize}"
                     "-c" "work_mem=${pcfg.workMem}"
+                    # Separates time spent reading from disk from CPU time.
+                    "-c" "track_io_timing=on"
+                  ] ++ lib.optionals (pcfg.slowStatementMs != null) [
+                    "-c" "log_min_duration_statement=${toString pcfg.slowStatementMs}"
+                    "-c" "auto_explain.log_min_duration=${toString pcfg.slowStatementMs}"
+                    "-c" "log_lock_waits=on"
                   ];
                   resources = lib.mkDefault {
                     requests = { cpu = "100m"; memory = "512Mi"; };
