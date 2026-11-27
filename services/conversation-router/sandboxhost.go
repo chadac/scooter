@@ -160,7 +160,7 @@ func newSandboxRouter(shutdownCtx context.Context, cfg config, resolver ownerRes
 	// A typed-nil *Store in an interface is not nil.
 	var labels labelResolver
 	if store != nil {
-		labels = store
+		labels = newLabelCache(store)
 	}
 	return newSandboxHandler(shutdownCtx, cfg, resolver, labels, fallback, direct)
 }
