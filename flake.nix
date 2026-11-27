@@ -419,6 +419,10 @@
           # dev-env-* so CI's existing matrix enumerates it; Linux-only like devEnvTests
           contribSandboxChecks = lib.optionalAttrs pkgs.stdenv.isLinux {
             dev-env-contrib-sandbox = contribSandbox;
+            dev-env-marimo-agent-panel = import ./contrib/marimo/tests/check.nix {
+              inherit lib;
+              pkgs = build.config.sandboxPkgs;
+            };
           };
 
           # Outputs needing the Linux-only sandbox image or claude-code.

@@ -522,8 +522,8 @@ jobs:
     outputs:
       tests: ${{ steps.list.outputs.tests }}
     env:
-      # One VM test each for boot, rebuild, services and tooling.
-      CORE_TESTS: "dev-env-systemd-boot dev-env-scooter-rebuild dev-env-service dev-env-stub-tools"
+      # Boot, rebuild, services, tooling, and the marimo Agent panel bridge.
+      CORE_TESTS: "dev-env-systemd-boot dev-env-scooter-rebuild dev-env-service dev-env-stub-tools dev-env-marimo-agent-panel"
       FULL: ${{ needs.tier.outputs.full }}
       # Tests too expensive for per-PR runs (space-separated check names).
       HEAVY_TESTS: "dev-env-scooter-module"

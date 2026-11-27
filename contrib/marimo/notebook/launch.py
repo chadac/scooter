@@ -12,18 +12,30 @@ These touch marimo internals, so each degrades to plain marimo if marimo changes
 
 import os
 import sys
+import tomllib
 
 
 def _warn(what: str, err: BaseException) -> None:
+    # Strict: the check fails rather than serve a panel that can't connect.
+    if os.environ.get("SCOOTER_MARIMO_STRICT"):
+        raise RuntimeError(f"scooter: marimo {what} not patched") from err
     print(f"scooter: marimo {what} not patched ({err!r}); the agent panel may not reach Scooter", file=sys.stderr)
+
+
+def _user_sets_external_agents(path: str | None) -> bool:
+    try:
+        with open(path, "rb") as f:
+            return "external_agents" in (tomllib.load(f).get("experimental") or {})
+    except (OSError, TypeError, tomllib.TOMLDecodeError):
+        return False
 
 
 def _patch() -> None:
     head = os.environ.get("SCOOTER_MARIMO_HEAD", "")
     try:
-        from marimo._server import start
+        from marimo._server import main, start
 
-        create = start.create_starlette_app
+        create = main.create_starlette_app
 
         def create_with_head(*args, **kwargs):
             app = create(*args, **kwargs)
@@ -31,24 +43,26 @@ def _patch() -> None:
             return app
 
         if head:
-            start.create_starlette_app = create_with_head
+            main.create_starlette_app = create_with_head
+            # Some marimo versions import it into start at module load.
+            if getattr(start, "create_starlette_app", None) is create:
+                start.create_starlette_app = create_with_head
     except Exception as err:  # noqa: BLE001
         _warn("page head", err)
 
     try:
         from marimo._config.manager import MarimoConfigManager
 
-        read_overrides = MarimoConfigManager._read_overrides
+        get_overrides = MarimoConfigManager.get_config_overrides
 
-        def overrides_with_agents(self):
-            config = read_overrides(self)
+        def overrides_with_agents(self, *args, **kwargs):
+            config = get_overrides(self, *args, **kwargs)
             # An override, since the page never sees defaults; the user's own value wins.
-            user = self.user_config_mgr.read().get("experimental") or {}
-            if "external_agents" not in user:
+            if not _user_sets_external_agents(self.user_config_mgr.get_config_path()):
                 config.setdefault("experimental", {}).setdefault("external_agents", True)
             return config
 
-        MarimoConfigManager._read_overrides = overrides_with_agents
+        MarimoConfigManager.get_config_overrides = overrides_with_agents
     except Exception as err:  # noqa: BLE001
         _warn("settings", err)
 
