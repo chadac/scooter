@@ -1431,6 +1431,8 @@ export function createSessionManager(deps: SessionManagerDeps): SessionManager {
         if (!entry) throw new Error(`unknown conversation: ${id}`);
         // A tombstoned entry may still be held by a caller that raced the delete.
         if (endedIds.has(id)) throw new Error(`conversation was ended: ${id}`);
+        // Router re-claims bump the generation before the feed reports them.
+        await ownershipGuard.confirmOwns?.(id);
 
         const buildBridge = (sandboxReady?: () => Promise<void>): SessionBridge | undefined => {
           entry.bridge = bridgeFactory?.({
