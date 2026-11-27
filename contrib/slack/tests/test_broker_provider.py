@@ -1,4 +1,4 @@
-"""Slack's broker half: the bot-token proxy to slack.com/api and its enable gate, driven through the environment."""
+"""Slack's broker half: the tools-only transport set and its enable gate, driven through the environment."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from scooter_broker_lib.transports.http_proxy import HttpProxy
+from scooter_broker_lib.transports.mcp_tools import McpTools
 from scooter_broker_lib.types import Identity
 from scooter_contrib_slack.broker_provider import slack
 
@@ -19,15 +20,15 @@ def _clean_env(monkeypatch):
     monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
 
 
-def test_provider_proxies_slack_api_with_the_bot_token(monkeypatch):
+def test_provider_reaches_slack_api_through_tools_only(monkeypatch):
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-123")
 
     provider = slack()
     assert provider.name == "slack"
     assert provider.enabled
-    proxy = next(t for t in provider.transports if isinstance(t, HttpProxy))
-    assert proxy.upstream == "https://slack.com/api"
-    assert set(proxy.methods) == {"GET", "POST"}
+    tools = next(t for t in provider.transports if isinstance(t, McpTools))
+    assert tools.upstream == "https://slack.com/api"
+    assert not any(isinstance(t, HttpProxy) for t in provider.transports)
 
 
 @pytest.mark.asyncio
@@ -94,27 +95,19 @@ async def test_files_host_is_a_read_only_forge_host(monkeypatch):
     assert (await provider.forge_policy.check(req("POST", host="slack.com"))).allowed
 
 
-def test_the_proxy_posts_to_slack_api_despite_the_files_policy(monkeypatch):
+def test_a_raw_slack_api_path_is_not_served(monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
     monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-123")
-    sent: list[httpx.Request] = []
-
-    def handler(req: httpx.Request) -> httpx.Response:
-        sent.append(req)
-        return httpx.Response(200, json={"ok": True, "ts": "1.0"})
-
-    real = httpx.AsyncClient
-    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **kw: real(*a, transport=httpx.MockTransport(handler), **kw))
 
     async def sandbox() -> Identity:
         return _identity()
 
     provider = slack()
     app = FastAPI()
-    proxy = next(t for t in provider.transports if isinstance(t, HttpProxy))
-    app.include_router(proxy.routes(provider, authed=sandbox), prefix="/slack")
-    r = TestClient(app).post("/slack/chat.postMessage", json={"channel": "C1", "text": "hi"})
-    assert r.status_code == 200, r.text
-    assert [str(s.url) for s in sent] == ["https://slack.com/api/chat.postMessage"]
+    for t in provider.transports:
+        app.include_router(t.routes(provider, authed=sandbox), prefix="/slack")
+    for path in ("/slack/chat.postMessage", "/slack/auth.test"):
+        assert TestClient(app).post(path, json={"channel": "C1"}).status_code == 404, path
+        assert TestClient(app).get(path).status_code == 404, path

@@ -107,9 +107,9 @@ async def slack_react(emoji: str, message_ts: str, ctx: ToolContext = ToolContex
 async def get_slack_context(ctx: ToolContext = ToolContextDep) -> ToolResult:
     """Report the Slack channel id + thread_ts THIS conversation is attached to.
 
-    Use it when you need the raw ids (e.g. to build a permalink via the broker, or to
-    pass thread_ts explicitly) — slack_respond and slack_react already infer these, so
-    you rarely need this just to reply.
+    Use it when you need the raw ids (e.g. to quote them to the user, or to pass
+    thread_ts explicitly) — slack_respond and slack_react already infer these, so you
+    rarely need this just to reply.
     """
     target = await slack_target(ctx)
     if target is None:

@@ -11,8 +11,9 @@ in
         Secret holding the Slack bot token (xoxb-…). Injected as SLACK_BOT_TOKEN. The
         secret must exist in the broker namespace.
 
-        Enabling this contrib enables the Slack provider: an http-proxy to
-        slack.com/api with the bot token injected, and read-only access to
+        Enabling this contrib enables the Slack provider: the slack_respond,
+        slack_react and get_slack_context tools, which call slack.com/api with
+        the bot token on the agent's behalf, and read-only access to
         files.slack.com through the forge proxy, so sandboxes can download
         attachments.
       '';
