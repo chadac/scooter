@@ -103,6 +103,24 @@ function SectionHeader({ icon, label }: { icon?: ReactNode; label: string }) {
   );
 }
 
+const FOLDERS_OPEN_KEY = "scooter.sidebar.foldersOpen.v1";
+
+/** The Folders heading; its chevron hides or shows every user folder. */
+function FoldersHeader({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      data-testid="folders-toggle"
+      aria-expanded={open}
+      onClick={onToggle}
+      className="flex w-full items-center gap-1 rounded-sm px-2 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground first:pt-1 hover:text-foreground"
+    >
+      <ChevronRight aria-hidden className={"size-3 transition-transform " + (open ? "rotate-90" : "")} />
+      Folders
+    </button>
+  );
+}
+
 /** A small "?" affordance with a native-title tooltip. */
 function InfoTip({ text }: { text: string }) {
   return (
@@ -769,6 +787,12 @@ export const Sidebar = memo(function Sidebar() {
   const userIds = folderSections.filter((f) => !f.starred).map((f) => f.id);
   const searching = query.trim() !== "" || providerFilter.length > 0;
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [foldersOpen, setFoldersOpen] = useState(() => localStorage.getItem(FOLDERS_OPEN_KEY) !== "false");
+  const toggleFolders = () => {
+    localStorage.setItem(FOLDERS_OPEN_KEY, String(!foldersOpen));
+    setFoldersOpen(!foldersOpen);
+  };
+  const showFolders = foldersOpen || searching;
 
   // On mobile the sidebar is an overlay drawer; close it when the conversation changes
   // to reveal the thread.
@@ -961,19 +985,26 @@ export const Sidebar = memo(function Sidebar() {
           </p>
         )}
         {folderSections
-          .filter((f) => !searching || allRows(f).length > 0)
+          .filter((f) => f.starred && (!searching || allRows(f).length > 0))
           .map((f) => (
-            <FolderSectionView
-              key={f.id}
-              section={f}
-              first={f.id === userIds[0]}
-              last={f.id === userIds.at(-1)}
-              searching={searching}
-              currentId={currentId}
-              labelMode={labelMode}
-            />
+            <FolderSectionView key={f.id} section={f} searching={searching} currentId={currentId} labelMode={labelMode} />
           ))}
-        {!searching && <NewFolder />}
+        {!searching && <FoldersHeader open={foldersOpen} onToggle={toggleFolders} />}
+        {showFolders &&
+          folderSections
+            .filter((f) => !f.starred && (!searching || allRows(f).length > 0))
+            .map((f) => (
+              <FolderSectionView
+                key={f.id}
+                section={f}
+                first={f.id === userIds[0]}
+                last={f.id === userIds.at(-1)}
+                searching={searching}
+                currentId={currentId}
+                labelMode={labelMode}
+              />
+            ))}
+        {!searching && foldersOpen && <NewFolder />}
         <DropZone folderId={null} className="mt-2 rounded-md">
           <SectionHeader label="Recent" />
           {recentRows.length === 0 && rows.length > 0 && !searching && (

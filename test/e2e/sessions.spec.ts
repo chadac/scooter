@@ -258,6 +258,25 @@ test.describe("session selector & titles", () => {
     await expect(items.filter({ hasText: /started in the folder/i })).toHaveCount(1, { timeout: 30_000 });
   });
 
+  test("the Folders section hides every folder until reopened, across a reload", async ({ chat, page, request, baseURL }) => {
+    const base = baseURL ?? "http://localhost:5173";
+    const folder = (await (await request.post(`${base}/folders`, { data: { name: `e2e-folders-${Date.now()}` } })).json()) as { id: string };
+    await chat.open();
+    const head = page.locator(folders.head(folder.id));
+    const toggle = page.getByTestId("folders-toggle");
+    await expect(head).toHaveCount(1, { timeout: 10_000 });
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(head).toHaveCount(0);
+    await expect(page.locator(folders.head("starred"))).toHaveCount(1);
+    await expect(page.getByTestId("new-folder")).toHaveCount(0);
+    await page.reload();
+    await expect(toggle).toHaveAttribute("aria-expanded", "false", { timeout: 30_000 });
+    await expect(head).toHaveCount(0);
+    await toggle.click();
+    await expect(head).toHaveCount(1);
+  });
+
   test("folders reorder by drag and by Move up, below Starred, and it sticks", async ({ chat, page, request, baseURL }) => {
     const base = baseURL ?? "http://localhost:5173";
     const stamp = Date.now();
