@@ -12,6 +12,7 @@ all resolve to None.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -92,6 +93,8 @@ class OwnerResolver:
     ttl: float = DEFAULT_TTL_SECONDS
     clock: Callable[[], float] = time.monotonic
     _cache: dict[str, tuple[float, ConversationAccess | None]] = field(default_factory=dict, repr=False)
+    # Concurrent misses share one fetch.
+    _inflight: dict[str, asyncio.Task[ConversationAccess | None]] = field(default_factory=dict, repr=False)
 
     async def access(self, conversation_id: str) -> ConversationAccess | None:
         """The conversation's owner and visibility, None when unknown or unreadable."""
@@ -101,6 +104,17 @@ class OwnerResolver:
         hit = self._cache.get(conversation_id)
         if hit is not None and now - hit[0] < self.ttl:
             return hit[1]
+        task = self._inflight.get(conversation_id)
+        if task is None:
+            task = asyncio.ensure_future(self._load(conversation_id))
+            self._inflight[conversation_id] = task
+            task.add_done_callback(lambda _: self._inflight.pop(conversation_id, None))
+        # Shielded, so one caller's cancellation doesn't fail the others.
+        return await asyncio.shield(task)
+
+    async def _load(self, conversation_id: str) -> ConversationAccess | None:
+        """Fetches and caches one conversation's access; failures stay uncached."""
+        now = self.clock()
         try:
             view = await self.fetch(conversation_id)
         except (httpx.HTTPError, ValueError) as e:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 import pytest
 
@@ -119,6 +121,39 @@ async def test_a_turn_to_shared_is_seen_after_the_ttl(views):
     assert views.calls == 1
     clock.t = 11
     assert await r.acting_user(ident("priv")) is None
+
+
+async def test_concurrent_misses_share_one_fetch(views):
+    release = asyncio.Event()
+    inner = Views(views.views)
+
+    async def slow(conv: str):
+        await release.wait()
+        return await inner(conv)
+
+    r = OwnerResolver(slow)
+    calls = [asyncio.create_task(r.acting_user(ident("priv"))) for _ in range(3)]
+    await asyncio.sleep(0)
+    release.set()
+    assert await asyncio.gather(*calls) == ["alice"] * 3
+    assert inner.calls == 1
+
+
+async def test_a_cancelled_caller_does_not_fail_a_shared_fetch(views):
+    release = asyncio.Event()
+
+    async def slow(conv: str):
+        await release.wait()
+        return await views(conv)
+
+    r = OwnerResolver(slow)
+    first = asyncio.create_task(r.acting_user(ident("priv")))
+    second = asyncio.create_task(r.acting_user(ident("priv")))
+    await asyncio.sleep(0)
+    first.cancel()
+    release.set()
+    assert await second == "alice"
+    assert views.calls == 1
 
 
 async def test_the_agent_host_fetcher_reads_the_conversation_view():
