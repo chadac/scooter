@@ -3,8 +3,10 @@
  * discovery manifest (/run/scooter/web-services.json, rendered by the `webServices`
  * NixOS option) via the exec API and drives their systemd units. Descriptors are
  * cached per conversation with a short TTL so a `scooter-rebuild` shows up without a
- * restart; start drops the entry and list({force}) re-reads on demand. This module
- * owns the exec coupling so the proxy stays unit-testable against a fake registry.
+ * restart; an expired entry still answers while one background read refreshes it, since
+ * that exec can take seconds on a busy pod. start drops the entry and list({force})
+ * re-reads on demand. This module owns the exec coupling so the proxy stays
+ * unit-testable against a fake registry.
  * Liveness is cached too, on a shorter TTL; only the loading page's poll asks for it.
  */
 
@@ -93,23 +95,45 @@ export function createWebServiceRegistry(
     }
   }
 
-  async function load(conversationId: string, force = false): Promise<WebServiceDescriptor[]> {
-    const entry = cache.get(conversationId);
-    const cached = !force && entry && now() - entry.at < ttlMs ? entry.descriptors : undefined;
-    // Only a non-empty cached list is authoritative, since an empty one usually means
-    // the manifest could not be read yet.
-    if (cached && cached.length > 0) return cached;
+  // conversationId -> its manifest read in flight, shared by callers.
+  const reads = new Map<string, Promise<WebServiceDescriptor[]>>();
+
+  function read(conversationId: string): Promise<WebServiceDescriptor[]> {
+    const pending = reads.get(conversationId);
+    if (pending) return pending;
     const ref = deps.sandboxFor(conversationId);
-    if (!ref) return [];
-    let descriptors: WebServiceDescriptor[] = [];
-    try {
-      const exec = await deps.connect(ref);
-      descriptors = parseManifest(await exec.download(MANIFEST_PATH));
-    } catch {
-      descriptors = []; // pod asleep, creating, or manifest missing
-    }
-    if (descriptors.length > 0) cache.set(conversationId, { descriptors, at: now() });
-    return descriptors;
+    if (!ref) return Promise.resolve([]);
+    const p: Promise<WebServiceDescriptor[]> = Promise.resolve(ref)
+      .then(deps.connect)
+      .then((exec) => exec.download(MANIFEST_PATH))
+      .then(parseManifest, () => [] as WebServiceDescriptor[]) // pod asleep, creating, or manifest missing
+      .then((descriptors) => {
+        // An invalidate during the read wins over its answer.
+        if (descriptors.length > 0 && reads.get(conversationId) === p) {
+          cache.set(conversationId, { descriptors, at: now() });
+        }
+        return descriptors;
+      })
+      .finally(() => {
+        if (reads.get(conversationId) === p) reads.delete(conversationId);
+      });
+    reads.set(conversationId, p);
+    return p;
+  }
+
+  async function load(conversationId: string, force = false): Promise<WebServiceDescriptor[]> {
+    // Only non-empty reads are cached; empty means the pod is not up.
+    const entry = cache.get(conversationId);
+    if (force || !entry) return read(conversationId);
+    // Expired: answer from cache so a slow exec stalls nothing.
+    if (now() - entry.at >= ttlMs) void read(conversationId);
+    return entry.descriptors;
+  }
+
+  /** Forget a conversation's descriptors, including a read still in flight. */
+  function forgetDescriptors(conversationId: string): void {
+    cache.delete(conversationId);
+    reads.delete(conversationId);
   }
 
   async function unit(conversationId: string, name: string): Promise<string | null> {
@@ -158,7 +182,7 @@ export function createWebServiceRegistry(
       }
       // A start may reveal a freshly-enabled service, and a cached "down" would outlive
       // the unit it was told about, so both caches go.
-      cache.delete(conversationId);
+      forgetDescriptors(conversationId);
       forgetLiveness(conversationId, name);
     },
     async stop(conversationId, name) {
@@ -202,7 +226,7 @@ export function createWebServiceRegistry(
       }
     },
     invalidate(conversationId) {
-      cache.delete(conversationId);
+      forgetDescriptors(conversationId);
       forgetLiveness(conversationId);
     },
   };

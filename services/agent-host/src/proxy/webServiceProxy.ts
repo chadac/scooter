@@ -359,9 +359,15 @@ export function createWebServiceProxy(deps: WebServiceProxyDeps): WebServiceProx
 
   async function podTargetFor(conv: Conversation): Promise<{ target: PodTarget; cached: boolean }> {
     const hit = targets.get(conv.id);
-    if (hit && hit.status === conv.status && Date.now() - hit.at < POD_TARGET_TTL_MS) {
+    if (hit && hit.status === conv.status) {
+      // Expired: answer from cache while one lookup refreshes it.
+      if (Date.now() - hit.at >= POD_TARGET_TTL_MS) void lookupTarget(conv).catch(() => dropTarget(conv.id));
       return { target: hit.target, cached: true };
     }
+    return { target: await lookupTarget(conv), cached: false };
+  }
+
+  function lookupTarget(conv: Conversation): Promise<PodTarget> {
     // One lookup per conversation however many requests are waiting (a page load fans out).
     let pending = lookups.get(conv.id);
     if (!pending) {
@@ -378,7 +384,7 @@ export function createWebServiceProxy(deps: WebServiceProxyDeps): WebServiceProx
       lookups.set(conv.id, p);
       pending = p;
     }
-    return { target: await pending, cached: false };
+    return pending;
   }
 
   /** Forget a conversation's pod address so the next request looks it up again. */

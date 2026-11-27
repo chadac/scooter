@@ -278,7 +278,49 @@ describe("picking up a scooter-rebuild", () => {
     expect(state.reads).toBe(readsAfterFirst);
 
     clock += 10_001;
+    // The expired read answers while the re-read runs; the next call sees the rebuild.
+    expect((await reg.list("c1")).map((s) => s.name)).toEqual(["marimo"]);
+    await new Promise((r) => setImmediate(r));
     expect((await reg.list("c1")).map((s) => s.name)).toEqual(["marimo", "docs"]);
+  });
+
+  it("an expired read answers at once while one slow re-read runs (a busy pod must not stall requests)", async () => {
+    let clock = 1_000;
+    let reads = 0;
+    const exec = fakeExec({
+      download: vi.fn(async () => {
+        reads++;
+        if (reads > 1) await new Promise(() => {}); // the pod never answers
+        return MANIFEST;
+      }),
+    });
+    const reg = make(exec, { ttlMs: 10_000, now: () => clock });
+    await reg.list("c1");
+
+    clock += 10_001;
+    for (let i = 0; i < 3; i++) expect((await reg.get("c1", "marimo"))?.port).toBe(2718);
+    expect(reads).toBe(2);
+  });
+
+  it("concurrent cold reads share one exec", async () => {
+    const { exec, state } = mutableExec(MANIFEST);
+    const reg = make(exec, { ttlMs: 10_000, now: () => 5_000 });
+    await Promise.all([reg.list("c1"), reg.list("c1"), reg.get("c1", "marimo")]);
+    expect(state.reads).toBe(1);
+  });
+
+  it("an invalidate during a read keeps that read out of the cache", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { exec, state } = mutableExec(MANIFEST);
+    const slow = fakeExec({ download: vi.fn(async (p: string) => { await gate; return exec.download(p); }) });
+    const reg = make(slow, { ttlMs: 10_000, now: () => 5_000 });
+    const first = reg.list("c1");
+    reg.invalidate("c1");
+    release();
+    await first;
+    await reg.list("c1");
+    expect(state.reads).toBe(2);
   });
 
   it("re-reads immediately when forced, without waiting for the TTL", async () => {

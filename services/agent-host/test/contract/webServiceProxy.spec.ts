@@ -900,6 +900,56 @@ describe("web-service proxy", () => {
     expect(lookups()).toBe(1);
   });
 
+  it("an expired address answers at once while a slow lookup refreshes it", async () => {
+    // The refresh never settles, as a `list pods` against a stalled API server.
+    let n = 0;
+    const proxy = createWebServiceProxy({
+      sessions: { get: () => ({ id: "conv-1", threadId: "conv-1" }), touchById: () => {} } as never,
+      resolvePodTarget: (async () => {
+        if (n++ > 0) await new Promise(() => {});
+        return { name: "conv-1-pod", podIP: "127.0.0.1" };
+      }) as never,
+      registry: fakeRegistry(svc.port),
+      publicHost: "scooter.example.com",
+      resolveUser: () => ANON,
+    });
+    expect((await proxyGet(proxy, "/c/conv-1/marimo/a")).status).toBe(200);
+    const realNow = Date.now;
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => realNow() + POD_TARGET_TTL_MS + 1);
+    try {
+      for (let i = 0; i < 3; i++) expect((await proxyGet(proxy, `/c/conv-1/marimo/a?n=${i}`)).status).toBe(200);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(n).toBe(2);
+  });
+
+  it("a failed refresh drops the expired address, so the next request looks again", async () => {
+    let n = 0;
+    const proxy = createWebServiceProxy({
+      sessions: { get: () => ({ id: "conv-1", threadId: "conv-1" }), touchById: () => {} } as never,
+      resolvePodTarget: (async () => {
+        if (n++ === 1) throw new Error("no ready pod");
+        return { name: "conv-1-pod", podIP: "127.0.0.1" };
+      }) as never,
+      registry: fakeRegistry(svc.port),
+      publicHost: "scooter.example.com",
+      resolveUser: () => ANON,
+    });
+    await proxyGet(proxy, "/c/conv-1/marimo/a");
+    const realNow = Date.now;
+    let offset = POD_TARGET_TTL_MS + 1;
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => realNow() + offset);
+    try {
+      expect((await proxyGet(proxy, "/c/conv-1/marimo/a")).status).toBe(200);
+      offset = 0;
+      expect((await proxyGet(proxy, "/c/conv-1/marimo/a")).status).toBe(200);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(n).toBe(3);
+  });
+
   it("looks again once the cached address expires", async () => {
     const { proxy, lookups } = countingProxy(fakeRegistry(svc.port));
     const realNow = Date.now;
