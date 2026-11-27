@@ -70,10 +70,13 @@ jobs:
           add-paths: |
             flake.lock
             modules/sandbox-os/stubs.lock
+            contrib/*/stubs.lock
+            nixos-tests/fixtures/contrib-ext/stubs.lock
           body: |
-            Automated weekly `nix flake update`, with
-            `modules/sandbox-os/stubs.lock` regenerated against the bumped
-            nixpkgs so the flake still evaluates.
+            Automated weekly `nix flake update`, with every
+            `stubs.lock` regenerated against the bumped
+            nixpkgs so the flake still evaluates. A marimo bump in nixpkgs
+            moves the notebook service's pin too; check the notebook still opens.
 
             ```
             ${{ steps.update.outputs.summary }}

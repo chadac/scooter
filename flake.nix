@@ -397,6 +397,10 @@
               grep -F 'launch.py edit --sandbox' ${marimoStart}
               grep -F '/_scooter/acp' ${marimoStart}
               grep -F -- '--base-url "$prefix/notebook"' ${marimoStart}
+              # marimo is pinned, and lists the page's origins for its kernel sockets.
+              grep -E -- '--with marimo==[0-9]+\.[0-9]+\.[0-9]+ ' ${marimoStart}
+              grep -F -- '"''${origin_args[@]}"' ${marimoStart}
+              grep -F -- '--allow-origins "''${SCOOTER_SERVICES_ORIGIN%/}"' ${marimoStart}
 
               # marimo opens notebooks computed: its start seeds runtime.auto_instantiate, but
               # only while marimo has no settings (it leaves an empty file), never over the user's.

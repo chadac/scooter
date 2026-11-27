@@ -72,13 +72,18 @@ in
     # uv-managed venv with patched wheels, so native deps import, and --sandbox makes it
     # self-contained with its inline PEP 723 deps.
     command =
-      let runner = "exec ${pkgs.uv}/bin/uv run --with marimo python ${./notebook/launch.py} edit --sandbox"; in
+      # Pinned to nixpkgs' marimo so flake.lock bumps move it; kernels inherit it.
+      let runner = "exec ${pkgs.uv}/bin/uv run --with marimo==${pkgs.marimo.version} python ${./notebook/launch.py} edit --sandbox"; in
       # `command` is types.str, so the derivation is interpolated to its store path for the re-converge eval.
       lib.mkDefault "${pkgs.writeShellScript "marimo-web-service" ''
         set -euo pipefail
         prefix="''${SCOOTER_SERVICE_PREFIX-/c/''${CONVERSATION_ID:-unknown}}"
         proxy_args=()
         if [ -n "''${PUBLIC_HOST:-}" ]; then proxy_args+=(--proxy "''${PUBLIC_HOST}"); fi
+        # marimo refuses kernel sockets from origins it doesn't list.
+        origin_args=()
+        if [ -n "''${SCOOTER_SERVICES_ORIGIN:-}" ]; then origin_args+=(--allow-origins "''${SCOOTER_SERVICES_ORIGIN%/}"); fi
+        if [[ "''${CONVERSATION_URL:-}" =~ ^https?://[^/?#]+ ]]; then origin_args+=(--allow-origins "''${BASH_REMATCH[0]}"); fi
         # The Agent panel's socket, on this page's origin; agent-host serves it, not the pod.
         SCOOTER_MARIMO_HEAD="<script>window.SCOOTER_ACP_PATH=\"$prefix/_scooter/acp\";</script><script>$(${pkgs.coreutils}/bin/cat ${./notebook/agent-panel.js})</script>"
         export SCOOTER_MARIMO_HEAD
@@ -86,7 +91,7 @@ in
         # --no-token: access is gated by the platform proxy, and marimo-pair needs a token-less server.
         ${runner} \
           --host 0.0.0.0 --port ${toString cfg.port} \
-          --base-url "$prefix/notebook" "''${proxy_args[@]}" \
+          --base-url "$prefix/notebook" "''${proxy_args[@]}" "''${origin_args[@]}" \
           --headless --no-token
       ''}";
   };
