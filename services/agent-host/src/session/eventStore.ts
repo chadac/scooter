@@ -190,7 +190,8 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
   };
 
   return {
-    appendEvent(id, event) {
+    appendEvent(id, raw) {
+      const event = jsonbSafe(raw);
       const prev = chains.get(id) ?? Promise.resolve();
       const next = prev
         .catch(() => {}) // a prior failure must not break the chain (ordering)
@@ -393,6 +394,24 @@ export function createPgEventStore(config: PgEventStoreConfig): PgEventStore {
       await ownPool?.end().catch(() => {});
     },
   };
+}
+
+// Cheap pre-check: JSON escapes for NUL or a surrogate.
+const JSONB_UNSAFE = /\\u(?:0000|d[89a-f])/i;
+const NUL_OR_LONE_SURROGATE = /\u0000|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
+
+/** Replace NULs and lone surrogates, which jsonb rejects, with U+FFFD. */
+function jsonbSafe(event: AguiEvent): AguiEvent {
+  if (!JSONB_UNSAFE.test(JSON.stringify(event))) return event;
+  const clean = (v: unknown): unknown => {
+    if (typeof v === "string") return v.replace(NUL_OR_LONE_SURROGATE, "\ufffd");
+    if (Array.isArray(v)) return v.map(clean);
+    if (v && typeof v === "object") {
+      return Object.fromEntries(Object.entries(v).map(([k, x]) => [clean(k), clean(x)]));
+    }
+    return v;
+  };
+  return clean(event) as AguiEvent;
 }
 
 /** What backfillConversation wrote, so the Job can verify rather than assume. */

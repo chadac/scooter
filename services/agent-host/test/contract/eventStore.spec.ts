@@ -53,6 +53,13 @@ function fakeDb(): {
         const [conversation_id, seq, event, checksum, prev_checksum] = values as [
           string, number, unknown, string, string,
         ];
+        // Postgres jsonb rejects escaped NULs and lone surrogates.
+        if (typeof event === "string" && /\\u0000/.test(event)) {
+          throw Object.assign(new Error("unsupported Unicode escape sequence"), { code: "22P05" });
+        }
+        if (typeof event === "string" && /\\ud[89a-f]/i.test(event)) {
+          throw Object.assign(new Error("invalid input syntax for type json"), { code: "22P02" });
+        }
         // drizzle serializes jsonb to a string before binding and Postgres returns it parsed.
         const parsed = typeof event === "string" ? JSON.parse(event) : event;
         // The fence rides this statement, evaluated before the PK.
@@ -499,6 +506,31 @@ describe("eventStore — durability contracts", () => {
     const seqs = rows.map((r) => r.seq as number);
     expect(seqs, "seq must stay strictly increasing after a failure").toEqual([...seqs].sort((a, b) => a - b));
     expect(new Set(seqs).size).toBe(seqs.length); // no duplicates
+  });
+
+  it("a tool output holding NUL or a lone surrogate still lands, with U+FFFD in its place", async () => {
+    const { db, rows } = fakeDb();
+    const s = store(db);
+    const errors: unknown[] = [];
+    s.onAppendError((_id, e) => errors.push(e));
+    const appended: ChecksummedEvent[] = [];
+    s.onAppend((_id, e) => appended.push(e));
+    const binary = {
+      type: "TOOL_CALL_RESULT",
+      toolCallId: "t1",
+      content: "101 Switching Protocols\r\n\u0081\u0000\u0001{\"event\":\"notebook\"} \ud800 \udc00 \ud83d\ude00",
+      meta: { "k\u0000": ["\u0000"] },
+    } as unknown as AguiEvent;
+
+    await s.appendEvent(CONV, binary);
+
+    expect(errors).toEqual([]);
+    const stored = rows[0].event as { content: string; meta: Record<string, string[]> };
+    expect(stored.content).toBe("101 Switching Protocols\r\n\u0081\ufffd\u0001{\"event\":\"notebook\"} \ufffd \ufffd \ud83d\ude00");
+    expect(stored.meta).toEqual({ "k\ufffd": ["\ufffd"] });
+    // The checksum and listeners must see the stored event.
+    expect(appended[0].event).toEqual(stored);
+    expect(rows[0].checksum).toBe(chainNext(EMPTY_CHECKSUM, appended[0].event));
   });
 
   it("removeConversation drops only that conversation's events", async () => {
