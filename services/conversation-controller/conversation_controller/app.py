@@ -19,6 +19,9 @@ from . import rows as conversation_rows
 logger = logging.getLogger(__name__)
 _C = {"component": "app"}
 
+# Reaper ages are minutes to days; per-tick passes waste queries.
+_REAP_INTERVAL_S = 60.0
+
 
 def run(cfg: Config, stop: threading.Event) -> None:
     k8s = ControllerK8s(cfg.namespace)
@@ -30,6 +33,7 @@ def run(cfg: Config, stop: threading.Event) -> None:
     # /metrics on every replica so a scrape target is always up.
     metrics.serve(cfg.metrics_port, stop)
     was_leader = False
+    last_orphan_reap = float("-inf")
     last_overlay_reap = float("-inf")
     last_sandbox_reap = float("-inf")
     while not stop.is_set():
@@ -42,7 +46,8 @@ def run(cfg: Config, stop: threading.Event) -> None:
                     autoscale_state = AutoscaleState()
                 reconcile_once(k8s, cfg.pod_cap, rows=rows)
                 # Guarded separately so a reaper failure does not abort assignment.
-                if cfg.reap_orphans:
+                if cfg.reap_orphans and time.monotonic() - last_orphan_reap >= _REAP_INTERVAL_S:
+                    last_orphan_reap = time.monotonic()
                     try:
                         reap_orphans(k8s, cfg.orphan_grace_seconds, rows)
                     except Exception:  # noqa: BLE001
@@ -50,14 +55,13 @@ def run(cfg: Config, stop: threading.Event) -> None:
                             "orphan-reaper pass failed",
                             extra={**_C, "will_retry_next_tick": True},
                         )
-                # At most once a minute; retention is measured in days.
-                if cfg.overlay_retention_seconds > 0 and time.monotonic() - last_overlay_reap >= 60:
+                if cfg.overlay_retention_seconds > 0 and time.monotonic() - last_overlay_reap >= _REAP_INTERVAL_S:
                     last_overlay_reap = time.monotonic()
                     try:
                         reap_overlays(k8s, cfg.overlay_retention_seconds)
                     except Exception:  # noqa: BLE001
                         logger.exception("overlay-reaper pass failed", extra={**_C, "will_retry_next_tick": True})
-                if cfg.sandbox_retention_seconds > 0 and time.monotonic() - last_sandbox_reap >= 60:
+                if cfg.sandbox_retention_seconds > 0 and time.monotonic() - last_sandbox_reap >= _REAP_INTERVAL_S:
                     last_sandbox_reap = time.monotonic()
                     try:
                         reap_sandboxes(k8s, rows, cfg.sandbox_retention_seconds, int(time.time() * 1000))
