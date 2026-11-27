@@ -20,6 +20,15 @@ const background = (page: Page) =>
   page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--background").trim());
 const isDark = (page: Page) => page.evaluate(() => document.documentElement.classList.contains("dark"));
 
+/** Click, then wait for the account to save the pick. */
+async function saved(page: Page, value: string, click: () => Promise<void>) {
+  const save = page.waitForResponse(
+    (r) => r.url().endsWith("/user-theme") && r.request().method() === "PATCH" && (r.request().postData() ?? "").includes(value),
+  );
+  await click();
+  await save;
+}
+
 test.describe("settings — appearance", () => {
   test.setTimeout(90_000);
 
@@ -90,8 +99,9 @@ test.describe("settings — appearance", () => {
   test("a single-variant theme pins its appearance and the header toggle names it", async ({ browser }) => {
     const page = await pageAs(browser, uniqueUser());
     await openAppearance(page);
-    await page.locator('[data-testid="theme-mode-light"]').click();
-    await page.locator('[data-testid="theme-option-midnight"]').click();
+    // A reload aborts an unsaved pick; the account's choice wins.
+    await saved(page, "light", () => page.locator('[data-testid="theme-mode-light"]').click());
+    await saved(page, "midnight", () => page.locator('[data-testid="theme-option-midnight"]').click());
 
     await expect.poll(() => isDark(page)).toBe(true);
     expect(await background(page)).toBe("#05050a");
