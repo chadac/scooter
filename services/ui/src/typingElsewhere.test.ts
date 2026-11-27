@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { typingElsewhere } from "./typingElsewhere";
+import { inComposer, typingElsewhere } from "./typingElsewhere";
 
 describe("typingElsewhere", () => {
   const mk = (html: string) => {
@@ -22,5 +22,21 @@ describe("typingElsewhere", () => {
     expect(typingElsewhere(mk(`<button id="t">x</button>`))).toBe(false);
     expect(typingElsewhere(mk(`<input id="t" type="checkbox">`))).toBe(false);
     expect(typingElsewhere(null)).toBe(false);
+  });
+});
+
+describe("inComposer", () => {
+  const mk = (html: string) => {
+    document.body.innerHTML = html;
+    return document.getElementById("t");
+  };
+
+  it("is true for the composer's input", () => {
+    expect(inComposer(mk(`<div class="aui-composer-root"><textarea id="t"></textarea></div>`))).toBe(true);
+  });
+  it("is false for a composer button, a textarea elsewhere and nothing focused", () => {
+    expect(inComposer(mk(`<div class="aui-composer-root"><button id="t">Send</button></div>`))).toBe(false);
+    expect(inComposer(mk(`<textarea id="t"></textarea>`))).toBe(false);
+    expect(inComposer(null)).toBe(false);
   });
 });

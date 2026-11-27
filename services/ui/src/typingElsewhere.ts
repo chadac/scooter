@@ -24,3 +24,13 @@ function subscribe(cb: () => void): () => void {
 export function useTypingElsewhere(): boolean {
   return useSyncExternalStore(subscribe, () => typingElsewhere(document.activeElement), () => false);
 }
+
+/** Whether focus is already in the composer's input. */
+export function inComposer(el: Element | null): boolean {
+  return el instanceof HTMLTextAreaElement && el.closest(".aui-composer-root") !== null;
+}
+
+/** Re-renders on focus moves; true while the composer has focus. */
+export function useInComposer(): boolean {
+  return useSyncExternalStore(subscribe, () => inComposer(document.activeElement), () => false);
+}

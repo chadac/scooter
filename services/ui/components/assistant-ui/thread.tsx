@@ -29,7 +29,7 @@ import { InlineRunStatus, ContextFillBar } from "@/src/RunStatusBar";
 import { QueuedMessages } from "@/src/QueuedMessages";
 import { attachStickToBottom } from "@/src/stickToBottom";
 import { useRenaming } from "@/src/sessions";
-import { useTypingElsewhere } from "@/src/typingElsewhere";
+import { useInComposer, useTypingElsewhere } from "@/src/typingElsewhere";
 import { embedded, useDocumentFocused } from "@/src/documentFocus";
 import { cn } from "@/lib/utils";
 import {
@@ -340,8 +340,10 @@ const Composer: FC = () => {
   // rename, close a popover the user is typing in, or pull focus from another frame.
   const renaming = useRenaming();
   const typingElsewhere = useTypingElsewhere();
+  // Refocusing moves the caret to the end, dropping a selection.
+  const inComposer = useInComposer();
   const focused = useDocumentFocused();
-  const hold = renaming || typingElsewhere || !focused;
+  const hold = renaming || typingElsewhere || inComposer || !focused;
   // Framed, skip mount focus until the user focuses the composer.
   const [autoFocus, setAutoFocus] = useState(() => !embedded || document.hasFocus());
   return (
