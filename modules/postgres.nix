@@ -307,8 +307,9 @@ in
       type = types.nullOr types.ints.positive;
       default = 1000;
       description = ''
-        Log every statement slower than this, with its plan via auto_explain, and every
-        lock wait past `deadlock_timeout` (ignored when `external` is set); null turns both off.
+        Log every statement slower than this, with its plan via auto_explain but without its
+        bind parameter values, and every lock wait past `deadlock_timeout` (ignored when
+        `external` is set); null turns both off.
         pg_stat_statements keeps a statement's maximum but not when it happened, so these log
         lines are what ties an outlier to a lock, a checkpoint or a disk stall.
       '';
@@ -587,6 +588,8 @@ in
                     "-c" "track_io_timing=on"
                   ] ++ lib.optionals (pcfg.slowStatementMs != null) [
                     "-c" "log_min_duration_statement=${toString pcfg.slowStatementMs}"
+                    # The plan explains the statement; bind values are row contents.
+                    "-c" "log_parameter_max_length=0"
                     "-c" "auto_explain.log_min_duration=${toString pcfg.slowStatementMs}"
                     "-c" "log_lock_waits=on"
                   ];
